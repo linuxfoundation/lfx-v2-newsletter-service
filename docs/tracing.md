@@ -30,7 +30,7 @@ OTEL_TRACES_SAMPLE_RATIO=1.0
 - `OTEL_SERVICE_NAME`: Name of the service in traces
 - `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP collector endpoint (e.g., Jaeger, Tempo)
 - `OTEL_EXPORTER_OTLP_INSECURE`: Use insecure connection (set to `false` for production)
-- `OTEL_TRACES_EXPORTER`: Trace exporter type (`otlp`, `jaeger`, `zipkin`, or `none`)
+- `OTEL_TRACES_EXPORTER`: Trace exporter type (`otlp` or `none`)
 - `OTEL_TRACES_SAMPLE_RATIO`: Sampling rate (0.0 to 1.0, where 1.0 = 100%)
 
 ## Implementation

@@ -94,20 +94,9 @@ func OTelConfigFromEnv() OTelConfig {
 
 	insecure := os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true"
 
-	tracesExporter := os.Getenv("OTEL_TRACES_EXPORTER")
-	if tracesExporter == "" {
-		tracesExporter = OTelExporterNone
-	}
-
-	metricsExporter := os.Getenv("OTEL_METRICS_EXPORTER")
-	if metricsExporter == "" {
-		metricsExporter = OTelExporterNone
-	}
-
-	logsExporter := os.Getenv("OTEL_LOGS_EXPORTER")
-	if logsExporter == "" {
-		logsExporter = OTelExporterNone
-	}
+	tracesExporter := normalizeExporter("traces", os.Getenv("OTEL_TRACES_EXPORTER"))
+	metricsExporter := normalizeExporter("metrics", os.Getenv("OTEL_METRICS_EXPORTER"))
+	logsExporter := normalizeExporter("logs", os.Getenv("OTEL_LOGS_EXPORTER"))
 
 	tracesSampleRatio := 1.0
 	if ratio := os.Getenv("OTEL_TRACES_SAMPLE_RATIO"); ratio != "" {
@@ -146,6 +135,24 @@ func OTelConfigFromEnv() OTelConfig {
 		TracesSampleRatio: tracesSampleRatio,
 		MetricsExporter:   metricsExporter,
 		LogsExporter:      logsExporter,
+	}
+}
+
+func normalizeExporter(signal, raw string) string {
+	exporter := strings.ToLower(strings.TrimSpace(raw))
+	if exporter == "" {
+		return OTelExporterNone
+	}
+
+	switch exporter {
+	case OTelExporterOTLP, OTelExporterNone:
+		return exporter
+	default:
+		slog.Warn("unsupported OTEL exporter value, falling back to none",
+			"signal", signal,
+			"provided-value", raw,
+			"supported-values", "otlp|none")
+		return OTelExporterNone
 	}
 }
 

@@ -188,6 +188,34 @@ func TestOTelConfigFromEnv_InsecureFlag(t *testing.T) {
 	}
 }
 
+// TestNormalizeExporter verifies that only supported exporter values are
+// accepted and unsupported values fall back to "none".
+func TestNormalizeExporter(t *testing.T) {
+	tests := []struct {
+		name   string
+		signal string
+		raw    string
+		want   string
+	}{
+		{name: "empty defaults to none", signal: "traces", raw: "", want: OTelExporterNone},
+		{name: "none accepted", signal: "traces", raw: "none", want: OTelExporterNone},
+		{name: "otlp accepted", signal: "traces", raw: "otlp", want: OTelExporterOTLP},
+		{name: "otlp uppercase normalized", signal: "traces", raw: "OTLP", want: OTelExporterOTLP},
+		{name: "otlp spaced normalized", signal: "traces", raw: " otlp ", want: OTelExporterOTLP},
+		{name: "unsupported jaeger falls back", signal: "traces", raw: "jaeger", want: OTelExporterNone},
+		{name: "unsupported zipkin falls back", signal: "traces", raw: "zipkin", want: OTelExporterNone},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeExporter(tt.signal, tt.raw)
+			if got != tt.want {
+				t.Errorf("normalizeExporter(%q, %q) = %q, want %q", tt.signal, tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestSetupOTelSDKWithConfig_AllDisabled verifies that the SDK can be
 // initialized successfully when all exporters (traces, metrics, logs) are
 // disabled, and that the returned shutdown function works correctly.
