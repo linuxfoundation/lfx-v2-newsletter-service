@@ -1,0 +1,203 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+
+# Default values for lfx-v2-newsletter-service
+replicaCount: 2
+
+image:
+  repository: lfx-v2-newsletter-service
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: newsletter-service.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: null
+
+app:
+  environment:
+    PORT:
+      value: "8080"
+    LOG_LEVEL:
+      value: "info"
+
+    # CMS Configuration
+    CMS_PROVIDER:
+      value: "ghost"
+    CMS_TIMEOUT:
+      value: "30s"
+
+    # Ghost Provider Configuration
+    GHOST_API_BASE_URL:
+      value: "https://linuxfoundation.ghost.io"
+    GHOST_API_KEY:
+      valueFrom:
+        secretKeyRef:
+          name: ghost-api-credentials
+          key: api-key
+    GHOST_API_TIMEOUT:
+      value: "30s"
+    GHOST_CACHE_TTL:
+      value: "300s"
+    GHOST_MAX_RESULTS_PER_PAGE:
+      value: "100"
+
+    # Inbound JWT Authentication
+    JWKS_URL:
+      value: ""
+    JWT_AUDIENCE:
+      value: "lfx-v2-newsletter-service"
+    JWT_ISSUER:
+      value: "heimdall"
+    JWT_CLOCK_SKEW:
+      value: "5s"
+    JWT_AUTH_DISABLED_MOCK_LOCAL_PRINCIPAL:
+      value: ""
+
+  # Additional env vars for ad-hoc overrides.
+  # Example:
+  # extraEnv:
+  #   - name: FEATURE_FLAG_X
+  #     value: "true"
+  extraEnv: []
+
+  # OpenTelemetry envs rendered into the deployment when enabled=true.
+  otel:
+    enabled: true
+    serviceName: lfx-v2-newsletter-service
+    serviceVersion: ""
+    exporter:
+      endpoint: ""
+      insecure: false
+      protocol: grpc
+    traces:
+      exporter: none
+      sampleRatio: "1.0"
+    metrics:
+      exporter: none
+    logs:
+      exporter: none
+
+lfx:
+  namespace: lfx
+  domain: lfx.local
+
+traefik:
+  enabled: false
+  gateway:
+    name: lfx-platform-gateway
+    namespace: lfx-platform
+    sectionName: web
+    group: gateway.networking.k8s.io
+    kind: Gateway
+  # Hostnames for the HTTPRoute. Falls back to <release-fullname>.<lfx.domain> when empty.
+  hostnames: []
+  routes:
+    - pathPrefix: /
+      servicePort: 80
+  middleware:
+    enabled: false
+    name: ""
+
+heimdall:
+  enabled: false
+  ruleset:
+    # These may vary by cluster CRD version.
+    apiVersion: security.heimdall/v1alpha1
+    name: ""
+    namespace: ""
+    audience: lfx-v2-newsletter-service
+    selector: {}
+    routes:
+      - method: GET
+        path: /newsletters
+      - method: GET
+        path: /newsletters/{id}
+  middleware:
+    enabled: false
+    name: ""
+    namespace: ""
+    address: ""
+    trustForwardHeader: true
+
+openfga:
+  enabled: false
+
+livenessProbe:
+  httpGet:
+    path: /livez
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3

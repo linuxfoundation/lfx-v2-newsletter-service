@@ -1,0 +1,46 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+
+GITHUB_COMMENT_REPORTER: false
+
+DISABLE_LINTERS:
+  - KUBERNETES_KUBECONFORM
+  - KUBERNETES_KUBESCAPE
+  - SPELL_LYCHEE
+  - SPELL_CSPELL
+  - YAML_PRETTIER
+
+DISABLE_ERRORS_LINTERS:
+  - COPYPASTE_JSCPD
+  - REPOSITORY_GITLEAKS
+  - REPOSITORY_TRIVY
+  - REPOSITORY_CHECKOV
+  - REPOSITORY_DEVSKIM
+
+GO_GOLANGCI_LINT_PRE_COMMANDS:
+  - command: GOTOOLCHAIN=go1.24.10 go install goa.design/goa/v3/cmd/goa@v3.16.2
+    cwd: workspace
+  - command: PATH="$(go env GOPATH)/bin:$PATH" GOTOOLCHAIN=auto goa gen github.com/linuxfoundation/lfx-v2-newsletter-service/design
+    cwd: workspace
+
+YAML_YAMLLINT_CONFIG_FILE: .yamllint
+
+REPOSITORY_KICS_ARGUMENTS: >-
+  scan --no-progress
+  --exclude-severities="medium,low,info,trace"
+  --exclude-paths="./gen/*"
+  --exclude-paths="cmd/newsletter-api/kodata/*"
+
+SPELL_CSPELL_ANALYZE_FILE_NAMES: false
+
+SPELL_VALE_PRE_COMMANDS:
+  - command: mkdir -p styles
+    cwd: workspace
+  - command: vale sync
+    cwd: workspace
+
+API_SPECTRAL_FILTER_REGEX_EXCLUDE: "gen|(cmd/newsletter-api/kodata)/"
+FILTER_REGEX_EXCLUDE: '(templates/.*\.yml|templates/.*\.yaml|cmd/newsletter-api/kodata/*.yaml)'
+
+KUBERNETES_DIRECTORY: charts/lfx-v2-newsletter-service
+KUBERNETES_HELM_ARGUMENTS: charts/lfx-v2-newsletter-service

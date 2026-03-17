@@ -1,0 +1,146 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+
+name: ko-build-tag
+
+on:
+  push:
+    tags:
+      - v*
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  ko-build-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Goa CLI
+        run: |
+          GOTOOLCHAIN=go1.24.10 go install goa.design/goa/v3/cmd/goa@v3.16.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Generate API code
+        run: goa gen github.com/linuxfoundation/lfx-v2-newsletter-service/design
+
+      - name: Setup ko
+        uses: ko-build/setup-ko@v0.8
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Setup Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute release tags
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          semver="${version#v}"
+          major_minor="$(echo "$semver" | awk -F. '{print $1"."$2}')"
+          {
+            echo "version=$version"
+            echo "semver=$semver"
+            echo "major_minor=$major_minor"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and publish release image
+        env:
+          KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
+        run: |
+          ko build ./cmd/newsletter-api \
+            --bare \
+            --platform=linux/amd64,linux/arm64 \
+            --sbom=spdx \
+            --tags "${{ steps.release.outputs.version }}" \
+            --tags "${{ steps.release.outputs.semver }}" \
+            --tags "${{ steps.release.outputs.major_minor }}" \
+            --tags "latest"
+
+      - name: Package Helm chart
+        run: |
+          mkdir -p /tmp/charts
+          helm package charts/lfx-v2-newsletter-service \
+            --version "${{ steps.release.outputs.semver }}" \
+            --app-version "${{ steps.release.outputs.semver }}" \
+            --destination /tmp/charts
+
+      - name: Push Helm chart to GHCR OCI
+        run: |
+          helm registry login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
+          helm push \
+            "/tmp/charts/lfx-v2-newsletter-service-${{ steps.release.outputs.semver }}.tgz" \
+            "oci://ghcr.io/${{ github.repository_owner }}/charts"
+
+      - name: Sign chart artifact (Cosign keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository_owner }}/charts/lfx-v2-newsletter-service:${{ steps.release.outputs.semver }}"
+
+      - name: Generate and attest SLSA-style provenance
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+          chart_ref="ghcr.io/${{ github.repository_owner }}/charts/lfx-v2-newsletter-service:${{ steps.release.outputs.semver }}"
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          cat >/tmp/chart-provenance.json <<EOF
+          {
+            "_type": "https://in-toto.io/Statement/v1",
+            "subject": [
+              {
+                "name": "${chart_ref}"
+              }
+            ],
+            "predicateType": "https://slsa.dev/provenance/v1",
+            "predicate": {
+              "buildDefinition": {
+                "buildType": "https://github.com/Attestations/GitHubActionsWorkflow@v1",
+                "externalParameters": {
+                  "workflow": "${GITHUB_WORKFLOW}",
+                  "repository": "${GITHUB_REPOSITORY}",
+                  "ref": "${GITHUB_REF}",
+                  "sha": "${GITHUB_SHA}",
+                  "version": "${{ steps.release.outputs.semver }}"
+                }
+              },
+              "runDetails": {
+                "builder": {
+                  "id": "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+                },
+                "metadata": {
+                  "invocationId": "${GITHUB_RUN_ID}",
+                  "startedOn": "${build_time}",
+                  "finishedOn": "${build_time}"
+                }
+              }
+            }
+          }
+          EOF
+
+          cosign attest --yes \
+            --type slsaprovenance \
+            --predicate /tmp/chart-provenance.json \
+            "${chart_ref}"

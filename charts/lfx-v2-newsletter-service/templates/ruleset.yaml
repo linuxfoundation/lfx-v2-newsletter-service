@@ -1,0 +1,28 @@
+{{/*
+Copyright The Linux Foundation and each contributor to LFX.
+SPDX-License-Identifier: MIT
+*/}}
+
+{{- if .Values.heimdall.enabled }}
+apiVersion: {{ .Values.heimdall.ruleset.apiVersion }}
+kind: RuleSet
+metadata:
+  name: {{ default (printf "%s-ruleset" (include "lfx-v2-newsletter-service.fullname" .)) .Values.heimdall.ruleset.name }}
+  namespace: {{ default .Release.Namespace .Values.heimdall.ruleset.namespace }}
+  labels:
+    {{- include "lfx-v2-newsletter-service.labels" . | nindent 4 }}
+spec:
+  audience: {{ .Values.heimdall.ruleset.audience | quote }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "lfx-v2-newsletter-service.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- with .Values.heimdall.ruleset.selector }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+  routes:
+    {{- range .Values.heimdall.ruleset.routes }}
+    - method: {{ .method | quote }}
+      path: {{ .path | quote }}
+    {{- end }}
+{{- end }}

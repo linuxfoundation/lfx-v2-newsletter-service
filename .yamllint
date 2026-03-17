@@ -1,0 +1,14 @@
+extends: default
+
+ignore: |
+  .git
+  megalinter-reports
+  styles
+  gen/
+  cmd/newsletter-api/kodata
+
+rules:
+  document-start: disable
+  truthy: disable
+  comments-indentation: disable
+  line-length: disable

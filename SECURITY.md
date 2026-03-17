@@ -1,11 +1,9 @@
-# Security Policy
+# Security policy
 
-This is a private, internal repository only intended to contain documentation.
+## Reporting a security vulnerability
 
-If you have a security concern, please direct-message one of the code-owners
-for this repository.
+To report a security vulnerability, please use GitHub's feature for private
+security reporting.
 
-For more information, please read:
-[How to report vulnerabilities to LF projects and
-foundations](https://www.linuxfoundation.org/security).
-
+For more information, please read: [How to report vulnerabilities to LF projects
+and foundations](https://www.linuxfoundation.org/security).
