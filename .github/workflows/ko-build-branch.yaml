@@ -23,6 +23,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install Goa CLI
+        run: |
+          GOTOOLCHAIN=go1.24.10 go install goa.design/goa/v3/cmd/goa@v3.16.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Generate API code
+        run: goa gen github.com/linuxfoundation/lfx-v2-newsletter-service/design
+
       - name: Setup ko
         uses: ko-build/setup-ko@v0.8
 

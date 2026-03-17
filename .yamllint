@@ -8,6 +8,7 @@ ignore: |
   cmd/newsletter-api/kodata
 
 rules:
-  line-length:
-    max: 120
-    level: warning
+  document-start: disable
+  truthy: disable
+  comments-indentation: disable
+  line-length: disable

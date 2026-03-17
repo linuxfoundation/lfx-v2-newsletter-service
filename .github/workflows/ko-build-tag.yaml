@@ -22,6 +22,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install Goa CLI
+        run: |
+          GOTOOLCHAIN=go1.24.10 go install goa.design/goa/v3/cmd/goa@v3.16.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Generate API code
+        run: goa gen github.com/linuxfoundation/lfx-v2-newsletter-service/design
+
       - name: Setup ko
         uses: ko-build/setup-ko@v0.8
 
@@ -46,9 +54,11 @@ jobs:
           version="${GITHUB_REF_NAME}"
           semver="${version#v}"
           major_minor="$(echo "$semver" | awk -F. '{print $1"."$2}')"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "semver=$semver" >> "$GITHUB_OUTPUT"
-          echo "major_minor=$major_minor" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "semver=$semver"
+            echo "major_minor=$major_minor"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and publish release image
         env:

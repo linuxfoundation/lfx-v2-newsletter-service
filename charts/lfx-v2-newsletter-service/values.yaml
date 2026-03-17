@@ -26,7 +26,7 @@ podSecurityContext:
 securityContext:
   capabilities:
     drop:
-    - ALL
+      - ALL
   readOnlyRootFilesystem: true
   allowPrivilegeEscalation: false
 
@@ -84,7 +84,7 @@ app:
       value: "ghost"
     CMS_TIMEOUT:
       value: "30s"
-    
+
     # Ghost Provider Configuration
     GHOST_API_BASE_URL:
       value: "https://linuxfoundation.ghost.io"

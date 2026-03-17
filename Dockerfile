@@ -20,7 +20,7 @@ COPY . .
 RUN go build -o bin/newsletter-service ./cmd/newsletter-api
 
 # Runtime stage
-FROM alpine:latest
+FROM alpine:3.22
 
 # Install ca-certificates for HTTPS
 RUN apk --no-cache add ca-certificates

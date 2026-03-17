@@ -12,6 +12,7 @@ GO_MODULE := github.com/linuxfoundation/lfx-v2-newsletter-service
 CMD_PATH := ./cmd/newsletter-api
 DESIGN_MODULE := $(GO_MODULE)/design
 GOA_VERSION := v3.16.2
+GOA_INSTALL_TOOLCHAIN ?= go1.24.10
 GO_FILES := $(shell find . -name '*.go' -not -path './gen/*' -not -path './vendor/*' -not -path './bin/*')
 
 # Container
@@ -52,7 +53,7 @@ help: ## Display this help message
 deps: ## Install dependencies
 	@echo "Installing dependencies..."
 	go mod download
-	go install goa.design/goa/v3/cmd/goa@$(GOA_VERSION)
+	GOTOOLCHAIN=$(GOA_INSTALL_TOOLCHAIN) go install goa.design/goa/v3/cmd/goa@$(GOA_VERSION)
 	@command -v golangci-lint >/dev/null 2>&1 || go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 apigen: ## Generate API code from Goa design

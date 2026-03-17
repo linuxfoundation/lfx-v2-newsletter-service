@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -137,6 +140,7 @@ fi
 set +u
 set -a
 if [[ -f "${ROOT_DIR}/.env" ]]; then
+  # shellcheck source=/dev/null
   source "${ROOT_DIR}/.env"
 fi
 set +a

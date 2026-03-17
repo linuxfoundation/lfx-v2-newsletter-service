@@ -133,7 +133,7 @@ export OTEL_TRACES_EXPORTER=otlp
 export OTEL_TRACES_SAMPLE_RATIO=1.0
 ```
 
-3. Run the service and access Jaeger UI at http://localhost:16686
+3. Run the service and access Jaeger UI at <http://localhost:16686>
 
 ### Kubernetes Deployment
 
@@ -157,7 +157,7 @@ env:
 
 ### Successful Request Trace
 
-```
+```text
 newsletter-service: GET /newsletters?tag=announcements
   ├─ provider.GetByTag (3ms)
   │   └─ HTTP GET https://cms.example.org/content/posts (45ms)
@@ -170,7 +170,7 @@ newsletter-service: GET /newsletters?tag=announcements
 
 ### Error Trace
 
-```
+```text
 newsletter-service: GET /newsletters/invalid-id
   ├─ provider.GetByID (2ms)
   │   └─ HTTP GET https://cms.example.org/content/posts/invalid-id (30ms)

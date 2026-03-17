@@ -66,7 +66,7 @@ Example:
 
 ```bash
 curl -s -H 'Authorization: Bearer test-token' \
-	'http://127.0.0.1:18080/newsletters?tag=Weekly%20ED%20Newsletter&limit=15&page=1&v=1'
+  'http://127.0.0.1:18080/newsletters?tag=Weekly%20ED%20Newsletter&limit=15&page=1&v=1'
 ```
 
 ### 2) Get newsletter by ID
@@ -87,7 +87,7 @@ Example:
 
 ```bash
 curl -s -H 'Authorization: Bearer test-token' \
-	'http://127.0.0.1:18080/newsletters/69b02ad450c7e50001107a23?v=1'
+  'http://127.0.0.1:18080/newsletters/69b02ad450c7e50001107a23?v=1'
 ```
 
 ### 3) Health endpoints (public)
