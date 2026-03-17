@@ -1,3 +1,6 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+
 # Build stage
 FROM golang:1.25-alpine AS builder
 

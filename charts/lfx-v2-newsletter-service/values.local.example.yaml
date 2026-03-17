@@ -1,3 +1,6 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+
 # Local development override example for lfx-v2-newsletter-service Helm chart.
 # Copy this file to values.local.yaml and customize as needed.
 

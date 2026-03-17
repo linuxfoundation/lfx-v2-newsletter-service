@@ -1,3 +1,6 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+
 GITHUB_COMMENT_REPORTER: false
 
 DISABLE_LINTERS:
@@ -15,7 +18,9 @@ DISABLE_ERRORS_LINTERS:
   - REPOSITORY_DEVSKIM
 
 GO_GOLANGCI_LINT_PRE_COMMANDS:
-  - command: GOTOOLCHAIN=go1.24.10 go run goa.design/goa/v3/cmd/goa@v3.16.2 gen github.com/linuxfoundation/lfx-v2-newsletter-service/design
+  - command: GOTOOLCHAIN=go1.24.10 go install goa.design/goa/v3/cmd/goa@v3.16.2
+    cwd: workspace
+  - command: PATH="$(go env GOPATH)/bin:$PATH" GOTOOLCHAIN=auto goa gen github.com/linuxfoundation/lfx-v2-newsletter-service/design
     cwd: workspace
 
 YAML_YAMLLINT_CONFIG_FILE: .yamllint
