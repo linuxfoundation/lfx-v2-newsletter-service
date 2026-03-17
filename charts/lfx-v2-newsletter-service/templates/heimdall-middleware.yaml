@@ -1,0 +1,13 @@
+{{- if .Values.heimdall.middleware.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ default (printf "%s-heimdall" (include "lfx-v2-newsletter-service.fullname" .)) .Values.heimdall.middleware.name }}
+  namespace: {{ default .Release.Namespace .Values.heimdall.middleware.namespace }}
+  labels:
+    {{- include "lfx-v2-newsletter-service.labels" . | nindent 4 }}
+spec:
+  forwardAuth:
+    address: {{ .Values.heimdall.middleware.address | quote }}
+    trustForwardHeader: {{ .Values.heimdall.middleware.trustForwardHeader }}
+{{- end }}

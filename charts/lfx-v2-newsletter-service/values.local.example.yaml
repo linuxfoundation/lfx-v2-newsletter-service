@@ -1,0 +1,25 @@
+# Local development override example for lfx-v2-newsletter-service Helm chart.
+# Copy this file to values.local.yaml and customize as needed.
+
+image:
+  repository: lfx-v2-newsletter-service
+  tag: latest
+  pullPolicy: Never
+
+# Optional local tweaks
+replicaCount: 1
+autoscaling:
+  enabled: false
+
+app:
+  environment:
+    PORT:
+      value: "8080"
+    LOG_LEVEL:
+      value: "debug"
+
+  # For local auth bypass only.
+  # Never set this in shared or production environments.
+  # environment:
+  #   JWT_AUTH_DISABLED_MOCK_LOCAL_PRINCIPAL:
+  #     value: "local-dev-user"

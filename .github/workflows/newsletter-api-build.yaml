@@ -1,0 +1,37 @@
+name: newsletter-api-build
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Goa CLI
+        run: |
+          go install goa.design/goa/v3/cmd/goa@v3.16.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Generate API code
+        run: goa gen github.com/linuxfoundation/lfx-v2-newsletter-service/design
+
+      - name: Build
+        run: go build ./cmd/newsletter-api
+
+      - name: Unit tests
+        run: go test ./...
