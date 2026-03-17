@@ -14,7 +14,8 @@ The LFX v2 Newsletter Service is a microservice that integrates with CMS provide
 2. **Clone and Setup**
 
    ```bash
-   cd /Users/lewis/go/src/github.com/linuxfoundation/lfx-v2-newsletter-service
+   git clone https://github.com/linuxfoundation/lfx-v2-newsletter-service.git
+   cd lfx-v2-newsletter-service
    
    # Install dependencies and generate API code
    make deps
