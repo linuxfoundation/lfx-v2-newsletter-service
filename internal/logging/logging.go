@@ -1,7 +1,7 @@
 // Copyright The Linux Foundation and each contributor to LFX.
 // SPDX-License-Identifier: MIT
 
-// Package logging contains the logging functionality for the meeting service.
+// Package logging contains the logging functionality for the newsletter service.
 package logging
 
 import (
