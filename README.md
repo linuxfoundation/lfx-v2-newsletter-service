@@ -269,7 +269,7 @@ The service exposes metrics for:
 - JWT auth validates PS256 tokens against Heimdall JWKS and requires the `principal` claim
 - CMS provider credentials stored in secrets
 - Rate limiting on upstream provider API calls
-- HTML content sanitization support
+- HTML content is returned as provided by the CMS; clients are responsible for sanitization
 
 ## ✅ Auth Compliance Checklist
 
