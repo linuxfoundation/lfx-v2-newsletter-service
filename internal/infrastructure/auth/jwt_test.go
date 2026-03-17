@@ -179,7 +179,7 @@ func newSignedTokenAndJWKS(t *testing.T, claims jwt.MapClaims) (string, string) 
 	}
 
 	kid := "test-key"
-	n := base64.RawURLEncoding.EncodeToString(privateKey.PublicKey.N.Bytes())
+	n := base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes())
 	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.PublicKey.E)).Bytes())
 
 	jwks := fmt.Sprintf(`{"keys":[{"kty":"RSA","kid":"%s","alg":"PS256","use":"sig","n":"%s","e":"%s"}]}`,
