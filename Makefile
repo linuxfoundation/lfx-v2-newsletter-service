@@ -78,7 +78,7 @@ test: ## Run tests
 
 test-verbose: ## Run tests with verbose output
 	@echo "Running tests (verbose)..."
-	go test $(TEST_FLAGS) -v -timeout $(TEST_TIMEOUT) ./...
+	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) ./...
 
 auth-smoke: ## Run end-to-end auth smoke test (strict JWT mode)
 	@echo "Running auth smoke test..."
