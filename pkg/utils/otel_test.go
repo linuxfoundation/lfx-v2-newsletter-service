@@ -31,8 +31,8 @@ func TestOTelConfigFromEnv_Defaults(t *testing.T) {
 
 	cfg := OTelConfigFromEnv()
 
-	if cfg.ServiceName != "lfx-v2-meeting-service" {
-		t.Errorf("expected default ServiceName 'lfx-v2-meeting-service', got %q", cfg.ServiceName)
+	if cfg.ServiceName != "lfx-v2-newsletter-service" {
+		t.Errorf("expected default ServiceName 'lfx-v2-newsletter-service', got %q", cfg.ServiceName)
 	}
 	if cfg.ServiceVersion != "" {
 		t.Errorf("expected empty ServiceVersion, got %q", cfg.ServiceVersion)

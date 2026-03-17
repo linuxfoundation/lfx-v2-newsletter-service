@@ -44,7 +44,7 @@ const (
 // OTelConfig holds OpenTelemetry configuration options.
 type OTelConfig struct {
 	// ServiceName is the name of the service for resource identification.
-	// Env: OTEL_SERVICE_NAME (default: "lfx-v2-meeting-service")
+	// Env: OTEL_SERVICE_NAME (default: "lfx-v2-newsletter-service")
 	ServiceName string
 	// ServiceVersion is the version of the service.
 	// Env: OTEL_SERVICE_VERSION (default: build-time version from ldflags)
@@ -80,7 +80,7 @@ type OTelConfig struct {
 func OTelConfigFromEnv() OTelConfig {
 	serviceName := os.Getenv("OTEL_SERVICE_NAME")
 	if serviceName == "" {
-		serviceName = "lfx-v2-meeting-service"
+		serviceName = "lfx-v2-newsletter-service"
 	}
 
 	serviceVersion := os.Getenv("OTEL_SERVICE_VERSION")
