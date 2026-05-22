@@ -17,6 +17,175 @@ the draft → sent state transition.
 > (e.g. publishing to `lfx-v2-email-service` over NATS) is a planned follow-up.
 > AI content generation continues to live in lfx-v2-ui.
 
+## Quick Start
+
+Two supported paths for running the service locally:
+
+- **Path A — Go binary against host Postgres.** Fastest inner loop. The
+  service runs on the host; Postgres is whatever you already have installed
+  (Homebrew, Postgres.app, Docker, etc.).
+- **Path B — Helm + CloudNativePG on OrbStack/kind.** Mirrors production:
+  the CNPG operator provisions an in-cluster Postgres and the chart wires
+  everything together.
+
+### Prerequisites
+
+- Go 1.25+
+- A running PostgreSQL 16+ instance (Path A) **or** OrbStack/kind with `kubectl`,
+  `helm` 3.8+, and [`ko`](https://ko.build) (Path B)
+- A reachable `lfx-v2-query-service` (or a stubbed `COMMITTEE_SERVICE_URL` —
+  the service starts without it being live, but recipient resolution will fail)
+
+---
+
+### Path A — run the binary against host Postgres
+
+**1. Create the database.**
+
+```bash
+psql postgres://localhost/postgres -c 'CREATE DATABASE newsletters;'
+```
+
+The service applies its DDL idempotently at startup (`internal/schema/schema.sql`);
+you do **not** need to run any SQL files manually.
+
+**2. Set the required environment variables.**
+
+```bash
+export DATABASE_URL='postgres://<your-user>@localhost:5432/newsletters?sslmode=disable'
+export COMMITTEE_SERVICE_URL='http://localhost:8081'   # lfx-v2-query-service / API gateway
+export REQUIRE_USER_AUTH=false                         # local only — production must verify JWTs
+export LOG_LEVEL=debug
+```
+
+`sslmode=disable` is required for a vanilla Homebrew Postgres install, which
+ships without TLS; pgx defaults to requiring SSL.
+
+**3. Build and run.**
+
+```bash
+make run
+```
+
+On a successful start you should see something like:
+
+```text
+level=INFO msg="schema applied" tables=...
+level=INFO msg="newsletter-api listening" addr=:8080
+```
+
+**4. Smoke-test.**
+
+```bash
+curl -s http://localhost:8080/livez && echo
+# → ok
+```
+
+If you see `missing required env vars: DATABASE_URL, COMMITTEE_SERVICE_URL`,
+the env vars above are not set in the shell you ran `make run` from — `make`
+does **not** load your shell rc.
+
+---
+
+### Path B — Helm + CloudNativePG on OrbStack
+
+**1. Install the CloudNativePG operator (once per cluster).**
+
+```bash
+make helm-install-operators
+```
+
+This installs the operator into `cnpg-system`. It is cluster-wide and only
+needs to be installed once. Helm validates resources against installed CRDs
+before applying any release, so the operator must exist before the umbrella
+or standalone chart is installed — that's why it is not a subchart.
+
+**2. Build the image with ko.**
+
+```bash
+make ko-build
+```
+
+This produces `ko.local/newsletter-api:local`. OrbStack shares the local
+Docker image cache with Kubernetes, so no manual `kind load` or registry push
+is needed.
+
+**3. Create your local values override.**
+
+```bash
+cp charts/lfx-v2-newsletter-service/values.local.yaml.example \
+   charts/lfx-v2-newsletter-service/values.local.yaml
+```
+
+The example file pins the chart to `database.mode=cluster+database`, points
+`image.repository` at `ko.local/newsletter-api`, disables `requireUserAuth`,
+and disables the NetworkPolicy for easier debugging. Adjust
+`app.committeeServiceURL` to point at your local query-service if needed.
+
+**4. Install the chart.**
+
+```bash
+make helm-install-local
+```
+
+Watch the operator provision the cluster, then the deployment come up:
+
+```bash
+kubectl get cluster,database,pods -n lfx --context orbstack
+```
+
+Once the pod is `1/1 Running`, the service has already applied its schema.
+Tail the logs to confirm:
+
+```bash
+kubectl logs -n lfx -l app.kubernetes.io/name=lfx-v2-newsletter-service \
+  --tail=50 --context orbstack
+# → level=INFO msg="schema applied" ...
+# → level=INFO msg="newsletter-api listening" addr=:8080
+```
+
+**5. Smoke-test via port-forward.**
+
+```bash
+kubectl port-forward -n lfx svc/lfx-v2-newsletter-service 18080:8080 \
+  --context orbstack &
+
+curl -s localhost:18080/livez && echo
+# → ok
+```
+
+---
+
+### Other install modes
+
+The chart supports three `database.mode` values; pick the right Make target:
+
+| Target                        | `database.mode`     | When to use                                                              |
+| ----------------------------- | ------------------- | ------------------------------------------------------------------------ |
+| `make helm-install-local`     | (from values.local) | Local OrbStack/kind dev (defaults to `cluster+database`)                 |
+| `make helm-install-cnpg`      | `cluster+database`  | Standalone CNPG install — chart provisions both the Cluster and Database |
+| `make helm-install-external`  | `external`          | Connect to an existing Postgres via a Kubernetes Secret                  |
+
+`external` mode requires a secret in the target namespace whose key (default
+`url`) holds the `DATABASE_URL`. Set `database.external.secretName` to that
+secret's name in your values override.
+
+### Teardown
+
+```bash
+make helm-uninstall                           # remove the chart release
+kubectl delete namespace lfx --context orbstack  # remove the CNPG cluster + PVCs
+```
+
+The CNPG operator itself is left installed (it is cluster-wide). To remove it:
+`helm uninstall cnpg -n cnpg-system`.
+
+For Path A, drop the local database:
+
+```bash
+psql postgres://localhost/postgres -c 'DROP DATABASE IF EXISTS newsletters;'
+```
+
 ## Key Technologies
 
 - **Language**: Go 1.25+
