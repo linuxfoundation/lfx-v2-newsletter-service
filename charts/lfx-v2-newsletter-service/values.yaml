@@ -113,8 +113,27 @@ database:
 
   # external configures an existing PostgreSQL connection (mode: external only).
   external:
+    # secretName is the name of the Kubernetes Secret to read the DSN from.
     secretName: ""
+    # shape selects how the DSN is read from the secret:
+    #   "url"    — read a single DATABASE_URL env var from `secretKey` (default).
+    #              Use when the secret has a single key holding a libpq URL.
+    #   "fields" — read host/port/username/password/dbname as separate
+    #              PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE env vars from the
+    #              keys mapping below. Use with the LFX RDS-via-ESO pattern
+    #              where AWS Secrets Manager provides one key per JSON field.
+    shape: "url"
+    # secretKey is the secret key holding the libpq URL (shape: url only).
     secretKey: "url"
+    # keys maps each DSN field to a secret key (shape: fields only). Defaults
+    # match the AWS RDS standard JSON layout produced by the
+    # SecretsManagerRDSPostgreSQLRotationSingleUser rotation Lambda.
+    keys:
+      host: host
+      port: port
+      username: username
+      password: password
+      dbname: dbname
 
 # serviceAccount is the configuration for the Kubernetes ServiceAccount.
 serviceAccount:
