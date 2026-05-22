@@ -16,7 +16,7 @@ import (
 // read per request.
 var trackingPixel = mustDecodeBase64("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
 
-// OpenPixel handles GET /newsletters/{id}/open?r=<recipient_hash>.
+// OpenPixel handles GET /newsletter-opens/{id}?r=<recipient_hash>.
 //
 // This endpoint is *intentionally unauthenticated* — it is requested by the
 // recipient's email client, which doesn't carry a session. Recipients are
@@ -35,10 +35,9 @@ func (h *Handler) OpenPixel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Recipient hash is required but we don't strictly enforce it — a missing
-	// hash still records an open (with empty hash) so a recipient_hash gap in
-	// the pipeline doesn't lose the signal entirely. The service-layer
-	// HashRecipient already returns "" for empty input, so we just forward.
+	// Recipient hash is forwarded verbatim. RecordOpenWithHash treats an empty
+	// hash as a silent no-op (still 200s with the pixel), so a tracking URL
+	// that lost its `r=` query param doesn't error — it just isn't counted.
 	recipientHash := r.URL.Query().Get("r")
 
 	if err := h.newsletter.RecordOpenWithHash(r.Context(), id, recipientHash); err != nil {

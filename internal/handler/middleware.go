@@ -128,7 +128,13 @@ func (h *Handler) withAuth(next http.Handler) http.Handler {
 				writeError(r.Context(), w, &authError{msg: "invalid token: " + err.Error(), status: http.StatusUnauthorized})
 				return
 			}
+			// Dev mode: validation failed but auth is non-blocking. Do NOT forward
+			// the unvalidated token to upstream services — a downstream call that
+			// receives an invalid bearer would fail in confusing ways. Strip the
+			// user identity and the bearer.
 			slog.WarnContext(r.Context(), "token validation failed; proceeding without auth (dev mode)", "error", err)
+			next.ServeHTTP(w, r)
+			return
 		}
 
 		ctx := context.WithValue(r.Context(), userContextKeyValue, user)

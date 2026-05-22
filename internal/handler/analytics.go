@@ -10,7 +10,7 @@ import (
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
 
-// GetAnalytics handles GET /newsletters/{id}/analytics.
+// GetAnalytics handles GET /newsletter-analytics/{id}.
 //
 // Returns ErrNotFound if the newsletter doesn't exist. Returns zero engagement
 // metrics (not an error) when the newsletter exists but has no opens recorded.

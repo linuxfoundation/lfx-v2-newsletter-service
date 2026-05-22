@@ -44,8 +44,13 @@ func AppendCtx(parent context.Context, attr slog.Attr) context.Context {
 		parent = context.Background()
 	}
 	if v, ok := parent.Value(slogFields).([]slog.Attr); ok {
-		v = append(v, attr)
-		return context.WithValue(parent, slogFields, v)
+		// Copy before append: the parent's backing array may still have capacity,
+		// so a bare append on a shared slice would mutate state visible to
+		// concurrent goroutines that share the parent ctx (cross-request race).
+		next := make([]slog.Attr, len(v), len(v)+1)
+		copy(next, v)
+		next = append(next, attr)
+		return context.WithValue(parent, slogFields, next)
 	}
 	return context.WithValue(parent, slogFields, []slog.Attr{attr})
 }

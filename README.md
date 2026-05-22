@@ -96,19 +96,22 @@ production (per-service Postgres roles with least-privilege secrets).
 
 ## HTTP API
 
-| Method | Path                                  | Description                       |
-| ------ | ------------------------------------- | --------------------------------- |
-| GET    | `/livez`                              | liveness probe                    |
-| GET    | `/readyz`                             | readiness probe (DB ping)         |
-| POST   | `/newsletters/drafts`                 | create draft                      |
-| GET    | `/newsletters/drafts`                 | list drafts for a context         |
-| GET    | `/newsletters/drafts/{id}`            | fetch draft (returns ETag)        |
-| PUT    | `/newsletters/drafts/{id}`            | update draft (requires If-Match)  |
-| DELETE | `/newsletters/drafts/{id}`            | delete draft                      |
-| POST   | `/newsletters/drafts/{id}/send`       | mark draft as sent (no email)     |
-| POST   | `/newsletters/recipient-count`        | preview unique recipient count    |
-| POST   | `/newsletters/recipients`             | preview recipient list            |
-| POST   | `/newsletters/test-send`              | validate-only stub (no email)     |
+| Method | Path                                  | Description                                  |
+| ------ | ------------------------------------- | -------------------------------------------- |
+| GET    | `/livez`                              | liveness probe                               |
+| GET    | `/readyz`                             | readiness probe (DB ping)                    |
+| POST   | `/newsletters/drafts`                 | create draft                                 |
+| GET    | `/newsletters/drafts`                 | list drafts for a context                    |
+| GET    | `/newsletters/drafts/{id}`            | fetch draft (returns ETag)                   |
+| PUT    | `/newsletters/drafts/{id}`            | update draft (requires If-Match)             |
+| DELETE | `/newsletters/drafts/{id}`            | delete draft                                 |
+| POST   | `/newsletters/drafts/{id}/send`       | mark draft as sent (no email)                |
+| POST   | `/newsletters/recipient-count`        | preview unique recipient count               |
+| POST   | `/newsletters/recipients`             | preview recipient list                       |
+| POST   | `/newsletters/test-send`              | validate-only stub (no email)                |
+| GET    | `/newsletters`                        | unified list of newsletters for a context    |
+| GET    | `/newsletter-analytics/{id}`          | per-newsletter analytics (opens, recipients) |
+| GET    | `/newsletter-opens/{id}`              | open-tracking pixel (unauthenticated GIF)    |
 
 Optimistic concurrency control: every draft carries an integer `version`
 column atomically incremented on each `UPDATE`. `GET` returns

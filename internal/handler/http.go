@@ -105,6 +105,10 @@ type errorPayload struct {
 }
 
 // writeError maps a domain error to an HTTP status code + JSON body.
+//
+// For 5xx responses we deliberately do not echo err.Error() to the client —
+// internal errors (DB failures, upstream responses) can carry infrastructure
+// details. The full error is still logged server-side at the warn level.
 func writeError(ctx context.Context, w http.ResponseWriter, err error) {
 	status, code := classifyError(err)
 	slog.WarnContext(ctx, "request failed",
@@ -112,9 +116,13 @@ func writeError(ctx context.Context, w http.ResponseWriter, err error) {
 		"code", code,
 		"error", err.Error(),
 	)
+	message := err.Error()
+	if status >= http.StatusInternalServerError {
+		message = "internal server error"
+	}
 	writeJSON(ctx, w, status, errorPayload{
 		Error:   code,
-		Message: err.Error(),
+		Message: message,
 	})
 }
 

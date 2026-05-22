@@ -89,7 +89,7 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 		Subject:       strings.TrimSpace(in.Subject),
 		BodyHTML:      in.BodyHTML,
 		EDReplyEmail:  strings.TrimSpace(in.EDReplyEmail),
-		CommitteeUIDs: dedupeStrings(in.CommitteeUIDs),
+		CommitteeUIDs: normalizeCommitteeUIDs(in.CommitteeUIDs),
 		Status:        model.StatusDraft,
 		CreatedBy:     in.CreatedBy,
 	}
@@ -213,7 +213,7 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, in UpdateDraftInput
 	existing.Subject = strings.TrimSpace(in.Subject)
 	existing.BodyHTML = in.BodyHTML
 	existing.EDReplyEmail = strings.TrimSpace(in.EDReplyEmail)
-	existing.CommitteeUIDs = dedupeStrings(in.CommitteeUIDs)
+	existing.CommitteeUIDs = normalizeCommitteeUIDs(in.CommitteeUIDs)
 
 	return s.repo.Update(ctx, existing, in.ExpectedVersion)
 }
@@ -288,19 +288,26 @@ func validateCommitteeUIDs(uids []string) error {
 	return nil
 }
 
-// dedupeStrings returns the input slice with duplicates removed, preserving order.
-func dedupeStrings(in []string) []string {
-	if len(in) <= 1 {
+// normalizeCommitteeUIDs trims surrounding whitespace from each UID and removes
+// duplicates after normalization, preserving first-seen order. Empty values
+// (post-trim) are dropped so " abc" and "abc" don't end up stored as distinct
+// recipients and cause double upstream lookups.
+func normalizeCommitteeUIDs(in []string) []string {
+	if len(in) == 0 {
 		return in
 	}
 	seen := make(map[string]struct{}, len(in))
 	out := make([]string, 0, len(in))
 	for _, s := range in {
-		if _, ok := seen[s]; ok {
+		trimmed := strings.TrimSpace(s)
+		if trimmed == "" {
 			continue
 		}
-		seen[s] = struct{}{}
-		out = append(out, s)
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
 	}
 	return out
 }
