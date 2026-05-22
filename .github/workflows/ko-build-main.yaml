@@ -1,0 +1,44 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+---
+name: Publish Main
+
+"on":
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish Main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+      - uses: ko-build/setup-ko@d982fec422852203cfb2053a8ec6ad302280d04d # v0.8
+        with:
+          version: v0.17.1
+      - name: Build and publish newsletter-api image
+        env:
+          VERSION: development
+          GIT_COMMIT: ${{ github.sha }}
+        run: |
+          BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
+          export BUILD_TIME
+          GIT_COMMIT=${GIT_COMMIT:0:7}
+          export GIT_COMMIT
+          ko build github.com/linuxfoundation/lfx-v2-newsletter-service/cmd/newsletter-api \
+            -B \
+            --platform linux/amd64,linux/arm64 \
+            -t ${{ github.sha }} \
+            -t development \
+            --sbom spdx

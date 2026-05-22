@@ -1,0 +1,69 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Coverage
+*.out
+coverage/
+
+# Go workspace
+go.work
+
+# Build artifacts
+/bin/
+/dist/
+/build/
+
+# Environment files (never commit secrets)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temp
+*.tmp
+*.temp
+tmp/
+
+# Helm local values (copy from values.local.example.yaml)
+charts/lfx-v2-invite-service/values.local.yaml
+
+# Air live reload
+.air.toml
+
+# Delve
+debug.test
+
+# Local certs
+*.pem
+*.key
+*.crt
+
+# Editor backups
+*.backup
+*.bak

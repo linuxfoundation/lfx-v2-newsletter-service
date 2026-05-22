@@ -1,0 +1,32 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+---
+# Example overrides for local development against an OrbStack / kind cluster.
+# Copy to values.local.yaml and adjust as needed.
+
+image:
+  repository: ko.local/newsletter-api
+  tag: local
+  pullPolicy: Never
+
+replicaCount: 1
+
+app:
+  logLevel: debug
+  committeeServiceURL: "http://lfx-api.lfx.svc.cluster.local"
+  requireUserAuth: false   # local dev only; production must validate JWTs
+  jwksURL: ""
+
+# Standalone local deployment: chart provisions both the Cluster and the Database CRs.
+database:
+  mode: cluster+database
+  cloudNativePG:
+    clusterName: lfx-newsletter-db
+    databaseName: newsletters
+    cluster:
+      instances: 1
+      storage:
+        size: 1Gi
+
+networkPolicy:
+  enabled: false   # easier debugging in local clusters

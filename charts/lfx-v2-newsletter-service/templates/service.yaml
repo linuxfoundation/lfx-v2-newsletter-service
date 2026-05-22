@@ -1,0 +1,20 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+{{- if .Values.service.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lfx-v2-newsletter-service.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "lfx-v2-newsletter-service.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}
