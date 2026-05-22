@@ -1,0 +1,249 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+{{- if .Values.heimdall.enabled }}
+---
+apiVersion: heimdall.dadrus.github.com/v1alpha4
+kind: RuleSet
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lfx-v2-newsletter-service.labels" . | nindent 4 }}
+spec:
+  rules:
+    # ---------------------------------------------------------------------
+    # Draft CRUD
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletter_drafts:create"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /newsletters/drafts
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        # Authorization is enforced in the service layer based on the request
+        # body's context_type and context_uid.
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletter_drafts:list"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /newsletters/drafts
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletter_drafts:get"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /newsletters/drafts/:id
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletter_drafts:update"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - PUT
+        routes:
+          - path: /newsletters/drafts/:id
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletter_drafts:delete"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - DELETE
+        routes:
+          - path: /newsletters/drafts/:id
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletter_drafts:send"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /newsletters/drafts/:id/send
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # ---------------------------------------------------------------------
+    # Recipient resolution + test send
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:recipients:count"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /newsletters/recipient-count
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:recipients:list"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /newsletters/recipients
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:test_send"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /newsletters/test-send
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # ---------------------------------------------------------------------
+    # Unified list + analytics
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:list"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /newsletters
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletter_analytics:get"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /newsletter-analytics/:id
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # ---------------------------------------------------------------------
+    # Open-tracking pixel: intentionally unauthenticated. Recipients open
+    # newsletters in email clients with no session. Identity is established
+    # via the SHA-256 recipient_hash query parameter, validated server-side.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletter_opens:pixel"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+          - HEAD
+        routes:
+          - path: /newsletter-opens/:id
+      execute:
+        - authorizer: allow_all
+{{- end }}

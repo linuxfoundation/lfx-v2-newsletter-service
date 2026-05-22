@@ -1,0 +1,186 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+
+# image is the configuration for the container image.
+image:
+  # repository is the container image repository.
+  repository: ghcr.io/linuxfoundation/lfx-v2-newsletter-service/newsletter-api
+  # tag overrides appVersion from Chart.yaml when set.
+  tag: ""
+  # pullPolicy is the image pull policy.
+  pullPolicy: IfNotPresent
+
+# replicaCount is the number of deployment replicas.
+replicaCount: 1
+
+# podAnnotations are additional annotations applied to the pod template.
+podAnnotations: {}
+
+# podLabels are additional labels applied to the pod template.
+podLabels: {}
+
+# podDisruptionBudget configures a PDB for the deployment.
+# Only one of minAvailable or maxUnavailable may be set.
+podDisruptionBudget:
+  enabled: false
+  # minAvailable: 1
+
+# resources is the container resource request and limit configuration.
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# service is the Kubernetes Service configuration.
+service:
+  enabled: true
+  # port is the service port.
+  port: 8080
+
+# app is runtime configuration passed as environment variables.
+app:
+  # logLevel is the log level: debug, info, warn, or error.
+  logLevel: info
+
+  # committeeServiceURL is the base URL for upstream committee-service calls
+  # (typically the LFX v2 API gateway routing /query/resources to query-service).
+  # REQUIRED in production.
+  committeeServiceURL: ""
+
+  # jwksURL is the URL of the JWKS endpoint used to verify inbound JWTs.
+  # REQUIRED when requireUserAuth=true (default).
+  jwksURL: ""
+
+  # audience is the required `aud` claim for inbound JWTs. Must match the
+  # value Heimdall sets via the create_jwt finalizer (templates/ruleset.yaml).
+  audience: ""
+
+  # use_oidc_contextualizer toggles Heimdall's OIDC contextualizer in the
+  # rendered RuleSet.
+  use_oidc_contextualizer: true
+
+  # requireUserAuth toggles JWT validation. Disable only for local development.
+  requireUserAuth: true
+
+  # extraEnv allows injecting additional environment variables into the container.
+  extraEnv: []
+
+  # otel is the configuration for OpenTelemetry observability.
+  otel:
+    serviceName: "lfx-v2-newsletter-service"
+    protocol: "grpc"
+    endpoint: ""
+    insecure: "false"
+    tracesExporter: "none"
+    tracesSampleRatio: "1.0"
+    metricsExporter: "none"
+    logsExporter: "none"
+    propagators: "tracecontext,baggage,jaeger"
+
+# database configures the PostgreSQL backend.
+database:
+  # mode selects the database provider:
+  #   "external"         — connect to an existing PostgreSQL instance via a
+  #                        Kubernetes Secret containing a DATABASE_URL.
+  #   "database"         — create a CloudNativePG Database CR pointing at an
+  #                        existing Cluster (e.g. provisioned by the umbrella
+  #                        chart). Use this mode when deploying via the umbrella.
+  #   "cluster+database" — create both a CloudNativePG Cluster CR and a Database
+  #                        CR. Use this mode when deploying the chart standalone
+  #                        without an umbrella.
+  mode: external
+
+  # cloudNativePG configures access to a CloudNativePG Cluster (modes:
+  # "database" and "cluster+database").
+  cloudNativePG:
+    # clusterName is the name of the CloudNativePG Cluster resource. The
+    # CloudNativePG operator creates secrets named <clusterName>-app and
+    # <clusterName>-superuser. In "cluster+database" mode the cluster is
+    # provisioned by this chart under this name; in "database" mode the cluster
+    # must already exist (e.g. created by the umbrella chart).
+    clusterName: ""
+    # databaseName is the PostgreSQL database within the cluster to connect to.
+    databaseName: newsletters
+    # cluster is used only in "cluster+database" mode to configure the
+    # CloudNativePG Cluster resource provisioned by this chart.
+    cluster:
+      instances: 1
+      storage:
+        size: 1Gi
+
+  # external configures an existing PostgreSQL connection (mode: external only).
+  external:
+    secretName: ""
+    secretKey: "url"
+
+# serviceAccount is the configuration for the Kubernetes ServiceAccount.
+serviceAccount:
+  create: true
+  name: "lfx-v2-newsletter-service"
+  annotations: {}
+
+# networkPolicy controls the Kubernetes NetworkPolicy for this workload.
+# Allows egress to OTel, upstream HTTP services, and Postgres.
+networkPolicy:
+  enabled: true
+  otelGRPCPort: 4317
+  otelHTTPPort: 4318
+  postgresPort: 5432
+
+# httpRoute toggles the Gateway API HTTPRoute (templates/httproute.yaml).
+# Disable when deploying behind a different ingress (e.g. plain Service +
+# NodePort for local dev).
+httpRoute:
+  enabled: true
+
+# lfx is the configuration for the LFX platform context.
+lfx:
+  # domain is the base domain used to build the hostname (lfx-api.<domain>).
+  domain: k8s.orb.local
+  # namespace is the target namespace for routing resources (HTTPRoute).
+  namespace: lfx
+
+# traefik configures the Gateway API parent reference for the HTTPRoute.
+traefik:
+  gateway:
+    name: lfx-platform-gateway
+    namespace: lfx
+
+# heimdall configures the Heimdall authorization sidecar / ruleset.
+heimdall:
+  # enabled toggles both the HTTPRoute ExtensionRef filter and the RuleSet
+  # template (templates/ruleset.yaml). Disable for local-only deployments
+  # that don't have Heimdall installed.
+  enabled: true
+  # url is the Heimdall forwardAuth endpoint (consumed by the Traefik
+  # middleware when add_middleware=true).
+  url: http://lfx-platform-heimdall.lfx.svc.cluster.local:4456
+  # jwksUrl is the JWKS endpoint Heimdall serves the JWTs it signs.
+  jwksUrl: http://lfx-platform-heimdall.lfx.svc.cluster.local:4457/.well-known/jwks
+  # add_middleware renders the Traefik Middleware CRDs (heimdall-forward-body
+  # / heimdall). Leave false when another chart owns the middleware.
+  add_middleware: false
+
+# openfga configures OpenFGA fine-grained authorization. The newsletter
+# RuleSet currently authorizes via service-layer checks rather than direct
+# OpenFGA lookups, so this is reserved for future use.
+openfga:
+  enabled: false
+
+# externalSecretsOperator gates the ExternalSecret + SecretStore templates.
+# Defaults to disabled; enable when wiring NATS or other AWS-Secrets-Manager
+# backed credentials.
+externalSecretsOperator:
+  enabled: false
+  externalSecret:
+    refreshInterval: "1h"
+    # data is a list of { secretKey, remoteRef: { key, property? } } entries.
+    data: []
+
+# global is the umbrella-chart scope. awsRegion gates ExternalSecret /
+# SecretStore rendering and is normally set by the parent chart.
+global:
+  awsRegion: ""
