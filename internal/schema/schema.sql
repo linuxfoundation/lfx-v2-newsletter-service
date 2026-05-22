@@ -61,6 +61,13 @@ CREATE INDEX IF NOT EXISTS idx_opens_opened_at             ON newsletter_opens (
 
 -- Bound runaway growth on the unauthenticated open-tracking pixel: collapse
 -- repeat hits from the same recipient within the same hour into a single row.
+-- opened_at_hour stores the UTC hour bucket so the unique index below can use
+-- a plain column (date_trunc is STABLE not IMMUTABLE and cannot appear in an
+-- index expression directly).
+ALTER TABLE newsletter_opens
+    ADD COLUMN IF NOT EXISTS opened_at_hour TIMESTAMPTZ
+        GENERATED ALWAYS AS (date_trunc('hour', opened_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') STORED;
+
 -- The application is expected to use ON CONFLICT DO NOTHING when inserting.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_opens_newsletter_recipient_hour
-    ON newsletter_opens (newsletter_id, recipient_hash, date_trunc('hour', opened_at));
+    ON newsletter_opens (newsletter_id, recipient_hash, opened_at_hour);
