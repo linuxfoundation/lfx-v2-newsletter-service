@@ -92,6 +92,37 @@ spec:
                   key: password
             - name: PGDATABASE
               value: {{ .Values.database.cloudNativePG.databaseName | quote }}
+            {{- else if eq (default "url" .Values.database.external.shape) "fields" }}
+            # External Postgres referenced by a multi-key Secret (e.g. an
+            # ExternalSecret that pulls /cloudops/rds-managed/lfx-v2/<service>
+            # from AWS Secrets Manager and exposes each JSON field as its own
+            # Secret key). Same env-var-leak avoidance as the CNPG path:
+            # the app composes DATABASE_URL in-process.
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.external.secretName }}
+                  key: {{ default "host" .Values.database.external.keys.host }}
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.external.secretName }}
+                  key: {{ default "port" .Values.database.external.keys.port }}
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.external.secretName }}
+                  key: {{ default "username" .Values.database.external.keys.username }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.external.secretName }}
+                  key: {{ default "password" .Values.database.external.keys.password }}
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.external.secretName }}
+                  key: {{ default "dbname" .Values.database.external.keys.dbname }}
             {{- else }}
             - name: DATABASE_URL
               valueFrom:
