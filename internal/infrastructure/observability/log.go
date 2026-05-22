@@ -20,6 +20,7 @@ const (
 	debug                  = "debug"
 	warn                   = "warn"
 	info                   = "info"
+	errorLvl               = "error"
 )
 
 type contextHandler struct {
@@ -56,7 +57,8 @@ func AppendCtx(parent context.Context, attr slog.Attr) context.Context {
 }
 
 // InitStructureLogConfig initializes the structured log configuration.
-// logLevel should be "debug", "info", "warn", or "" for the default (debug).
+// logLevel should be "debug", "info", "warn", "error", or "" for the default
+// (debug). The "error" level matches what Helm values.yaml advertises.
 // Call with "" during init() for early startup logging, then call again after
 // AppConfigFromEnv() to apply the configured level.
 func InitStructureLogConfig(logLevel string) {
@@ -70,6 +72,8 @@ func InitStructureLogConfig(logLevel string) {
 		level.Set(slog.LevelInfo)
 	case warn:
 		level.Set(slog.LevelWarn)
+	case errorLvl:
+		level.Set(slog.LevelError)
 	default:
 		level.Set(logLevelDefault)
 	}

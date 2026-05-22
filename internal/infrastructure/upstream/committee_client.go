@@ -22,6 +22,12 @@ const defaultHTTPTimeout = 10 * time.Second
 // defaultQueryPageSize is the page size for paginated /query/resources calls.
 const defaultQueryPageSize = 100
 
+// maxQueryPages bounds the pagination loop so a buggy or adversarial upstream
+// that always returns a non-empty next_page_token can't loop indefinitely. At
+// defaultQueryPageSize=100, this caps a single committee fetch at 10k members
+// — far above any realistic committee.
+const maxQueryPages = 100
+
 // CommitteeQueryClient resolves committee members through the LFX v2 query service.
 //
 // The query service exposes /query/resources with type=committee_member and
@@ -67,7 +73,10 @@ func (c *CommitteeQueryClient) GetMembers(ctx context.Context, committeeUID stri
 	var out []model.CommitteeMember
 	pageToken := ""
 
-	for {
+	for page := 0; ; page++ {
+		if page >= maxQueryPages {
+			return nil, fmt.Errorf("committee members pagination exceeded %d pages for uid %s", maxQueryPages, committeeUID)
+		}
 		q := url.Values{}
 		// The query service requires v=1 on every /query/resources request.
 		// The error message claims "\"version\" is missing" but the actual URL

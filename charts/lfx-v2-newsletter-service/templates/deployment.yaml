@@ -64,9 +64,12 @@ spec:
               value: {{ .Values.app.audience | quote }}
             {{- end }}
             {{- if or (eq .Values.database.mode "database") (eq .Values.database.mode "cluster+database") }}
-            # Load individual CloudNativePG secret fields so we can construct
-            # DATABASE_URL with a specific database name, since the cluster's
-            # 'uri' key always points to the default 'app' database.
+            # Forward the CloudNativePG app-secret fields and the per-service
+            # database name; the app composes DATABASE_URL in-process. This
+            # avoids embedding the cluster-app password as a literal substring
+            # of an env-var value in the pod spec — env-var interpolation
+            # would resolve $(PGPASSWORD) and make the password visible via
+            # `kubectl describe pod` even though the source is a Secret.
             - name: PGHOST
               valueFrom:
                 secretKeyRef:
@@ -87,8 +90,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "lfx-v2-newsletter-service.cloudNativePGAppSecret" . }}
                   key: password
-            - name: DATABASE_URL
-              value: "postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/{{ .Values.database.cloudNativePG.databaseName }}"
+            - name: PGDATABASE
+              value: {{ .Values.database.cloudNativePG.databaseName | quote }}
             {{- else }}
             - name: DATABASE_URL
               valueFrom:

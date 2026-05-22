@@ -125,7 +125,12 @@ func (h *Handler) withAuth(next http.Handler) http.Handler {
 		user, err := h.auth.validate(bearer)
 		if err != nil {
 			if h.requireUserAuth {
-				writeError(r.Context(), w, &authError{msg: "invalid token: " + err.Error(), status: http.StatusUnauthorized})
+				// Log the full JWT library error server-side only; surface a
+				// generic message to the client so we don't leak JWKS URLs,
+				// key IDs, or other infrastructure details to an
+				// unauthenticated caller.
+				slog.WarnContext(r.Context(), "token validation failed", "error", err)
+				writeError(r.Context(), w, &authError{msg: "invalid token", status: http.StatusUnauthorized})
 				return
 			}
 			// Dev mode: validation failed but auth is non-blocking. Do NOT forward

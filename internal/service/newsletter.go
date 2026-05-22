@@ -12,7 +12,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/mail"
+	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
@@ -21,6 +23,11 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 )
+
+// recipientHashPattern matches the lowercase-hex SHA-256 token used in
+// tracking URLs. Service-layer guard so RecordOpenWithHash never persists
+// malformed values even if a future caller forgets to validate upstream.
+var recipientHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 const (
 	maxSubjectLength      = 200
@@ -170,6 +177,10 @@ func (s *NewsletterService) RecordOpenWithHash(ctx context.Context, newsletterID
 	}
 	hash := strings.TrimSpace(recipientHash)
 	if hash == "" {
+		return nil
+	}
+	if !recipientHashPattern.MatchString(hash) {
+		slog.WarnContext(ctx, "RecordOpenWithHash: discarding malformed recipient hash", "newsletter_id", newsletterID)
 		return nil
 	}
 	return s.repo.RecordOpen(ctx, newsletterID, hash)

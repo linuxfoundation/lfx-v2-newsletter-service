@@ -9,10 +9,10 @@ import (
 	"log/slog"
 	"net/mail"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
@@ -46,7 +46,10 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	}
 }
 
-// SendDraftInput is the typed input for SendDraft.
+// SendDraftInput is the typed input for SendDraft. EDName is accepted from the
+// UI for forwards compatibility (the field is part of the legacy contract) but
+// is not currently persisted or otherwise used until the email-dispatch path
+// is wired up; it is intentionally not validated.
 type SendDraftInput struct {
 	DraftID         uuid.UUID
 	ExpectedVersion int64
@@ -56,10 +59,6 @@ type SendDraftInput struct {
 // SendDraft loads a draft, resolves the recipient list, marks the draft as
 // sent, and returns an aggregate result. No email is actually dispatched.
 func (o *SendOrchestrator) SendDraft(ctx context.Context, in SendDraftInput) (*model.SendResult, error) {
-	if in.EDName == "" {
-		return nil, fmt.Errorf("%w: edName is required", domain.ErrInvalidRequest)
-	}
-
 	draft, err := o.repo.Get(ctx, in.DraftID)
 	if err != nil {
 		return nil, err
@@ -123,9 +122,8 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	if _, err := mail.ParseAddress(strings.TrimSpace(in.ToEmail)); err != nil {
 		return fmt.Errorf("%w: toEmail is not a valid email: %v", domain.ErrInvalidRequest, err)
 	}
-	if in.EDName == "" {
-		return fmt.Errorf("%w: edName is required", domain.ErrInvalidRequest)
-	}
+	// EDName is accepted for forwards compatibility (legacy UI contract) but
+	// not used until email dispatch is wired.
 
 	slog.InfoContext(ctx, "test-send accepted (email dispatch not yet wired)",
 		"to_email", in.ToEmail,
@@ -156,32 +154,33 @@ func (o *SendOrchestrator) Recipients(ctx context.Context, committeeUIDs []strin
 }
 
 // resolveRecipients fans out to the committee client across committees, dedupes
-// by lowercased email, and filters obviously bad addresses.
+// by lowercased email, and filters obviously bad addresses. The errgroup cancels
+// in-flight goroutines as soon as one returns an error so a transient failure
+// from one committee doesn't keep the remaining lookups running against the
+// upstream query service.
 func (o *SendOrchestrator) resolveRecipients(ctx context.Context, committeeUIDs []string) ([]model.CommitteeMember, error) {
-	type committeeResult struct {
-		members []model.CommitteeMember
-		err     error
-	}
-	results := make([]committeeResult, len(committeeUIDs))
+	results := make([][]model.CommitteeMember, len(committeeUIDs))
 
-	var wg sync.WaitGroup
+	g, gctx := errgroup.WithContext(ctx)
 	for i, uid := range committeeUIDs {
-		wg.Add(1)
-		go func(idx int, committeeUID string) {
-			defer wg.Done()
-			members, err := o.committee.GetMembers(ctx, committeeUID)
-			results[idx] = committeeResult{members: members, err: err}
-		}(i, uid)
+		idx, committeeUID := i, uid
+		g.Go(func() error {
+			members, err := o.committee.GetMembers(gctx, committeeUID)
+			if err != nil {
+				return err
+			}
+			results[idx] = members
+			return nil
+		})
 	}
-	wg.Wait()
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
 
 	seen := make(map[string]struct{})
 	out := make([]model.CommitteeMember, 0)
-	for _, r := range results {
-		if r.err != nil {
-			return nil, r.err
-		}
-		for _, m := range r.members {
+	for _, members := range results {
+		for _, m := range members {
 			email := strings.ToLower(strings.TrimSpace(m.Email))
 			if email == "" || !strings.Contains(email, "@") {
 				continue

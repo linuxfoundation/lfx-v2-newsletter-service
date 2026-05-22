@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -74,6 +75,13 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		return errors.New("REQUIRE_USER_AUTH is true but JWKS_URL is empty")
 	}
 	if auth == nil {
+		// Fail closed outside of explicitly-local environments. A misconfigured
+		// deploy with REQUIRE_USER_AUTH=false in production would silently
+		// disable all JWT validation; refuse to start instead.
+		env := strings.ToLower(strings.TrimSpace(cfg.LFXEnvironment))
+		if env != "" && env != "local" && env != "development" && env != "dev" {
+			return fmt.Errorf("auth is disabled (REQUIRE_USER_AUTH=false) but LFX_ENVIRONMENT=%q is not local/development — refusing to start", cfg.LFXEnvironment)
+		}
 		slog.WarnContext(ctx, "AuthValidator is nil; JWT validation is disabled (REQUIRE_USER_AUTH=false)")
 	}
 

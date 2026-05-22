@@ -44,12 +44,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
 
       - name: Setup Ko
-        uses: ko-build/setup-ko@v0.8
+        uses: ko-build/setup-ko@d982fec422852203cfb2053a8ec6ad302280d04d # v0.8
         with:
           version: v0.17.1
 

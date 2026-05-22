@@ -16,6 +16,7 @@ import (
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
+	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
 // Handler is the HTTP handler aggregate that owns the service-layer dependencies
@@ -131,6 +132,7 @@ func classifyError(err error) (int, string) {
 	if status, code, ok := classifyAuthError(err); ok {
 		return status, code
 	}
+	var svcUnavailable pkgerrors.ServiceUnavailable
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound, "not_found"
@@ -140,18 +142,30 @@ func classifyError(err error) (int, string) {
 		return http.StatusConflict, "already_sent"
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest, "invalid_request"
+	case errors.As(err, &svcUnavailable):
+		// Upstream / dependency failure (e.g. /query/resources returned 5xx).
+		// Surface as 503 so callers can distinguish a transient upstream
+		// problem from a true internal bug.
+		return http.StatusServiceUnavailable, "service_unavailable"
 	default:
 		return http.StatusInternalServerError, "internal_error"
 	}
 }
 
+// maxRequestBodyBytes caps inbound JSON bodies. Newsletter bodyHtml is the
+// largest legitimate field (capped at 100 KiB in the service layer); 1 MiB
+// gives generous headroom while bounding the per-request allocation when a
+// client streams a hostile payload.
+const maxRequestBodyBytes = 1 << 20
+
 // decodeJSON decodes the request body into dst, returning a domain.ErrInvalidRequest
-// if the body is missing or malformed.
+// if the body is missing, malformed, or exceeds maxRequestBodyBytes.
 func decodeJSON(r *http.Request, dst any) error {
 	if r.Body == nil {
 		return domain.ErrInvalidRequest
 	}
 	defer func() { _ = r.Body.Close() }()
+	r.Body = http.MaxBytesReader(nil, r.Body, maxRequestBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {

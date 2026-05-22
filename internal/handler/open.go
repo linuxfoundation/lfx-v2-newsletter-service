@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 )
@@ -15,6 +16,10 @@ import (
 // trackingPixel is a 1x1 transparent GIF (43 bytes). Inlined to avoid a disk
 // read per request.
 var trackingPixel = mustDecodeBase64("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+
+// recipientHashPattern matches the lowercase-hex SHA-256 token the service
+// embeds in tracking URLs. Anchored, compiled once at package init.
+var recipientHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 // OpenPixel handles GET /newsletter-opens/{id}?r=<recipient_hash>.
 //
@@ -35,10 +40,15 @@ func (h *Handler) OpenPixel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Recipient hash is forwarded verbatim. RecordOpenWithHash treats an empty
-	// hash as a silent no-op (still 200s with the pixel), so a tracking URL
-	// that lost its `r=` query param doesn't error — it just isn't counted.
+	// RecordOpenWithHash treats an empty hash as a silent no-op, so a tracking
+	// URL that lost its `r=` query param still 200s with the pixel (just not
+	// counted). Malformed (non-hex / wrong length) tokens are likewise treated
+	// as no-op so an attacker can't pad newsletter_opens with arbitrary text.
 	recipientHash := r.URL.Query().Get("r")
+	if recipientHash != "" && !recipientHashPattern.MatchString(recipientHash) {
+		slog.WarnContext(r.Context(), "open pixel: discarding malformed recipient hash", "id", id)
+		recipientHash = ""
+	}
 
 	if err := h.newsletter.RecordOpenWithHash(r.Context(), id, recipientHash); err != nil {
 		// ErrNotFound means the URL was tampered with or the newsletter was

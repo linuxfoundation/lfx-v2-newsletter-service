@@ -31,6 +31,12 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Bound the lock acquisition: pg_advisory_xact_lock blocks indefinitely
+	// by default, so a hung peer pod would stall every subsequent rollout.
+	// SET LOCAL applies the timeout to this transaction only.
+	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = '60s'"); err != nil {
+		return fmt.Errorf("set statement timeout: %w", err)
+	}
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", advisoryLockKey); err != nil {
 		return fmt.Errorf("acquire advisory lock: %w", err)
 	}

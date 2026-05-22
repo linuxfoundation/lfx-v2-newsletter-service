@@ -217,15 +217,19 @@ func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sen
 	return updated, nil
 }
 
-// RecordOpen inserts a single open event. Multiple opens by the same recipient
-// are intentionally kept as separate rows so we can compute both total and
-// unique opens.
+// RecordOpen inserts a single open event. Repeat hits from the same recipient
+// within the same hour collapse to a no-op via the
+// uq_opens_newsletter_recipient_hour unique index — this bounds growth on the
+// unauthenticated tracking pixel without losing unique-open counts.
 func (r *PostgresNewsletterRepo) RecordOpen(ctx context.Context, newsletterID uuid.UUID, recipientHash string) error {
 	open := &model.NewsletterOpen{
 		NewsletterID:  newsletterID,
 		RecipientHash: recipientHash,
 	}
-	if _, err := r.db.NewInsert().Model(open).Exec(ctx); err != nil {
+	if _, err := r.db.NewInsert().
+		Model(open).
+		On("CONFLICT ON CONSTRAINT uq_opens_newsletter_recipient_hour DO NOTHING").
+		Exec(ctx); err != nil {
 		return fmt.Errorf("record open: %w", err)
 	}
 	return nil
