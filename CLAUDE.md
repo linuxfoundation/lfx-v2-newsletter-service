@@ -22,7 +22,7 @@ The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It ow
 - **Language**: Go 1.25+
 - **HTTP**: stdlib `net/http` with Go 1.22+ mux pattern
 - **Database**: PostgreSQL via [pgx](https://github.com/jackc/pgx) + [bun](https://bun.uptrace.dev), provisioned by [CloudNativePG](https://cloudnative-pg.io)
-- **Migrations**: [golang-migrate](https://github.com/golang-migrate/migrate) embedded with `//go:embed`
+- **Schema**: single embedded `schema.sql` applied idempotently on startup (CREATE … IF NOT EXISTS), serialized across pods via a Postgres advisory transaction lock
 - **Auth**: Heimdall-issued JWTs verified via JWKS (`MicahParks/keyfunc`)
 - **Observability**: OpenTelemetry (traces, metrics, logs) + slog structured logging
 - **Container**: Chainguard distroless images
@@ -32,7 +32,7 @@ The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It ow
 
 ```text
 cmd/newsletter-api/
-├── main.go                   # OTel bootstrap, DB pool, migrations, HTTP server, graceful shutdown
+├── main.go                   # OTel bootstrap, DB pool, schema, HTTP server, graceful shutdown
 └── service/
     ├── config.go             # ALL env var reads — no os.Getenv in other layers
     └── implementations.go    # Wires infrastructure into service structs
@@ -49,9 +49,9 @@ internal/service/
 internal/repository/
 └── postgres.go               # bun-backed NewsletterRepository with optimistic locking
 
-internal/migrations/
-├── migrations.go             # //go:embed *.sql
-└── 000001_create_newsletters.{up,down}.sql
+internal/schema/
+├── schema.go                 # //go:embed schema.sql + Apply()
+└── schema.sql                # Consolidated DDL (CREATE … IF NOT EXISTS)
 
 internal/handler/
 ├── http.go                   # Routes() + JSON helpers + error mapper

@@ -23,7 +23,7 @@ the draft → sent state transition.
 - **HTTP**: stdlib `net/http` with Go 1.22+ mux pattern
 - **Database**: PostgreSQL via [pgx](https://github.com/jackc/pgx) + [bun](https://bun.uptrace.dev),
   provisioned by [CloudNativePG](https://cloudnative-pg.io) in cluster
-- **Migrations**: [golang-migrate](https://github.com/golang-migrate/migrate) embedded with `//go:embed`, run in-process on startup with advisory locking
+- **Schema**: single embedded `schema.sql` applied idempotently on startup (CREATE … IF NOT EXISTS), serialized across pods via a Postgres advisory transaction lock
 - **Observability**: OpenTelemetry (traces, metrics, logs) + slog structured logging
 - **Container**: Chainguard distroless images
 - **Orchestration**: Kubernetes with Helm charts
@@ -32,7 +32,7 @@ the draft → sent state transition.
 
 ```text
 cmd/newsletter-api/
-├── main.go                   # bootstrap: OTel, DB pool, migrations, HTTP, graceful shutdown
+├── main.go                   # bootstrap: OTel, DB pool, schema, HTTP, graceful shutdown
 └── service/
     ├── config.go             # env var reads — single source of truth
     └── implementations.go    # wires infrastructure into service structs
@@ -49,9 +49,9 @@ internal/service/
 internal/repository/
 └── postgres.go               # bun-backed NewsletterRepository with optimistic locking
 
-internal/migrations/
-├── migrations.go             # //go:embed *.sql
-└── 000001_create_newsletters.{up,down}.sql
+internal/schema/
+├── schema.go                 # //go:embed schema.sql + Apply()
+└── schema.sql                # consolidated DDL (CREATE … IF NOT EXISTS)
 
 internal/handler/
 ├── http.go                   # Routes(), JSON helpers

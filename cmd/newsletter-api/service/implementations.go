@@ -12,9 +12,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/golang-migrate/migrate/v4"
-	migratepg "github.com/golang-migrate/migrate/v4/database/postgres"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/uptrace/bun"
@@ -23,8 +20,8 @@ import (
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/handler"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/upstream"
-	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/migrations"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/repository"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/schema"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 )
 
@@ -45,12 +42,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		return err
 	}
 
-	// Step 1: run database migrations before opening the connection pool.
-	if err := runMigrations(ctx, cfg.DatabaseURL); err != nil {
-		return fmt.Errorf("migrations: %w", err)
-	}
-
-	// Step 2: open the pgx connection pool used at runtime.
+	// Step 1: open the pgx connection pool used at runtime.
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("open pgx pool: %w", err)
@@ -59,6 +51,11 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 
 	sqlDB = stdlib.OpenDBFromPool(pool)
 	bunDB = bun.NewDB(sqlDB, pgdialect.New())
+
+	// Step 2: bootstrap database schema (idempotent, advisory-locked).
+	if err := schema.Apply(ctx, pgPool); err != nil {
+		return fmt.Errorf("schema apply: %w", err)
+	}
 
 	// Step 3: upstream HTTP client with OTel instrumentation.
 	tracedClient := &http.Client{
@@ -116,41 +113,4 @@ func Shutdown() {
 	if pgPool != nil {
 		pgPool.Close()
 	}
-}
-
-// runMigrations applies any pending schema migrations in-process. A Postgres
-// advisory lock (acquired automatically by golang-migrate's postgres driver)
-// serializes concurrent pods.
-func runMigrations(ctx context.Context, dsn string) error {
-	source, err := iofs.New(migrations.FS, ".")
-	if err != nil {
-		return fmt.Errorf("iofs source: %w", err)
-	}
-
-	migDB, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return fmt.Errorf("open migrate db: %w", err)
-	}
-	defer func() { _ = migDB.Close() }()
-
-	driver, err := migratepg.WithInstance(migDB, &migratepg.Config{})
-	if err != nil {
-		return fmt.Errorf("postgres driver: %w", err)
-	}
-
-	m, err := migrate.NewWithInstance("iofs", source, "postgres", driver)
-	if err != nil {
-		return fmt.Errorf("migrate new: %w", err)
-	}
-
-	slog.InfoContext(ctx, "running database migrations")
-	if err := m.Up(); err != nil {
-		if errors.Is(err, migrate.ErrNoChange) {
-			slog.InfoContext(ctx, "no pending migrations")
-			return nil
-		}
-		return fmt.Errorf("migrate up: %w", err)
-	}
-	slog.InfoContext(ctx, "database migrations applied")
-	return nil
 }
