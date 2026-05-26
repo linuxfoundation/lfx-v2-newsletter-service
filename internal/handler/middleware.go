@@ -59,7 +59,8 @@ func (a *AuthValidator) validate(tokenStr string) (string, error) {
 		return "", nil
 	}
 	token, err := jwt.Parse(tokenStr, a.jwks.Keyfunc,
-		jwt.WithValidMethods([]string{"RS256", "ES256"}),
+		// PS256 is the default for Heimdall's JWT finalizer.
+		jwt.WithValidMethods([]string{"RS256", "ES256", "PS256"}),
 		jwt.WithExpirationRequired(),
 	)
 	if err != nil {
