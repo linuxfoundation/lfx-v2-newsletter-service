@@ -179,6 +179,7 @@ func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
 		CommitteeUIDs: n.CommitteeUIDs,
 		Status:        publicapi.Status(n.Status),
 		SentAt:        n.SentAt,
+		GroupID:       n.GroupID,
 		CreatedBy:     n.CreatedBy,
 		Version:       n.Version,
 		CreatedAt:     n.CreatedAt,

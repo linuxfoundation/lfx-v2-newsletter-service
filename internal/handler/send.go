@@ -14,8 +14,11 @@ import (
 
 // SendDraft handles POST /newsletters/drafts/{id}/send.
 //
-// The request requires If-Match for optimistic locking. edName is taken from
-// the X-User-Name header or falls back to the JWT principal.
+// The request requires If-Match for optimistic locking and a JSON body with
+// the email-service `groupId` minted by lfx-v2-ui before it fanned out the
+// per-recipient sends. The handler persists that group_id on the newsletter
+// row and flips status to sent — it does not dispatch email itself. EDName
+// is taken from the X-User-Name header or falls back to the JWT principal.
 func (h *Handler) SendDraft(w http.ResponseWriter, r *http.Request) {
 	id, err := parseUUID(r.PathValue("id"))
 	if err != nil {
@@ -28,9 +31,16 @@ func (h *Handler) SendDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.send.SendDraft(r.Context(), service.SendDraftInput{
+	var body publicapi.SendDraftRequest
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+
+	updated, err := h.send.SendDraft(r.Context(), service.SendDraftInput{
 		DraftID:         id,
 		ExpectedVersion: expectedVersion,
+		GroupID:         body.GroupID,
 		EDName:          resolveEDName(r),
 	})
 	if err != nil {
@@ -38,7 +48,8 @@ func (h *Handler) SendDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(r.Context(), w, http.StatusOK, toAPISendResult(result))
+	w.Header().Set("ETag", formatETag(updated.Version))
+	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(updated))
 }
 
 // RecipientCount handles POST /newsletters/recipient-count.
@@ -111,21 +122,4 @@ func resolveEDName(r *http.Request) string {
 		return user
 	}
 	return "Executive Director"
-}
-
-// toAPISendResult converts a domain SendResult into the public DTO.
-func toAPISendResult(in *model.SendResult) publicapi.SendResponse {
-	out := publicapi.SendResponse{
-		TotalRecipients: in.TotalRecipients,
-		Sent:            in.Sent,
-		Failed:          in.Failed,
-		Failures:        make([]publicapi.SendFailure, 0, len(in.Failures)),
-	}
-	for _, f := range in.Failures {
-		out.Failures = append(out.Failures, publicapi.SendFailure{
-			Email:  f.Email,
-			Reason: f.Reason,
-		})
-	}
-	return out
 }
