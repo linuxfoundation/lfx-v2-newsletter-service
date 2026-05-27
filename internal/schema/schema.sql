@@ -23,9 +23,32 @@ CREATE TABLE IF NOT EXISTS newsletters (
 -- group_id is the lfx-v2-email-service correlation identifier. Set by the
 -- Express layer in lfx-v2-ui when a draft is marked sent so analytics can
 -- aggregate per-recipient engagement records keyed by this id. Nullable on
--- drafts; immutable once set.
+-- drafts; immutable once set. Stored as TEXT (rather than UUID) so existing
+-- deployments don't require a column-type alter, but the CHECK constraints
+-- below enforce UUID format and the status='sent' ⇒ group_id NOT NULL
+-- invariant at the DB layer in case a caller misbehaves.
 ALTER TABLE newsletters
     ADD COLUMN IF NOT EXISTS group_id TEXT;
+
+-- PG has no native IF NOT EXISTS on ADD CONSTRAINT; check pg_constraint first
+-- so re-running schema.sql is a no-op.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_group_id_uuid_format'
+    ) THEN
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_group_id_uuid_format
+            CHECK (group_id IS NULL OR group_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_sent_requires_group_id'
+    ) THEN
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_sent_requires_group_id
+            CHECK (status <> 'sent' OR group_id IS NOT NULL);
+    END IF;
+END$$;
 
 CREATE INDEX IF NOT EXISTS idx_newsletters_context ON newsletters (context_type, context_uid);
 CREATE INDEX IF NOT EXISTS idx_newsletters_status  ON newsletters (status);
