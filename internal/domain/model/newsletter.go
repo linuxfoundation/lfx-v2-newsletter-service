@@ -42,10 +42,15 @@ type Newsletter struct {
 	Status          Status      `bun:"status,notnull,default:'draft'" json:"status"`
 	SentAt          *time.Time  `bun:"sent_at" json:"sentAt,omitempty"`
 	TotalRecipients int         `bun:"total_recipients,notnull,default:0" json:"totalRecipients"`
-	CreatedBy       string      `bun:"created_by,notnull" json:"createdBy"`
-	Version         int64       `bun:"version,notnull,default:1" json:"version"`
-	CreatedAt       time.Time   `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
-	UpdatedAt       time.Time   `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
+	// GroupID is the lfx-v2-email-service correlation identifier. Populated
+	// by MarkSent when the draft transitions to status=sent; null on drafts.
+	// Used by analytics queries to aggregate per-newsletter engagement
+	// across the per-recipient sends fanned out from lfx-v2-ui.
+	GroupID   *string   `bun:"group_id" json:"groupId,omitempty"`
+	CreatedBy string    `bun:"created_by,notnull" json:"createdBy"`
+	Version   int64     `bun:"version,notnull,default:1" json:"version"`
+	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
+	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
 }
 
 // NewsletterOpen records a single open event for a sent newsletter.
@@ -91,18 +96,4 @@ type CommitteeMember struct {
 type ProjectBranding struct {
 	DisplayName string
 	LogoURL     string
-}
-
-// SendFailure records a single recipient that the email service rejected.
-type SendFailure struct {
-	Email  string `json:"email"`
-	Reason string `json:"reason"`
-}
-
-// SendResult aggregates the outcome of a newsletter send batch.
-type SendResult struct {
-	TotalRecipients int           `json:"totalRecipients"`
-	Sent            int           `json:"sent"`
-	Failed          int           `json:"failed"`
-	Failures        []SendFailure `json:"failures"`
 }

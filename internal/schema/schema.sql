@@ -20,6 +20,13 @@ CREATE TABLE IF NOT EXISTS newsletters (
     updated_at        TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
+-- group_id is the lfx-v2-email-service correlation identifier. Set by the
+-- Express layer in lfx-v2-ui when a draft is marked sent so analytics can
+-- aggregate per-recipient engagement records keyed by this id. Nullable on
+-- drafts; immutable once set.
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS group_id TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_newsletters_context ON newsletters (context_type, context_uid);
 CREATE INDEX IF NOT EXISTS idx_newsletters_status  ON newsletters (status);
 

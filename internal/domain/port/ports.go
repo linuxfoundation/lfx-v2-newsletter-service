@@ -45,7 +45,7 @@ type NewsletterRepository interface {
 	ListAll(ctx context.Context, filters ListFilters) (*ListPage, error)
 	Update(ctx context.Context, n *model.Newsletter, expectedVersion int64) (*model.Newsletter, error)
 	Delete(ctx context.Context, id uuid.UUID) error
-	MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, totalRecipients int, expectedVersion int64) (*model.Newsletter, error)
+	MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, totalRecipients int, groupID string, expectedVersion int64) (*model.Newsletter, error)
 
 	// Open tracking
 	RecordOpen(ctx context.Context, newsletterID uuid.UUID, recipientHash string) error

@@ -37,10 +37,13 @@ type Newsletter struct {
 	CommitteeUIDs []string    `json:"committeeUids"`
 	Status        Status      `json:"status"`
 	SentAt        *time.Time  `json:"sentAt,omitempty"`
-	CreatedBy     string      `json:"createdBy"`
-	Version       int64       `json:"version"`
-	CreatedAt     time.Time   `json:"createdAt"`
-	UpdatedAt     time.Time   `json:"updatedAt"`
+	// GroupID is the lfx-v2-email-service correlation identifier, set when
+	// the newsletter is sent. Null on drafts.
+	GroupID   *string   `json:"groupId,omitempty"`
+	CreatedBy string    `json:"createdBy"`
+	Version   int64     `json:"version"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // CreateDraftRequest is the body of POST /newsletters/drafts.
@@ -107,18 +110,14 @@ type TestSendResponse struct {
 	OK bool `json:"ok"`
 }
 
-// SendFailure records a single recipient that the email service rejected.
-type SendFailure struct {
-	Email  string `json:"email"`
-	Reason string `json:"reason"`
-}
-
-// SendResponse is the body of POST /newsletters/drafts/{id}/send.
-type SendResponse struct {
-	TotalRecipients int           `json:"totalRecipients"`
-	Sent            int           `json:"sent"`
-	Failed          int           `json:"failed"`
-	Failures        []SendFailure `json:"failures"`
+// SendDraftRequest is the body of POST /newsletters/drafts/{id}/send.
+//
+// GroupID is the lfx-v2-email-service correlation identifier minted by
+// lfx-v2-ui's Express layer before it fans out the per-recipient sends. The
+// Go service persists this value on the newsletter row so later analytics
+// queries can locate the engagement records.
+type SendDraftRequest struct {
+	GroupID string `json:"groupId"`
 }
 
 // NewsletterListItem is one row in the unified list response. Inherits the
