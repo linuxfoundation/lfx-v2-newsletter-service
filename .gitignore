@@ -50,8 +50,8 @@ logs/
 *.temp
 tmp/
 
-# Helm local values (copy from values.local.example.yaml)
-charts/lfx-v2-invite-service/values.local.yaml
+# Helm local values (copy from values.local.yaml.example)
+charts/lfx-v2-newsletter-service/values.local.yaml
 
 # Air live reload
 .air.toml

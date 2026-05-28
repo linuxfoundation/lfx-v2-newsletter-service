@@ -1,5 +1,18 @@
 # Claude Development Guide for LFX V2 Newsletter Service
 
+> **Central LFX skills:**
+>
+> - `lfx-skills:lfx`: cross-repo topology, ownership routing, repo discovery, and missing-checkout handling.
+> - `lfx-skills:lfx-platform-architecture`: platform composition, service classes, query-service/FGA/indexer flow, Helm and ArgoCD handoffs, and cross-service responsibility boundaries.
+>
+> **Repo-local skills:**
+>
+> - `newsletter-service-dev`: auto-attaches on Go, chart, and service-owned doc paths. It owns this repo's Go conventions, HTTP handler shape, Postgres/Bun persistence, embedded schema, recipient resolution, public `pkg/api` DTO contract, tests, formatting, linting, and license headers. See `.claude/skills/newsletter-service-dev/SKILL.md`.
+> - `newsletter-service-pr-readiness`: pre-PR shape check only: branch/JIRA/conventional commits/rebase/DCO + GPG/diff size/protected files. See `.claude/skills/newsletter-service-pr-readiness/SKILL.md`.
+> - `newsletter-service-preflight`: Go mechanical before-PR pipeline: working tree, license, formatting, lint/vet, build, tests, protected files, commit verification, and PR change summary. See `.claude/skills/newsletter-service-preflight/SKILL.md`.
+>
+> If the plugin is missing, install with `/plugin marketplace add linuxfoundation/lfx-skills` then `/plugin install lfx-skills@lfx-skills`.
+
 ## Project Overview
 
 The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It owns:
@@ -16,6 +29,31 @@ The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It ow
 >
 > AI content generation continues to live in `lfx-v2-ui`; this service does
 > not proxy AI calls.
+
+## Repo Role
+
+This repo owns newsletter drafts, sent-state persistence, recipient preview/count behavior, local open tracking, newsletter analytics, the newsletter HTTP API, and the service-local Helm chart. It consumes query-service for committee-member recipient lookup and persists the email-service `groupId` supplied by the caller when a draft is marked sent.
+
+It does not currently dispatch email, render AI content, publish indexer messages, or emit FGA tuples.
+
+## Authoritative Repo Docs
+
+- `docs/newsletter-service-contract.md`: HTTP routes, public DTOs, ETag behavior, state transitions, errors, analytics, and open tracking.
+- `docs/recipient-resolution.md`: query-service consumption, bearer-token propagation, recipient normalization, and email-service `groupId` handoff.
+- `docs/service-helm-chart.md`: service-local chart values, Postgres database modes, Gateway/Heimdall wiring, and deployment handoffs.
+- `charts/lfx-v2-newsletter-service/`: service-local Helm templates and defaults.
+
+Read the relevant contract before changing `pkg/api`, handlers, database schema, recipient resolution, analytics, open tracking, or chart values. Update docs in the same PR as behavior changes.
+
+## Consumed Cross-Repo Contracts
+
+- Query API and pagination: `lfx-v2-query-service/docs/query-service-contract.md`
+- Committee-member indexed data and tags: `lfx-v2-committee-service/docs/indexer-contract.md`
+- Email send and engagement tracking: `lfx-v2-email-service/docs/email-service-contract.md`
+- Shared service chart conventions: `lfx-v2-helm/docs/service-chart-patterns.md`
+- Deployed values, image tags, database secrets, ExternalSecret wiring: `lfx-v2-argocd`
+
+Use `lfx-skills:lfx` if an owner repo is missing locally, a path has moved, or the task needs additional peer repos.
 
 ## Key Technologies
 
@@ -80,6 +118,38 @@ make test        # Run tests with race detector
 make check       # fmt + lint + license-check + go vet
 make lint        # golangci-lint
 ```
+
+## Work cycle — post-commit and pre-PR reviews
+
+> **CRITICAL — while the branch is pre-PR, post-commit review is mandatory.** After every commit on the local branch, launch the `lfx-skills:lfx-general-code-reviewer` subagent via the Agent tool (`subagent_type: lfx-skills:lfx-general-code-reviewer`, `run_in_background: true`) — then keep working while it runs. If Claude displays plugin agents without the `lfx-skills:` namespace, use the equivalent displayed general reviewer name. Before opening a PR, every running review must return clean (or remaining findings explicitly documented as trade-offs), the **full-branch sweep** must run clean if the branch has more than one commit (`branch` arg), AND `/newsletter-service-pr-readiness` must clear every Critical finding before `/newsletter-service-preflight` runs.
+>
+> **Once the PR is open, do NOT invoke the general reviewer on iteration commits.** CodeRabbit + Copilot auto-trigger on every push and own the audit surface from that point. The general reviewer is pre-PR insurance only.
+
+### Post-commit (pre-PR phase, after every commit, asynchronous)
+
+1. **Commit your work.** `git commit --signoff -S`. Do not wait for any prior review to finish.
+2. **Immediately launch the general reviewer subagent.** Use `subagent_type: lfx-skills:lfx-general-code-reviewer`, `run_in_background: true`.
+3. **Post-commit mode prompt (exact):** `target repo: lfx-v2-newsletter-service\n\nReview the latest commit.` Append `extra: <focus>` on a new line only when there is a priority hint to add. Do NOT pass `branch` here. If this work cycle is launched from the LFX workspace parent, the `target repo:` line is required so the reviewer operates in this repo.
+4. **Keep working.** Start the next commit while the reviewer runs. Do not block on it.
+5. **When the review returns:** roll every Critical finding and every reasonable Important finding into the next commit.
+
+### Pre-PR (drain the queue, sweep cumulative state, then open)
+
+When the work is done and no more code commits are planned:
+
+1. **Wait for every running review to complete.**
+2. **If any returned review flags Critical or reasonable Important:** add a fix commit, launch the general reviewer again on the new state, wait, and loop until clean or explicitly documented as a trade-off.
+3. **Full-branch sweep — only if the branch has more than one commit.** Launch `lfx-skills:lfx-general-code-reviewer` again with prompt **`target repo: lfx-v2-newsletter-service\nbranch\n\nReview the branch's diff against origin/main.`**. Address any new findings, then re-run the sweep until clean.
+4. **Run `/newsletter-service-pr-readiness`** for branch name, JIRA reference, conventional commits, rebase status, DCO + GPG signing, diff size, and protected files.
+5. **Run `/newsletter-service-preflight`** for working tree status, license headers, formatting, lint/vet, build, tests, protected files, commit verification, and PR change summary.
+6. **Only then push and open the PR.**
+
+### Post-PR iteration (responding to bot feedback on an open PR)
+
+1. Wait for CodeRabbit + Copilot to comment after each push.
+2. Triage every Critical and reasonable Important finding against current code.
+3. Roll fixes into a `fix(review): ...` commit.
+4. Push. Repeat until clean.
 
 ## Conventions
 
