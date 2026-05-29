@@ -15,6 +15,7 @@ import (
 	"net/http"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
@@ -25,6 +26,8 @@ type Handler struct {
 	newsletter      *service.NewsletterService
 	send            *service.SendOrchestrator
 	analytics       *service.AnalyticsService
+	unsub           *service.UnsubscribeService
+	project         port.ProjectMetadataClient
 	db              *sql.DB
 	auth            *AuthValidator
 	requireUserAuth bool
@@ -35,6 +38,8 @@ type Config struct {
 	Newsletter      *service.NewsletterService
 	Send            *service.SendOrchestrator
 	Analytics       *service.AnalyticsService
+	Unsubscribe     *service.UnsubscribeService
+	Project         port.ProjectMetadataClient
 	DB              *sql.DB
 	Auth            *AuthValidator
 	RequireUserAuth bool
@@ -46,10 +51,26 @@ func New(cfg Config) *Handler {
 		newsletter:      cfg.Newsletter,
 		send:            cfg.Send,
 		analytics:       cfg.Analytics,
+		unsub:           cfg.Unsubscribe,
+		project:         cfg.Project,
 		db:              cfg.DB,
 		auth:            cfg.Auth,
 		requireUserAuth: cfg.RequireUserAuth,
 	}
+}
+
+// projectDisplayName resolves a human-readable project name for use in
+// recipient-facing pages, falling back to a generic label when the lookup
+// fails so the page always renders.
+func (h *Handler) projectDisplayName(ctx context.Context, projectUID string) string {
+	if h.project == nil {
+		return "this project's"
+	}
+	name, err := h.project.Name(ctx, projectUID)
+	if err != nil || name == "" {
+		return "this project's"
+	}
+	return name
 }
 
 // Routes returns a fully-wired http.Handler with all newsletter routes registered.
@@ -89,6 +110,11 @@ func (h *Handler) Routes() http.Handler {
 	// recipient's email client which has no session. Identity comes from the
 	// hash in the query string.
 	mux.HandleFunc("GET /projects/{project_uid}/newsletter-opens/{newsletter_uid}", h.OpenPixel)
+
+	// One-click unsubscribe — intentionally unauthenticated; requested by a
+	// recipient clicking the footer link. Authorization comes from the
+	// HMAC-signed token in the query string.
+	mux.HandleFunc("GET /newsletters/unsubscribe", h.Unsubscribe)
 
 	// Outermost middleware first: request ID so it appears on every log line,
 	// then request log so it captures status + duration.

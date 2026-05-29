@@ -76,6 +76,20 @@ spec:
             - name: SEND_CONCURRENCY
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.app.unsubscribe.publicBaseURL }}
+            - name: NEWSLETTER_PUBLIC_BASE_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.app.unsubscribe.secretRef.name }}
+            - name: NEWSLETTER_UNSUBSCRIBE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.unsubscribe.secretRef.name }}
+                  key: {{ .Values.app.unsubscribe.secretRef.key }}
+            {{- else if .Values.app.unsubscribe.secret }}
+            - name: NEWSLETTER_UNSUBSCRIBE_SECRET
+              value: {{ .Values.app.unsubscribe.secret | quote }}
+            {{- end }}
             - name: REQUIRE_USER_AUTH
               value: {{ .Values.app.requireUserAuth | quote }}
             {{- if .Values.app.jwksURL }}

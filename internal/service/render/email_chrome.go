@@ -34,6 +34,12 @@ type Chrome struct {
 	// Required when IncludeComplianceFooter is true.
 	EDName       string
 	EDReplyEmail string
+	// UnsubscribeURL is the per-recipient one-click opt-out link. The send
+	// orchestrator passes a placeholder here and substitutes the real URL
+	// per recipient inside the fan-out loop. When empty the footer falls
+	// back to the legacy "reply with UNSUBSCRIBE" copy so test sends and
+	// misconfigured environments still emit valid HTML.
+	UnsubscribeURL string
 }
 
 // LFX brand colors used by the email chrome. Mirrored from
@@ -239,11 +245,15 @@ func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
 	if input.EDReplyEmail != "" {
 		replyLine = `<div style="margin-bottom:6px;">To reply, email <a href="mailto:` + replyEmailSafe + `" style="color:` + colorBlue500 + `;text-decoration:underline;">` + replyEmailSafe + `</a></div>`
 	}
+	unsubLine := `To unsubscribe from ` + displayNameSafe + ` newsletters, reply with <strong>UNSUBSCRIBE</strong>.`
+	if input.UnsubscribeURL != "" {
+		unsubLine = `<a href="` + escapeHTML(input.UnsubscribeURL) + `" style="color:` + colorBlue500 + `;text-decoration:underline;">Unsubscribe</a> from ` + displayNameSafe + ` newsletters.`
+	}
 	return `<tr>
 <td style="background-color:` + colorGray50 + `;border-top:1px solid ` + colorGray200 + `;padding:24px 40px;font-size:12px;color:` + colorGray500 + `;font-family:` + fontStack + `;">
 <div style="margin-bottom:6px;">Sent by <strong style="color:` + colorGray900 + `;">` + edNameSafe + `</strong> on behalf of <strong style="color:` + colorGray900 + `;">` + displayNameSafe + `</strong>.</div>
 ` + replyLine + `
-<div style="color:` + colorGray400 + `;font-size:11px;">To unsubscribe from ` + displayNameSafe + ` newsletters, reply with <strong>UNSUBSCRIBE</strong>. Delivered by <span style="font-weight:700;color:` + colorBlue500 + `;letter-spacing:-0.02em;">LFX</span>.</div>
+<div style="color:` + colorGray400 + `;font-size:11px;">` + unsubLine + ` Delivered by <span style="font-weight:700;color:` + colorBlue500 + `;letter-spacing:-0.02em;">LFX</span>.</div>
 </td>
 </tr>`
 }
@@ -335,7 +345,11 @@ func EmailText(input Chrome) string {
 		if input.EDReplyEmail != "" {
 			lines = append(lines, "To reply, email "+input.EDReplyEmail)
 		}
-		lines = append(lines, "To unsubscribe from "+display+" newsletters, reply with UNSUBSCRIBE.", "Delivered by LFX.")
+		if input.UnsubscribeURL != "" {
+			lines = append(lines, "Unsubscribe from "+display+" newsletters: "+input.UnsubscribeURL, "Delivered by LFX.")
+		} else {
+			lines = append(lines, "To unsubscribe from "+display+" newsletters, reply with UNSUBSCRIBE.", "Delivered by LFX.")
+		}
 	}
 
 	return strings.Join(lines, "\n")

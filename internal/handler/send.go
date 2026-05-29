@@ -47,12 +47,13 @@ func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
 
 // RecipientCount handles POST /projects/{project_uid}/newsletters/recipient-count.
 func (h *Handler) RecipientCount(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
 	var body publicapi.RecipientCountRequest
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
-	count, err := h.send.RecipientCount(r.Context(), body.CommitteeUIDs)
+	count, err := h.send.RecipientCount(r.Context(), projectUID, body.CommitteeUIDs)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
@@ -62,12 +63,13 @@ func (h *Handler) RecipientCount(w http.ResponseWriter, r *http.Request) {
 
 // Recipients handles POST /projects/{project_uid}/newsletters/recipients.
 func (h *Handler) Recipients(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
 	var body publicapi.RecipientsRequest
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
-	recipients, err := h.send.Recipients(r.Context(), body.CommitteeUIDs)
+	recipients, err := h.send.Recipients(r.Context(), projectUID, body.CommitteeUIDs)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return

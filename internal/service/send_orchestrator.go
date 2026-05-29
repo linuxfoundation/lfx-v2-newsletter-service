@@ -33,6 +33,7 @@ type SendOrchestrator struct {
 	committee     port.CommitteeClient
 	project       port.ProjectMetadataClient
 	email         port.EmailDispatcher
+	unsub         *UnsubscribeService
 	concurrency   int
 	fanoutEnabled bool
 }
@@ -43,6 +44,7 @@ type SendOrchestratorConfig struct {
 	Committee   port.CommitteeClient
 	Project     port.ProjectMetadataClient
 	Email       port.EmailDispatcher
+	Unsubscribe *UnsubscribeService
 	Concurrency int
 	// FanoutEnabled is the feature toggle for the per-recipient send loop.
 	// Defaults to true; flip false in environments where we want to validate
@@ -61,6 +63,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		committee:     cfg.Committee,
 		project:       cfg.Project,
 		email:         cfg.Email,
+		unsub:         cfg.Unsubscribe,
 		concurrency:   c,
 		fanoutEnabled: cfg.FanoutEnabled,
 	}
@@ -113,7 +116,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		return nil, domain.ErrVersionMismatch
 	}
 
-	recipients, err := o.resolveRecipients(ctx, draft.CommitteeUIDs)
+	recipients, err := o.resolveRecipients(ctx, draft.ProjectUID, draft.CommitteeUIDs)
 	if err != nil {
 		return nil, fmt.Errorf("resolve recipients: %w", err)
 	}
@@ -131,12 +134,15 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		EDName:                  fallbackString(in.EDName, "Executive Director"),
 		EDReplyEmail:            draft.EDReplyEmail,
 	}
+	if o.unsub.Enabled() {
+		chrome.UnsubscribeURL = UnsubscribeURLPlaceholder
+	}
 	htmlBody := render.EmailHTML(chrome)
 	textBody := render.EmailText(chrome)
 
 	groupID := uuid.NewString()
 
-	sent, failed, failures := o.fanOut(ctx, recipients, draft.Subject, htmlBody, textBody, groupID)
+	sent, failed, failures := o.fanOut(ctx, draft.ProjectUID, recipients, draft.Subject, htmlBody, textBody, groupID)
 
 	// Only flip the draft to `sent` when at least one recipient was delivered
 	// to. If every send failed (email-service unreachable, all recipients
@@ -247,11 +253,11 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 }
 
 // RecipientCount resolves recipients and returns the unique count.
-func (o *SendOrchestrator) RecipientCount(ctx context.Context, committeeUIDs []string) (int, error) {
+func (o *SendOrchestrator) RecipientCount(ctx context.Context, projectUID string, committeeUIDs []string) (int, error) {
 	if err := validateCommitteeUIDs(committeeUIDs); err != nil {
 		return 0, err
 	}
-	recipients, err := o.resolveRecipients(ctx, committeeUIDs)
+	recipients, err := o.resolveRecipients(ctx, projectUID, committeeUIDs)
 	if err != nil {
 		return 0, err
 	}
@@ -259,18 +265,19 @@ func (o *SendOrchestrator) RecipientCount(ctx context.Context, committeeUIDs []s
 }
 
 // Recipients resolves recipients and returns the unique list.
-func (o *SendOrchestrator) Recipients(ctx context.Context, committeeUIDs []string) ([]model.CommitteeMember, error) {
+func (o *SendOrchestrator) Recipients(ctx context.Context, projectUID string, committeeUIDs []string) ([]model.CommitteeMember, error) {
 	if err := validateCommitteeUIDs(committeeUIDs); err != nil {
 		return nil, err
 	}
-	return o.resolveRecipients(ctx, committeeUIDs)
+	return o.resolveRecipients(ctx, projectUID, committeeUIDs)
 }
 
 // resolveRecipients fans out to the committee client across committees, dedupes
-// by lowercased email, and filters obviously bad addresses. The errgroup cancels
-// in-flight goroutines as soon as one returns an error so a transient failure
-// from one committee doesn't keep the remaining lookups running.
-func (o *SendOrchestrator) resolveRecipients(ctx context.Context, committeeUIDs []string) ([]model.CommitteeMember, error) {
+// by lowercased email, filters obviously bad addresses, and drops any address
+// that has unsubscribed from this project. The errgroup cancels in-flight
+// goroutines as soon as one returns an error so a transient failure from one
+// committee doesn't keep the remaining lookups running.
+func (o *SendOrchestrator) resolveRecipients(ctx context.Context, projectUID string, committeeUIDs []string) ([]model.CommitteeMember, error) {
 	results := make([][]model.CommitteeMember, len(committeeUIDs))
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -289,8 +296,14 @@ func (o *SendOrchestrator) resolveRecipients(ctx context.Context, committeeUIDs 
 		return nil, err
 	}
 
+	excluded, err := o.listUnsubscribed(ctx, projectUID)
+	if err != nil {
+		return nil, fmt.Errorf("list unsubscribes: %w", err)
+	}
+
 	seen := make(map[string]struct{})
 	out := make([]model.CommitteeMember, 0)
+	skipped := 0
 	for _, members := range results {
 		for _, m := range members {
 			email := strings.ToLower(strings.TrimSpace(m.Email))
@@ -301,13 +314,33 @@ func (o *SendOrchestrator) resolveRecipients(ctx context.Context, committeeUIDs 
 				continue
 			}
 			seen[email] = struct{}{}
+			if _, unsub := excluded[email]; unsub {
+				skipped++
+				continue
+			}
 			out = append(out, model.CommitteeMember{
 				Email:     email,
 				FirstName: strings.TrimSpace(m.FirstName),
 			})
 		}
 	}
+	if skipped > 0 {
+		slog.InfoContext(ctx, "resolve recipients: excluded unsubscribed addresses",
+			"project_uid", projectUID,
+			"excluded", skipped,
+			"remaining", len(out),
+		)
+	}
 	return out, nil
+}
+
+// listUnsubscribed returns the set of unsubscribed emails for the project, or
+// an empty set when no unsubscribe service is wired (tests, legacy config).
+func (o *SendOrchestrator) listUnsubscribed(ctx context.Context, projectUID string) (map[string]struct{}, error) {
+	if o.unsub == nil || o.unsub.repo == nil {
+		return map[string]struct{}{}, nil
+	}
+	return o.unsub.repo.ListUnsubscribedEmails(ctx, projectUID)
 }
 
 // fanOut dispatches per-recipient send_email requests to email-service with
@@ -315,7 +348,7 @@ func (o *SendOrchestrator) resolveRecipients(ctx context.Context, committeeUIDs 
 // failures are captured and surfaced in the result so the caller can decide
 // how to react. A nil EmailDispatcher (or FanoutEnabled=false) short-circuits
 // to "all sent, none failed" for dev/test environments.
-func (o *SendOrchestrator) fanOut(ctx context.Context, recipients []model.CommitteeMember, subject, htmlBody, textBody, groupID string) (sent, failed int, failures []SendFailure) {
+func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipients []model.CommitteeMember, subject, htmlBody, textBody, groupID string) (sent, failed int, failures []SendFailure) {
 	if len(recipients) == 0 {
 		return 0, 0, nil
 	}
@@ -350,11 +383,17 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, recipients []model.Commit
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			recipientHTML, recipientText := htmlBody, textBody
+			if o.unsub.Enabled() {
+				url := o.unsub.BuildURL(projectUID, recipient.Email)
+				recipientHTML = strings.ReplaceAll(htmlBody, UnsubscribeURLPlaceholder, url)
+				recipientText = strings.ReplaceAll(textBody, UnsubscribeURLPlaceholder, url)
+			}
 			_, err := o.email.SendEmail(ctx, port.SendEmailInput{
 				To:      recipient.Email,
 				Subject: subject,
-				HTML:    htmlBody,
-				Text:    textBody,
+				HTML:    recipientHTML,
+				Text:    recipientText,
 				GroupID: groupID,
 			})
 			mu.Lock()

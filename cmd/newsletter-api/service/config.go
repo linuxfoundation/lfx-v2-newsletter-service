@@ -44,6 +44,15 @@ type AppConfig struct {
 	// SendConcurrency caps in-flight per-recipient sends during fan-out.
 	SendConcurrency int
 
+	// UnsubscribeSecret is the HMAC key signing per-recipient unsubscribe
+	// tokens. When empty, the footer falls back to the legacy "reply with
+	// UNSUBSCRIBE" copy and the public endpoint rejects all requests.
+	UnsubscribeSecret string
+
+	// PublicBaseURL is the externally-reachable origin of this service,
+	// used to build unsubscribe links embedded in outgoing emails.
+	PublicBaseURL string
+
 	// Auth
 	JWKSURL          string
 	ExpectedAudience string
@@ -75,6 +84,8 @@ func AppConfigFromEnv() (AppConfig, error) {
 		NATSReconnectWait: durationOr("NATS_RECONNECT_WAIT", time.Duration(defaultNATSReconnectWaitSecs)*time.Second),
 		SendFanoutEnabled: boolOr("SEND_FANOUT_ENABLED", true),
 		SendConcurrency:   intOr("SEND_CONCURRENCY", defaultSendConcurrency),
+		UnsubscribeSecret: os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
+		PublicBaseURL:     strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
 		JWKSURL:           os.Getenv("JWKS_URL"),
 		ExpectedAudience:  os.Getenv("JWT_AUDIENCE"),
 		RequireUserAuth:   boolOr("REQUIRE_USER_AUTH", true),
@@ -99,6 +110,12 @@ func AppConfigFromEnv() (AppConfig, error) {
 	}
 	if cfg.RequireUserAuth && cfg.ExpectedAudience == "" {
 		missing = append(missing, "JWT_AUDIENCE (required when REQUIRE_USER_AUTH=true)")
+	}
+	if cfg.SendFanoutEnabled && cfg.UnsubscribeSecret == "" {
+		missing = append(missing, "NEWSLETTER_UNSUBSCRIBE_SECRET (required when SEND_FANOUT_ENABLED=true)")
+	}
+	if cfg.SendFanoutEnabled && cfg.PublicBaseURL == "" {
+		missing = append(missing, "NEWSLETTER_PUBLIC_BASE_URL (required when SEND_FANOUT_ENABLED=true)")
 	}
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))

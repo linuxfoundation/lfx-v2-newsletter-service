@@ -306,6 +306,44 @@ func (r *PostgresNewsletterRepo) Analytics(ctx context.Context, newsletterID uui
 	}, nil
 }
 
+// CreateUnsubscribe records a project-scoped opt-out. Idempotent: a second
+// call for the same (project_uid, email) pair is a no-op via the unique
+// index. Email is normalized to lowercase before insert so the index matches
+// regardless of the case the recipient's mail client used in the URL.
+func (r *PostgresNewsletterRepo) CreateUnsubscribe(ctx context.Context, projectUID, email string) error {
+	row := &model.NewsletterUnsubscribe{
+		ProjectUID: projectUID,
+		Email:      strings.ToLower(strings.TrimSpace(email)),
+	}
+	if _, err := r.db.NewInsert().
+		Model(row).
+		On("CONFLICT (project_uid, email) DO NOTHING").
+		Exec(ctx); err != nil {
+		return fmt.Errorf("insert unsubscribe: %w", err)
+	}
+	return nil
+}
+
+// ListUnsubscribedEmails returns the set of lowercased email addresses that
+// have opted out of newsletters for the given project. Returned as a map so
+// the send orchestrator can filter the recipient list in O(1) per address.
+func (r *PostgresNewsletterRepo) ListUnsubscribedEmails(ctx context.Context, projectUID string) (map[string]struct{}, error) {
+	var emails []string
+	err := r.db.NewSelect().
+		Model((*model.NewsletterUnsubscribe)(nil)).
+		Column("email").
+		Where("project_uid = ?", projectUID).
+		Scan(ctx, &emails)
+	if err != nil {
+		return nil, fmt.Errorf("list unsubscribes: %w", err)
+	}
+	out := make(map[string]struct{}, len(emails))
+	for _, e := range emails {
+		out[strings.ToLower(e)] = struct{}{}
+	}
+	return out, nil
+}
+
 // classifyMissing distinguishes ErrNotFound from ErrVersionMismatch after an
 // Update affected zero rows.
 func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UUID) error {

@@ -68,6 +68,19 @@ app:
     # Empty string falls back to the app default (5).
     concurrency: ""
 
+  # unsubscribe configures the per-recipient one-click opt-out link
+  # embedded in the email footer. publicBaseURL is the externally-reachable
+  # origin of this service; the HMAC secret signs the token so links can't
+  # be forged. Both are REQUIRED when send.fanoutEnabled=true.
+  unsubscribe:
+    publicBaseURL: ""
+    # secret sets the HMAC key directly (local/dev only). Prefer secretRef.
+    secret: ""
+    # secretRef sources the HMAC key from a Kubernetes Secret.
+    secretRef:
+      name: ""
+      key: "unsubscribe-secret"
+
   # jwksURL is the URL of the JWKS endpoint used to verify inbound JWTs.
   # REQUIRED when requireUserAuth=true (default).
   jwksURL: ""
