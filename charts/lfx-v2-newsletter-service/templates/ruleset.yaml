@@ -311,4 +311,22 @@ spec:
           - path: /projects/:project_uid/newsletter-opens/:newsletter_uid
       execute:
         - authorizer: allow_all
+
+    # ---------------------------------------------------------------------
+    # One-click unsubscribe: intentionally unauthenticated. Recipients click
+    # the footer link from their mail client with no session. Authorization
+    # comes from the HMAC-signed `t` query parameter, verified server-side.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:unsubscribe"
+      allow_encoded_slashes: 'off'
+      match:
+        # GET only — HEAD probes from link checkers and mail-client preview
+        # engines must not reach the handler (the handler also no-ops HEAD
+        # defensively, but blocking at the gateway keeps the audit trail clean).
+        methods:
+          - GET
+        routes:
+          - path: /newsletters/unsubscribe
+      execute:
+        - authorizer: allow_all
 {{- end }}

@@ -122,3 +122,25 @@ ALTER TABLE newsletter_opens
 -- The application is expected to use ON CONFLICT DO NOTHING when inserting.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_opens_newsletter_recipient_hour
     ON newsletter_opens (newsletter_id, recipient_hash, opened_at_hour);
+
+-- newsletter_unsubscribes records project-scoped opt-outs. A row means the
+-- given email address has unsubscribed from all newsletters for that
+-- project_uid; the address may still receive newsletters for other projects.
+-- Email is stored lowercased so the unique index makes the insert idempotent
+-- without needing a CITEXT extension.
+--
+-- updated_at is currently write-once (set equal to created_at on insert and
+-- never touched). It is reserved for a future re-subscribe / preference-update
+-- flow where an opt-out row may be mutated (e.g. soft-deleted with a
+-- resubscribed_at timestamp) rather than hard-deleted, so the column is
+-- declared now to avoid a later ALTER TABLE.
+CREATE TABLE IF NOT EXISTS newsletter_unsubscribes (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_uid TEXT        NOT NULL,
+    email       TEXT        NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_unsubscribes_project_email
+    ON newsletter_unsubscribes (project_uid, email);

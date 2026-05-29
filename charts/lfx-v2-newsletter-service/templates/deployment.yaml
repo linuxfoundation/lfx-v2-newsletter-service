@@ -76,6 +76,21 @@ spec:
             - name: SEND_CONCURRENCY
               value: {{ . | quote }}
             {{- end }}
+            - name: NEWSLETTER_PUBLIC_BASE_URL
+              value: {{ default (printf "https://lfx-api.%s" .Values.lfx.domain) .Values.app.unsubscribe.publicBaseURL | quote }}
+            {{- if .Values.app.unsubscribe.secretRef.name }}
+            - name: NEWSLETTER_UNSUBSCRIBE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.unsubscribe.secretRef.name }}
+                  key: {{ .Values.app.unsubscribe.secretRef.key }}
+            {{- else if .Values.app.unsubscribe.secret }}
+            - name: NEWSLETTER_UNSUBSCRIBE_SECRET
+              value: {{ .Values.app.unsubscribe.secret | quote }}
+            {{- else if .Values.app.send.fanoutEnabled }}
+            {{/* Fail the install instead of letting the pod CrashLoop with a missing HMAC secret. */}}
+            {{- required "app.unsubscribe.secretRef.name or app.unsubscribe.secret is required when app.send.fanoutEnabled is true" "" }}
+            {{- end }}
             - name: REQUIRE_USER_AUTH
               value: {{ .Values.app.requireUserAuth | quote }}
             {{- if .Values.app.jwksURL }}
