@@ -10,18 +10,20 @@ import (
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
 
-// GetAnalytics handles GET /newsletter-analytics/{id}.
+// GetAnalytics handles GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics.
 //
-// Returns ErrNotFound if the newsletter doesn't exist. Returns zero engagement
-// metrics (not an error) when the newsletter exists but has no opens recorded.
+// Returns ErrNotFound if the newsletter doesn't exist or belongs to a different
+// project than the one supplied. Returns zero engagement metrics (not an error)
+// when the newsletter exists but has no opens recorded.
 func (h *Handler) GetAnalytics(w http.ResponseWriter, r *http.Request) {
-	id, err := parseUUID(r.PathValue("id"))
+	projectUID := r.PathValue("project_uid")
+	id, err := parseUUID(r.PathValue("newsletter_uid"))
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
 
-	a, err := h.newsletter.Analytics(r.Context(), id)
+	a, err := h.analytics.Get(r.Context(), projectUID, id)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return

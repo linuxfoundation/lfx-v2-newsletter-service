@@ -2,20 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 // Package api is the public HTTP contract consumed by lfx-v2-ui and other
-// callers. Field names mirror packages/shared/src/interfaces/newsletter.interface.ts
-// in the lfx-v2-ui monorepo.
+// callers. Field names are snake_case to match the LFX V2 attribute-naming
+// convention and the rest of the V2 services (committee, project, meeting).
 package api
 
 import "time"
-
-// ContextType identifies the scope a newsletter is composed for.
-type ContextType string
-
-// ContextType values mirrored from the lfx-v2-ui shared interfaces.
-const (
-	ContextFoundation ContextType = "foundation"
-	ContextProject    ContextType = "project"
-)
 
 // Status enumerates newsletter lifecycle states.
 type Status string
@@ -26,55 +17,48 @@ const (
 	StatusSent  Status = "sent"
 )
 
-// Newsletter is the response shape returned by draft endpoints.
+// Newsletter is the response shape returned by single-resource endpoints.
 type Newsletter struct {
-	ID            string      `json:"id"`
-	ContextType   ContextType `json:"contextType"`
-	ContextUID    string      `json:"contextUid"`
-	Subject       string      `json:"subject"`
-	BodyHTML      string      `json:"bodyHtml"`
-	EDReplyEmail  string      `json:"edReplyEmail"`
-	CommitteeUIDs []string    `json:"committeeUids"`
-	Status        Status      `json:"status"`
-	SentAt        *time.Time  `json:"sentAt,omitempty"`
+	ID            string     `json:"id"`
+	ProjectUID    string     `json:"project_uid"`
+	Subject       string     `json:"subject"`
+	BodyHTML      string     `json:"body_html"`
+	EDReplyEmail  string     `json:"ed_reply_email"`
+	CommitteeUIDs []string   `json:"committee_uids"`
+	Status        Status     `json:"status"`
+	SentAt        *time.Time `json:"sent_at,omitempty"`
 	// GroupID is the lfx-v2-email-service correlation identifier, set when
 	// the newsletter is sent. Null on drafts.
-	GroupID   *string   `json:"groupId,omitempty"`
-	CreatedBy string    `json:"createdBy"`
-	Version   int64     `json:"version"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	GroupID         *string   `json:"group_id,omitempty"`
+	TotalRecipients int       `json:"total_recipients"`
+	CreatedBy       string    `json:"created_by"`
+	Version         int64     `json:"version"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
-// CreateDraftRequest is the body of POST /newsletters/drafts.
-type CreateDraftRequest struct {
-	ContextType   ContextType `json:"contextType"`
-	ContextUID    string      `json:"contextUid"`
-	Subject       string      `json:"subject"`
-	BodyHTML      string      `json:"bodyHtml"`
-	EDReplyEmail  string      `json:"edReplyEmail"`
-	CommitteeUIDs []string    `json:"committeeUids"`
-}
-
-// UpdateDraftRequest is the body of PUT /newsletters/drafts/{id}.
-type UpdateDraftRequest struct {
+// CreateNewsletterRequest is the body of POST /projects/{project_uid}/newsletters.
+type CreateNewsletterRequest struct {
 	Subject       string   `json:"subject"`
-	BodyHTML      string   `json:"bodyHtml"`
-	EDReplyEmail  string   `json:"edReplyEmail"`
-	CommitteeUIDs []string `json:"committeeUids"`
+	BodyHTML      string   `json:"body_html"`
+	EDReplyEmail  string   `json:"ed_reply_email"`
+	CommitteeUIDs []string `json:"committee_uids"`
 }
 
-// ListDraftsResponse is the body of GET /newsletters/drafts.
-type ListDraftsResponse struct {
-	Drafts []Newsletter `json:"drafts"`
+// UpdateNewsletterRequest is the body of PUT /projects/{project_uid}/newsletters/{newsletter_uid}.
+type UpdateNewsletterRequest struct {
+	Subject       string   `json:"subject"`
+	BodyHTML      string   `json:"body_html"`
+	EDReplyEmail  string   `json:"ed_reply_email"`
+	CommitteeUIDs []string `json:"committee_uids"`
 }
 
-// RecipientCountRequest is the body of POST /newsletters/recipient-count.
+// RecipientCountRequest is the body of POST /projects/{project_uid}/newsletters/recipient-count.
 type RecipientCountRequest struct {
-	CommitteeUIDs []string `json:"committeeUids"`
+	CommitteeUIDs []string `json:"committee_uids"`
 }
 
-// RecipientCountResponse is the body of POST /newsletters/recipient-count.
+// RecipientCountResponse is the body of POST /projects/{project_uid}/newsletters/recipient-count.
 type RecipientCountResponse struct {
 	Count int `json:"count"`
 }
@@ -82,78 +66,87 @@ type RecipientCountResponse struct {
 // Recipient is a single entry in the preview recipients list.
 type Recipient struct {
 	Email     string `json:"email"`
-	FirstName string `json:"firstName,omitempty"`
+	FirstName string `json:"first_name,omitempty"`
 }
 
-// RecipientsRequest is the body of POST /newsletters/recipients.
+// RecipientsRequest is the body of POST /projects/{project_uid}/newsletters/recipients.
 type RecipientsRequest struct {
-	CommitteeUIDs []string `json:"committeeUids"`
+	CommitteeUIDs []string `json:"committee_uids"`
 }
 
-// RecipientsResponse is the body of POST /newsletters/recipients.
+// RecipientsResponse is the body of POST /projects/{project_uid}/newsletters/recipients.
 type RecipientsResponse struct {
 	Recipients []Recipient `json:"recipients"`
 }
 
-// TestSendRequest is the body of POST /newsletters/test-send.
+// TestSendRequest is the body of POST /projects/{project_uid}/newsletters/test-send.
 type TestSendRequest struct {
-	Subject      string      `json:"subject"`
-	BodyHTML     string      `json:"bodyHtml"`
-	ToEmail      string      `json:"toEmail"`
-	ContextType  ContextType `json:"contextType"`
-	ContextUID   string      `json:"contextUid"`
-	EDReplyEmail string      `json:"edReplyEmail"`
+	Subject      string `json:"subject"`
+	BodyHTML     string `json:"body_html"`
+	ToEmail      string `json:"to_email"`
+	EDReplyEmail string `json:"ed_reply_email,omitempty"`
 }
 
-// TestSendResponse is the body of POST /newsletters/test-send.
+// TestSendResponse is the body of POST /projects/{project_uid}/newsletters/test-send.
 type TestSendResponse struct {
 	OK bool `json:"ok"`
 }
 
-// SendDraftRequest is the body of POST /newsletters/drafts/{id}/send.
+// SendFailure describes a single per-recipient failure surfaced from the send fan-out.
+type SendFailure struct {
+	Email string `json:"email"`
+	Error string `json:"error"`
+}
+
+// SendNewsletterResponse is the body of POST /projects/{project_uid}/newsletters/{newsletter_uid}/send.
 //
-// GroupID is the lfx-v2-email-service correlation identifier minted by
-// lfx-v2-ui's Express layer before it fans out the per-recipient sends. The
-// Go service persists this value on the newsletter row so later analytics
-// queries can locate the engagement records.
-type SendDraftRequest struct {
-	GroupID string `json:"groupId"`
+// The newsletter-service owns the email dispatch: it mints group_id, resolves
+// recipients via NATS to committee-service, and fans out per-recipient sends
+// via NATS to email-service. Per-recipient failures are returned so the caller
+// can surface them; the newsletter is still marked sent if any recipients
+// succeeded (matching the prior lfx-v2-ui behaviour).
+type SendNewsletterResponse struct {
+	Newsletter      Newsletter    `json:"newsletter"`
+	GroupID         string        `json:"group_id"`
+	TotalRecipients int           `json:"total_recipients"`
+	Sent            int           `json:"sent"`
+	Failed          int           `json:"failed"`
+	Failures        []SendFailure `json:"failures,omitempty"`
 }
 
 // NewsletterListItem is one row in the unified list response. Inherits the
 // Newsletter shape and adds engagement fields populated only when status='sent'.
 type NewsletterListItem struct {
 	Newsletter
-	TotalRecipients *int     `json:"totalRecipients,omitempty"`
-	UniqueOpens     *int     `json:"uniqueOpens,omitempty"`
-	OpenRate        *float64 `json:"openRate,omitempty"`
+	UniqueOpens *int     `json:"unique_opens,omitempty"`
+	OpenRate    *float64 `json:"open_rate,omitempty"`
 }
 
-// NewsletterListResponse is the body of GET /newsletters.
+// NewsletterListResponse is the body of GET /projects/{project_uid}/newsletters.
 type NewsletterListResponse struct {
 	Newsletters   []NewsletterListItem `json:"newsletters"`
-	NextPageToken string               `json:"nextPageToken,omitempty"`
+	NextPageToken string               `json:"next_page_token,omitempty"`
 }
 
 // NewsletterDailyOpens is one bucket of the daily-opens time series.
 type NewsletterDailyOpens struct {
 	Date        string `json:"date"`
 	Opens       int    `json:"opens"`
-	UniqueOpens int    `json:"uniqueOpens"`
+	UniqueOpens int    `json:"unique_opens"`
 }
 
-// NewsletterAnalytics is the body of GET /newsletters/{id}/analytics.
+// NewsletterAnalytics is the body of GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics.
 type NewsletterAnalytics struct {
-	NewsletterID    string                 `json:"newsletterId"`
+	NewsletterID    string                 `json:"newsletter_id"`
 	Subject         string                 `json:"subject"`
 	Status          Status                 `json:"status"`
-	SentAt          *time.Time             `json:"sentAt,omitempty"`
-	TotalRecipients int                    `json:"totalRecipients"`
+	SentAt          *time.Time             `json:"sent_at,omitempty"`
+	TotalRecipients int                    `json:"total_recipients"`
 	Delivered       int                    `json:"delivered"`
 	Failed          int                    `json:"failed"`
-	TotalOpens      int                    `json:"totalOpens"`
-	UniqueOpens     int                    `json:"uniqueOpens"`
-	OpenRate        float64                `json:"openRate"`
-	DailyOpens      []NewsletterDailyOpens `json:"dailyOpens"`
-	LastEventAt     *time.Time             `json:"lastEventAt,omitempty"`
+	TotalOpens      int                    `json:"total_opens"`
+	UniqueOpens     int                    `json:"unique_opens"`
+	OpenRate        float64                `json:"open_rate"`
+	DailyOpens      []NewsletterDailyOpens `json:"daily_opens"`
+	LastEventAt     *time.Time             `json:"last_event_at,omitempty"`
 }

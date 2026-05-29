@@ -11,22 +11,20 @@ import (
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
 
-// ListNewsletters handles GET /newsletters?contextType=...&contextUid=...&status=...&pageToken=...
+// ListNewsletters handles GET /projects/{project_uid}/newsletters?status=...&page_token=...
 //
 // Returns drafts and sent newsletters paginated by updated_at DESC. When the
 // status query param is omitted, both are returned interleaved.
 func (h *Handler) ListNewsletters(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
 	q := r.URL.Query()
-	contextType := model.ContextType(q.Get("contextType"))
-	contextUID := q.Get("contextUid")
 	status := model.Status(q.Get("status"))
-	pageToken := q.Get("pageToken")
+	pageToken := q.Get("page_token")
 
 	page, err := h.newsletter.ListNewsletters(r.Context(), service.ListNewslettersInput{
-		ContextType: contextType,
-		ContextUID:  contextUID,
-		Status:      status,
-		PageToken:   pageToken,
+		ProjectUID: projectUID,
+		Status:     status,
+		PageToken:  pageToken,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -43,18 +41,10 @@ func (h *Handler) ListNewsletters(w http.ResponseWriter, r *http.Request) {
 	writeJSON(r.Context(), w, http.StatusOK, out)
 }
 
-// toAPIListItem converts a domain Newsletter into the list DTO, populating
-// engagement fields for sent rows (currently delivered/opens are 0 until
-// the email pipeline + open tracking are wired into real campaigns).
+// toAPIListItem converts a domain Newsletter into the list DTO. Engagement
+// totals are derived from the persisted row (total_recipients is set at send
+// time); per-newsletter analytics (open rate, unique opens) require a separate
+// call to /analytics so the list query stays a single DB round-trip.
 func toAPIListItem(n *model.Newsletter) publicapi.NewsletterListItem {
-	item := publicapi.NewsletterListItem{Newsletter: *toAPINewsletter(n)}
-	if n.Status == model.StatusSent {
-		total := n.TotalRecipients
-		opens := 0
-		rate := 0.0
-		item.TotalRecipients = &total
-		item.UniqueOpens = &opens
-		item.OpenRate = &rate
-	}
-	return item
+	return publicapi.NewsletterListItem{Newsletter: *toAPINewsletter(n)}
 }

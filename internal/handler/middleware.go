@@ -13,8 +13,6 @@ import (
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
-
-	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/upstream"
 )
 
 type userContextKey struct{}
@@ -143,8 +141,14 @@ func (h *Handler) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		// Downstream calls from this service go over NATS (no per-request auth
+		// context propagated on the wire — same trust model committee-service
+		// uses for lfx.projects-api.get_name etc.). We deliberately do NOT
+		// attach the bearer to the context: outbound calls don't need it and
+		// keeping it off the context prevents future code paths from
+		// accidentally forwarding it.
+		_ = bearer
 		ctx := context.WithValue(r.Context(), userContextKeyValue, user)
-		ctx = context.WithValue(ctx, upstream.BearerTokenContextKey, bearer)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
