@@ -128,6 +128,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_opens_newsletter_recipient_hour
 -- project_uid; the address may still receive newsletters for other projects.
 -- Email is stored lowercased so the unique index makes the insert idempotent
 -- without needing a CITEXT extension.
+--
+-- updated_at is currently write-once (set equal to created_at on insert and
+-- never touched). It is reserved for a future re-subscribe / preference-update
+-- flow where an opt-out row may be mutated (e.g. soft-deleted with a
+-- resubscribed_at timestamp) rather than hard-deleted, so the column is
+-- declared now to avoid a later ALTER TABLE.
 CREATE TABLE IF NOT EXISTS newsletter_unsubscribes (
     id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     project_uid TEXT        NOT NULL,

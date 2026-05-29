@@ -37,9 +37,11 @@ type UnsubscribeService struct {
 }
 
 // NewUnsubscribeService wires an UnsubscribeService. baseURL should be the
-// externally-reachable origin of this service (e.g.
-// "https://api.lfx.linuxfoundation.org/newsletter"); trailing slashes are
-// trimmed.
+// externally-reachable origin (and optional path prefix) of this service.
+// In every deployed environment the chart sets this to the API gateway
+// origin without a service-specific prefix — e.g. "https://lfx-api.v2.cluster.lfx.dev"
+// — because /newsletters/unsubscribe is exposed at the gateway root.
+// Trailing slashes are trimmed.
 func NewUnsubscribeService(repo port.UnsubscribeRepository, secret []byte, baseURL string) *UnsubscribeService {
 	return &UnsubscribeService{
 		repo:    repo,
@@ -107,6 +109,12 @@ func (s *UnsubscribeService) Unsubscribe(ctx context.Context, token string) (pro
 	projectUID, email, err = s.VerifyToken(token)
 	if err != nil {
 		return "", "", err
+	}
+	// Defensive: this is reachable from an unauthenticated handler, and
+	// returning an error is preferable to panicking if the service is wired
+	// without a repo (test fakes, misconfiguration).
+	if s.repo == nil {
+		return "", "", fmt.Errorf("%w: unsubscribe repository is not configured", domain.ErrInvalidRequest)
 	}
 	if err := s.repo.CreateUnsubscribe(ctx, projectUID, email); err != nil {
 		return "", "", err

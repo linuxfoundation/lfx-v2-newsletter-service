@@ -254,6 +254,9 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 
 // RecipientCount resolves recipients and returns the unique count.
 func (o *SendOrchestrator) RecipientCount(ctx context.Context, projectUID string, committeeUIDs []string) (int, error) {
+	if err := validateProjectUID(projectUID); err != nil {
+		return 0, err
+	}
 	if err := validateCommitteeUIDs(committeeUIDs); err != nil {
 		return 0, err
 	}
@@ -266,6 +269,9 @@ func (o *SendOrchestrator) RecipientCount(ctx context.Context, projectUID string
 
 // Recipients resolves recipients and returns the unique list.
 func (o *SendOrchestrator) Recipients(ctx context.Context, projectUID string, committeeUIDs []string) ([]model.CommitteeMember, error) {
+	if err := validateProjectUID(projectUID); err != nil {
+		return nil, err
+	}
 	if err := validateCommitteeUIDs(committeeUIDs); err != nil {
 		return nil, err
 	}
@@ -386,8 +392,22 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 			recipientHTML, recipientText := htmlBody, textBody
 			if o.unsub.Enabled() {
 				url := o.unsub.BuildURL(projectUID, recipient.Email)
+				// Substitution runs over the full rendered body, including the
+				// author-supplied draft. The collision risk is low (a literal
+				// UnsubscribeURLPlaceholder in the draft would just be replaced
+				// with a working per-recipient link), but worth noting if we
+				// ever expose %%-delimited placeholders to authors.
 				recipientHTML = strings.ReplaceAll(htmlBody, UnsubscribeURLPlaceholder, url)
 				recipientText = strings.ReplaceAll(textBody, UnsubscribeURLPlaceholder, url)
+			}
+			// Honour the nil-dispatcher contract documented above. Production
+			// wiring always provides one, but tests and misconfigured local
+			// envs should never panic on an unauthenticated send path.
+			if o.email == nil {
+				mu.Lock()
+				sent++
+				mu.Unlock()
+				return
 			}
 			_, err := o.email.SendEmail(ctx, port.SendEmailInput{
 				To:      recipient.Email,
