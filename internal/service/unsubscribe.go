@@ -63,8 +63,10 @@ func (s *UnsubscribeService) BuildURL(projectUID, email string) string {
 }
 
 // buildToken returns base64url(projectUID + "\n" + email + "\n" + hexMAC).
-// Newline is the field separator because it cannot appear in a project UID
-// or an email address.
+// Newline is the field separator. Project UIDs and email addresses we mint
+// links for never contain newlines in practice, and VerifyToken requires
+// exactly three fields, so a stray newline in input produces a malformed
+// token rather than a forgeable one.
 func (s *UnsubscribeService) buildToken(projectUID, email string) string {
 	email = strings.ToLower(strings.TrimSpace(email))
 	payload := projectUID + "\n" + email

@@ -320,9 +320,11 @@ spec:
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:unsubscribe"
       allow_encoded_slashes: 'off'
       match:
+        # GET only — HEAD probes from link checkers and mail-client preview
+        # engines must not reach the handler (the handler also no-ops HEAD
+        # defensively, but blocking at the gateway keeps the audit trail clean).
         methods:
           - GET
-          - HEAD
         routes:
           - path: /newsletters/unsubscribe
       execute:

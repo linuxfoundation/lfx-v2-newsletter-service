@@ -87,6 +87,9 @@ spec:
             {{- else if .Values.app.unsubscribe.secret }}
             - name: NEWSLETTER_UNSUBSCRIBE_SECRET
               value: {{ .Values.app.unsubscribe.secret | quote }}
+            {{- else if .Values.app.send.fanoutEnabled }}
+            {{/* Fail the install instead of letting the pod CrashLoop with a missing HMAC secret. */}}
+            {{- required "app.unsubscribe.secretRef.name or app.unsubscribe.secret is required when app.send.fanoutEnabled is true" "" }}
             {{- end }}
             - name: REQUIRE_USER_AUTH
               value: {{ .Values.app.requireUserAuth | quote }}

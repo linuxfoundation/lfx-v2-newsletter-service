@@ -57,6 +57,26 @@ func TestUnsubscribeHandlerSuccess(t *testing.T) {
 	}
 }
 
+func TestUnsubscribeHandlerHEADIsNoOp(t *testing.T) {
+	repo := &stubUnsubRepo{}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub, project: stubProjectClient{}}
+
+	url := unsub.BuildURL("proj-1", "alice@example.com")
+	token := url[strings.Index(url, "?t=")+3:]
+
+	req := httptest.NewRequest(http.MethodHead, "/newsletters/unsubscribe?t="+token, nil)
+	w := httptest.NewRecorder()
+	h.Unsubscribe(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if len(repo.created) != 0 {
+		t.Errorf("HEAD must not record an unsubscribe; repo.created = %v", repo.created)
+	}
+}
+
 func TestUnsubscribeHandlerInvalidToken(t *testing.T) {
 	unsub := service.NewUnsubscribeService(&stubUnsubRepo{}, []byte("k"), "http://localhost")
 	h := &Handler{unsub: unsub, project: stubProjectClient{}}

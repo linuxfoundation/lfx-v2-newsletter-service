@@ -24,6 +24,17 @@ import (
 // than offering a JSON download.
 func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// Go's net/http ServeMux routes HEAD to a GET-only pattern. Link
+	// checkers, security scanners, and mail-client preview engines
+	// commonly probe URLs with HEAD; if we processed those, every preview
+	// would silently unsubscribe the recipient. Treat HEAD as a no-op.
+	if r.Method == http.MethodHead {
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	token := r.URL.Query().Get("t")
 
 	if h.unsub == nil {
@@ -36,7 +47,7 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, domain.ErrInvalidRequest) {
 			slog.WarnContext(ctx, "unsubscribe: invalid token", "error", err.Error())
-			writeUnsubscribeHTML(w, http.StatusBadRequest, "Invalid link", "This unsubscribe link is invalid or has expired.")
+			writeUnsubscribeHTML(w, http.StatusBadRequest, "Invalid link", "This unsubscribe link is invalid.")
 			return
 		}
 		slog.ErrorContext(ctx, "unsubscribe: failed", "error", err.Error())
