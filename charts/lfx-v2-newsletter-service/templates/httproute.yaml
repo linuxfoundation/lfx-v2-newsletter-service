@@ -33,6 +33,12 @@ spec:
         - path:
             type: RegularExpression
             value: "^/projects/[^/]+/newsletter-opens/[^/]+$"
+        # One-click unsubscribe link clicked from a recipient's email client.
+        # Not project-scoped in the URL: the project_uid is carried inside the
+        # signed token so links stay short and opaque.
+        - path:
+            type: Exact
+            value: /newsletters/unsubscribe
       {{- if .Values.heimdall.enabled }}
       filters:
         - type: ExtensionRef
