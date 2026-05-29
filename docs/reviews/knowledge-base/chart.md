@@ -29,7 +29,7 @@ Patterns for the service-local Helm chart: secret hygiene in the deployment temp
 
 **Detect:** in `charts/lfx-v2-newsletter-service/templates/heimdall-middleware.yaml`, confirm the `Middleware` `metadata.namespace` matches the namespace the HTTPRoute's `ExtensionRef` resolves against (`{{ .Values.lfx.namespace }}`), not `{{ .Release.Namespace }}`. Cross-check `templates/httproute.yaml` for the unnamespaced `ExtensionRef`.
 
-**Empirical citation:** PR #7 `charts/lfx-v2-newsletter-service/templates/heimdall-middleware.yaml:15` — Copilot — "The Middleware is referenced from templates/httproute.yaml via an ExtensionRef without a namespace, so it must be created in the same namespace as the HTTPRoute ({{ .Values.lfx.namespace }}). Using {{ .Release.Namespace }} here will break resolution." (Open thread; verify the namespace coupling on any middleware/HTTPRoute change — note `docs/service-helm-chart.md` says routing resources moved namespaces.)
+**Empirical citation:** PR #7 `charts/lfx-v2-newsletter-service/templates/heimdall-middleware.yaml:15` — Copilot — "The Middleware is referenced from templates/httproute.yaml via an ExtensionRef without a namespace, so it must be created in the same namespace as the HTTPRoute ({{ .Values.lfx.namespace }}). Using {{ .Release.Namespace }} here will break resolution." (Open thread; verify the namespace coupling on any middleware/HTTPRoute change — `templates/heimdall-middleware.yaml` still renders the Middleware into `{{ .Release.Namespace }}` while `templates/httproute.yaml` lives in `{{ .Values.lfx.namespace }}`.)
 
 **Failure message:** Heimdall `Middleware` namespace uses `.Release.Namespace` but the HTTPRoute `ExtensionRef` resolves against `.Values.lfx.namespace` — Traefik drops the route.
 

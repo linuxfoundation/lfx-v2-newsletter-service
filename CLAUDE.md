@@ -93,10 +93,14 @@ internal/schema/
 
 internal/handler/
 ├── http.go                   # Routes() + JSON helpers + error mapper
-├── drafts.go                 # /newsletters/drafts CRUD
+├── drafts.go                 # /newsletters/drafts CRUD + ETag helpers
 ├── send.go                   # /send, /test-send, /recipients, /recipient-count
+├── list.go                   # GET /newsletters unified list
+├── analytics.go              # GET /newsletter-analytics/{id}
+├── open.go                   # GET /newsletter-opens/{id} tracking pixel
 ├── health.go                 # /livez, /readyz
-└── middleware.go             # JWKS auth, request log
+├── middleware.go             # JWKS auth (AuthValidator), request log
+└── request_id.go             # X-Request-ID propagation
 
 internal/infrastructure/
 ├── observability/
@@ -108,6 +112,11 @@ internal/infrastructure/
 
 pkg/api/
 └── newsletter.go             # Public contract: request/response DTOs
+
+pkg/errors/
+├── base.go                   # base typed-error helpers
+├── client.go                 # client (4xx) error types
+└── server.go                 # server (5xx) error types incl. ServiceUnavailable
 ```
 
 ## Build Commands
