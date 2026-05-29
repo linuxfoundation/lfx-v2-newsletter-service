@@ -45,10 +45,28 @@ app:
   # logLevel is the log level: debug, info, warn, or error.
   logLevel: info
 
-  # committeeServiceURL is the base URL for upstream committee-service calls
-  # (typically the LFX v2 API gateway routing /query/resources to query-service).
-  # REQUIRED in production.
-  committeeServiceURL: ""
+  # nats is the NATS connection used by the email dispatcher, committee
+  # member client, and project metadata client. Newsletter-service makes no
+  # HTTP upstream calls — recipient resolution, project metadata lookup, and
+  # email send are all NATS request/reply.
+  nats:
+    url: "nats://lfx-platform-nats.lfx.svc.cluster.local:4222"
+    # timeout / maxReconnect / reconnectWait fall back to the app defaults
+    # (10s / unlimited / 2s) when empty.
+    timeout: ""
+    maxReconnect: ""
+    reconnectWait: ""
+
+  # send tunes the per-recipient send loop.
+  send:
+    # fanoutEnabled toggles real email dispatch. When false the orchestrator
+    # validates inputs and resolves recipients but does NOT call the
+    # email-service NATS subject — useful for dev/staging shake-out of the
+    # recipient-resolution path without sending real mail.
+    fanoutEnabled: true
+    # concurrency caps in-flight email-service requests during fan-out.
+    # Empty string falls back to the app default (5).
+    concurrency: ""
 
   # jwksURL is the URL of the JWKS endpoint used to verify inbound JWTs.
   # REQUIRED when requireUserAuth=true (default).

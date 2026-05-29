@@ -17,9 +17,10 @@ import (
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
 
-// CreateDraft handles POST /newsletters/drafts.
-func (h *Handler) CreateDraft(w http.ResponseWriter, r *http.Request) {
-	var body publicapi.CreateDraftRequest
+// CreateNewsletter handles POST /projects/{project_uid}/newsletters.
+func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
+	var body publicapi.CreateNewsletterRequest
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(r.Context(), w, err)
 		return
@@ -31,8 +32,7 @@ func (h *Handler) CreateDraft(w http.ResponseWriter, r *http.Request) {
 	}
 
 	draft, err := h.newsletter.CreateDraft(r.Context(), service.CreateDraftInput{
-		ContextType:   model.ContextType(body.ContextType),
-		ContextUID:    body.ContextUID,
+		ProjectUID:    projectUID,
 		Subject:       body.Subject,
 		BodyHTML:      body.BodyHTML,
 		EDReplyEmail:  body.EDReplyEmail,
@@ -45,49 +45,33 @@ func (h *Handler) CreateDraft(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("ETag", formatETag(draft.Version))
-	w.Header().Set("Location", "/newsletters/drafts/"+draft.ID.String())
+	w.Header().Set("Location", fmt.Sprintf("/projects/%s/newsletters/%s", projectUID, draft.ID))
 	writeJSON(r.Context(), w, http.StatusCreated, toAPINewsletter(draft))
 }
 
-// GetDraft handles GET /newsletters/drafts/{id}.
-func (h *Handler) GetDraft(w http.ResponseWriter, r *http.Request) {
-	id, err := parseUUID(r.PathValue("id"))
+// GetNewsletter handles GET /projects/{project_uid}/newsletters/{newsletter_uid}.
+func (h *Handler) GetNewsletter(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
+	id, err := parseUUID(r.PathValue("newsletter_uid"))
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
 
-	draft, err := h.newsletter.GetDraft(r.Context(), id)
+	n, err := h.newsletter.GetNewsletter(r.Context(), projectUID, id)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
 
-	w.Header().Set("ETag", formatETag(draft.Version))
-	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(draft))
+	w.Header().Set("ETag", formatETag(n.Version))
+	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(n))
 }
 
-// ListDrafts handles GET /newsletters/drafts?contextType=...&contextUid=....
-func (h *Handler) ListDrafts(w http.ResponseWriter, r *http.Request) {
-	contextType := model.ContextType(r.URL.Query().Get("contextType"))
-	contextUID := r.URL.Query().Get("contextUid")
-
-	drafts, err := h.newsletter.ListDrafts(r.Context(), contextType, contextUID)
-	if err != nil {
-		writeError(r.Context(), w, err)
-		return
-	}
-
-	resp := publicapi.ListDraftsResponse{Drafts: make([]publicapi.Newsletter, 0, len(drafts))}
-	for _, d := range drafts {
-		resp.Drafts = append(resp.Drafts, *toAPINewsletter(d))
-	}
-	writeJSON(r.Context(), w, http.StatusOK, resp)
-}
-
-// UpdateDraft handles PUT /newsletters/drafts/{id} with required If-Match.
-func (h *Handler) UpdateDraft(w http.ResponseWriter, r *http.Request) {
-	id, err := parseUUID(r.PathValue("id"))
+// UpdateNewsletter handles PUT /projects/{project_uid}/newsletters/{newsletter_uid} with required If-Match.
+func (h *Handler) UpdateNewsletter(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
+	id, err := parseUUID(r.PathValue("newsletter_uid"))
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
@@ -99,13 +83,13 @@ func (h *Handler) UpdateDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body publicapi.UpdateDraftRequest
+	var body publicapi.UpdateNewsletterRequest
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
 
-	updated, err := h.newsletter.UpdateDraft(r.Context(), service.UpdateDraftInput{
+	updated, err := h.newsletter.UpdateDraft(r.Context(), projectUID, service.UpdateDraftInput{
 		ID:              id,
 		ExpectedVersion: expectedVersion,
 		Subject:         body.Subject,
@@ -122,14 +106,15 @@ func (h *Handler) UpdateDraft(w http.ResponseWriter, r *http.Request) {
 	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(updated))
 }
 
-// DeleteDraft handles DELETE /newsletters/drafts/{id}.
-func (h *Handler) DeleteDraft(w http.ResponseWriter, r *http.Request) {
-	id, err := parseUUID(r.PathValue("id"))
+// DeleteNewsletter handles DELETE /projects/{project_uid}/newsletters/{newsletter_uid}.
+func (h *Handler) DeleteNewsletter(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
+	id, err := parseUUID(r.PathValue("newsletter_uid"))
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
-	if err := h.newsletter.DeleteDraft(r.Context(), id); err != nil {
+	if err := h.newsletter.DeleteDraft(r.Context(), projectUID, id); err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
@@ -148,7 +133,6 @@ func requireIfMatch(r *http.Request) (int64, error) {
 	if raw == "" {
 		return 0, fmt.Errorf("%w: If-Match header is required", domain.ErrInvalidRequest)
 	}
-	// Strip optional quotes and W/ weak prefix.
 	raw = strings.TrimPrefix(raw, "W/")
 	raw = strings.Trim(raw, "\"")
 	v, err := strconv.ParseInt(raw, 10, 64)
@@ -170,19 +154,19 @@ func parseUUID(raw string) (uuid.UUID, error) {
 // toAPINewsletter converts a domain model into the public API DTO.
 func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
 	return &publicapi.Newsletter{
-		ID:            n.ID.String(),
-		ContextType:   publicapi.ContextType(n.ContextType),
-		ContextUID:    n.ContextUID,
-		Subject:       n.Subject,
-		BodyHTML:      n.BodyHTML,
-		EDReplyEmail:  n.EDReplyEmail,
-		CommitteeUIDs: n.CommitteeUIDs,
-		Status:        publicapi.Status(n.Status),
-		SentAt:        n.SentAt,
-		GroupID:       n.GroupID,
-		CreatedBy:     n.CreatedBy,
-		Version:       n.Version,
-		CreatedAt:     n.CreatedAt,
-		UpdatedAt:     n.UpdatedAt,
+		ID:              n.ID.String(),
+		ProjectUID:      n.ProjectUID,
+		Subject:         n.Subject,
+		BodyHTML:        n.BodyHTML,
+		EDReplyEmail:    n.EDReplyEmail,
+		CommitteeUIDs:   n.CommitteeUIDs,
+		Status:          publicapi.Status(n.Status),
+		SentAt:          n.SentAt,
+		GroupID:         n.GroupID,
+		TotalRecipients: n.TotalRecipients,
+		CreatedBy:       n.CreatedBy,
+		Version:         n.Version,
+		CreatedAt:       n.CreatedAt,
+		UpdatedAt:       n.UpdatedAt,
 	}
 }

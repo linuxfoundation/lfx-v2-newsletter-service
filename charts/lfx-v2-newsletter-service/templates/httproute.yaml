@@ -18,19 +18,21 @@ spec:
   hostnames:
     - "lfx-api.{{ .Values.lfx.domain }}"
   rules:
+    # Newsletter endpoints are project-scoped:
+    #   /projects/{project_uid}/newsletters[/<rest>]
+    #   /projects/{project_uid}/newsletter-opens/{newsletter_uid}
+    # Gateway API's `RegularExpression` path-match type lets us pluck the
+    # newsletter-owned subset out of the `/projects/...` URL space without
+    # routing every project sub-path here (project-service owns the rest).
+    # Requires a Gateway implementation with RegularExpression support
+    # (Traefik >= 2.10).
     - matches:
         - path:
-            type: Exact
-            value: /newsletters
+            type: RegularExpression
+            value: "^/projects/[^/]+/newsletters(/.*)?$"
         - path:
-            type: PathPrefix
-            value: /newsletters/
-        - path:
-            type: PathPrefix
-            value: /newsletter-analytics/
-        - path:
-            type: PathPrefix
-            value: /newsletter-opens/
+            type: RegularExpression
+            value: "^/projects/[^/]+/newsletter-opens/[^/]+$"
       {{- if .Values.heimdall.enabled }}
       filters:
         - type: ExtensionRef
