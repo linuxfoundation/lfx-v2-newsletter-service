@@ -163,11 +163,29 @@ func writeError(ctx context.Context, w http.ResponseWriter, err error) {
 }
 
 // classifyError maps an error to an HTTP status code and short error code.
+//
+// Two error families are recognized:
+//
+//   - domain sentinel errors (`domain.Err*`), matched with `errors.Is`. These
+//     are returned by the repository and service layers for well-known
+//     business-logic outcomes.
+//   - typed `pkgerrors.*` wrappers (`Validation`, `NotFound`, `Conflict`,
+//     `ServiceUnavailable`), matched with `errors.As`. These are returned by
+//     the NATS upstream clients (committee, project, email-dispatcher) since
+//     they don't have a domain sentinel to wrap.
+//
+// Domain matches take precedence over the typed wrappers. Anything else falls
+// through to 500.
 func classifyError(err error) (int, string) {
 	if status, code, ok := classifyAuthError(err); ok {
 		return status, code
 	}
-	var svcUnavailable pkgerrors.ServiceUnavailable
+	var (
+		svcUnavailable pkgerrors.ServiceUnavailable
+		notFound       pkgerrors.NotFound
+		validation     pkgerrors.Validation
+		conflict       pkgerrors.Conflict
+	)
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound, "not_found"
@@ -179,6 +197,12 @@ func classifyError(err error) (int, string) {
 		return http.StatusBadRequest, "invalid_request"
 	case errors.As(err, &svcUnavailable):
 		return http.StatusServiceUnavailable, "service_unavailable"
+	case errors.As(err, &notFound):
+		return http.StatusNotFound, "not_found"
+	case errors.As(err, &validation):
+		return http.StatusBadRequest, "invalid_request"
+	case errors.As(err, &conflict):
+		return http.StatusConflict, "conflict"
 	default:
 		return http.StatusInternalServerError, "internal_error"
 	}
