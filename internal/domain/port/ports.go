@@ -74,36 +74,36 @@ type ProjectMetadataClient interface {
 
 // SendEmailInput is one per-recipient send envelope dispatched to email-service.
 type SendEmailInput struct {
-	To       string
-	Subject  string
-	HTML     string
-	Text     string
-	GroupID  string
+	To      string
+	Subject string
+	HTML    string
+	Text    string
+	GroupID string
 }
 
 // EmailRecipientRecord mirrors lfx-v2-email-service's per-recipient state, used
 // when aggregating analytics. Fields are kept loose because newsletter-service
 // only reads a subset.
 type EmailRecipientRecord struct {
-	EmailID     string
-	GroupID     string
-	To          string
-	SentAt      *time.Time
-	Delivered   bool
-	Opened      bool
-	OpenCount   int
-	LastOpened  *time.Time
-	Failed      bool
+	EmailID    string
+	GroupID    string
+	To         string
+	SentAt     *time.Time
+	Delivered  bool
+	Opened     bool
+	OpenCount  int
+	LastOpened *time.Time
+	Failed     bool
 }
 
 // EmailEngagement is the per-group rollup returned by email-service.
 type EmailEngagement struct {
-	GroupID    string
-	TotalSent  int
-	Delivered  int
-	Opened     int
+	GroupID     string
+	TotalSent   int
+	Delivered   int
+	Opened      int
 	UniqueOpens int
-	Failed     int
+	Failed      int
 }
 
 // EmailDispatcher fans out individual emails to lfx-v2-email-service and

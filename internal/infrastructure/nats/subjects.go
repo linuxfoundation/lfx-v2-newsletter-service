@@ -24,7 +24,7 @@ const (
 
 	// Email-service NATS subjects. Imported as constants so the call sites
 	// don't drift from the email-service contract.
-	EmailServiceSendEmailSubject       = "lfx.email-service.send_email"
-	EmailServiceGetEmailStatusSubject  = "lfx.email-service.get_email_status"
-	EmailServiceGetEngagementSubject   = "lfx.email-service.get_email_engagement_analytics"
+	EmailServiceSendEmailSubject      = "lfx.email-service.send_email"
+	EmailServiceGetEmailStatusSubject = "lfx.email-service.get_email_status"
+	EmailServiceGetEngagementSubject  = "lfx.email-service.get_email_engagement_analytics"
 )

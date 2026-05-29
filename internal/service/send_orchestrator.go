@@ -31,21 +31,21 @@ const defaultSendConcurrency = 5
 // transition. It owns the email-service integration; the UI no longer talks
 // to email-service directly.
 type SendOrchestrator struct {
-	repo           port.NewsletterRepository
-	committee      port.CommitteeClient
-	project        port.ProjectMetadataClient
-	email          port.EmailDispatcher
-	concurrency    int
-	fanoutEnabled  bool
+	repo          port.NewsletterRepository
+	committee     port.CommitteeClient
+	project       port.ProjectMetadataClient
+	email         port.EmailDispatcher
+	concurrency   int
+	fanoutEnabled bool
 }
 
 // SendOrchestratorConfig configures a SendOrchestrator.
 type SendOrchestratorConfig struct {
-	Repo          port.NewsletterRepository
-	Committee     port.CommitteeClient
-	Project       port.ProjectMetadataClient
-	Email         port.EmailDispatcher
-	Concurrency   int
+	Repo        port.NewsletterRepository
+	Committee   port.CommitteeClient
+	Project     port.ProjectMetadataClient
+	Email       port.EmailDispatcher
+	Concurrency int
 	// FanoutEnabled is the feature toggle for the per-recipient send loop.
 	// Defaults to true; flip false in environments where we want to validate
 	// the recipient-resolution path without sending real mail.
@@ -139,6 +139,22 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	groupID := uuid.NewString()
 
 	sent, failed, failures := o.fanOut(ctx, recipients, draft.Subject, htmlBody, textBody, groupID)
+
+	// Only flip the draft to `sent` when at least one recipient was delivered
+	// to. If every send failed (email-service unreachable, all recipients
+	// rejected, etc.) the row stays a draft so the operator can retry without
+	// emails ever having gone out. Without this gate, a fully-failed send is
+	// permanently indistinguishable from a successful one — no retry path.
+	if sent == 0 && len(recipients) > 0 {
+		slog.WarnContext(ctx, "newsletter send failed: no recipients delivered, leaving as draft",
+			"newsletter_id", draft.ID,
+			"project_uid", draft.ProjectUID,
+			"group_id", groupID,
+			"total_recipients", len(recipients),
+			"failed", failed,
+		)
+		return nil, fmt.Errorf("send failed: 0 of %d recipients delivered", len(recipients))
+	}
 
 	updated, markErr := o.repo.MarkSent(ctx, draft.ID, time.Now().UTC(), len(recipients), groupID, draft.Version)
 	if markErr != nil {
@@ -318,8 +334,21 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, recipients []model.Commit
 	var wg sync.WaitGroup
 	for _, r := range recipients {
 		recipient := r
+		// Respect ctx cancellation when acquiring a worker slot. A naked
+		// `sem <- struct{}{}` would block forever (or until a slot frees) even
+		// after the caller cancelled — and then spin up a goroutine per
+		// remaining recipient that immediately fails into `failures` with the
+		// cancelled context. Selecting on ctx.Done() lets us bail early.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			mu.Lock()
+			failed++
+			failures = append(failures, SendFailure{Email: recipient.Email, Error: ctx.Err().Error()})
+			mu.Unlock()
+			continue
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()

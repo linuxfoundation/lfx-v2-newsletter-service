@@ -51,8 +51,31 @@ spec:
               value: {{ .Values.service.port | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.app.logLevel | quote }}
-            - name: COMMITTEE_SERVICE_URL
-              value: {{ .Values.app.committeeServiceURL | quote }}
+            # NATS — used by the email dispatcher, committee member client,
+            # and project metadata client. Newsletter-service makes no HTTP
+            # upstream calls (the previous COMMITTEE_SERVICE_URL was retired
+            # along with the HTTP committee_client because Heimdall-minted
+            # JWTs failed OIDC validation at query-service).
+            - name: NATS_URL
+              value: {{ .Values.app.nats.url | quote }}
+            {{- with .Values.app.nats.timeout }}
+            - name: NATS_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.nats.maxReconnect }}
+            - name: NATS_MAX_RECONNECT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.nats.reconnectWait }}
+            - name: NATS_RECONNECT_WAIT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SEND_FANOUT_ENABLED
+              value: {{ .Values.app.send.fanoutEnabled | quote }}
+            {{- with .Values.app.send.concurrency }}
+            - name: SEND_CONCURRENCY
+              value: {{ . | quote }}
+            {{- end }}
             - name: REQUIRE_USER_AUTH
               value: {{ .Values.app.requireUserAuth | quote }}
             {{- if .Values.app.jwksURL }}
