@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 // Package render builds the outer HTML/text envelope wrapped around the
-// authored newsletter body. The output mirrors the in-app preview and the
-// previous TypeScript helper at apps/lfx-one/src/server/helpers/newsletter-email.helper.ts
-// in lfx-v2-ui (now deleted).
+// authored newsletter body.
 //
 // Trust boundary: BodyHTML is populated by authenticated writers via the
 // authoring UI. There is no programmatic HTML sanitizer (e.g. DOMPurify) here.
-// Quill's format whitelist on the authoring side is NOT a security sanitizer.
+// The authoring side's WYSIWYG format whitelist is NOT a security sanitizer.
 // If we ever accept body content from a less privileged source, sanitize
 // upstream of this call.
 package render

@@ -105,7 +105,7 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveEDName resolves the executive director display name from request
-// metadata. Prefers the X-User-Name header (set by lfx-v2-ui's proxy when
+// metadata. Prefers the X-User-Name header (set by an upstream proxy when
 // available) and falls back to the JWT principal.
 func resolveEDName(r *http.Request) string {
 	if name := strings.TrimSpace(r.Header.Get("X-User-Name")); name != "" {

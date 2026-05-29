@@ -1,9 +1,9 @@
 // Copyright The Linux Foundation and each contributor to LFX.
 // SPDX-License-Identifier: MIT
 
-// Package api is the public HTTP contract consumed by lfx-v2-ui and other
-// callers. Field names are snake_case to match the LFX V2 attribute-naming
-// convention and the rest of the V2 services (committee, project, meeting).
+// Package api is the public HTTP contract for the newsletter service. Field
+// names are snake_case to match the LFX V2 attribute-naming convention and
+// the rest of the V2 services (committee, project, meeting).
 package api
 
 import "time"
@@ -11,7 +11,7 @@ import "time"
 // Status enumerates newsletter lifecycle states.
 type Status string
 
-// Status values mirrored from the lfx-v2-ui shared interfaces.
+// Status values persisted by the service.
 const (
 	StatusDraft Status = "draft"
 	StatusSent  Status = "sent"
@@ -103,8 +103,8 @@ type SendFailure struct {
 // The newsletter-service owns the email dispatch: it mints group_id, resolves
 // recipients via NATS to committee-service, and fans out per-recipient sends
 // via NATS to email-service. Per-recipient failures are returned so the caller
-// can surface them; the newsletter is still marked sent if any recipients
-// succeeded (matching the prior lfx-v2-ui behaviour).
+// can surface them; the newsletter is marked sent when at least one recipient
+// was delivered to.
 type SendNewsletterResponse struct {
 	Newsletter      Newsletter    `json:"newsletter"`
 	GroupID         string        `json:"group_id"`

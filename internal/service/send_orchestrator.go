@@ -22,8 +22,6 @@ import (
 )
 
 // defaultSendConcurrency caps in-flight email-service requests during fan-out.
-// Mirrors the lfx-v2-ui Express bridge that this orchestrator replaces (a
-// worker pool of 5 also bounded that fan-out).
 const defaultSendConcurrency = 5
 
 // SendOrchestrator coordinates recipient resolution, email-chrome rendering,
