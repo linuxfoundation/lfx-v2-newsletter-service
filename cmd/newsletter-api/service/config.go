@@ -49,8 +49,13 @@ type AppConfig struct {
 	// UNSUBSCRIBE" copy and the public endpoint rejects all requests.
 	UnsubscribeSecret string
 
-	// PublicBaseURL is the externally-reachable origin of this service,
-	// used to build unsubscribe links embedded in outgoing emails.
+	// PublicBaseURL is the LFX platform API gateway URL — the same origin
+	// every LFX v2 service is fronted by. It serves two purposes here:
+	//   1. Build externally-reachable unsubscribe links embedded in
+	//      outgoing emails (the public path on this service).
+	//   2. Reach the LFX v2 query service at {PublicBaseURL}/query/resources
+	//      for committee-member recipient resolution.
+	// The helm chart defaults this to https://lfx-api.<lfx.domain>.
 	PublicBaseURL string
 
 	// Auth
@@ -114,8 +119,8 @@ func AppConfigFromEnv() (AppConfig, error) {
 	if cfg.SendFanoutEnabled && cfg.UnsubscribeSecret == "" {
 		missing = append(missing, "NEWSLETTER_UNSUBSCRIBE_SECRET (required when SEND_FANOUT_ENABLED=true)")
 	}
-	if cfg.SendFanoutEnabled && cfg.PublicBaseURL == "" {
-		missing = append(missing, "NEWSLETTER_PUBLIC_BASE_URL (required when SEND_FANOUT_ENABLED=true)")
+	if cfg.PublicBaseURL == "" {
+		missing = append(missing, "NEWSLETTER_PUBLIC_BASE_URL (required: used for unsubscribe links and to reach the LFX platform query service)")
 	}
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))

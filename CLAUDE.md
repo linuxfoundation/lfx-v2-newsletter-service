@@ -60,13 +60,21 @@ internal/handler/
 ├── health.go                 # /livez, /readyz
 └── middleware.go             # JWKS auth, request log
 
+internal/auth/
+└── context.go                # Shared bearer-token context key + accessor
+
 internal/infrastructure/
 ├── observability/
 │   ├── log.go                # slog + OTel handler init
 │   └── otel.go               # OTel SDK bootstrap
+├── nats/
+│   ├── client.go             # Shared NATS connection wrapper
+│   ├── project_client.go     # NATS project-metadata client
+│   ├── email_dispatcher.go   # NATS email-service client
+│   └── subjects.go           # NATS subject constants
 └── upstream/
-    ├── committee_client.go   # HTTP client for committee/query service
-    └── http_helpers.go       # bearer token context, JSON parser
+    ├── committee_client.go   # HTTP client for the LFX v2 query service
+    └── http_helpers.go       # Query response envelope + decode helpers
 
 pkg/api/
 └── newsletter.go             # Public contract: request/response DTOs
@@ -120,7 +128,9 @@ Every `.go` file must start with:
 
 ## Related Services
 
-| Service                    | Relationship                                                      |
-| -------------------------- | ----------------------------------------------------------------- |
-| `lfx-v2-query-service`     | Source of committee member emails (via `/query/resources` HTTP)   |
-| `lfx-v2-ui` Express server | HTTP client; proxies UI requests to this service                  |
+| Service                    | Relationship                                                                            |
+| -------------------------- | --------------------------------------------------------------------------------------- |
+| `lfx-v2-query-service`     | Source of committee members for recipient resolution (HTTP, `/query/resources`)         |
+| `lfx-v2-projects-service`  | Source of project name/slug (NATS, `lfx.projects-api.get_name` / `get_slug`)            |
+| `lfx-v2-email-service`     | Email send + status + analytics (NATS, `lfx.email-service.*`)                           |
+| `lfx-v2-ui` Express server | HTTP client; proxies UI requests to this service                                        |

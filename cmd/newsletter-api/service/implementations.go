@@ -19,6 +19,7 @@ import (
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/handler"
 	natsinfra "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/nats"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/upstream"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/repository"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/schema"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
@@ -57,11 +58,9 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		return fmt.Errorf("schema apply: %w", err)
 	}
 
-	// Step 3: NATS — used by the email dispatcher, committee client, and
-	// project metadata client. No upstream HTTP service-to-service calls
-	// remain (the prior HTTP committee query client used to forward the user
-	// bearer token, but Heimdall mints a JWT the query-service can't validate,
-	// so that path returned empty results in practice).
+	// Step 3: NATS — used by the project metadata client and the email
+	// dispatcher. Committee-member resolution moved to HTTP against the LFX
+	// platform query service (see upstream.NewCommitteeClient below).
 	nc, err := natsinfra.New(ctx, natsinfra.Config{
 		URL:           cfg.NATSURL,
 		Timeout:       cfg.NATSTimeout,
@@ -72,7 +71,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		return fmt.Errorf("nats connect: %w", err)
 	}
 	natsClient = nc
-	committeeClient := natsinfra.NewCommitteeClient(nc)
+	committeeClient := upstream.NewCommitteeClient(cfg.PublicBaseURL)
 	projectClient := natsinfra.NewProjectClient(nc)
 	emailDispatcher := natsinfra.NewEmailDispatcher(nc)
 

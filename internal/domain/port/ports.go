@@ -62,10 +62,13 @@ type UnsubscribeRepository interface {
 
 // CommitteeClient resolves committee members for newsletter recipient calculation.
 //
-// The concrete implementation talks to lfx-v2-committee-service via the
-// `lfx.committee-api.list_members` NATS subject. No auth context flows through
-// — NATS is network-isolated and authorization is enforced at the inbound
-// gateway before the request ever reaches newsletter-service.
+// The concrete implementation calls the LFX v2 query service over HTTP at
+// GET /query/resources?type=committee_member&tags=committee_uid:<uid>,
+// forwarding the inbound user's bearer token. Access is FGA-gated at the
+// query service: a member appears in the response only if the caller has
+// `viewer` on `committee:{committee_uid}`. An empty result (committee
+// unknown to the index OR committee with zero members) returns an empty
+// slice, not an error.
 type CommitteeClient interface {
 	ListMembers(ctx context.Context, committeeUID string) ([]model.CommitteeMember, error)
 }

@@ -7,11 +7,6 @@ package nats
 // calls. Names mirror the conventions in lfx-v2-committee-service's
 // pkg/constants/subjects.go and lfx-v2-email-service's pkg/api package.
 const (
-	// CommitteeListMembersSubject lists a single committee's members.
-	// Request payload: committee UID as raw bytes.
-	// Response: JSON array of committee member records (email, first_name, ...).
-	CommitteeListMembersSubject = "lfx.committee-api.list_members"
-
 	// ProjectGetNameSubject resolves a project's display name.
 	// Request payload: project UID as raw bytes.
 	// Response: project name as raw bytes.
