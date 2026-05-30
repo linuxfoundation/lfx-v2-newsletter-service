@@ -178,9 +178,11 @@ serviceAccount:
   annotations: {}
 
 # networkPolicy controls the Kubernetes NetworkPolicy for this workload.
-# Allows egress to OTel, upstream HTTP services, and Postgres.
+# Allows egress to DNS, NATS (service-to-service request/reply), OTel,
+# Postgres, and external HTTPS (e.g. JWKS).
 networkPolicy:
   enabled: true
+  natsPort: 4222
   otelGRPCPort: 4317
   otelHTTPPort: 4318
   postgresPort: 5432
