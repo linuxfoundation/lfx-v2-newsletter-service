@@ -10,5 +10,12 @@ useDefault = true
     description = "Allowlisted files"
     paths = [
         '''.*_test\.go$''',
-        '''(go.mod|go.sum)$'''
+        '''(go.mod|go.sum)$''',
+        # False positive: the curl-auth-header rule misfires on the benign
+        # localhost health-check / smoke-test curls in a removed bootstrap
+        # helper script (present only in git history at commit de3f56b).
+        # Every curl in it targets http://127.0.0.1:${APP_PORT} and the only
+        # bearer token is the literal placeholder "not-a-real-token"; no
+        # credential is present.
+        '''scripts/auth_smoke\.sh$'''
     ]
