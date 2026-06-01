@@ -93,16 +93,22 @@ type SendEmailInput struct {
 // EmailRecipientRecord mirrors lfx-v2-email-service's per-recipient state, used
 // when aggregating analytics. Fields are kept loose because newsletter-service
 // only reads a subset.
+//
+// OpenedAtList holds every observed open timestamp for this recipient when
+// email-service exposes the per-event series; with older email-service builds
+// that only emit a flat `opened_at`, OpenedAtList carries a single element so
+// downstream callers can treat the multi-event shape as canonical.
 type EmailRecipientRecord struct {
-	EmailID    string
-	GroupID    string
-	To         string
-	SentAt     *time.Time
-	Delivered  bool
-	Opened     bool
-	OpenCount  int
-	LastOpened *time.Time
-	Failed     bool
+	EmailID      string
+	GroupID      string
+	To           string
+	SentAt       *time.Time
+	Delivered    bool
+	Opened       bool
+	OpenCount    int
+	LastOpened   *time.Time
+	OpenedAtList []time.Time
+	Failed       bool
 }
 
 // EmailEngagement is the per-group rollup returned by email-service.
@@ -128,4 +134,9 @@ type EmailDispatcher interface {
 	SendEmail(ctx context.Context, in SendEmailInput) (emailID string, err error)
 	GetEngagement(ctx context.Context, groupID string) (*EmailEngagement, error)
 	GetStatusByEmailID(ctx context.Context, emailID string) (*EmailRecipientRecord, error)
+	// GetStatusByGroupID fetches the per-recipient records for every email
+	// dispatched under the given group_id. Used by the analytics service to
+	// build the daily-opens time series and the unique-opens count, since
+	// email-service's engagement summary is scalar-only.
+	GetStatusByGroupID(ctx context.Context, groupID string) ([]EmailRecipientRecord, error)
 }
