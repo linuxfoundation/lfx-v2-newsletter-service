@@ -93,16 +93,22 @@ type SendEmailInput struct {
 // EmailRecipientRecord mirrors lfx-v2-email-service's per-recipient state, used
 // when aggregating analytics. Fields are kept loose because newsletter-service
 // only reads a subset.
+//
+// OpenedAtList holds every observed open timestamp for this recipient when
+// email-service exposes the per-event series; with older email-service builds
+// that only emit a flat `opened_at`, OpenedAtList carries a single element so
+// downstream callers can treat the multi-event shape as canonical.
 type EmailRecipientRecord struct {
-	EmailID    string
-	GroupID    string
-	To         string
-	SentAt     *time.Time
-	Delivered  bool
-	Opened     bool
-	OpenCount  int
-	LastOpened *time.Time
-	Failed     bool
+	EmailID      string
+	GroupID      string
+	To           string
+	SentAt       *time.Time
+	Delivered    bool
+	Opened       bool
+	OpenCount    int
+	LastOpened   *time.Time
+	OpenedAtList []time.Time
+	Failed       bool
 }
 
 // EmailEngagement is the per-group rollup returned by email-service.

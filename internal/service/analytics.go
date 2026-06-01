@@ -119,43 +119,60 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 
 // aggregatePerRecipient buckets per-recipient open events into a sorted
 // DailyOpens series and counts unique opens (one per recipient that ever
-// opened). Since email-service's deployed schema carries a single LastOpened
-// timestamp per recipient (not a per-open event list), Opens and UniqueOpens
-// per bucket are equal — one bucketed event per recipient.
+// opened). Per-day Opens count every event; per-day UniqueOpens counts
+// distinct recipients with at least one event on that day.
+//
+// When email-service exposes opened_at_list, each entry becomes its own
+// counted event so repeat opens by the same recipient show up in Opens. With
+// older email-service builds that only emit a flat opened_at, the dispatcher
+// fills OpenedAtList with a single element so the same code path applies.
 //
 // Returns the last observed open timestamp so callers can advance LastEventAt.
 func aggregatePerRecipient(records []port.EmailRecipientRecord) (int, []model.DailyOpens, *time.Time) {
 	type bucket struct {
-		date        time.Time
-		opens       int
-		uniqueOpens int
+		date             time.Time
+		opens            int
+		uniqueRecipients map[string]struct{}
 	}
 	buckets := map[string]*bucket{}
 	unique := 0
 	var lastEvent *time.Time
 	for _, r := range records {
-		if !r.Opened || r.LastOpened == nil {
+		events := r.OpenedAtList
+		if len(events) == 0 && r.Opened && r.LastOpened != nil {
+			// Defensive fallback if the dispatcher hands us a record built
+			// from a wire shape that lacked both opened_at_list and
+			// opened_at but still set Opened=true with a LastOpened.
+			events = []time.Time{*r.LastOpened}
+		}
+		if len(events) == 0 {
 			continue
 		}
 		unique++
-		opened := r.LastOpened.UTC()
-		if lastEvent == nil || opened.After(*lastEvent) {
-			cp := opened
-			lastEvent = &cp
+		recipientKey := r.EmailID
+		if recipientKey == "" {
+			recipientKey = r.To
 		}
-		key := opened.Format(dayBucketLayout)
-		b, ok := buckets[key]
-		if !ok {
-			day, _ := time.Parse(dayBucketLayout, key)
-			b = &bucket{date: day}
-			buckets[key] = b
+		for _, ev := range events {
+			opened := ev.UTC()
+			if lastEvent == nil || opened.After(*lastEvent) {
+				cp := opened
+				lastEvent = &cp
+			}
+			key := opened.Format(dayBucketLayout)
+			b, ok := buckets[key]
+			if !ok {
+				day, _ := time.Parse(dayBucketLayout, key)
+				b = &bucket{date: day, uniqueRecipients: map[string]struct{}{}}
+				buckets[key] = b
+			}
+			b.opens++
+			b.uniqueRecipients[recipientKey] = struct{}{}
 		}
-		b.opens++
-		b.uniqueOpens++
 	}
 	daily := make([]model.DailyOpens, 0, len(buckets))
 	for _, b := range buckets {
-		daily = append(daily, model.DailyOpens{Date: b.date, Opens: b.opens, UniqueOpens: b.uniqueOpens})
+		daily = append(daily, model.DailyOpens{Date: b.date, Opens: b.opens, UniqueOpens: len(b.uniqueRecipients)})
 	}
 	sort.Slice(daily, func(i, j int) bool { return daily[i].Date.Before(daily[j].Date) })
 	return unique, daily, lastEvent
