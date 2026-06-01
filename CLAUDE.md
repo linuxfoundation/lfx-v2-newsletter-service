@@ -132,7 +132,7 @@ make lint        # golangci-lint
 
 > **CRITICAL — while the branch is pre-PR, post-commit reviews are mandatory.** After every commit on the local branch, launch the `lfx-skills:lfx-general-code-reviewer`, `lfx-skills:lfx-newsletter-service-code-reviewer`, and `lfx-skills:lfx-newsletter-service-learnings-reviewer` subagents in parallel via the Agent tool (`subagent_type: lfx-skills:lfx-general-code-reviewer` / `subagent_type: lfx-skills:lfx-newsletter-service-code-reviewer` / `subagent_type: lfx-skills:lfx-newsletter-service-learnings-reviewer`, all `run_in_background: true`) — then keep working while they run. If Claude displays plugin agents without the `lfx-skills:` namespace, use the equivalent displayed reviewer names. Before opening a PR, every running review must return clean (or remaining findings explicitly documented as trade-offs), the **full-branch sweep** must run clean if the branch has more than one commit (`branch` arg), AND `/newsletter-service-pr-readiness` must clear every Critical finding before `/newsletter-service-preflight` runs.
 >
-> **Once the PR is open, do NOT invoke these reviewers on iteration commits.** CodeRabbit + Copilot auto-trigger on every push and own the audit surface from that point. The central reviewers are pre-PR insurance only.
+> **Once the PR is open, do NOT invoke these reviewers on iteration commits.** Copilot auto-triggers on every push and owns the audit surface from that point. The central reviewers are pre-PR insurance only.
 
 ### Post-commit (pre-PR phase, after every commit, parallel, asynchronous)
 
@@ -164,7 +164,7 @@ When the work is done and no more code commits are planned:
 
 ### Post-PR iteration (responding to bot feedback on an open PR)
 
-1. Wait for CodeRabbit + Copilot to comment after each push.
+1. Wait for Copilot to comment after each push.
 2. Triage every Critical and reasonable Important finding against current code.
 3. Roll fixes into a `fix(review): ...` commit.
 4. Push. Repeat until clean.
