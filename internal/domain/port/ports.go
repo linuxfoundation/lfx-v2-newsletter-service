@@ -128,4 +128,9 @@ type EmailDispatcher interface {
 	SendEmail(ctx context.Context, in SendEmailInput) (emailID string, err error)
 	GetEngagement(ctx context.Context, groupID string) (*EmailEngagement, error)
 	GetStatusByEmailID(ctx context.Context, emailID string) (*EmailRecipientRecord, error)
+	// GetStatusByGroupID fetches the per-recipient records for every email
+	// dispatched under the given group_id. Used by the analytics service to
+	// build the daily-opens time series and the unique-opens count, since
+	// email-service's engagement summary is scalar-only.
+	GetStatusByGroupID(ctx context.Context, groupID string) ([]EmailRecipientRecord, error)
 }

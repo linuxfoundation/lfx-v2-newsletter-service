@@ -58,6 +58,9 @@ func (f *fakeEmailDispatcher) GetEngagement(_ context.Context, _ string) (*port.
 func (f *fakeEmailDispatcher) GetStatusByEmailID(_ context.Context, _ string) (*port.EmailRecipientRecord, error) {
 	return &port.EmailRecipientRecord{}, nil
 }
+func (f *fakeEmailDispatcher) GetStatusByGroupID(_ context.Context, _ string) ([]port.EmailRecipientRecord, error) {
+	return nil, nil
+}
 func (f *fakeEmailDispatcher) reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
