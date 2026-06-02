@@ -36,9 +36,12 @@ func (f *fakeProjectClient) Slug(_ context.Context, _ string) (string, error) {
 }
 
 type capturedSend struct {
-	To   string
-	HTML string
-	Text string
+	To              string
+	HTML            string
+	Text            string
+	From            string
+	FromDisplayName string
+	ReplyTo         string
 }
 
 type fakeEmailDispatcher struct {
@@ -49,7 +52,14 @@ type fakeEmailDispatcher struct {
 func (f *fakeEmailDispatcher) SendEmail(_ context.Context, in port.SendEmailInput) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.sends = append(f.sends, capturedSend{To: in.To, HTML: in.HTML, Text: in.Text})
+	f.sends = append(f.sends, capturedSend{
+		To:              in.To,
+		HTML:            in.HTML,
+		Text:            in.Text,
+		From:            in.From,
+		FromDisplayName: in.FromDisplayName,
+		ReplyTo:         in.ReplyTo,
+	})
 	return uuid.NewString(), nil
 }
 func (f *fakeEmailDispatcher) GetEngagement(_ context.Context, _ string) (*port.EmailEngagement, error) {
@@ -335,5 +345,118 @@ func TestSendUnsubscribeResendExcludes(t *testing.T) {
 	}
 	if !hasAlice {
 		t.Fatalf("p2 send excluded alice; unsubscribe must be project-scoped. got %v", got)
+	}
+}
+
+// TestSendNewsletterPopulatesEnvelope asserts the project-personalized From,
+// From-Display-Name, and Reply-To are forwarded on every per-recipient send.
+func TestSendNewsletterPopulatesEnvelope(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	if len(email.sends) != 2 {
+		t.Fatalf("got %d sends, want 2", len(email.sends))
+	}
+	for _, s := range email.sends {
+		if s.From != defaultFromAddress {
+			t.Errorf("send to %s: From=%q, want %q", s.To, s.From, defaultFromAddress)
+		}
+		if s.FromDisplayName != "Test Project Newsletter" {
+			t.Errorf("send to %s: FromDisplayName=%q, want %q", s.To, s.FromDisplayName, "Test Project Newsletter")
+		}
+		if s.ReplyTo != draft.EDReplyEmail {
+			t.Errorf("send to %s: ReplyTo=%q, want %q", s.To, s.ReplyTo, draft.EDReplyEmail)
+		}
+	}
+}
+
+// TestSendNewsletterRespectsFromAddressOverride asserts an explicit FromAddress
+// on SendOrchestratorConfig wins over the built-in default.
+func TestSendNewsletterRespectsFromAddressOverride(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Committee:     committee,
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		Unsubscribe:   unsub,
+		Concurrency:   1,
+		FanoutEnabled: true,
+		FromAddress:   "dev-newsletter@linuxfoundation.org",
+	})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if got := email.sends[0].From; got != "dev-newsletter@linuxfoundation.org" {
+		t.Errorf("From=%q, want %q", got, "dev-newsletter@linuxfoundation.org")
+	}
+}
+
+// TestTestSendPopulatesEnvelope asserts the same project-personalized envelope
+// fields land on the test-send path, with ReplyTo passed through from the
+// request body and omitted when the body leaves it blank.
+func TestTestSendPopulatesEnvelope(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name         string
+		edReplyEmail string
+		wantReplyTo  string
+	}{
+		{name: "with reply email", edReplyEmail: "ed@example.com", wantReplyTo: "ed@example.com"},
+		{name: "without reply email", edReplyEmail: "", wantReplyTo: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			committee := &fakeCommitteeClient{}
+			email := &fakeEmailDispatcher{}
+			unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+			orch := newTestOrchestrator(repo, committee, email, unsub)
+
+			err := orch.TestSend(ctx, TestSendInput{
+				ProjectUID:   "p1",
+				Subject:      "Hello",
+				BodyHTML:     "<p>Body</p>",
+				ToEmail:      "tester@example.com",
+				EDReplyEmail: tc.edReplyEmail,
+			})
+			if err != nil {
+				t.Fatalf("TestSend: %v", err)
+			}
+			if len(email.sends) != 1 {
+				t.Fatalf("got %d sends, want 1", len(email.sends))
+			}
+			s := email.sends[0]
+			if s.From != defaultFromAddress {
+				t.Errorf("From=%q, want %q", s.From, defaultFromAddress)
+			}
+			if s.FromDisplayName != "Test Project Newsletter" {
+				t.Errorf("FromDisplayName=%q, want %q", s.FromDisplayName, "Test Project Newsletter")
+			}
+			if s.ReplyTo != tc.wantReplyTo {
+				t.Errorf("ReplyTo=%q, want %q", s.ReplyTo, tc.wantReplyTo)
+			}
+		})
 	}
 }

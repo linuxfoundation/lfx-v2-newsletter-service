@@ -114,11 +114,14 @@ func NewEmailDispatcher(client *Client) *EmailDispatcher {
 // aggregated reliably.
 func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
 	envelope := emailapi.SendEmailRequest{
-		To:      in.To,
-		Subject: in.Subject,
-		HTML:    in.HTML,
-		Text:    in.Text,
-		GroupID: in.GroupID,
+		To:              in.To,
+		Subject:         in.Subject,
+		HTML:            in.HTML,
+		Text:            in.Text,
+		From:            in.From,
+		FromDisplayName: in.FromDisplayName,
+		ReplyTo:         in.ReplyTo,
+		GroupID:         in.GroupID,
 	}
 	data, err := json.Marshal(envelope)
 	if err != nil {

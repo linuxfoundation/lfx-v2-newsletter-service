@@ -76,6 +76,10 @@ spec:
             - name: SEND_CONCURRENCY
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.app.send.fromAddress }}
+            - name: EMAIL_FROM_ADDRESS
+              value: {{ . | quote }}
+            {{- end }}
             - name: NEWSLETTER_PUBLIC_BASE_URL
               value: {{ default (printf "https://lfx-api.%s" .Values.lfx.domain) .Values.app.unsubscribe.publicBaseURL | quote }}
             {{- if .Values.app.unsubscribe.secretRef.name }}
