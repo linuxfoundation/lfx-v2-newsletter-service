@@ -27,7 +27,7 @@ const defaultSendConcurrency = 5
 // defaultFromAddress is the SMTP envelope From used when the orchestrator is
 // constructed without an explicit FromAddress (e.g. tests). Production wiring
 // always sets one through SendOrchestratorConfig.
-const defaultFromAddress = "newsletter@linuxfoundation.org"
+const defaultFromAddress = "newsletter@lfx.linuxfoundation.org"
 
 // fromDisplayNameSuffix is appended to the project name to build the From
 // display name, yielding e.g. "Kubernetes Newsletter".

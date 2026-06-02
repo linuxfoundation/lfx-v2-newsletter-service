@@ -69,7 +69,7 @@ app:
     concurrency: ""
     # fromAddress is the SMTP envelope From applied to every outbound
     # newsletter. Domain must be in the email-service allowlist. Empty falls
-    # back to the app default (newsletter@linuxfoundation.org).
+    # back to the app default (newsletter@lfx.linuxfoundation.org).
     fromAddress: ""
 
   # unsubscribe configures the per-recipient one-click opt-out link

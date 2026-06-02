@@ -45,7 +45,7 @@ type AppConfig struct {
 	SendConcurrency int
 
 	// EmailFromAddress is the bare address used as the SMTP envelope From on
-	// outbound newsletters. Defaults to newsletter@linuxfoundation.org; override
+	// outbound newsletters. Defaults to newsletter@lfx.linuxfoundation.org; override
 	// per environment when a different sender is configured upstream. The
 	// domain must be in the email-service allowlist or send_email will reject
 	// the request.
@@ -76,7 +76,7 @@ const (
 	defaultNATSReconnectWaitSecs = 2
 	defaultNATSURL               = "nats://nats:4222"
 	defaultSendConcurrency       = 5
-	defaultEmailFromAddress      = "newsletter@linuxfoundation.org"
+	defaultEmailFromAddress      = "newsletter@lfx.linuxfoundation.org"
 )
 
 // AppConfigFromEnv reads AppConfig from environment variables, applying defaults
