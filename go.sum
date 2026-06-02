@@ -36,8 +36,8 @@ github.com/jinzhu/inflection v1.0.0 h1:K317FqzuhWc8YvSVlFMCCUb36O/S9MCKRDI7QkRKD
 github.com/jinzhu/inflection v1.0.0/go.mod h1:h+uFLlag+Qp1Va5pdKtLDYj+kHp5pxUVkryuEj+Srlc=
 github.com/klauspost/compress v1.18.5 h1:/h1gH5Ce+VWNLSWqPzOVn6XBO+vJbCNGvjoaGBFW2IE=
 github.com/klauspost/compress v1.18.5/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
-github.com/linuxfoundation/lfx-v2-email-service v0.1.3 h1:WJuHoiTP6X5zflpYwiyaQCPqShPxk1ZH7M60AjtL/ws=
-github.com/linuxfoundation/lfx-v2-email-service v0.1.3/go.mod h1:ic4UkGJyZvjagDaI34UnuTfoxCHQsxaSFJQs5SRpynM=
+github.com/linuxfoundation/lfx-v2-email-service v0.1.5 h1:bQoRUI6zYBnbXiz9nBOW0i3JrzcRWVOwrbb6YtcFAvg=
+github.com/linuxfoundation/lfx-v2-email-service v0.1.5/go.mod h1:ic4UkGJyZvjagDaI34UnuTfoxCHQsxaSFJQs5SRpynM=
 github.com/nats-io/nats.go v1.52.0 h1:n3avV4VBsCgsdwh71TppsTwtv+QdPs7ntSKM8qJLGsc=
 github.com/nats-io/nats.go v1.52.0/go.mod h1:26HypzazeOkyO3/mqd1zZd53STJN0EjCYF9Uy2ZOBno=
 github.com/nats-io/nkeys v0.4.15 h1:JACV5jRVO9V856KOapQ7x+EY8Jo3qw1vJt/9Jpwzkk4=

@@ -44,6 +44,13 @@ type AppConfig struct {
 	// SendConcurrency caps in-flight per-recipient sends during fan-out.
 	SendConcurrency int
 
+	// EmailFromAddress is the bare address used as the SMTP envelope From on
+	// outbound newsletters. Defaults to newsletter@lfx.linuxfoundation.org; override
+	// per environment when a different sender is configured upstream. The
+	// domain must be in the email-service allowlist or send_email will reject
+	// the request.
+	EmailFromAddress string
+
 	// UnsubscribeSecret is the HMAC key signing per-recipient unsubscribe
 	// tokens. When empty, the footer falls back to the legacy "reply with
 	// UNSUBSCRIBE" copy and the public endpoint rejects all requests.
@@ -69,6 +76,7 @@ const (
 	defaultNATSReconnectWaitSecs = 2
 	defaultNATSURL               = "nats://nats:4222"
 	defaultSendConcurrency       = 5
+	defaultEmailFromAddress      = "newsletter@lfx.linuxfoundation.org"
 )
 
 // AppConfigFromEnv reads AppConfig from environment variables, applying defaults
@@ -84,6 +92,7 @@ func AppConfigFromEnv() (AppConfig, error) {
 		NATSReconnectWait: durationOr("NATS_RECONNECT_WAIT", time.Duration(defaultNATSReconnectWaitSecs)*time.Second),
 		SendFanoutEnabled: boolOr("SEND_FANOUT_ENABLED", true),
 		SendConcurrency:   intOr("SEND_CONCURRENCY", defaultSendConcurrency),
+		EmailFromAddress:  envOr("EMAIL_FROM_ADDRESS", defaultEmailFromAddress),
 		UnsubscribeSecret: os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
 		PublicBaseURL:     strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
 		JWKSURL:           os.Getenv("JWKS_URL"),

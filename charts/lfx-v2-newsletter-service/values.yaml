@@ -67,6 +67,10 @@ app:
     # concurrency caps in-flight email-service requests during fan-out.
     # Empty string falls back to the app default (5).
     concurrency: ""
+    # fromAddress is the SMTP envelope From applied to every outbound
+    # newsletter. Domain must be in the email-service allowlist. Empty falls
+    # back to the app default (newsletter@lfx.linuxfoundation.org).
+    fromAddress: ""
 
   # unsubscribe configures the per-recipient one-click opt-out link
   # embedded in the email footer. publicBaseURL is the externally-reachable

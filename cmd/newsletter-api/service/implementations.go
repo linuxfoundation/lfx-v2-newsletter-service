@@ -108,6 +108,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		Unsubscribe:   unsubSvc,
 		Concurrency:   cfg.SendConcurrency,
 		FanoutEnabled: cfg.SendFanoutEnabled,
+		FromAddress:   cfg.EmailFromAddress,
 	})
 	analyticsSvc := service.NewAnalyticsService(repo, emailDispatcher)
 

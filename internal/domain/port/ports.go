@@ -82,12 +82,20 @@ type ProjectMetadataClient interface {
 }
 
 // SendEmailInput is one per-recipient send envelope dispatched to email-service.
+//
+// From, FromDisplayName, and ReplyTo are optional: when empty, email-service
+// applies its configured service defaults and (for ReplyTo) omits the SMTP
+// Reply-To header entirely. Domains on From and ReplyTo must be in the
+// email-service allowlist — enforcement lives there, not here.
 type SendEmailInput struct {
-	To      string
-	Subject string
-	HTML    string
-	Text    string
-	GroupID string
+	To              string
+	Subject         string
+	HTML            string
+	Text            string
+	From            string
+	FromDisplayName string
+	ReplyTo         string
+	GroupID         string
 }
 
 // EmailRecipientRecord mirrors lfx-v2-email-service's per-recipient state, used
