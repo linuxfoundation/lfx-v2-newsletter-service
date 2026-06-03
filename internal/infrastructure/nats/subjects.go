@@ -27,4 +27,11 @@ const (
 	EmailServiceSendEmailSubject      = "lfx.email-service.send_email"
 	EmailServiceGetEmailStatusSubject = "lfx.email-service.get_email_status"
 	EmailServiceGetEngagementSubject  = "lfx.email-service.get_email_engagement_analytics"
+
+	// AuthUserMetadataReadSubject resolves a user's profile from auth-service.
+	// Request payload: a JWT token, a subject identifier (e.g. "auth0|..."), or
+	// a username — auth-service auto-detects. We send the validated principal
+	// extracted from the inbound JWT. Response: JSON { success, data: { name,
+	// given_name, family_name, ... } }. See lfx-v2-auth-service/docs/user_metadata.md.
+	AuthUserMetadataReadSubject = "lfx.auth-service.user_metadata.read"
 )

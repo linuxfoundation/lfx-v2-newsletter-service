@@ -42,6 +42,7 @@ type SendOrchestrator struct {
 	committee     port.CommitteeClient
 	project       port.ProjectMetadataClient
 	email         port.EmailDispatcher
+	userMetadata  port.UserMetadataReader
 	unsub         *UnsubscribeService
 	concurrency   int
 	fanoutEnabled bool
@@ -50,12 +51,13 @@ type SendOrchestrator struct {
 
 // SendOrchestratorConfig configures a SendOrchestrator.
 type SendOrchestratorConfig struct {
-	Repo        port.NewsletterRepository
-	Committee   port.CommitteeClient
-	Project     port.ProjectMetadataClient
-	Email       port.EmailDispatcher
-	Unsubscribe *UnsubscribeService
-	Concurrency int
+	Repo         port.NewsletterRepository
+	Committee    port.CommitteeClient
+	Project      port.ProjectMetadataClient
+	Email        port.EmailDispatcher
+	UserMetadata port.UserMetadataReader
+	Unsubscribe  *UnsubscribeService
+	Concurrency  int
 	// FanoutEnabled is the feature toggle for the per-recipient send loop.
 	// Defaults to true; flip false in environments where we want to validate
 	// the recipient-resolution path without sending real mail.
@@ -80,6 +82,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		committee:     cfg.Committee,
 		project:       cfg.Project,
 		email:         cfg.Email,
+		userMetadata:  cfg.UserMetadata,
 		unsub:         cfg.Unsubscribe,
 		concurrency:   c,
 		fanoutEnabled: cfg.FanoutEnabled,
@@ -88,15 +91,16 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 }
 
 // SendNewsletterInput is the typed input for SendNewsletter.
+//
+// Principal is the validated JWT `sub`/`principal` claim of the user triggering
+// the send (read by the handler from request context). The orchestrator uses it
+// to look up the sender's display name from auth-service. Empty principal is
+// only valid in dev mode (auth disabled) and falls back to project-name chrome.
 type SendNewsletterInput struct {
 	ProjectUID      string
 	NewsletterID    uuid.UUID
 	ExpectedVersion int64
-	EDName          string
-	// SenderDisplayName is the trusted human display name of the user who
-	// triggered the send. When non-empty (after sanitization) it becomes the
-	// SMTP From display name; otherwise we fall back to "<project> Newsletter".
-	SenderDisplayName string
+	Principal       string
 }
 
 // SendFailure describes a single per-recipient failure surfaced from the
@@ -147,7 +151,11 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	if projectName == "" {
 		projectName = "Project"
 	}
-	fromDisplayName := sanitizeFromDisplayName(in.SenderDisplayName)
+	senderName, err := o.resolveSenderName(ctx, in.Principal)
+	if err != nil {
+		return nil, err
+	}
+	fromDisplayName := sanitizeFromDisplayName(senderName)
 	if fromDisplayName == "" {
 		fromDisplayName = projectName + fromDisplayNameSuffix
 	}
@@ -157,7 +165,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		BodyHTML:                draft.BodyHTML,
 		DisplayName:             projectName,
 		IncludeComplianceFooter: true,
-		EDName:                  fallbackString(in.EDName, "Executive Director"),
+		EDName:                  fallbackString(senderName, "Executive Director"),
 		EDReplyEmail:            draft.EDReplyEmail,
 	}
 	if o.unsub.Enabled() {
@@ -220,14 +228,16 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 }
 
 // TestSendInput is the typed input for TestSend.
+//
+// Principal is the validated JWT principal of the user triggering the test
+// send. Same semantics as SendNewsletterInput.Principal — see its doc comment.
 type TestSendInput struct {
-	ProjectUID        string
-	Subject           string
-	BodyHTML          string
-	ToEmail           string
-	EDReplyEmail      string
-	EDName            string
-	SenderDisplayName string
+	ProjectUID   string
+	Subject      string
+	BodyHTML     string
+	ToEmail      string
+	EDReplyEmail string
+	Principal    string
 }
 
 // TestSend dispatches a single test email — no persistence, no analytics, no
@@ -255,7 +265,11 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	if projectName == "" {
 		projectName = "Project"
 	}
-	fromDisplayName := sanitizeFromDisplayName(in.SenderDisplayName)
+	senderName, err := o.resolveSenderName(ctx, in.Principal)
+	if err != nil {
+		return err
+	}
+	fromDisplayName := sanitizeFromDisplayName(senderName)
 	if fromDisplayName == "" {
 		fromDisplayName = projectName + fromDisplayNameSuffix
 	}
@@ -276,7 +290,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		)
 		return nil
 	}
-	_, err := o.email.SendEmail(ctx, port.SendEmailInput{
+	if _, dispatchErr := o.email.SendEmail(ctx, port.SendEmailInput{
 		To:              strings.TrimSpace(in.ToEmail),
 		Subject:         in.Subject,
 		HTML:            htmlBody,
@@ -284,9 +298,8 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		From:            o.fromAddress,
 		FromDisplayName: fromDisplayName,
 		ReplyTo:         strings.TrimSpace(in.EDReplyEmail),
-	})
-	if err != nil {
-		return fmt.Errorf("dispatch test-send: %w", err)
+	}); dispatchErr != nil {
+		return fmt.Errorf("dispatch test-send: %w", dispatchErr)
 	}
 	slog.InfoContext(ctx, "test-send dispatched",
 		"to_email", in.ToEmail,
@@ -492,6 +505,27 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 	}
 	wg.Wait()
 	return sent, failed, failures
+}
+
+// resolveSenderName looks up the sender's display name from auth-service using
+// the validated JWT principal. Empty principal short-circuits to "" so dev
+// mode (REQUIRE_USER_AUTH=false) keeps working — the caller then falls back to
+// the project-name chrome. A non-empty principal that fails the lookup
+// (auth-service down, user not found, no display name available) bubbles the
+// error so the handler returns 5xx and the send is refused rather than
+// emitting an unattributed envelope.
+func (o *SendOrchestrator) resolveSenderName(ctx context.Context, principal string) (string, error) {
+	if strings.TrimSpace(principal) == "" {
+		return "", nil
+	}
+	if o.userMetadata == nil {
+		return "", nil
+	}
+	name, err := o.userMetadata.Name(ctx, principal)
+	if err != nil {
+		return "", fmt.Errorf("resolve sender name: %w", err)
+	}
+	return name, nil
 }
 
 func fallbackString(value, fallback string) string {

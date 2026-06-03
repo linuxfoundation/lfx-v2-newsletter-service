@@ -81,6 +81,16 @@ type ProjectMetadataClient interface {
 	Slug(ctx context.Context, projectUID string) (string, error)
 }
 
+// UserMetadataReader resolves a human display name for the authenticated user
+// by their JWT principal. Backed by the NATS subject
+// `lfx.auth-service.user_metadata.read` (lfx-v2-auth-service). The principal
+// is the validated `sub`/`principal` claim from the inbound JWT — never a raw
+// HTTP header — so the result can be trusted in user-visible contexts such as
+// the SMTP From display name and the email body signature.
+type UserMetadataReader interface {
+	Name(ctx context.Context, principal string) (string, error)
+}
+
 // SendEmailInput is one per-recipient send envelope dispatched to email-service.
 //
 // From, FromDisplayName, and ReplyTo are optional: when empty, email-service

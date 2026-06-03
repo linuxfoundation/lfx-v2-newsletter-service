@@ -75,6 +75,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	committeeClient := natsinfra.NewCommitteeClient(nc)
 	projectClient := natsinfra.NewProjectClient(nc)
 	emailDispatcher := natsinfra.NewEmailDispatcher(nc)
+	userMetadataClient := natsinfra.NewUserMetadataClient(nc)
 
 	// Step 4: auth.
 	auth, err := handler.NewAuthValidator(ctx, cfg.JWKSURL, cfg.ExpectedAudience)
@@ -105,6 +106,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		Committee:     committeeClient,
 		Project:       projectClient,
 		Email:         emailDispatcher,
+		UserMetadata:  userMetadataClient,
 		Unsubscribe:   unsubSvc,
 		Concurrency:   cfg.SendConcurrency,
 		FanoutEnabled: cfg.SendFanoutEnabled,

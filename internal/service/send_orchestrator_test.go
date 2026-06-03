@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -168,6 +169,19 @@ func (r *fakeNewsletterRepo) ListUnsubscribedEmails(_ context.Context, projectUI
 	return out, nil
 }
 
+// fakeUserMetadataReader stands in for the auth-service NATS client. The
+// orchestrator only calls it when a Principal is provided, so existing tests
+// that leave Principal empty exercise the dev-mode fallback path without ever
+// touching this fake.
+type fakeUserMetadataReader struct {
+	name string
+	err  error
+}
+
+func (f *fakeUserMetadataReader) Name(_ context.Context, _ string) (string, error) {
+	return f.name, f.err
+}
+
 // ---- helpers --------------------------------------------------------------
 
 func newTestOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService) *SendOrchestrator {
@@ -176,6 +190,21 @@ func newTestOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClien
 		Committee:     committee,
 		Project:       &fakeProjectClient{},
 		Email:         email,
+		Unsubscribe:   unsub,
+		Concurrency:   2,
+		FanoutEnabled: true,
+	})
+}
+
+// newTestOrchestratorWithUser wires a fake UserMetadataReader so tests can
+// drive the auth-service NATS lookup deterministically.
+func newTestOrchestratorWithUser(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService, user port.UserMetadataReader) *SendOrchestrator {
+	return NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Committee:     committee,
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		UserMetadata:  user,
 		Unsubscribe:   unsub,
 		Concurrency:   2,
 		FanoutEnabled: true,
@@ -380,10 +409,10 @@ func TestSendNewsletterPopulatesEnvelope(t *testing.T) {
 	}
 }
 
-// TestSendNewsletterUsesSenderDisplayName asserts that when the caller supplies
-// the human display name of the user triggering the send, that name lands in
-// the From display name on every per-recipient dispatch.
-func TestSendNewsletterUsesSenderDisplayName(t *testing.T) {
+// TestSendNewsletterUsesAuthServiceName asserts that when a Principal is
+// supplied, the orchestrator resolves the sender's display name via the
+// UserMetadataReader and stamps it on every per-recipient From line.
+func TestSendNewsletterUsesAuthServiceName(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
 	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
@@ -391,13 +420,14 @@ func TestSendNewsletterUsesSenderDisplayName(t *testing.T) {
 	}}
 	email := &fakeEmailDispatcher{}
 	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
-	orch := newTestOrchestrator(repo, committee, email, unsub)
+	users := &fakeUserMetadataReader{name: "Jane Doe"}
+	orch := newTestOrchestratorWithUser(repo, committee, email, unsub, users)
 
 	draft := repo.addDraft("p1", []string{"c1"})
 	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
-		ProjectUID:        "p1",
-		NewsletterID:      draft.ID,
-		SenderDisplayName: "Jane Doe",
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+		Principal:    "auth0|abc",
 	}); err != nil {
 		t.Fatalf("SendNewsletter: %v", err)
 	}
@@ -411,20 +441,20 @@ func TestSendNewsletterUsesSenderDisplayName(t *testing.T) {
 	}
 }
 
-// TestSendNewsletterSanitizesSenderDisplayName asserts CR/LF and other control
-// characters are stripped from the SenderDisplayName (header-injection guard),
+// TestSendNewsletterSanitizesAuthServiceName asserts CR/LF and other control
+// characters in the auth-service response are stripped before they hit the
+// SMTP From header (defense in depth on the email header injection surface),
 // and that a value which sanitizes to empty falls back to "<project> Newsletter".
-func TestSendNewsletterSanitizesSenderDisplayName(t *testing.T) {
+func TestSendNewsletterSanitizesAuthServiceName(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
 		name    string
-		sender  string
+		nameVal string
 		wantFDN string
 	}{
-		{name: "strips CR LF", sender: "Jane\r\nBcc: evil@example.com", wantFDN: "JaneBcc: evil@example.com"},
-		{name: "trims whitespace", sender: "   Jane Doe   ", wantFDN: "Jane Doe"},
-		{name: "all control chars falls back", sender: "\r\n\t", wantFDN: "Test Project Newsletter"},
-		{name: "empty falls back", sender: "", wantFDN: "Test Project Newsletter"},
+		{name: "strips CR LF", nameVal: "Jane\r\nBcc: evil@example.com", wantFDN: "JaneBcc: evil@example.com"},
+		{name: "trims whitespace", nameVal: "   Jane Doe   ", wantFDN: "Jane Doe"},
+		{name: "all control chars falls back", nameVal: "\r\n\t", wantFDN: "Test Project Newsletter"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -434,13 +464,14 @@ func TestSendNewsletterSanitizesSenderDisplayName(t *testing.T) {
 			}}
 			email := &fakeEmailDispatcher{}
 			unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
-			orch := newTestOrchestrator(repo, committee, email, unsub)
+			users := &fakeUserMetadataReader{name: tc.nameVal}
+			orch := newTestOrchestratorWithUser(repo, committee, email, unsub, users)
 
 			draft := repo.addDraft("p1", []string{"c1"})
 			if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
-				ProjectUID:        "p1",
-				NewsletterID:      draft.ID,
-				SenderDisplayName: tc.sender,
+				ProjectUID:   "p1",
+				NewsletterID: draft.ID,
+				Principal:    "auth0|abc",
 			}); err != nil {
 				t.Fatalf("SendNewsletter: %v", err)
 			}
@@ -454,22 +485,82 @@ func TestSendNewsletterSanitizesSenderDisplayName(t *testing.T) {
 	}
 }
 
-// TestTestSendUsesSenderDisplayName asserts the test-send path honours
-// SenderDisplayName the same way as the production send path.
-func TestTestSendUsesSenderDisplayName(t *testing.T) {
+// TestSendNewsletterBlocksWhenAuthServiceFails asserts that a non-empty
+// Principal whose auth-service lookup errors causes the send to bubble the
+// error rather than dispatch with a fallback envelope. This is the explicit
+// "block with 5xx" contract.
+func TestSendNewsletterBlocksWhenAuthServiceFails(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{err: errors.New("auth-service unreachable")}
+	orch := newTestOrchestratorWithUser(repo, committee, email, unsub, users)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+		Principal:    "auth0|abc",
+	})
+	if err == nil {
+		t.Fatal("expected error when auth-service lookup fails, got nil")
+	}
+	if len(email.sends) != 0 {
+		t.Fatalf("expected 0 dispatches when send is blocked, got %d", len(email.sends))
+	}
+}
+
+// TestSendNewsletterDevModeFallback asserts that when no Principal is provided
+// (auth disabled / local dev), the orchestrator skips the auth-service lookup
+// entirely and falls back to the project-name chrome.
+func TestSendNewsletterDevModeFallback(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	// A fake that would error if called — proves the orchestrator never calls it.
+	users := &fakeUserMetadataReader{err: errors.New("must not be called when principal is empty")}
+	orch := newTestOrchestratorWithUser(repo, committee, email, unsub, users)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+	}); err != nil {
+		t.Fatalf("SendNewsletter (dev mode): %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if got := email.sends[0].FromDisplayName; got != "Test Project Newsletter" {
+		t.Errorf("FromDisplayName=%q, want %q", got, "Test Project Newsletter")
+	}
+}
+
+// TestTestSendUsesAuthServiceName asserts the test-send path honours the
+// auth-service-resolved name the same way as the production send path.
+func TestTestSendUsesAuthServiceName(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
 	committee := &fakeCommitteeClient{}
 	email := &fakeEmailDispatcher{}
 	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
-	orch := newTestOrchestrator(repo, committee, email, unsub)
+	users := &fakeUserMetadataReader{name: "Jane Doe"}
+	orch := newTestOrchestratorWithUser(repo, committee, email, unsub, users)
 
 	if err := orch.TestSend(ctx, TestSendInput{
-		ProjectUID:        "p1",
-		Subject:           "Hello",
-		BodyHTML:          "<p>Body</p>",
-		ToEmail:           "tester@example.com",
-		SenderDisplayName: "Jane Doe",
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "tester@example.com",
+		Principal:  "auth0|abc",
 	}); err != nil {
 		t.Fatalf("TestSend: %v", err)
 	}
