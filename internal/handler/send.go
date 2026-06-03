@@ -5,7 +5,6 @@ package handler
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
@@ -34,7 +33,7 @@ func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
 		ProjectUID:      projectUID,
 		NewsletterID:    id,
 		ExpectedVersion: expectedVersion,
-		EDName:          resolveEDName(r),
+		Principal:       UserFromContext(r.Context()),
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -98,25 +97,12 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 		BodyHTML:     body.BodyHTML,
 		ToEmail:      body.ToEmail,
 		EDReplyEmail: body.EDReplyEmail,
-		EDName:       resolveEDName(r),
+		Principal:    UserFromContext(r.Context()),
 	}); err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
 	writeJSON(r.Context(), w, http.StatusOK, publicapi.TestSendResponse{OK: true})
-}
-
-// resolveEDName resolves the executive director display name from request
-// metadata. Prefers the X-User-Name header (set by an upstream proxy when
-// available) and falls back to the JWT principal.
-func resolveEDName(r *http.Request) string {
-	if name := strings.TrimSpace(r.Header.Get("X-User-Name")); name != "" {
-		return name
-	}
-	if user := UserFromContext(r.Context()); user != "" {
-		return user
-	}
-	return "Executive Director"
 }
 
 // toAPISendResponse converts a service SendResult into the public API DTO.
