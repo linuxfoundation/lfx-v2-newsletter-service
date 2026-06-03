@@ -19,6 +19,7 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render"
+	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
 // defaultSendConcurrency caps in-flight email-service requests during fan-out.
@@ -155,7 +156,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	if err != nil {
 		return nil, err
 	}
-	fromDisplayName := sanitizeFromDisplayName(senderName)
+	fromDisplayName := senderName
 	if fromDisplayName == "" {
 		fromDisplayName = projectName + fromDisplayNameSuffix
 	}
@@ -269,7 +270,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	if err != nil {
 		return err
 	}
-	fromDisplayName := sanitizeFromDisplayName(senderName)
+	fromDisplayName := senderName
 	if fromDisplayName == "" {
 		fromDisplayName = projectName + fromDisplayNameSuffix
 	}
@@ -508,24 +509,46 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 }
 
 // resolveSenderName looks up the sender's display name from auth-service using
-// the validated JWT principal. Empty principal short-circuits to "" so dev
-// mode (REQUIRE_USER_AUTH=false) keeps working — the caller then falls back to
-// the project-name chrome. A non-empty principal that fails the lookup
-// (auth-service down, user not found, no display name available) bubbles the
-// error so the handler returns 5xx and the send is refused rather than
-// emitting an unattributed envelope.
+// the validated JWT principal, then validates it with net/mail.ParseAddress
+// so the stdlib's RFC 5322 parser — not a hand-rolled character allowlist —
+// decides what's safe to render in the From header. Empty principal short-
+// circuits to "" so dev mode (REQUIRE_USER_AUTH=false) keeps working — the
+// caller then falls back to the project-name chrome.
+//
+// All other failure modes are classified as internal (5xx) and bubble up so
+// the send is refused rather than emitting a malformed or unattributed
+// envelope. Specifically:
+//   - non-empty principal with no UserMetadata wired (prod misconfiguration);
+//   - auth-service unreachable / user not found / no display name (the typed
+//     error from the client is intentionally re-wrapped as Unexpected so it
+//     doesn't surface to the API consumer as 404/400 — they asked to send a
+//     newsletter, not to look up a user);
+//   - resolved name fails to parse as an RFC 5322 display-name phrase
+//     (raw CR/LF, NUL, etc.).
 func (o *SendOrchestrator) resolveSenderName(ctx context.Context, principal string) (string, error) {
 	if strings.TrimSpace(principal) == "" {
 		return "", nil
 	}
 	if o.userMetadata == nil {
-		return "", nil
+		return "", pkgerrors.NewUnexpected("sender name resolution is required but UserMetadata client is not configured")
 	}
+	// Auth-service errors are folded into the message string instead of wrapped:
+	// the client returns typed pkgerrors.NotFound / Validation that would, via
+	// errors.As in the HTTP classifier, still surface as 404/400 even though the
+	// API consumer didn't ask for that user — they asked to send a newsletter.
 	name, err := o.userMetadata.Name(ctx, principal)
 	if err != nil {
-		return "", fmt.Errorf("resolve sender name: %w", err)
+		return "", pkgerrors.NewUnexpected(fmt.Sprintf("resolve sender name from auth-service: %v", err))
 	}
-	return name, nil
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "", nil
+	}
+	parsed, err := mail.ParseAddress(trimmed + " <noreply@invalid.localhost>")
+	if err != nil {
+		return "", pkgerrors.NewUnexpected(fmt.Sprintf("invalid sender display name from auth-service: %v", err))
+	}
+	return parsed.Name, nil
 }
 
 func fallbackString(value, fallback string) string {
@@ -533,26 +556,6 @@ func fallbackString(value, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-// sanitizeFromDisplayName trims surrounding whitespace and strips CR/LF and
-// other control characters that would let an attacker inject extra email
-// headers. Returns "" when nothing usable remains so the caller can apply its
-// fallback.
-func sanitizeFromDisplayName(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	b := strings.Builder{}
-	b.Grow(len(s))
-	for _, r := range s {
-		if r == '\r' || r == '\n' || r == '\t' || (r >= 0x00 && r < 0x20) || r == 0x7f {
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return strings.TrimSpace(b.String())
 }
 
 // redactEmail masks the local part of an email for safe logging.

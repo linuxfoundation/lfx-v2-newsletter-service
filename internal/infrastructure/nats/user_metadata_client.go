@@ -63,7 +63,7 @@ func (u *UserMetadataClient) Name(ctx context.Context, principal string) (string
 		if msg == "" {
 			msg = "user not found"
 		}
-		return "", pkgerrors.NewNotFound(fmt.Sprintf("user metadata lookup failed for principal: %s", msg))
+		return "", pkgerrors.NewNotFound(fmt.Sprintf("user metadata lookup rejected by auth-service: %s", msg))
 	}
 	if response.Data == nil {
 		return "", pkgerrors.NewNotFound("user metadata response has no data")

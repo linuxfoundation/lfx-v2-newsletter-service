@@ -15,6 +15,7 @@ import (
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
+	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
 // ---- fakes ----------------------------------------------------------------
@@ -441,20 +442,26 @@ func TestSendNewsletterUsesAuthServiceName(t *testing.T) {
 	}
 }
 
-// TestSendNewsletterSanitizesAuthServiceName asserts CR/LF and other control
-// characters in the auth-service response are stripped before they hit the
-// SMTP From header (defense in depth on the email header injection surface),
-// and that a value which sanitizes to empty falls back to "<project> Newsletter".
-func TestSendNewsletterSanitizesAuthServiceName(t *testing.T) {
+// TestSendNewsletterValidatesAuthServiceName asserts the orchestrator delegates
+// safety of the resolved sender name to net/mail.ParseAddress: well-formed
+// names are accepted (whitespace trimmed), an all-whitespace value falls back
+// to the project-name chrome, and a name that won't parse as an RFC 5322
+// display-name phrase (raw CR/LF, unbalanced quotes) blocks the send rather
+// than being silently sanitised into something attacker-controlled.
+func TestSendNewsletterValidatesAuthServiceName(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
-		name    string
-		nameVal string
-		wantFDN string
+		name     string
+		nameVal  string
+		wantFDN  string // checked when wantErr is false
+		wantErr  bool
+		wantSent int
 	}{
-		{name: "strips CR LF", nameVal: "Jane\r\nBcc: evil@example.com", wantFDN: "JaneBcc: evil@example.com"},
-		{name: "trims whitespace", nameVal: "   Jane Doe   ", wantFDN: "Jane Doe"},
-		{name: "all control chars falls back", nameVal: "\r\n\t", wantFDN: "Test Project Newsletter"},
+		{name: "accepts simple name", nameVal: "Jane Doe", wantFDN: "Jane Doe", wantSent: 1},
+		{name: "trims whitespace", nameVal: "   Jane Doe   ", wantFDN: "Jane Doe", wantSent: 1},
+		{name: "all whitespace falls back to project", nameVal: "   \t  ", wantFDN: "Test Project Newsletter", wantSent: 1},
+		{name: "rejects CR LF header injection", nameVal: "Jane\r\nBcc: evil@example.com", wantErr: true},
+		{name: "rejects embedded NUL", nameVal: "Jane\x00Doe", wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -468,15 +475,25 @@ func TestSendNewsletterSanitizesAuthServiceName(t *testing.T) {
 			orch := newTestOrchestratorWithUser(repo, committee, email, unsub, users)
 
 			draft := repo.addDraft("p1", []string{"c1"})
-			if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+			_, err := orch.SendNewsletter(ctx, SendNewsletterInput{
 				ProjectUID:   "p1",
 				NewsletterID: draft.ID,
 				Principal:    "auth0|abc",
-			}); err != nil {
+			})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if len(email.sends) != 0 {
+					t.Fatalf("expected 0 dispatches on rejection, got %d", len(email.sends))
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("SendNewsletter: %v", err)
 			}
-			if len(email.sends) != 1 {
-				t.Fatalf("got %d sends, want 1", len(email.sends))
+			if len(email.sends) != tc.wantSent {
+				t.Fatalf("got %d sends, want %d", len(email.sends), tc.wantSent)
 			}
 			if got := email.sends[0].FromDisplayName; got != tc.wantFDN {
 				t.Errorf("FromDisplayName=%q, want %q", got, tc.wantFDN)
@@ -487,9 +504,74 @@ func TestSendNewsletterSanitizesAuthServiceName(t *testing.T) {
 
 // TestSendNewsletterBlocksWhenAuthServiceFails asserts that a non-empty
 // Principal whose auth-service lookup errors causes the send to bubble the
-// error rather than dispatch with a fallback envelope. This is the explicit
-// "block with 5xx" contract.
+// error rather than dispatch with a fallback envelope. The error must
+// classify as Unexpected (→ 5xx) and must NOT surface the upstream client's
+// typed NotFound/Validation — the API consumer asked to send a newsletter,
+// not to look up a user.
 func TestSendNewsletterBlocksWhenAuthServiceFails(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name      string
+		upstream  error
+		assertion func(t *testing.T, err error)
+	}{
+		{
+			name:     "transport error wraps as Unexpected",
+			upstream: errors.New("auth-service unreachable"),
+		},
+		{
+			name:     "upstream NotFound does not leak as NotFound",
+			upstream: pkgerrors.NewNotFound("user not found"),
+		},
+		{
+			name:     "upstream Validation does not leak as Validation",
+			upstream: pkgerrors.NewValidation("principal malformed"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+				"c1": {{Email: "alice@example.com"}},
+			}}
+			email := &fakeEmailDispatcher{}
+			unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+			users := &fakeUserMetadataReader{err: tc.upstream}
+			orch := newTestOrchestratorWithUser(repo, committee, email, unsub, users)
+
+			draft := repo.addDraft("p1", []string{"c1"})
+			_, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+				ProjectUID:   "p1",
+				NewsletterID: draft.ID,
+				Principal:    "auth0|abc",
+			})
+			if err == nil {
+				t.Fatal("expected error when auth-service lookup fails, got nil")
+			}
+			var unexpected pkgerrors.Unexpected
+			if !errors.As(err, &unexpected) {
+				t.Errorf("expected error to classify as Unexpected (→ 5xx), got %T: %v", err, err)
+			}
+			var notFound pkgerrors.NotFound
+			if errors.As(err, &notFound) {
+				t.Errorf("upstream NotFound leaked through to caller (would surface as 404): %v", err)
+			}
+			var validation pkgerrors.Validation
+			if errors.As(err, &validation) {
+				t.Errorf("upstream Validation leaked through to caller (would surface as 400): %v", err)
+			}
+			if len(email.sends) != 0 {
+				t.Fatalf("expected 0 dispatches when send is blocked, got %d", len(email.sends))
+			}
+		})
+	}
+}
+
+// TestSendNewsletterBlocksWhenUserMetadataMisconfigured asserts that a non-empty
+// Principal with no UserMetadata client wired (production misconfiguration —
+// auth is enabled but the dependency was never constructed) refuses the send
+// rather than silently emitting an unattributed envelope.
+func TestSendNewsletterBlocksWhenUserMetadataMisconfigured(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
 	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
@@ -497,8 +579,8 @@ func TestSendNewsletterBlocksWhenAuthServiceFails(t *testing.T) {
 	}}
 	email := &fakeEmailDispatcher{}
 	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
-	users := &fakeUserMetadataReader{err: errors.New("auth-service unreachable")}
-	orch := newTestOrchestratorWithUser(repo, committee, email, unsub, users)
+	// No UserMetadata wired — simulates prod misconfig with auth turned on.
+	orch := newTestOrchestratorWithUser(repo, committee, email, unsub, nil)
 
 	draft := repo.addDraft("p1", []string{"c1"})
 	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{
@@ -507,10 +589,14 @@ func TestSendNewsletterBlocksWhenAuthServiceFails(t *testing.T) {
 		Principal:    "auth0|abc",
 	})
 	if err == nil {
-		t.Fatal("expected error when auth-service lookup fails, got nil")
+		t.Fatal("expected error when UserMetadata is not configured, got nil")
+	}
+	var unexpected pkgerrors.Unexpected
+	if !errors.As(err, &unexpected) {
+		t.Errorf("expected error to classify as Unexpected (→ 5xx), got %T: %v", err, err)
 	}
 	if len(email.sends) != 0 {
-		t.Fatalf("expected 0 dispatches when send is blocked, got %d", len(email.sends))
+		t.Fatalf("expected 0 dispatches when UserMetadata is unwired, got %d", len(email.sends))
 	}
 }
 
