@@ -31,10 +31,11 @@ func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := h.send.SendNewsletter(r.Context(), service.SendNewsletterInput{
-		ProjectUID:      projectUID,
-		NewsletterID:    id,
-		ExpectedVersion: expectedVersion,
-		EDName:          resolveEDName(r),
+		ProjectUID:        projectUID,
+		NewsletterID:      id,
+		ExpectedVersion:   expectedVersion,
+		EDName:            resolveEDName(r),
+		SenderDisplayName: resolveSenderDisplayName(r),
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -93,12 +94,13 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.send.TestSend(r.Context(), service.TestSendInput{
-		ProjectUID:   projectUID,
-		Subject:      body.Subject,
-		BodyHTML:     body.BodyHTML,
-		ToEmail:      body.ToEmail,
-		EDReplyEmail: body.EDReplyEmail,
-		EDName:       resolveEDName(r),
+		ProjectUID:        projectUID,
+		Subject:           body.Subject,
+		BodyHTML:          body.BodyHTML,
+		ToEmail:           body.ToEmail,
+		EDReplyEmail:      body.EDReplyEmail,
+		EDName:            resolveEDName(r),
+		SenderDisplayName: resolveSenderDisplayName(r),
 	}); err != nil {
 		writeError(r.Context(), w, err)
 		return
@@ -117,6 +119,15 @@ func resolveEDName(r *http.Request) string {
 		return user
 	}
 	return "Executive Director"
+}
+
+// resolveSenderDisplayName returns the trusted human display name of the user
+// triggering the send, or "" if none is available. Only the X-User-Name header
+// (populated by the upstream proxy after mapping the principal) is trusted —
+// the raw JWT principal/sub is intentionally not used here because it can be
+// an opaque ID and we never want that in the SMTP From header.
+func resolveSenderDisplayName(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-User-Name"))
 }
 
 // toAPISendResponse converts a service SendResult into the public API DTO.

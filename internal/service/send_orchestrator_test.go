@@ -380,6 +380,107 @@ func TestSendNewsletterPopulatesEnvelope(t *testing.T) {
 	}
 }
 
+// TestSendNewsletterUsesSenderDisplayName asserts that when the caller supplies
+// the human display name of the user triggering the send, that name lands in
+// the From display name on every per-recipient dispatch.
+func TestSendNewsletterUsesSenderDisplayName(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:        "p1",
+		NewsletterID:      draft.ID,
+		SenderDisplayName: "Jane Doe",
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	if len(email.sends) != 2 {
+		t.Fatalf("got %d sends, want 2", len(email.sends))
+	}
+	for _, s := range email.sends {
+		if s.FromDisplayName != "Jane Doe" {
+			t.Errorf("send to %s: FromDisplayName=%q, want %q", s.To, s.FromDisplayName, "Jane Doe")
+		}
+	}
+}
+
+// TestSendNewsletterSanitizesSenderDisplayName asserts CR/LF and other control
+// characters are stripped from the SenderDisplayName (header-injection guard),
+// and that a value which sanitizes to empty falls back to "<project> Newsletter".
+func TestSendNewsletterSanitizesSenderDisplayName(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name    string
+		sender  string
+		wantFDN string
+	}{
+		{name: "strips CR LF", sender: "Jane\r\nBcc: evil@example.com", wantFDN: "JaneBcc: evil@example.com"},
+		{name: "trims whitespace", sender: "   Jane Doe   ", wantFDN: "Jane Doe"},
+		{name: "all control chars falls back", sender: "\r\n\t", wantFDN: "Test Project Newsletter"},
+		{name: "empty falls back", sender: "", wantFDN: "Test Project Newsletter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+				"c1": {{Email: "alice@example.com"}},
+			}}
+			email := &fakeEmailDispatcher{}
+			unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+			orch := newTestOrchestrator(repo, committee, email, unsub)
+
+			draft := repo.addDraft("p1", []string{"c1"})
+			if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+				ProjectUID:        "p1",
+				NewsletterID:      draft.ID,
+				SenderDisplayName: tc.sender,
+			}); err != nil {
+				t.Fatalf("SendNewsletter: %v", err)
+			}
+			if len(email.sends) != 1 {
+				t.Fatalf("got %d sends, want 1", len(email.sends))
+			}
+			if got := email.sends[0].FromDisplayName; got != tc.wantFDN {
+				t.Errorf("FromDisplayName=%q, want %q", got, tc.wantFDN)
+			}
+		})
+	}
+}
+
+// TestTestSendUsesSenderDisplayName asserts the test-send path honours
+// SenderDisplayName the same way as the production send path.
+func TestTestSendUsesSenderDisplayName(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID:        "p1",
+		Subject:           "Hello",
+		BodyHTML:          "<p>Body</p>",
+		ToEmail:           "tester@example.com",
+		SenderDisplayName: "Jane Doe",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if got := email.sends[0].FromDisplayName; got != "Jane Doe" {
+		t.Errorf("FromDisplayName=%q, want %q", got, "Jane Doe")
+	}
+}
+
 // TestSendNewsletterRespectsFromAddressOverride asserts an explicit FromAddress
 // on SendOrchestratorConfig wins over the built-in default.
 func TestSendNewsletterRespectsFromAddressOverride(t *testing.T) {

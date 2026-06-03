@@ -93,6 +93,10 @@ type SendNewsletterInput struct {
 	NewsletterID    uuid.UUID
 	ExpectedVersion int64
 	EDName          string
+	// SenderDisplayName is the trusted human display name of the user who
+	// triggered the send. When non-empty (after sanitization) it becomes the
+	// SMTP From display name; otherwise we fall back to "<project> Newsletter".
+	SenderDisplayName string
 }
 
 // SendFailure describes a single per-recipient failure surfaced from the
@@ -143,7 +147,10 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	if projectName == "" {
 		projectName = "Project"
 	}
-	fromDisplayName := projectName + fromDisplayNameSuffix
+	fromDisplayName := sanitizeFromDisplayName(in.SenderDisplayName)
+	if fromDisplayName == "" {
+		fromDisplayName = projectName + fromDisplayNameSuffix
+	}
 
 	chrome := render.Chrome{
 		Subject:                 draft.Subject,
@@ -214,12 +221,13 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 
 // TestSendInput is the typed input for TestSend.
 type TestSendInput struct {
-	ProjectUID   string
-	Subject      string
-	BodyHTML     string
-	ToEmail      string
-	EDReplyEmail string
-	EDName       string
+	ProjectUID        string
+	Subject           string
+	BodyHTML          string
+	ToEmail           string
+	EDReplyEmail      string
+	EDName            string
+	SenderDisplayName string
 }
 
 // TestSend dispatches a single test email — no persistence, no analytics, no
@@ -247,7 +255,10 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	if projectName == "" {
 		projectName = "Project"
 	}
-	fromDisplayName := projectName + fromDisplayNameSuffix
+	fromDisplayName := sanitizeFromDisplayName(in.SenderDisplayName)
+	if fromDisplayName == "" {
+		fromDisplayName = projectName + fromDisplayNameSuffix
+	}
 
 	chrome := render.Chrome{
 		Subject:                 in.Subject,
@@ -488,6 +499,26 @@ func fallbackString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// sanitizeFromDisplayName trims surrounding whitespace and strips CR/LF and
+// other control characters that would let an attacker inject extra email
+// headers. Returns "" when nothing usable remains so the caller can apply its
+// fallback.
+func sanitizeFromDisplayName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	b := strings.Builder{}
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\r' || r == '\n' || r == '\t' || (r >= 0x00 && r < 0x20) || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // redactEmail masks the local part of an email for safe logging.
