@@ -72,8 +72,8 @@ var bodyTagStyles = map[string]string{
 	"p":          "margin:0 0 14px;line-height:1.65;",
 	"h2":         "color:" + colorGray900 + ";font-size:22px;font-weight:700;line-height:1.3;letter-spacing:-0.01em;margin:32px 0 12px;padding-bottom:8px;border-bottom:1px solid " + colorGray200 + ";",
 	"h3":         "color:" + colorGray700 + ";font-size:17px;font-weight:600;line-height:1.4;margin:24px 0 8px;",
-	"ul":         "margin:12px 0 16px;padding-left:32px;list-style-type:disc;",
-	"ol":         "margin:12px 0 16px;padding-left:32px;list-style-type:decimal;",
+	"ul":         "margin:12px 0 16px;padding-left:24px;list-style-type:disc;",
+	"ol":         "margin:12px 0 16px;padding-left:24px;list-style-type:decimal;",
 	"li":         "margin:0 0 8px;line-height:1.6;",
 	"blockquote": "margin:16px 0;padding:12px 16px;border-left:3px solid " + colorBlue500 + ";background-color:" + colorBlue50 + ";border-radius:0 4px 4px 0;color:" + colorGray800 + ";font-style:normal;",
 	"hr":         "border:0;border-top:1px dashed " + colorGray200 + ";margin:24px 0;",
@@ -250,7 +250,7 @@ func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
 		unsubLine = `<a href="` + escapeHTML(input.UnsubscribeURL) + `" style="color:` + colorBlue500 + `;text-decoration:underline;">Unsubscribe</a> from ` + displayNameSafe + ` newsletters.`
 	}
 	return `<tr>
-<td style="background-color:` + colorGray50 + `;border-top:1px solid ` + colorGray200 + `;padding:24px 40px;font-size:12px;color:` + colorGray500 + `;font-family:` + fontStack + `;">
+<td class="lfx-pad" style="background-color:` + colorGray50 + `;border-top:1px solid ` + colorGray200 + `;padding:24px 24px;font-size:12px;color:` + colorGray500 + `;font-family:` + fontStack + `;">
 <div style="margin-bottom:6px;">Sent by <strong style="color:` + colorGray900 + `;">` + edNameSafe + `</strong> on behalf of <strong style="color:` + colorGray900 + `;">` + displayNameSafe + `</strong>.</div>
 ` + replyLine + `
 <div style="color:` + colorGray400 + `;font-size:11px;">` + unsubLine + ` Delivered by <span style="font-weight:700;color:` + colorBlue500 + `;letter-spacing:-0.02em;">LFX</span>.</div>
@@ -291,14 +291,19 @@ func EmailHTML(input Chrome) string {
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <meta http-equiv="X-UA-Compatible" content="IE=edge" />
 <title>` + subjectSafe + `</title>
+<style>
+@media only screen and (max-width:600px){
+.lfx-pad{padding-left:16px!important;padding-right:16px!important;}
+}
+</style>
 </head>
 <body style="margin:0;padding:0;background-color:` + colorGray50 + `;font-family:` + fontStack + `;">
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:` + colorGray50 + `;padding:24px 12px;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:` + colorGray50 + `;padding:16px 8px;">
 <tr>
 <td align="center">
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="680" style="width:680px;max-width:680px;background-color:` + colorWhite + `;border:1px solid ` + colorGray200 + `;border-radius:8px;overflow:hidden;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;max-width:680px;background-color:` + colorWhite + `;border:1px solid ` + colorGray200 + `;border-radius:8px;overflow:hidden;">
 <tr>
-<td style="` + headerBG + `color:` + colorWhite + `;padding:32px 40px;font-family:` + fontStack + `;">
+<td class="lfx-pad" style="` + headerBG + `color:` + colorWhite + `;padding:28px 24px;font-family:` + fontStack + `;">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
 <tr>
 ` + logoCell + `
@@ -311,7 +316,7 @@ func EmailHTML(input Chrome) string {
 </td>
 </tr>
 <tr>
-<td style="padding:32px 40px;font-size:16px;color:` + colorGray800 + `;line-height:1.65;font-family:` + fontStack + `;">` + styledBody + `</td>
+<td class="lfx-pad" style="padding:28px 24px;font-size:16px;color:` + colorGray800 + `;line-height:1.65;font-family:` + fontStack + `;">` + styledBody + `</td>
 </tr>
 ` + complianceFooter + `
 </table>
