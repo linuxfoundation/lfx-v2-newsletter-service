@@ -125,11 +125,14 @@ the codebase you wish existed.
 
 ## Severity definitions
 
-- **`critical`** — must not merge without a human. A real security
-  vulnerability (auth bypass, PII or secret exposure, injection), data loss or
-  corruption, a breaking change to the public `pkg/api` contract or the DB
-  schema's invariants, or a change to authorization/tenant scoping. Anything in
-  this tier should also drive `needs_human: true`.
+- **`critical`** — must not merge as-is. A real security vulnerability (auth
+  bypass, PII or secret exposure, injection), data loss or corruption, a
+  breaking change to the public `pkg/api` contract or the DB schema's
+  invariants, or a change to authorization/tenant scoping. Always **blocking**.
+  It escalates to `needs_human` only when it also meets the bar below (a
+  sensitive boundary, an unbounded blast radius, or a fix you are not confident
+  is complete), **not merely by being tagged critical** — a self-contained,
+  in-PR-fixable critical blocks through its thread without pinning the label.
 - **`high`** — a serious correctness or design defect that will cause incorrect
   behavior, a resource-exhaustion or availability risk, a silent contract drift,
   or a missing test on security-sensitive code. Blocking, but a competent author
@@ -147,7 +150,13 @@ thread must still resolve.
 
 ## When to raise `needs_human`
 
-- Any `critical` finding.
+`needs_human` marks a change a human must sign off on **regardless of whether
+you found a defect or believe the code is now correct**. It is about the
+*nature of the change*, not the presence of a finding. A critical defect an
+author can simply fix in-PR blocks the merge through its comment thread — the
+review will not come back clean until it is fixed — but does **not** by itself
+pin the sticky, human-only label. Reserve `needs_human` for:
+
 - Changes to authentication, authorization, or tenant/context scoping (even if
   they look correct).
 - Database migrations or schema changes that touch existing data or constraints.
@@ -158,8 +167,14 @@ thread must still resolve.
   (query-service params, the email-service `groupId`).
 - The first wiring of email dispatch, NATS publication, or FGA into this
   service.
+- A `critical` finding whose blast radius you cannot fully bound, or whose fix
+  you are not confident is complete and self-contained — a genuinely dangerous
+  security hole, not a clean-cut "a guard was removed, add it back."
 - Any case where your confidence is low, the change is large or subtle, or you
   cannot fully verify a claim against the code or the central skills.
+
+When in doubt, raise it — but a routine, in-PR-fixable defect, even a critical
+one, is not by itself a reason to.
 
 ## Output contract (`findings.json`)
 

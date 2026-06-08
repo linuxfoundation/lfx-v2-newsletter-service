@@ -119,8 +119,11 @@ to these are the ones that matter most:
 
 ## What "critical" means in this repo
 
-Reserve `critical` (and `needs_human`) for changes that can cause real harm or
-that no automated reviewer should clear alone:
+Reserve `critical` for changes that can cause real harm. Most of the categories
+below are also ones no automated reviewer should clear alone, so they set
+`needs_human` too (per the escalation bar in `AGENTS.md`) — but a self-contained,
+in-PR-fixable critical blocks through its thread without pinning the human-only
+label; it is the *nature* of the change, not the critical tag, that escalates:
 
 - A security vulnerability (see `newsletter-security-review`): auth bypass,
   audience-check removal, PII or secret exposure, injection, an unbounded
