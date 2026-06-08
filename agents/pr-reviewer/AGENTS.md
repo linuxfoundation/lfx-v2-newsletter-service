@@ -86,9 +86,12 @@ When a PR wakes you, work in this order:
      SQL construction, secrets and config). Run it on any PR that touches a
      handler, the auth middleware, the service or repository layer, the schema,
      config, or the chart.
-   - **`newsletter-senior-reviewer`** — architecture and design judgment, the
-     contracts and conventions a senior reviewer holds this repo to, and the
-     definition of what "critical" means here.
+   - **`newsletter-senior-reviewer`** — the general code-review dimensions the
+     central `lfx-general-code-reviewer` covers (correctness, error handling,
+     readability, DRY, tests, performance, code truthfulness) plus architecture
+     and design judgment, the contracts and conventions a senior reviewer holds
+     this repo to, and the definition of what "critical" means here. It draws on
+     the central architecture skills for platform-wide judgments.
 
 5. **Decide and post.** Tag each finding (severity rules below), post inline PR
    comments, write a one-paragraph summary, and emit the `findings.json` verdict.
