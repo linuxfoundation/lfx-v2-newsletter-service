@@ -9,22 +9,49 @@ description: >
   open-tracking pixel, JWT and audience verification, bearer-token propagation,
   context/tenant scoping, response-body information leakage, SQL construction,
   request-body bounds, and secrets/config. Built from first principles for this
-  repo, modeled on systematic security-review methodology, not a generic linter.
+  repo, applying the diff-aware, high-confidence, low-false-positive methodology
+  of Anthropic's claude-code-security-review skill, not a generic linter.
 allowed-tools: Read, Glob, Grep
 ---
 
 # Newsletter Service Security Review
 
-Review the diff for security defects, from first principles, against this
-service's actual surface. Method: for each changed area, identify what an
-attacker controls, what the code trusts, and where trust crosses a boundary
-(network input, an unauthenticated endpoint, a token, a SQL query, a log line,
-a response body, a secret). Report only findings you can ground in the code.
-Severity follows the reviewer's rubric (`critical`/`high`/`should-fix`/`nit`).
+Security review for an `lfx-v2-newsletter-service` diff, run with the discipline of
+Anthropic's open `claude-code-security-review` skill and grounded in this service's
+real surface. This service handles **member PII** (committee-member emails and
+names) and runs an **unauthenticated endpoint** (the open-tracking pixel): a leak
+is a privacy incident, and the pixel is reachable by anyone. Those two facts set
+the stakes.
 
-This service handles **member PII** (committee-member emails and names) and
-runs an **unauthenticated endpoint**. Those two facts set the stakes: a leak is
-a privacy incident, and the open pixel is reachable by anyone.
+## Methodology (adapted from Anthropic's `claude-code-security-review`)
+
+Run a focused, **diff-aware** review, not a whole-repo audit:
+
+1. **Only new risk.** Assess the security implications this PR *introduces*. Do not
+   relitigate pre-existing issues the diff does not touch (note them at most as a
+   `nit`).
+2. **Assume the code is hostile, report only what is real.** Flag only
+   **high-confidence, concretely exploitable** findings. If you cannot trace a
+   specific path from an attacker-controlled input to a sensitive sink, it is not
+   `critical`/`high`.
+3. **Three passes.** (a) *Context* — find the guards this repo already relies on
+   (the `^[a-f0-9]{64}$` hash check, the `mail.ParseAddress` validators, the
+   `MaxBytesReader` body cap, bun's parameterized builder, the JWT audience
+   check). (b) *Comparative* — does the change deviate from those established
+   patterns? (c) *Assessment* — trace each input to its sink and confirm the guard
+   sits on the path the data actually takes, not three functions away.
+4. **Confidence-gate every finding (1-10); report only >=7.** Prefer a few real
+   findings to a long speculative list. Severity follows the reviewer's rubric
+   (`critical`/`high`/`should-fix`/`nit`).
+5. **Evidence, not vibes.** Each finding names the file, the function, the
+   untrusted source, the boundary crossed, the concrete impact, and the fix.
+
+Canonical categories (Anthropic's taxonomy, mapped to this Go service): injection
+(SQL via raw string-building, path, template), authentication & authorization
+(JWT/audience bypass, privilege escalation, IDOR / tenant-scope bypass), crypto &
+secrets (hardcoded keys, weak randomness, secret logging), unsafe code execution
+(deserialization), and data exposure (PII or secret in logs/responses, error
+leakage). The repo surface below is where these land.
 
 ## Threat surface (check the categories the diff touches)
 
@@ -42,8 +69,10 @@ newsletter UUID can hit it.
   layers is `critical`.
 - The open insert MUST dedupe via the per-recipient-per-hour unique index
   (`uq_opens_newsletter_recipient_hour`) with `ON CONFLICT DO NOTHING`. Without
-  it, the unauthenticated endpoint writes a row per request: unbounded table
-  growth and inflatable open counts. `critical`/`high`.
+  it, the unauthenticated endpoint writes a row per request and inflates open
+  counts. Flag this as a **data-integrity** finding (unbounded *unauthenticated*
+  writes plus corrupted analytics), `high`, not as a DOS/load issue (we do not
+  raise DOS as such).
 - The endpoint must never return 4xx/5xx detail to the email client, and must
   never echo the `id` or hash into a body. It only ever serves the pixel.
 - Any new unauthenticated route, or any new write reachable without auth, is a
@@ -117,9 +146,10 @@ authorizes via service-layer checks." So:
 
 - Treat any change that touches draft access, listing, analytics, or send as an
   authorization-relevant change. Ask: can principal A read or mutate principal
-  B's newsletter by guessing its UUID? If the PR widens that exposure (e.g. a
-  new endpoint that returns a draft by id without a context check), it is
-  `critical` and `needs_human`.
+  B's newsletter? The finding rests on the **missing `(contextType, contextUid)`
+  ownership check**, not on guessing the UUID (treat UUIDs as unguessable, per the
+  methodology). If the PR widens that exposure (e.g. a new endpoint that returns a
+  draft by id without a context check), it is `critical` and `needs_human`.
 - A PR that **adds** real authorization (FGA tuples, an access-check call, a
   context-ownership guard) is a security-positive change but still
   `needs_human`: authorization changes always get a human.
@@ -183,6 +213,29 @@ authorizes via service-layer checks." So:
   weakened `networkPolicy`, a disabled `requireUserAuth` default, or a secret
   moved out of ExternalSecrets/CloudNativePG into plaintext values is
   `critical`/`high` and `needs_human`.
+
+## What not to flag (signal discipline)
+
+Adopt Anthropic's exclusions so the gate stays trustworthy. Do **not** raise:
+
+- **Denial of service, resource exhaustion, or "add rate limiting"** on their own.
+  (The dedupe-index and pagination caps above are flagged for *data integrity* and
+  unbounded *unauthenticated* writes, not as load problems.)
+- **A mere lack of hardening / defense-in-depth** with no concrete vulnerability.
+- **Outdated third-party dependencies** (managed separately); a *new* dependency's
+  risk belongs to the senior reviewer, not here.
+- **Theoretical race/timing issues** with no practical exploit.
+- **Test-only files**, and anything in Markdown/docs.
+- **Log spoofing** (un-sanitized user input in a log line is not itself a vuln),
+  **regex injection/DoS**, and **missing audit logs**.
+- **SSRF that only controls a URL path**; SSRF counts only when it controls the
+  host or protocol (the bearer-propagation item above is exactly that case).
+
+Precedents to apply: **UUIDs are unguessable** and need no validation (the draft
+authorization finding rests on the *missing ownership check*, not on guessing the
+id); **environment variables and config are trusted** inputs; **logging URLs and
+non-PII is fine** — only secrets or PII (emails, names) in a log or response is a
+finding. Raise `should-fix`/`MEDIUM` only when the issue is concrete.
 
 ## Reporting
 
