@@ -150,6 +150,12 @@ thread must still resolve.
 
 ## When to raise `needs_human`
 
+The authoritative needs-human decision belongs to a **separate escalation agent**
+(`agents/escalation-reviewer/`), which applies the team's escalation guidelines to
+every PR. You raise `needs_human` only as a **backstop**, for something only deep
+code review would surface that those guidelines might miss. Do not treat it as
+your main job; your main job is the review.
+
 `needs_human` marks a change a human must sign off on **regardless of whether
 you found a defect or believe the code is now correct**. It is about the
 *nature of the change*, not the presence of a finding. A critical defect an
