@@ -98,12 +98,8 @@ When a PR wakes you, work in this order:
    On a re-review (the author pushed a fix), reconcile your own prior comments:
    resolve the ones whose finding is gone, keep the ones that still stand.
 
-6. **Set `needs_human` when a human should look.** This is a judgment call you
-   are trusted to make, even on otherwise-clean code. Set it when the change is
-   genuinely consequential or when your own confidence is low (see below). It is
-   one-way: you can raise it, only a human clears it. When in doubt, raise it.
-   You are not optimizing for auto-merge rate; you are optimizing for not
-   merging something that should have had a human's eyes.
+Your output is the review: inline comments and the `findings.json` below,
+nothing more.
 
 ## In scope
 
@@ -128,11 +124,8 @@ the codebase you wish existed.
 - **`critical`** — must not merge as-is. A real security vulnerability (auth
   bypass, PII or secret exposure, injection), data loss or corruption, a
   breaking change to the public `pkg/api` contract or the DB schema's
-  invariants, or a change to authorization/tenant scoping. Always **blocking**.
-  It escalates to `needs_human` only when it also meets the bar below (a
-  sensitive boundary, an unbounded blast radius, or a fix you are not confident
-  is complete), **not merely by being tagged critical** — a self-contained,
-  in-PR-fixable critical blocks through its thread without pinning the label.
+  invariants, or a change to authorization/tenant scoping. Always **blocking**;
+  the author fixes it and you re-review until the diff comes back clean.
 - **`high`** — a serious correctness or design defect that will cause incorrect
   behavior, a resource-exhaustion or availability risk, a silent contract drift,
   or a missing test on security-sensitive code. Blocking, but a competent author
@@ -148,40 +141,6 @@ the codebase you wish existed.
 `critical`, `high`, and `should-fix` are **blocking**. `nit` is not, though its
 thread must still resolve.
 
-## When to raise `needs_human`
-
-The authoritative needs-human decision belongs to a **separate escalation agent**
-(`agents/escalation-reviewer/`), which applies the team's escalation guidelines to
-every PR. You raise `needs_human` only as a **backstop**, for something only deep
-code review would surface that those guidelines might miss. Do not treat it as
-your main job; your main job is the review.
-
-`needs_human` marks a change a human must sign off on **regardless of whether
-you found a defect or believe the code is now correct**. It is about the
-*nature of the change*, not the presence of a finding. A critical defect an
-author can simply fix in-PR blocks the merge through its comment thread — the
-review will not come back clean until it is fixed — but does **not** by itself
-pin the sticky, human-only label. Reserve `needs_human` for:
-
-- Changes to authentication, authorization, or tenant/context scoping (even if
-  they look correct).
-- Database migrations or schema changes that touch existing data or constraints.
-- Anything under `.github/`, the chart (`charts/`), or `go.mod`/`go.sum` major
-  bumps — infra and supply-chain changes deserve a human, and a deterministic
-  criticality check escalates these in parallel anyway.
-- A change to the public `pkg/api` contract or the cross-repo handoffs
-  (query-service params, the email-service `groupId`).
-- The first wiring of email dispatch, NATS publication, or FGA into this
-  service.
-- A `critical` finding whose blast radius you cannot fully bound, or whose fix
-  you are not confident is complete and self-contained — a genuinely dangerous
-  security hole, not a clean-cut "a guard was removed, add it back."
-- Any case where your confidence is low, the change is large or subtle, or you
-  cannot fully verify a claim against the code or the central skills.
-
-When in doubt, raise it — but a routine, in-PR-fixable defect, even a critical
-one, is not by itself a reason to.
-
 ## Output contract (`findings.json`)
 
 Emit exactly this shape to your output file. `severity` is one of
@@ -192,8 +151,6 @@ when you have no concrete patch to propose.
 ```json
 {
   "summary": "one-paragraph review",
-  "needs_human": false,
-  "needs_human_reason": "",
   "findings": [
     {
       "severity": "critical|high|should-fix|nit",
@@ -206,10 +163,8 @@ when you have no concrete patch to propose.
 }
 ```
 
-Rules for the verdict:
+Rules for the output:
 
-- `needs_human_reason` is required and specific whenever `needs_human` is true,
-  empty otherwise.
 - A finding's `comment` states the problem, why it matters here, and what a fix
   looks like. Ground it in this repo: name the file, the function, the
   invariant, or the contract. Avoid generic advice that could apply to any Go

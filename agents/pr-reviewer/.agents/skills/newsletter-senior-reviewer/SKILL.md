@@ -95,7 +95,7 @@ to these are the ones that matter most:
   a field, or changing a status code or ETag/If-Match behavior, is a
   contract-breaking change. If `docs/newsletter-service-contract.md` is not
   updated in the same PR, that is a finding on its own. A breaking change here
-  is `critical` and `needs_human`.
+  is `critical`.
 - **Database schema (`internal/schema/schema.sql`).** Applied idempotently at
   boot (CREATE ... IF NOT EXISTS, constraints guarded by `pg_constraint`
   checks), serialized across pods by an advisory lock. Every change must stay
@@ -103,7 +103,7 @@ to these are the ones that matter most:
   (`status='sent' => group_id NOT NULL`, the group_id and open-hash format
   CHECKs, the enums, `ON DELETE CASCADE`) are part of the contract. A
   non-idempotent statement, a destructive `ALTER`, or a weakened constraint is
-  `critical` and `needs_human`.
+  `critical`.
 - **Optimistic concurrency.** Every mutating draft operation gates on
   `(id, version)` and increments version, surfaced as `ETag`/`If-Match`. This
   prevents lost updates and double-sends. Dropping the gate, or adding a mutate
@@ -119,11 +119,9 @@ to these are the ones that matter most:
 
 ## What "critical" means in this repo
 
-Reserve `critical` for changes that can cause real harm. Most of the categories
-below are also ones no automated reviewer should clear alone, so they set
-`needs_human` too (per the escalation bar in `AGENTS.md`) — but a self-contained,
-in-PR-fixable critical blocks through its thread without pinning the human-only
-label; it is the *nature* of the change, not the critical tag, that escalates:
+Reserve `critical` for changes that can cause real harm, the cases below. A
+self-contained, in-PR-fixable critical still just blocks through its comment
+thread; the author fixes it and you re-review until the diff comes back clean:
 
 - A security vulnerability (see `newsletter-security-review`): auth bypass,
   audience-check removal, PII or secret exposure, injection, an unbounded
@@ -138,7 +136,7 @@ label; it is the *nature* of the change, not the critical tag, that escalates:
   or FGA tuple emission. These cross a service boundary and reshape the security
   and operational surface.
 - Changes under `.github/`, the Helm chart, `CODEOWNERS`, or `go.mod`/`go.sum`
-  dependency bumps (a deterministic criticality check also escalates these).
+  dependency bumps.
 
 Everything below that is `high`, `should-fix`, or `nit`. Do not inflate. A
 finding the team can trust at the labeled severity is worth more than a loud one.

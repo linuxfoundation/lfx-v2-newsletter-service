@@ -149,10 +149,10 @@ authorizes via service-layer checks." So:
   B's newsletter? The finding rests on the **missing `(contextType, contextUid)`
   ownership check**, not on guessing the UUID (treat UUIDs as unguessable, per the
   methodology). If the PR widens that exposure (e.g. a new endpoint that returns a
-  draft by id without a context check), it is `critical` and `needs_human`.
+  draft by id without a context check), it is `critical`.
 - A PR that **adds** real authorization (FGA tuples, an access-check call, a
-  context-ownership guard) is a security-positive change but still
-  `needs_human`: authorization changes always get a human.
+  context-ownership guard) is a security-positive change, but review it as the
+  security-sensitive change it is, with the same care as one that removes a guard.
 - Do not assume Heimdall fully scopes this. Heimdall authenticates and may
   coarse-authorize at the edge; per-object ownership within a context is the
   service's concern. Verify against `lfx-platform-architecture` rather than
@@ -193,7 +193,7 @@ authorizes via service-layer checks." So:
 - The schema's invariants are security-relevant: `status='sent' => group_id
   NOT NULL`, the `group_id` UUID-format CHECK, the `context_type`/`status`
   enums, and the open-hash CHECK. A migration that drops or weakens any of these
-  is `critical` and `needs_human`. `ON DELETE CASCADE` from `newsletter_opens`
+  is `critical`. `ON DELETE CASCADE` from `newsletter_opens`
   to `newsletters` must survive schema edits.
 - Optimistic-locking gates (`WHERE id = ? AND version = ?`) prevent lost
   updates and double-sends. A write that drops the version gate is a
@@ -212,7 +212,7 @@ authorizes via service-layer checks." So:
 - Chart changes: an externally exposed route that should be behind Heimdall, a
   weakened `networkPolicy`, a disabled `requireUserAuth` default, or a secret
   moved out of ExternalSecrets/CloudNativePG into plaintext values is
-  `critical`/`high` and `needs_human`.
+  `critical`/`high`.
 
 ## What not to flag (signal discipline)
 
