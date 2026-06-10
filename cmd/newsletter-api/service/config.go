@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // AppConfig holds all runtime configuration read from environment variables.
@@ -26,8 +28,37 @@ type AppConfig struct {
 	// pod spec — the env-var interpolation pattern would embed it verbatim.
 	DatabaseURL string
 
-	// Upstream services (required)
-	CommitteeServiceURL string
+	// NATS (required) — single connection used by the email dispatcher,
+	// committee member client, and project metadata client.
+	NATSURL           string
+	NATSTimeout       time.Duration
+	NATSMaxReconnect  int
+	NATSReconnectWait time.Duration
+
+	// SendFanoutEnabled toggles the per-recipient send loop. When false, the
+	// send orchestrator validates inputs and transitions the draft to sent
+	// without dispatching email to recipients. Useful for dev/staging shake-out
+	// of the recipient-resolution path without sending real mail.
+	SendFanoutEnabled bool
+
+	// SendConcurrency caps in-flight per-recipient sends during fan-out.
+	SendConcurrency int
+
+	// EmailFromAddress is the bare address used as the SMTP envelope From on
+	// outbound newsletters. Defaults to newsletter@lfx.linuxfoundation.org; override
+	// per environment when a different sender is configured upstream. The
+	// domain must be in the email-service allowlist or send_email will reject
+	// the request.
+	EmailFromAddress string
+
+	// UnsubscribeSecret is the HMAC key signing per-recipient unsubscribe
+	// tokens. When empty, the footer falls back to the legacy "reply with
+	// UNSUBSCRIBE" copy and the public endpoint rejects all requests.
+	UnsubscribeSecret string
+
+	// PublicBaseURL is the externally-reachable origin of this service,
+	// used to build unsubscribe links embedded in outgoing emails.
+	PublicBaseURL string
 
 	// Auth
 	JWKSURL          string
@@ -40,21 +71,34 @@ type AppConfig struct {
 
 // Defaults centralizes default values referenced from AppConfigFromEnv.
 const (
-	defaultPort = "8080"
+	defaultPort                  = "8080"
+	defaultNATSTimeout           = 10 * time.Second
+	defaultNATSReconnectWaitSecs = 2
+	defaultNATSURL               = "nats://nats:4222"
+	defaultSendConcurrency       = 5
+	defaultEmailFromAddress      = "newsletter@lfx.linuxfoundation.org"
 )
 
 // AppConfigFromEnv reads AppConfig from environment variables, applying defaults
 // where reasonable. It returns an error if a required variable is missing.
 func AppConfigFromEnv() (AppConfig, error) {
 	cfg := AppConfig{
-		Port:                envOr("PORT", defaultPort),
-		LogLevel:            os.Getenv("LOG_LEVEL"),
-		DatabaseURL:         os.Getenv("DATABASE_URL"),
-		CommitteeServiceURL: os.Getenv("COMMITTEE_SERVICE_URL"),
-		JWKSURL:             os.Getenv("JWKS_URL"),
-		ExpectedAudience:    os.Getenv("JWT_AUDIENCE"),
-		RequireUserAuth:     boolOr("REQUIRE_USER_AUTH", true),
-		LFXEnvironment:      os.Getenv("LFX_ENVIRONMENT"),
+		Port:              envOr("PORT", defaultPort),
+		LogLevel:          os.Getenv("LOG_LEVEL"),
+		DatabaseURL:       os.Getenv("DATABASE_URL"),
+		NATSURL:           envOr("NATS_URL", defaultNATSURL),
+		NATSTimeout:       durationOr("NATS_TIMEOUT", defaultNATSTimeout),
+		NATSMaxReconnect:  intOr("NATS_MAX_RECONNECT", -1),
+		NATSReconnectWait: durationOr("NATS_RECONNECT_WAIT", time.Duration(defaultNATSReconnectWaitSecs)*time.Second),
+		SendFanoutEnabled: boolOr("SEND_FANOUT_ENABLED", true),
+		SendConcurrency:   intOr("SEND_CONCURRENCY", defaultSendConcurrency),
+		EmailFromAddress:  envOr("EMAIL_FROM_ADDRESS", defaultEmailFromAddress),
+		UnsubscribeSecret: os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
+		PublicBaseURL:     strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
+		JWKSURL:           os.Getenv("JWKS_URL"),
+		ExpectedAudience:  os.Getenv("JWT_AUDIENCE"),
+		RequireUserAuth:   boolOr("REQUIRE_USER_AUTH", true),
+		LFXEnvironment:    os.Getenv("LFX_ENVIRONMENT"),
 	}
 
 	// If DATABASE_URL is not set, compose it from PG* env vars in-process so
@@ -70,14 +114,17 @@ func AppConfigFromEnv() (AppConfig, error) {
 	if cfg.DatabaseURL == "" {
 		missing = append(missing, "DATABASE_URL (or PGHOST/PGUSER/PGPASSWORD/PGDATABASE)")
 	}
-	if cfg.CommitteeServiceURL == "" {
-		missing = append(missing, "COMMITTEE_SERVICE_URL")
-	}
 	if cfg.RequireUserAuth && cfg.JWKSURL == "" {
 		missing = append(missing, "JWKS_URL (required when REQUIRE_USER_AUTH=true)")
 	}
 	if cfg.RequireUserAuth && cfg.ExpectedAudience == "" {
 		missing = append(missing, "JWT_AUDIENCE (required when REQUIRE_USER_AUTH=true)")
+	}
+	if cfg.SendFanoutEnabled && cfg.UnsubscribeSecret == "" {
+		missing = append(missing, "NEWSLETTER_UNSUBSCRIBE_SECRET (required when SEND_FANOUT_ENABLED=true)")
+	}
+	if cfg.SendFanoutEnabled && cfg.PublicBaseURL == "" {
+		missing = append(missing, "NEWSLETTER_PUBLIC_BASE_URL (required when SEND_FANOUT_ENABLED=true)")
 	}
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
@@ -134,4 +181,28 @@ func boolOr(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func intOr(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+func durationOr(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return fallback
+	}
+	return d
 }

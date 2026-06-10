@@ -51,8 +51,50 @@ spec:
               value: {{ .Values.service.port | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.app.logLevel | quote }}
-            - name: COMMITTEE_SERVICE_URL
-              value: {{ .Values.app.committeeServiceURL | quote }}
+            # NATS — used by the email dispatcher, committee member client,
+            # and project metadata client. Newsletter-service makes no HTTP
+            # upstream calls (the previous COMMITTEE_SERVICE_URL was retired
+            # along with the HTTP committee_client because Heimdall-minted
+            # JWTs failed OIDC validation at query-service).
+            - name: NATS_URL
+              value: {{ .Values.app.nats.url | quote }}
+            {{- with .Values.app.nats.timeout }}
+            - name: NATS_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.nats.maxReconnect }}
+            - name: NATS_MAX_RECONNECT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.nats.reconnectWait }}
+            - name: NATS_RECONNECT_WAIT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SEND_FANOUT_ENABLED
+              value: {{ .Values.app.send.fanoutEnabled | quote }}
+            {{- with .Values.app.send.concurrency }}
+            - name: SEND_CONCURRENCY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.fromAddress }}
+            - name: EMAIL_FROM_ADDRESS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: NEWSLETTER_PUBLIC_BASE_URL
+              value: {{ default (printf "https://lfx-api.%s" .Values.lfx.domain) .Values.app.unsubscribe.publicBaseURL | quote }}
+            {{- if .Values.app.unsubscribe.secretRef.name }}
+            - name: NEWSLETTER_UNSUBSCRIBE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.unsubscribe.secretRef.name }}
+                  key: {{ .Values.app.unsubscribe.secretRef.key }}
+            {{- else if .Values.app.unsubscribe.secret }}
+            - name: NEWSLETTER_UNSUBSCRIBE_SECRET
+              value: {{ .Values.app.unsubscribe.secret | quote }}
+            {{- else if .Values.app.send.fanoutEnabled }}
+            {{/* Fail the install instead of letting the pod CrashLoop with a missing HMAC secret. */}}
+            {{- required "app.unsubscribe.secretRef.name or app.unsubscribe.secret is required when app.send.fanoutEnabled is true" "" }}
+            {{- end }}
             - name: REQUIRE_USER_AUTH
               value: {{ .Values.app.requireUserAuth | quote }}
             {{- if .Values.app.jwksURL }}

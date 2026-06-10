@@ -11,16 +11,14 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/handler"
-	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/upstream"
+	natsinfra "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/nats"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/repository"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/schema"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
@@ -34,6 +32,7 @@ var (
 	httpHandler http.Handler
 	handlerImpl *handler.Handler
 	authImpl    *handler.AuthValidator
+	natsClient  *natsinfra.Client
 )
 
 // InitInfrastructure wires every singleton in dependency order. Idempotent
@@ -58,12 +57,25 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		return fmt.Errorf("schema apply: %w", err)
 	}
 
-	// Step 3: upstream HTTP client with OTel instrumentation.
-	tracedClient := &http.Client{
-		Timeout:   10 * time.Second,
-		Transport: otelhttp.NewTransport(http.DefaultTransport),
+	// Step 3: NATS — used by the email dispatcher, committee client, and
+	// project metadata client. No upstream HTTP service-to-service calls
+	// remain (the prior HTTP committee query client used to forward the user
+	// bearer token, but Heimdall mints a JWT the query-service can't validate,
+	// so that path returned empty results in practice).
+	nc, err := natsinfra.New(ctx, natsinfra.Config{
+		URL:           cfg.NATSURL,
+		Timeout:       cfg.NATSTimeout,
+		MaxReconnect:  cfg.NATSMaxReconnect,
+		ReconnectWait: cfg.NATSReconnectWait,
+	})
+	if err != nil {
+		return fmt.Errorf("nats connect: %w", err)
 	}
-	committeeClient := upstream.NewCommitteeQueryClient(cfg.CommitteeServiceURL, tracedClient)
+	natsClient = nc
+	committeeClient := natsinfra.NewCommitteeClient(nc)
+	projectClient := natsinfra.NewProjectClient(nc)
+	emailDispatcher := natsinfra.NewEmailDispatcher(nc)
+	userMetadataClient := natsinfra.NewUserMetadataClient(nc)
 
 	// Step 4: auth.
 	auth, err := handler.NewAuthValidator(ctx, cfg.JWKSURL, cfg.ExpectedAudience)
@@ -88,14 +100,26 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	// Step 5: domain wiring.
 	repo := repository.NewPostgresNewsletterRepo(bunDB)
 	newsletterSvc := service.NewNewsletterService(repo)
+	unsubSvc := service.NewUnsubscribeService(repo, []byte(cfg.UnsubscribeSecret), cfg.PublicBaseURL)
 	sendSvc := service.NewSendOrchestrator(service.SendOrchestratorConfig{
-		Repo:      repo,
-		Committee: committeeClient,
+		Repo:          repo,
+		Committee:     committeeClient,
+		Project:       projectClient,
+		Email:         emailDispatcher,
+		UserMetadata:  userMetadataClient,
+		Unsubscribe:   unsubSvc,
+		Concurrency:   cfg.SendConcurrency,
+		FanoutEnabled: cfg.SendFanoutEnabled,
+		FromAddress:   cfg.EmailFromAddress,
 	})
+	analyticsSvc := service.NewAnalyticsService(repo, emailDispatcher)
 
 	handlerImpl = handler.New(handler.Config{
 		Newsletter:      newsletterSvc,
 		Send:            sendSvc,
+		Analytics:       analyticsSvc,
+		Unsubscribe:     unsubSvc,
+		Project:         projectClient,
 		DB:              sqlDB,
 		Auth:            authImpl,
 		RequireUserAuth: cfg.RequireUserAuth,
@@ -113,6 +137,9 @@ func SQLDB() *sql.DB { return sqlDB }
 
 // Shutdown tears down singletons in reverse order. Safe to call from defer.
 func Shutdown() {
+	if natsClient != nil {
+		natsClient.Close()
+	}
 	if bunDB != nil {
 		if err := bunDB.Close(); err != nil {
 			slog.Warn("bun close error", "error", err)

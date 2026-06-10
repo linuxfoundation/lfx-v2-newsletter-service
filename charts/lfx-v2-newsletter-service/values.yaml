@@ -45,10 +45,50 @@ app:
   # logLevel is the log level: debug, info, warn, or error.
   logLevel: info
 
-  # committeeServiceURL is the base URL for upstream committee-service calls
-  # (typically the LFX v2 API gateway routing /query/resources to query-service).
-  # REQUIRED in production.
-  committeeServiceURL: ""
+  # nats is the NATS connection used by the email dispatcher, committee
+  # member client, and project metadata client. Newsletter-service makes no
+  # HTTP upstream calls — recipient resolution, project metadata lookup, and
+  # email send are all NATS request/reply.
+  nats:
+    url: "nats://lfx-platform-nats.lfx.svc.cluster.local:4222"
+    # timeout / maxReconnect / reconnectWait fall back to the app defaults
+    # (10s / unlimited / 2s) when empty.
+    timeout: ""
+    maxReconnect: ""
+    reconnectWait: ""
+
+  # send tunes the per-recipient send loop.
+  send:
+    # fanoutEnabled toggles real email dispatch. When false the orchestrator
+    # validates inputs and resolves recipients but does NOT call the
+    # email-service NATS subject — useful for dev/staging shake-out of the
+    # recipient-resolution path without sending real mail.
+    fanoutEnabled: true
+    # concurrency caps in-flight email-service requests during fan-out.
+    # Empty string falls back to the app default (5).
+    concurrency: ""
+    # fromAddress is the SMTP envelope From applied to every outbound
+    # newsletter. Domain must be in the email-service allowlist. Empty falls
+    # back to the app default (newsletter@lfx.linuxfoundation.org).
+    fromAddress: ""
+
+  # unsubscribe configures the per-recipient one-click opt-out link
+  # embedded in the email footer. publicBaseURL is the externally-reachable
+  # origin of this service; the HMAC secret signs the token so links can't
+  # be forged. The HMAC secret is REQUIRED when send.fanoutEnabled=true.
+  unsubscribe:
+    # publicBaseURL is the externally-reachable origin used to build the
+    # unsubscribe URL embedded in outgoing emails. Defaults to
+    # `https://lfx-api.<lfx.domain>` so it auto-tracks the same hostname
+    # served by the HTTPRoute. Override only when fronting the service with
+    # a different public origin.
+    publicBaseURL: ""
+    # secret sets the HMAC key directly (local/dev only). Prefer secretRef.
+    secret: ""
+    # secretRef sources the HMAC key from a Kubernetes Secret.
+    secretRef:
+      name: ""
+      key: "unsubscribe-secret"
 
   # jwksURL is the URL of the JWKS endpoint used to verify inbound JWTs.
   # REQUIRED when requireUserAuth=true (default).
@@ -142,9 +182,11 @@ serviceAccount:
   annotations: {}
 
 # networkPolicy controls the Kubernetes NetworkPolicy for this workload.
-# Allows egress to OTel, upstream HTTP services, and Postgres.
+# Allows egress to DNS, NATS (service-to-service request/reply), OTel,
+# Postgres, and external HTTPS (e.g. JWKS).
 networkPolicy:
   enabled: true
+  natsPort: 4222
   otelGRPCPort: 4317
   otelHTTPPort: 4318
   postgresPort: 5432

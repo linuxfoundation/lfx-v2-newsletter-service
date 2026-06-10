@@ -15,6 +15,7 @@ import (
 	"net/http"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
@@ -24,6 +25,9 @@ import (
 type Handler struct {
 	newsletter      *service.NewsletterService
 	send            *service.SendOrchestrator
+	analytics       *service.AnalyticsService
+	unsub           *service.UnsubscribeService
+	project         port.ProjectMetadataClient
 	db              *sql.DB
 	auth            *AuthValidator
 	requireUserAuth bool
@@ -33,6 +37,9 @@ type Handler struct {
 type Config struct {
 	Newsletter      *service.NewsletterService
 	Send            *service.SendOrchestrator
+	Analytics       *service.AnalyticsService
+	Unsubscribe     *service.UnsubscribeService
+	Project         port.ProjectMetadataClient
 	DB              *sql.DB
 	Auth            *AuthValidator
 	RequireUserAuth bool
@@ -43,13 +50,39 @@ func New(cfg Config) *Handler {
 	return &Handler{
 		newsletter:      cfg.Newsletter,
 		send:            cfg.Send,
+		analytics:       cfg.Analytics,
+		unsub:           cfg.Unsubscribe,
+		project:         cfg.Project,
 		db:              cfg.DB,
 		auth:            cfg.Auth,
 		requireUserAuth: cfg.RequireUserAuth,
 	}
 }
 
+// projectDisplayName resolves a human-readable project name for use in
+// recipient-facing pages, falling back to a generic label when the lookup
+// fails so the page always renders.
+func (h *Handler) projectDisplayName(ctx context.Context, projectUID string) string {
+	if h.project == nil {
+		return "this project's"
+	}
+	name, err := h.project.Name(ctx, projectUID)
+	if err != nil || name == "" {
+		return "this project's"
+	}
+	return name
+}
+
 // Routes returns a fully-wired http.Handler with all newsletter routes registered.
+//
+// All authenticated paths are project-scoped (`/projects/{project_uid}/...`)
+// so the Heimdall ruleset can gate by `project:{project_uid}` extracted from
+// `Request.URL.Captures.project_uid`. Drafts and sent newsletters share one
+// resource; status is a field on the row, not a sub-path.
+//
+// The open-pixel endpoint also carries `project_uid` for path consistency,
+// but Heimdall lets it through anonymously — recipients clicking the tracker
+// have no session.
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 
@@ -57,29 +90,31 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /livez", h.Livez)
 	mux.HandleFunc("GET /readyz", h.Readyz)
 
-	// Newsletter endpoints — JWT auth via withAuth().
-	mux.Handle("POST /newsletters/drafts", h.withAuth(http.HandlerFunc(h.CreateDraft)))
-	mux.Handle("GET /newsletters/drafts", h.withAuth(http.HandlerFunc(h.ListDrafts)))
-	mux.Handle("GET /newsletters/drafts/{id}", h.withAuth(http.HandlerFunc(h.GetDraft)))
-	mux.Handle("PUT /newsletters/drafts/{id}", h.withAuth(http.HandlerFunc(h.UpdateDraft)))
-	mux.Handle("DELETE /newsletters/drafts/{id}", h.withAuth(http.HandlerFunc(h.DeleteDraft)))
-	mux.Handle("POST /newsletters/drafts/{id}/send", h.withAuth(http.HandlerFunc(h.SendDraft)))
+	// Newsletter CRUD — JWT auth via withAuth().
+	mux.Handle("POST /projects/{project_uid}/newsletters", h.withAuth(http.HandlerFunc(h.CreateNewsletter)))
+	mux.Handle("GET /projects/{project_uid}/newsletters", h.withAuth(http.HandlerFunc(h.ListNewsletters)))
+	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}", h.withAuth(http.HandlerFunc(h.GetNewsletter)))
+	mux.Handle("PUT /projects/{project_uid}/newsletters/{newsletter_uid}", h.withAuth(http.HandlerFunc(h.UpdateNewsletter)))
+	mux.Handle("DELETE /projects/{project_uid}/newsletters/{newsletter_uid}", h.withAuth(http.HandlerFunc(h.DeleteNewsletter)))
+	mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/send", h.withAuth(http.HandlerFunc(h.SendNewsletter)))
 
-	mux.Handle("POST /newsletters/recipient-count", h.withAuth(http.HandlerFunc(h.RecipientCount)))
-	mux.Handle("POST /newsletters/recipients", h.withAuth(http.HandlerFunc(h.Recipients)))
-	mux.Handle("POST /newsletters/test-send", h.withAuth(http.HandlerFunc(h.TestSend)))
+	// Recipient resolution + test send — JWT auth.
+	mux.Handle("POST /projects/{project_uid}/newsletters/recipient-count", h.withAuth(http.HandlerFunc(h.RecipientCount)))
+	mux.Handle("POST /projects/{project_uid}/newsletters/recipients", h.withAuth(http.HandlerFunc(h.Recipients)))
+	mux.Handle("POST /projects/{project_uid}/newsletters/test-send", h.withAuth(http.HandlerFunc(h.TestSend)))
 
-	// Unified list + per-newsletter analytics — JWT auth.
-	// Note: paths intentionally avoid the /newsletters/{id}/... shape because
-	// Go's mux flags it as ambiguous with the existing /newsletters/drafts/{id}
-	// pattern (drafts could be treated as {id} or as a literal segment).
-	mux.Handle("GET /newsletters", h.withAuth(http.HandlerFunc(h.ListNewsletters)))
-	mux.Handle("GET /newsletter-analytics/{id}", h.withAuth(http.HandlerFunc(h.GetAnalytics)))
+	// Per-newsletter analytics — JWT auth.
+	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics", h.withAuth(http.HandlerFunc(h.GetAnalytics)))
 
 	// Open tracking pixel — intentionally unauthenticated; requested by the
 	// recipient's email client which has no session. Identity comes from the
 	// hash in the query string.
-	mux.HandleFunc("GET /newsletter-opens/{id}", h.OpenPixel)
+	mux.HandleFunc("GET /projects/{project_uid}/newsletter-opens/{newsletter_uid}", h.OpenPixel)
+
+	// One-click unsubscribe — intentionally unauthenticated; requested by a
+	// recipient clicking the footer link. Authorization comes from the
+	// HMAC-signed token in the query string.
+	mux.HandleFunc("GET /newsletters/unsubscribe", h.Unsubscribe)
 
 	// Outermost middleware first: request ID so it appears on every log line,
 	// then request log so it captures status + duration.
@@ -128,11 +163,29 @@ func writeError(ctx context.Context, w http.ResponseWriter, err error) {
 }
 
 // classifyError maps an error to an HTTP status code and short error code.
+//
+// Two error families are recognized:
+//
+//   - domain sentinel errors (`domain.Err*`), matched with `errors.Is`. These
+//     are returned by the repository and service layers for well-known
+//     business-logic outcomes.
+//   - typed `pkgerrors.*` wrappers (`Validation`, `NotFound`, `Conflict`,
+//     `ServiceUnavailable`), matched with `errors.As`. These are returned by
+//     the NATS upstream clients (committee, project, email-dispatcher) since
+//     they don't have a domain sentinel to wrap.
+//
+// Domain matches take precedence over the typed wrappers. Anything else falls
+// through to 500.
 func classifyError(err error) (int, string) {
 	if status, code, ok := classifyAuthError(err); ok {
 		return status, code
 	}
-	var svcUnavailable pkgerrors.ServiceUnavailable
+	var (
+		svcUnavailable pkgerrors.ServiceUnavailable
+		notFound       pkgerrors.NotFound
+		validation     pkgerrors.Validation
+		conflict       pkgerrors.Conflict
+	)
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound, "not_found"
@@ -143,16 +196,19 @@ func classifyError(err error) (int, string) {
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest, "invalid_request"
 	case errors.As(err, &svcUnavailable):
-		// Upstream / dependency failure (e.g. /query/resources returned 5xx).
-		// Surface as 503 so callers can distinguish a transient upstream
-		// problem from a true internal bug.
 		return http.StatusServiceUnavailable, "service_unavailable"
+	case errors.As(err, &notFound):
+		return http.StatusNotFound, "not_found"
+	case errors.As(err, &validation):
+		return http.StatusBadRequest, "invalid_request"
+	case errors.As(err, &conflict):
+		return http.StatusConflict, "conflict"
 	default:
 		return http.StatusInternalServerError, "internal_error"
 	}
 }
 
-// maxRequestBodyBytes caps inbound JSON bodies. Newsletter bodyHtml is the
+// maxRequestBodyBytes caps inbound JSON bodies. Newsletter body_html is the
 // largest legitimate field (capped at 100 KiB in the service layer); 1 MiB
 // gives generous headroom while bounding the per-request allocation when a
 // client streams a hostile payload.

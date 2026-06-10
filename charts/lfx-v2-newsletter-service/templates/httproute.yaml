@@ -18,19 +18,27 @@ spec:
   hostnames:
     - "lfx-api.{{ .Values.lfx.domain }}"
   rules:
+    # Newsletter endpoints are project-scoped:
+    #   /projects/{project_uid}/newsletters[/<rest>]
+    #   /projects/{project_uid}/newsletter-opens/{newsletter_uid}
+    # Gateway API's `RegularExpression` path-match type lets us pluck the
+    # newsletter-owned subset out of the `/projects/...` URL space without
+    # routing every project sub-path here (project-service owns the rest).
+    # Requires a Gateway implementation with RegularExpression support
+    # (Traefik >= 2.10).
     - matches:
         - path:
+            type: RegularExpression
+            value: "^/projects/[^/]+/newsletters(/.*)?$"
+        - path:
+            type: RegularExpression
+            value: "^/projects/[^/]+/newsletter-opens/[^/]+$"
+        # One-click unsubscribe link clicked from a recipient's email client.
+        # Not project-scoped in the URL: the project_uid is carried inside the
+        # signed token so links stay short and opaque.
+        - path:
             type: Exact
-            value: /newsletters
-        - path:
-            type: PathPrefix
-            value: /newsletters/
-        - path:
-            type: PathPrefix
-            value: /newsletter-analytics/
-        - path:
-            type: PathPrefix
-            value: /newsletter-opens/
+            value: /newsletters/unsubscribe
       {{- if .Values.heimdall.enabled }}
       filters:
         - type: ExtensionRef

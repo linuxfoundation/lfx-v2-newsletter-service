@@ -5,8 +5,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 CREATE TABLE IF NOT EXISTS newsletters (
     id                UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-    context_type      TEXT         NOT NULL CHECK (context_type IN ('foundation','project')),
-    context_uid       TEXT         NOT NULL,
+    project_uid       TEXT         NOT NULL,
     subject           TEXT         NOT NULL,
     body_html         TEXT         NOT NULL,
     ed_reply_email    TEXT         NOT NULL,
@@ -20,13 +19,34 @@ CREATE TABLE IF NOT EXISTS newsletters (
     updated_at        TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
--- group_id is the lfx-v2-email-service correlation identifier. Set by the
--- Express layer in lfx-v2-ui when a draft is marked sent so analytics can
--- aggregate per-recipient engagement records keyed by this id. Nullable on
--- drafts; immutable once set. Stored as TEXT (rather than UUID) so existing
--- deployments don't require a column-type alter, but the CHECK constraints
--- below enforce UUID format and the status='sent' ⇒ group_id NOT NULL
--- invariant at the DB layer in case a caller misbehaves.
+-- Forward-compatibility shim for environments that ran the previous schema
+-- (foundation/project context, no project_uid). Drops the now-defunct context
+-- columns and renames context_uid → project_uid in place so existing rows survive.
+-- Safe to run on a fresh DB because the columns won't exist.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'newsletters' AND column_name = 'context_type'
+    ) THEN
+        ALTER TABLE newsletters DROP CONSTRAINT IF EXISTS newsletters_context_type_check;
+        ALTER TABLE newsletters DROP COLUMN context_type;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'newsletters' AND column_name = 'context_uid'
+    ) THEN
+        ALTER TABLE newsletters RENAME COLUMN context_uid TO project_uid;
+    END IF;
+END$$;
+
+-- group_id is the lfx-v2-email-service correlation identifier. Minted by
+-- the SendOrchestrator when a draft is marked sent so analytics can aggregate
+-- per-recipient engagement records keyed by this id. Nullable on drafts;
+-- immutable once set. Stored as TEXT (rather than UUID) so existing deployments
+-- don't require a column-type alter, but the CHECK constraints below enforce
+-- UUID format and the status='sent' ⇒ group_id NOT NULL invariant at the DB
+-- layer in case a caller misbehaves.
 ALTER TABLE newsletters
     ADD COLUMN IF NOT EXISTS group_id TEXT;
 
@@ -50,14 +70,15 @@ BEGIN
     END IF;
 END$$;
 
-CREATE INDEX IF NOT EXISTS idx_newsletters_context ON newsletters (context_type, context_uid);
+-- Replace the old (context_type, context_uid) indexes with project-scoped
+-- equivalents. The composite list index supports the (project_uid, updated_at
+-- DESC, id DESC) keyset pagination used by ListAll.
+DROP INDEX IF EXISTS idx_newsletters_context;
+DROP INDEX IF EXISTS idx_newsletters_list;
+CREATE INDEX IF NOT EXISTS idx_newsletters_project ON newsletters (project_uid);
 CREATE INDEX IF NOT EXISTS idx_newsletters_status  ON newsletters (status);
-
--- Composite index supporting the (context_type, context_uid, updated_at DESC, id DESC)
--- keyset pagination used by ListAll. Without this, every list call falls back
--- to a sort over the context partition.
 CREATE INDEX IF NOT EXISTS idx_newsletters_list
-    ON newsletters (context_type, context_uid, updated_at DESC, id DESC);
+    ON newsletters (project_uid, updated_at DESC, id DESC);
 
 -- newsletter_opens captures one row per open event. recipient_hash is a SHA-256
 -- of the lowercased recipient email so we can compute unique opens without
@@ -101,3 +122,25 @@ ALTER TABLE newsletter_opens
 -- The application is expected to use ON CONFLICT DO NOTHING when inserting.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_opens_newsletter_recipient_hour
     ON newsletter_opens (newsletter_id, recipient_hash, opened_at_hour);
+
+-- newsletter_unsubscribes records project-scoped opt-outs. A row means the
+-- given email address has unsubscribed from all newsletters for that
+-- project_uid; the address may still receive newsletters for other projects.
+-- Email is stored lowercased so the unique index makes the insert idempotent
+-- without needing a CITEXT extension.
+--
+-- updated_at is currently write-once (set equal to created_at on insert and
+-- never touched). It is reserved for a future re-subscribe / preference-update
+-- flow where an opt-out row may be mutated (e.g. soft-deleted with a
+-- resubscribed_at timestamp) rather than hard-deleted, so the column is
+-- declared now to avoid a later ALTER TABLE.
+CREATE TABLE IF NOT EXISTS newsletter_unsubscribes (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_uid TEXT        NOT NULL,
+    email       TEXT        NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_unsubscribes_project_email
+    ON newsletter_unsubscribes (project_uid, email);

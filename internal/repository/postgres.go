@@ -69,13 +69,12 @@ func (r *PostgresNewsletterRepo) Get(ctx context.Context, id uuid.UUID) (*model.
 	return n, nil
 }
 
-// List returns all newsletters in the given context, newest first.
-func (r *PostgresNewsletterRepo) List(ctx context.Context, contextType model.ContextType, contextUID string) ([]*model.Newsletter, error) {
+// List returns all newsletters in the given project, newest first.
+func (r *PostgresNewsletterRepo) List(ctx context.Context, projectUID string) ([]*model.Newsletter, error) {
 	var rows []*model.Newsletter
 	err := r.db.NewSelect().
 		Model(&rows).
-		Where("context_type = ?", contextType).
-		Where("context_uid = ?", contextUID).
+		Where("project_uid = ?", projectUID).
 		Order("created_at DESC").
 		Scan(ctx)
 	if err != nil {
@@ -99,8 +98,7 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 
 	q := r.db.NewSelect().
 		Model((*model.Newsletter)(nil)).
-		Where("context_type = ?", filters.ContextType).
-		Where("context_uid = ?", filters.ContextUID).
+		Where("project_uid = ?", filters.ProjectUID).
 		Order("updated_at DESC").
 		Order("id DESC").
 		Limit(limit + 1)
@@ -147,8 +145,7 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		// pgdialect.Array forces a Postgres text[] literal; without it bun
 		// json-encodes the slice and PG raises a "malformed array literal".
 		Set("committee_uids = ?", pgdialect.Array(n.CommitteeUIDs)).
-		Set("context_type = ?", n.ContextType).
-		Set("context_uid = ?", n.ContextUID).
+		Set("project_uid = ?", n.ProjectUID).
 		Set("updated_at = now()").
 		Set("version = version + 1").
 		Where("id = ? AND version = ?", n.ID, expectedVersion).
@@ -307,6 +304,44 @@ func (r *PostgresNewsletterRepo) Analytics(ctx context.Context, newsletterID uui
 		DailyOpens:      daily,
 		LastEventAt:     agg.LastEventAt,
 	}, nil
+}
+
+// CreateUnsubscribe records a project-scoped opt-out. Idempotent: a second
+// call for the same (project_uid, email) pair is a no-op via the unique
+// index. Email is normalized to lowercase before insert so the index matches
+// regardless of the case the recipient's mail client used in the URL.
+func (r *PostgresNewsletterRepo) CreateUnsubscribe(ctx context.Context, projectUID, email string) error {
+	row := &model.NewsletterUnsubscribe{
+		ProjectUID: projectUID,
+		Email:      strings.ToLower(strings.TrimSpace(email)),
+	}
+	if _, err := r.db.NewInsert().
+		Model(row).
+		On("CONFLICT (project_uid, email) DO NOTHING").
+		Exec(ctx); err != nil {
+		return fmt.Errorf("insert unsubscribe: %w", err)
+	}
+	return nil
+}
+
+// ListUnsubscribedEmails returns the set of lowercased email addresses that
+// have opted out of newsletters for the given project. Returned as a map so
+// the send orchestrator can filter the recipient list in O(1) per address.
+func (r *PostgresNewsletterRepo) ListUnsubscribedEmails(ctx context.Context, projectUID string) (map[string]struct{}, error) {
+	var emails []string
+	err := r.db.NewSelect().
+		Model((*model.NewsletterUnsubscribe)(nil)).
+		Column("email").
+		Where("project_uid = ?", projectUID).
+		Scan(ctx, &emails)
+	if err != nil {
+		return nil, fmt.Errorf("list unsubscribes: %w", err)
+	}
+	out := make(map[string]struct{}, len(emails))
+	for _, e := range emails {
+		out[strings.ToLower(e)] = struct{}{}
+	}
+	return out, nil
 }
 
 // classifyMissing distinguishes ErrNotFound from ErrVersionMismatch after an

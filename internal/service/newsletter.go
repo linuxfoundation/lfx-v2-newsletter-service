@@ -47,8 +47,7 @@ func NewNewsletterService(repo port.NewsletterRepository) *NewsletterService {
 
 // CreateDraftInput is the typed input for CreateDraft.
 type CreateDraftInput struct {
-	ContextType   model.ContextType
-	ContextUID    string
+	ProjectUID    string
 	Subject       string
 	BodyHTML      string
 	EDReplyEmail  string
@@ -68,11 +67,8 @@ type UpdateDraftInput struct {
 
 // CreateDraft validates the input and inserts a new draft row.
 func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput) (*model.Newsletter, error) {
-	if err := validateContextType(in.ContextType); err != nil {
+	if err := validateProjectUID(in.ProjectUID); err != nil {
 		return nil, err
-	}
-	if in.ContextUID == "" {
-		return nil, fmt.Errorf("%w: contextUid is required", domain.ErrInvalidRequest)
 	}
 	if err := validateSubject(in.Subject); err != nil {
 		return nil, err
@@ -91,8 +87,7 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	}
 
 	n := &model.Newsletter{
-		ContextType:   in.ContextType,
-		ContextUID:    in.ContextUID,
+		ProjectUID:    in.ProjectUID,
 		Subject:       strings.TrimSpace(in.Subject),
 		BodyHTML:      in.BodyHTML,
 		EDReplyEmail:  strings.TrimSpace(in.EDReplyEmail),
@@ -107,39 +102,43 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	return n, nil
 }
 
-// GetDraft fetches a draft by id. Returns domain.ErrNotFound if not found.
-func (s *NewsletterService) GetDraft(ctx context.Context, id uuid.UUID) (*model.Newsletter, error) {
-	return s.repo.Get(ctx, id)
-}
-
-// ListDrafts returns all drafts for the given context, newest first.
-func (s *NewsletterService) ListDrafts(ctx context.Context, contextType model.ContextType, contextUID string) ([]*model.Newsletter, error) {
-	if err := validateContextType(contextType); err != nil {
+// GetNewsletter fetches a newsletter by id and verifies it belongs to the given
+// project. A mismatch surfaces as ErrNotFound so the caller can't probe for
+// other projects' newsletters.
+func (s *NewsletterService) GetNewsletter(ctx context.Context, projectUID string, id uuid.UUID) (*model.Newsletter, error) {
+	if err := validateProjectUID(projectUID); err != nil {
 		return nil, err
 	}
-	if contextUID == "" {
-		return nil, fmt.Errorf("%w: contextUid is required", domain.ErrInvalidRequest)
+	n, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return nil, err
 	}
-	return s.repo.List(ctx, contextType, contextUID)
+	if n.ProjectUID != projectUID {
+		return nil, domain.ErrNotFound
+	}
+	return n, nil
+}
+
+// GetNewsletterByID fetches a newsletter by id WITHOUT a project gate. Used
+// internally by handlers that already enforce project ownership (e.g. the
+// open-pixel handler, which validates project_uid from the URL against the
+// stored newsletter).
+func (s *NewsletterService) GetNewsletterByID(ctx context.Context, id uuid.UUID) (*model.Newsletter, error) {
+	return s.repo.Get(ctx, id)
 }
 
 // ListNewslettersInput is the typed input for ListNewsletters.
 type ListNewslettersInput struct {
-	ContextType model.ContextType
-	ContextUID  string
-	Status      model.Status // optional; "" means both drafts and sent
-	PageToken   string
+	ProjectUID string
+	Status     model.Status // optional; "" means both drafts and sent
+	PageToken  string
 }
 
-// ListNewsletters returns a page of newsletters for the given context. When
-// Status is empty, both drafts and sent newsletters are returned, ordered by
-// most-recently-updated first.
+// ListNewsletters returns a page of newsletters for the given project, ordered
+// by most-recently-updated first.
 func (s *NewsletterService) ListNewsletters(ctx context.Context, in ListNewslettersInput) (*port.ListPage, error) {
-	if err := validateContextType(in.ContextType); err != nil {
+	if err := validateProjectUID(in.ProjectUID); err != nil {
 		return nil, err
-	}
-	if in.ContextUID == "" {
-		return nil, fmt.Errorf("%w: contextUid is required", domain.ErrInvalidRequest)
 	}
 	if in.Status != "" {
 		switch in.Status {
@@ -149,16 +148,26 @@ func (s *NewsletterService) ListNewsletters(ctx context.Context, in ListNewslett
 		}
 	}
 	return s.repo.ListAll(ctx, port.ListFilters{
-		ContextType: in.ContextType,
-		ContextUID:  in.ContextUID,
-		Status:      in.Status,
-		PageToken:   in.PageToken,
+		ProjectUID: in.ProjectUID,
+		Status:     in.Status,
+		PageToken:  in.PageToken,
 	})
 }
 
 // Analytics returns aggregated engagement metrics for the given newsletter.
-// Returns ErrNotFound if the newsletter doesn't exist.
-func (s *NewsletterService) Analytics(ctx context.Context, id uuid.UUID) (*model.Analytics, error) {
+// Returns ErrNotFound if the newsletter doesn't exist or belongs to a different
+// project than the one supplied.
+func (s *NewsletterService) Analytics(ctx context.Context, projectUID string, id uuid.UUID) (*model.Analytics, error) {
+	if err := validateProjectUID(projectUID); err != nil {
+		return nil, err
+	}
+	n, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if n.ProjectUID != projectUID {
+		return nil, domain.ErrNotFound
+	}
 	return s.repo.Analytics(ctx, id)
 }
 
@@ -198,8 +207,12 @@ func HashRecipient(email string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// UpdateDraft mutates an existing draft, gated by optimistic locking.
-func (s *NewsletterService) UpdateDraft(ctx context.Context, in UpdateDraftInput) (*model.Newsletter, error) {
+// UpdateDraft mutates an existing draft, gated by optimistic locking and
+// project ownership.
+func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, in UpdateDraftInput) (*model.Newsletter, error) {
+	if err := validateProjectUID(projectUID); err != nil {
+		return nil, err
+	}
 	if err := validateSubject(in.Subject); err != nil {
 		return nil, err
 	}
@@ -217,6 +230,9 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, in UpdateDraftInput
 	if err != nil {
 		return nil, err
 	}
+	if existing.ProjectUID != projectUID {
+		return nil, domain.ErrNotFound
+	}
 	if existing.Status == model.StatusSent {
 		return nil, domain.ErrAlreadySent
 	}
@@ -229,12 +245,18 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, in UpdateDraftInput
 	return s.repo.Update(ctx, existing, in.ExpectedVersion)
 }
 
-// DeleteDraft removes a draft by id. Returns domain.ErrNotFound if missing.
-// Drafts that are already sent cannot be deleted.
-func (s *NewsletterService) DeleteDraft(ctx context.Context, id uuid.UUID) error {
+// DeleteDraft removes a draft by id, gated by project ownership. Drafts that
+// are already sent cannot be deleted.
+func (s *NewsletterService) DeleteDraft(ctx context.Context, projectUID string, id uuid.UUID) error {
+	if err := validateProjectUID(projectUID); err != nil {
+		return err
+	}
 	existing, err := s.repo.Get(ctx, id)
 	if err != nil {
 		return err
+	}
+	if existing.ProjectUID != projectUID {
+		return domain.ErrNotFound
 	}
 	if existing.Status == model.StatusSent {
 		return domain.ErrAlreadySent
@@ -242,14 +264,11 @@ func (s *NewsletterService) DeleteDraft(ctx context.Context, id uuid.UUID) error
 	return s.repo.Delete(ctx, id)
 }
 
-// validateContextType ensures the context type is a recognized value.
-func validateContextType(t model.ContextType) error {
-	switch t {
-	case model.ContextFoundation, model.ContextProject:
-		return nil
-	default:
-		return fmt.Errorf("%w: contextType must be 'foundation' or 'project'", domain.ErrInvalidRequest)
+func validateProjectUID(projectUID string) error {
+	if strings.TrimSpace(projectUID) == "" {
+		return fmt.Errorf("%w: project_uid is required", domain.ErrInvalidRequest)
 	}
+	return nil
 }
 
 func validateSubject(subject string) error {
@@ -265,10 +284,10 @@ func validateSubject(subject string) error {
 
 func validateBodyHTML(bodyHTML string) error {
 	if strings.TrimSpace(bodyHTML) == "" {
-		return fmt.Errorf("%w: bodyHtml is required", domain.ErrInvalidRequest)
+		return fmt.Errorf("%w: body_html is required", domain.ErrInvalidRequest)
 	}
 	if len(bodyHTML) > maxBodyHTMLLength {
-		return fmt.Errorf("%w: bodyHtml exceeds %d characters", domain.ErrInvalidRequest, maxBodyHTMLLength)
+		return fmt.Errorf("%w: body_html exceeds %d characters", domain.ErrInvalidRequest, maxBodyHTMLLength)
 	}
 	return nil
 }
@@ -276,24 +295,24 @@ func validateBodyHTML(bodyHTML string) error {
 func validateEDReplyEmail(email string) error {
 	trimmed := strings.TrimSpace(email)
 	if trimmed == "" {
-		return fmt.Errorf("%w: edReplyEmail is required", domain.ErrInvalidRequest)
+		return fmt.Errorf("%w: ed_reply_email is required", domain.ErrInvalidRequest)
 	}
 	if _, err := mail.ParseAddress(trimmed); err != nil {
-		return fmt.Errorf("%w: edReplyEmail is not a valid email: %v", domain.ErrInvalidRequest, err)
+		return fmt.Errorf("%w: ed_reply_email is not a valid email: %v", domain.ErrInvalidRequest, err)
 	}
 	return nil
 }
 
 func validateCommitteeUIDs(uids []string) error {
 	if len(uids) == 0 {
-		return fmt.Errorf("%w: at least one committeeUid is required", domain.ErrInvalidRequest)
+		return fmt.Errorf("%w: at least one committee_uid is required", domain.ErrInvalidRequest)
 	}
 	if len(uids) > maxCommitteesPerDraft {
-		return fmt.Errorf("%w: at most %d committeeUids allowed", domain.ErrInvalidRequest, maxCommitteesPerDraft)
+		return fmt.Errorf("%w: at most %d committee_uids allowed", domain.ErrInvalidRequest, maxCommitteesPerDraft)
 	}
 	for _, u := range uids {
 		if strings.TrimSpace(u) == "" {
-			return fmt.Errorf("%w: committeeUids contains an empty value", domain.ErrInvalidRequest)
+			return fmt.Errorf("%w: committee_uids contains an empty value", domain.ErrInvalidRequest)
 		}
 	}
 	return nil

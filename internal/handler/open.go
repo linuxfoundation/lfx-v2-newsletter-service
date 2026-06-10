@@ -21,7 +21,7 @@ var trackingPixel = mustDecodeBase64("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAA
 // embeds in tracking URLs. Anchored, compiled once at package init.
 var recipientHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
-// OpenPixel handles GET /newsletter-opens/{id}?r=<recipient_hash>.
+// OpenPixel handles GET /projects/{project_uid}/newsletter-opens/{newsletter_uid}?r=<recipient_hash>.
 //
 // This endpoint is *intentionally unauthenticated* — it is requested by the
 // recipient's email client, which doesn't carry a session. Recipients are
@@ -32,12 +32,25 @@ var recipientHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 // respond with the transparent pixel so email clients don't surface a broken
 // image. We log warnings for genuinely invalid requests but never propagate
 // 4xx/5xx to the email client.
+//
+// The project_uid in the path is validated against the persisted newsletter so
+// a tampered URL pointing at the right newsletter_uid under the wrong
+// project_uid is silently rejected (pixel still returns 200).
 func (h *Handler) OpenPixel(w http.ResponseWriter, r *http.Request) {
-	id, err := parseUUID(r.PathValue("id"))
+	projectUID := r.PathValue("project_uid")
+	id, err := parseUUID(r.PathValue("newsletter_uid"))
 	if err != nil {
-		slog.WarnContext(r.Context(), "open pixel: invalid id", "error", err.Error())
+		slog.WarnContext(r.Context(), "open pixel: invalid newsletter_uid", "error", err.Error())
 		writePixel(w)
 		return
+	}
+
+	if n, lookupErr := h.newsletter.GetNewsletterByID(r.Context(), id); lookupErr == nil {
+		if projectUID != "" && n.ProjectUID != projectUID {
+			slog.WarnContext(r.Context(), "open pixel: project_uid mismatch", "newsletter_id", id)
+			writePixel(w)
+			return
+		}
 	}
 
 	// RecordOpenWithHash treats an empty hash as a silent no-op, so a tracking

@@ -19,33 +19,27 @@ const (
 	StatusSent  Status = "sent"
 )
 
-// ContextType identifies the scope a newsletter is composed for.
-type ContextType string
-
-// ContextType values persisted in the database. Mirrored by the schema CHECK constraint.
-const (
-	ContextFoundation ContextType = "foundation"
-	ContextProject    ContextType = "project"
-)
-
 // Newsletter is the aggregate root persisted in the newsletters table.
+//
+// Project_uid is the only scope dimension — foundation-scoped newsletters are
+// not supported. Authorization at the gateway (Heimdall + FGA) gates by
+// project_uid extracted from the path.
 type Newsletter struct {
 	bun.BaseModel `bun:"table:newsletters,alias:n"`
 
-	ID              uuid.UUID   `bun:"id,pk,type:uuid,default:gen_random_uuid()" json:"id"`
-	ContextType     ContextType `bun:"context_type,notnull" json:"contextType"`
-	ContextUID      string      `bun:"context_uid,notnull" json:"contextUid"`
-	Subject         string      `bun:"subject,notnull" json:"subject"`
-	BodyHTML        string      `bun:"body_html,notnull" json:"bodyHtml"`
-	EDReplyEmail    string      `bun:"ed_reply_email,notnull" json:"edReplyEmail"`
-	CommitteeUIDs   []string    `bun:"committee_uids,array" json:"committeeUids"`
-	Status          Status      `bun:"status,notnull,default:'draft'" json:"status"`
-	SentAt          *time.Time  `bun:"sent_at" json:"sentAt,omitempty"`
-	TotalRecipients int         `bun:"total_recipients,notnull,default:0" json:"totalRecipients"`
-	// GroupID is the lfx-v2-email-service correlation identifier. Populated
-	// by MarkSent when the draft transitions to status=sent; null on drafts.
-	// Used by analytics queries to aggregate per-newsletter engagement
-	// across the per-recipient sends fanned out from lfx-v2-ui.
+	ID              uuid.UUID  `bun:"id,pk,type:uuid,default:gen_random_uuid()" json:"id"`
+	ProjectUID      string     `bun:"project_uid,notnull" json:"projectUid"`
+	Subject         string     `bun:"subject,notnull" json:"subject"`
+	BodyHTML        string     `bun:"body_html,notnull" json:"bodyHtml"`
+	EDReplyEmail    string     `bun:"ed_reply_email,notnull" json:"edReplyEmail"`
+	CommitteeUIDs   []string   `bun:"committee_uids,array" json:"committeeUids"`
+	Status          Status     `bun:"status,notnull,default:'draft'" json:"status"`
+	SentAt          *time.Time `bun:"sent_at" json:"sentAt,omitempty"`
+	TotalRecipients int        `bun:"total_recipients,notnull,default:0" json:"totalRecipients"`
+	// GroupID is the lfx-v2-email-service correlation identifier, minted by
+	// the SendOrchestrator at send time and persisted alongside the status
+	// transition. Used by analytics queries to aggregate per-newsletter
+	// engagement across the per-recipient sends.
 	GroupID   *string   `bun:"group_id" json:"groupId,omitempty"`
 	CreatedBy string    `bun:"created_by,notnull" json:"createdBy"`
 	Version   int64     `bun:"version,notnull,default:1" json:"version"`
@@ -92,7 +86,7 @@ type CommitteeMember struct {
 	FirstName string
 }
 
-// ProjectBranding is the slice of a project/foundation used to brand newsletter emails.
+// ProjectBranding is the slice of a project used to brand newsletter emails.
 type ProjectBranding struct {
 	DisplayName string
 	LogoURL     string
