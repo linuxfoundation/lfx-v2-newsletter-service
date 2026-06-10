@@ -1,6 +1,6 @@
 ---
 name: newsletter-service-dev
-description: Repo-local Go coding conventions and implementation guidance for lfx-v2-newsletter-service. Auto-attaches when editing Go code, HTTP handlers, Postgres/Bun repository code, embedded schema, query-service recipient resolution, newsletter API DTOs, Makefile, Helm chart templates, or service-owned docs. Owns the newsletter HTTP API, draft/send state transitions, local analytics/open tracking, recipient resolution, tests, formatting, linting, and license headers. Central platform composition stays in lfx-skills:lfx-platform-architecture; cross-repo routing stays in lfx-skills:lfx.
+description: Repo-local Go coding conventions and implementation guidance for lfx-v2-newsletter-service. Auto-attaches when editing Go code, HTTP handlers, Postgres/Bun repository code, embedded schema, NATS upstream clients, recipient resolution, email fan-out, newsletter API DTOs, Makefile, Helm chart templates, or service-owned docs. Owns the newsletter HTTP API, draft/send state transitions, email dispatch, unsubscribe, local analytics/open tracking, recipient resolution, tests, formatting, linting, and license headers. Central platform composition stays in lfx-skills:lfx-platform-architecture; cross-repo routing stays in lfx-skills:lfx.
 paths:
   - "**/*.go"
   - "go.mod"
@@ -17,27 +17,28 @@ allowed-tools: Read, Glob, Grep, Edit, Write, Bash
 
 # Development Conventions
 
-Repo-owned conventions for `lfx-v2-newsletter-service`. This service owns newsletter drafts, sent-state persistence, recipient resolution, local open tracking, and newsletter analytics. It is not a Goa service, does not currently emit indexer or FGA messages, and does not currently dispatch emails itself.
+Repo-owned conventions for `lfx-v2-newsletter-service`. This service owns project-scoped newsletter drafts, sent-state persistence, recipient resolution, email dispatch (per-recipient fan-out to email-service over NATS), unsubscribe opt-outs, local open tracking, and newsletter analytics. It is not a Goa service and does not emit indexer or FGA messages.
 
 Use this skill alongside:
 
 - `lfx-skills:lfx` for cross-repo topology, owner lookup, and missing local checkouts.
 - `lfx-skills:lfx-platform-architecture` for platform composition, service classes, query-service/FGA/indexer flows, and deployment handoffs.
 - `docs/newsletter-service-contract.md` for this repo's HTTP API and public DTO contract.
-- `docs/recipient-resolution.md` for query-service consumption and the email-service handoff.
+- `docs/recipient-resolution.md` for committee-service member lookup over NATS and the email-service fan-out.
 - `docs/service-helm-chart.md` for service-local chart values, database modes, Gateway/Heimdall wiring, and deployment surfaces.
 
 ## Repo Layout
 
 ```text
 cmd/newsletter-api/                 entry point, runtime config, dependency wiring
-internal/domain/model/              newsletter aggregate, open event, analytics DTOs
-internal/domain/port/               repository and upstream interfaces
-internal/service/                   draft CRUD, validation, send-state orchestration, recipient hash helpers
+internal/domain/model/              newsletter aggregate, open event, unsubscribe, analytics DTOs
+internal/domain/port/               repository and upstream interfaces (committee, project, email, user metadata)
+internal/service/                   draft CRUD, validation, send orchestration + fan-out, unsubscribe, analytics, email chrome render
 internal/repository/                Postgres/Bun implementation and pagination cursor codec
 internal/schema/                    embedded idempotent schema.sql, advisory-lock bootstrap
 internal/handler/                   stdlib net/http routes, auth middleware, JSON/error mapping
-internal/infrastructure/upstream/   query-service HTTP client and bearer-token propagation
+internal/infrastructure/nats/       NATS request/reply clients (committee, project, email dispatcher, user metadata) and subject constants
+internal/infrastructure/upstream/   retired HTTP client package (placeholder only)
 internal/infrastructure/observability/ slog and OpenTelemetry setup
 pkg/api/                            public request/response DTOs
 pkg/errors/                         typed client/server error helpers
@@ -58,9 +59,10 @@ Match the existing package boundaries before adding a new abstraction.
 ## Drafts And Send State
 
 - Draft lifecycle is `draft -> sent`; sent drafts cannot be modified, deleted, or sent again.
-- `UpdateDraft` and `SendDraft` use optimistic locking through strong ETags and `If-Match`.
-- `SendDraft` requires a valid UUID `groupId`. That value is the `lfx-v2-email-service` correlation ID persisted on the newsletter row.
-- Current send behavior is a state transition only. Email dispatch is performed outside this Go service today. Do not add a publisher without updating `docs/recipient-resolution.md`, `docs/newsletter-service-contract.md`, and the caller contract.
+- Update and send use optimistic locking through strong ETags and `If-Match`.
+- `SendNewsletter` mints the email-service `group_id` (`uuid.NewString()`) and persists it on the newsletter row when the draft is marked sent. The DB enforces UUID format and `status='sent' => group_id IS NOT NULL`.
+- The send orchestrator owns email dispatch: it renders chrome, resolves the sender display name, and fans out per-recipient `lfx.email-service.send_email` requests with bounded concurrency. The draft flips to sent only when at least one recipient was delivered to; a fully-failed fan-out stays a draft for retry.
+- `SEND_FANOUT_ENABLED=false` short-circuits dispatch for dev/staging shake-out. Keep `docs/recipient-resolution.md` and `docs/newsletter-service-contract.md` updated in the same PR as any send-behavior change.
 
 ## Postgres And Schema
 
@@ -72,10 +74,10 @@ Match the existing package boundaries before adding a new abstraction.
 
 ## Recipient Resolution
 
-- Recipient resolution uses the query service via HTTP `GET /query/resources`, with `type=committee_member` and committee UID tags.
-- The inbound bearer token is validated by this service and then propagated to the upstream query-service request through context. Do not forward invalid tokens in local auth-disabled mode.
-- The orchestrator deduplicates recipients by lowercased email and filters empty or obviously invalid addresses.
-- Read `docs/recipient-resolution.md` and `lfx-v2-query-service/docs/query-service-contract.md` before changing query parameters, pagination handling, bearer-token propagation, or recipient selection.
+- Recipient resolution calls committee-service over NATS (`lfx.committee-api.list_members`), one request per committee UID, concurrently via `errgroup.WithContext`.
+- The inbound bearer token is validated by this service but never attached to context or forwarded — outbound NATS calls carry no token (trust is enforced upstream of NATS). Keep it that way.
+- The orchestrator deduplicates recipients by lowercased email, filters empty or obviously invalid addresses, and excludes the project's unsubscribed addresses.
+- Subject constants live in `internal/infrastructure/nats/subjects.go`; keep them in sync with the owning services. Read `docs/recipient-resolution.md` before changing member lookup, unsubscribe exclusion, or recipient selection.
 
 ## Logging And Observability
 
@@ -95,13 +97,13 @@ Match the existing package boundaries before adding a new abstraction.
   - invalid request -> 400
   - upstream dependency failure -> 503
   - unexpected -> 500 with a generic client message
-- Wrap upstream and database errors with `%w`. Do not return raw database or upstream HTTP response bodies directly to clients.
+- Wrap upstream and database errors with `%w`. Do not return raw database errors or upstream NATS reply bodies directly to clients. NATS upstream clients return typed `pkgerrors.*` wrappers matched with `errors.As` in `classifyError`.
 
 ## Tests
 
 - Prefer table-driven tests and co-locate `*_test.go` with the code under test.
 - Depend on `internal/domain/port` interfaces for repositories and upstream clients.
-- Use fake repositories or fake `CommitteeClient` implementations for service tests. Do not require a live query service for unit tests.
+- Use fake repositories or fake `CommitteeClient`/`EmailDispatcher` implementations for service tests. Do not require a live NATS server for unit tests.
 - Handler tests should exercise `http.Handler` paths and assert status, ETag, and JSON bodies where the route contract changes.
 - Run `make test` before handoff; it enables the race detector.
 
@@ -133,9 +135,10 @@ Match the existing package boundaries before adding a new abstraction.
 
 ## Boundaries
 
-- This repo owns newsletter persistence and newsletter API behavior.
-- `lfx-v2-query-service` owns generic query API behavior.
-- `lfx-v2-committee-service` owns committee-member indexing and committee-member data emitted into query-service.
-- `lfx-v2-email-service` owns transactional email delivery and engagement tracking records.
-- `lfx-self-serve` owns the current UI/BFF fan-out to email-service and consumes this service's HTTP API.
+- This repo owns newsletter persistence, newsletter API behavior, and the newsletter email fan-out.
+- `lfx-v2-committee-service` owns committee-member data and the `lfx.committee-api.list_members` payload.
+- `lfx-v2-project-service` owns project name/slug lookup payloads.
+- `lfx-v2-email-service` owns transactional email delivery, the `send_email` payload, and engagement tracking records.
+- `lfx-v2-auth-service` owns the user-metadata payload used for sender display names.
+- The LFX UI consumes this service's HTTP API; it no longer talks to email-service directly for newsletters.
 - If a change requires a peer repo, use `lfx-skills:lfx` to locate or clone it and read that repo's `CLAUDE.md` plus contract docs.

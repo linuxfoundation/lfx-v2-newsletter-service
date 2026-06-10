@@ -17,11 +17,11 @@ Important templates:
 | --- | --- |
 | `deployment.yaml` | Container image, env vars, Postgres secret wiring, probes, resources. |
 | `database.yaml` | Optional CloudNativePG `Cluster` and `Database` resources. |
-| `httproute.yaml` | Gateway API routing for `/newsletters`, `/newsletter-analytics`, and `/newsletter-opens`. |
-| `ruleset.yaml` | Heimdall rules for authenticated API routes and the unauthenticated open pixel. |
+| `httproute.yaml` | Gateway API routing for the project-scoped newsletter paths, the open pixel, and `/newsletters/unsubscribe`. |
+| `ruleset.yaml` | Heimdall rules for authenticated API routes plus the unauthenticated open pixel and unsubscribe endpoint. |
 | `heimdall-middleware.yaml` | Optional Traefik middleware resources when this chart owns them locally. |
 | `externalsecret.yaml` | Optional ExternalSecret resources. |
-| `networkpolicy.yaml` | Optional egress controls for OTel, upstream HTTP services, and Postgres. |
+| `networkpolicy.yaml` | Optional egress controls for DNS, NATS, OTel, Postgres, and external HTTPS (e.g. JWKS). |
 | `service.yaml` | ClusterIP service. |
 | `serviceaccount.yaml` | ServiceAccount. |
 
@@ -31,7 +31,13 @@ Important templates:
 | --- | --- | --- |
 | `service.port` | `PORT` | HTTP listen port. |
 | `app.logLevel` | `LOG_LEVEL` | `debug`, `info`, `warn`, or `error`. |
-| `app.committeeServiceURL` | `COMMITTEE_SERVICE_URL` | Base URL that routes `/query/resources` to query-service. Required in production. |
+| `app.nats.url` | `NATS_URL` | Single NATS connection used by the email dispatcher, committee member client, and project metadata client. |
+| `app.nats.timeout` / `maxReconnect` / `reconnectWait` | `NATS_TIMEOUT` / `NATS_MAX_RECONNECT` / `NATS_RECONNECT_WAIT` | Empty falls back to app defaults (10s / unlimited / 2s). |
+| `app.send.fanoutEnabled` | `SEND_FANOUT_ENABLED` | Toggles real email dispatch; false validates and resolves recipients without sending. |
+| `app.send.concurrency` | `SEND_CONCURRENCY` | Caps in-flight email-service requests during fan-out (default 5). |
+| `app.send.fromAddress` | `EMAIL_FROM_ADDRESS` | SMTP envelope From; domain must be in the email-service allowlist. |
+| `app.unsubscribe.publicBaseURL` | `NEWSLETTER_PUBLIC_BASE_URL` | Externally-reachable origin used to build unsubscribe links. Defaults to `https://lfx-api.<lfx.domain>`. Required when fan-out is enabled. |
+| `app.unsubscribe.secret` / `secretRef` | `NEWSLETTER_UNSUBSCRIBE_SECRET` | HMAC key signing unsubscribe tokens. Required when fan-out is enabled; prefer `secretRef`. |
 | `app.requireUserAuth` | `REQUIRE_USER_AUTH` | Disable only for local development. |
 | `app.jwksURL` | `JWKS_URL` | Required when auth is enabled. |
 | `app.audience` | `JWT_AUDIENCE` | Must match Heimdall `create_jwt` audience. |
@@ -51,12 +57,11 @@ In CNPG modes and `external.shape=fields`, the deployment forwards `PGHOST`, `PG
 
 ## Gateway And Heimdall
 
-`httproute.yaml` routes:
+`httproute.yaml` routes (regex path matches, so only the newsletter sub-paths of `/projects/...` route here):
 
-- `/newsletters`
-- `/newsletters/`
-- `/newsletter-analytics/`
-- `/newsletter-opens/`
+- `^/projects/[^/]+/newsletters(/.*)?$`
+- `^/projects/[^/]+/newsletter-opens/[^/]+$`
+- `/newsletters/unsubscribe` (exact)
 
 When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 
@@ -64,7 +69,7 @@ When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 
 - Authenticates normal API routes through OIDC and creates the service JWT.
 - Uses `allow_all` today rather than direct `openfga_check` rules.
-- Leaves `/newsletter-opens/{id}` unauthenticated because email clients request it without a user session.
+- Leaves the open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
 
 `openfga.enabled` is currently reserved for future use. Do not add FGA contract docs unless the service starts enforcing or emitting concrete FGA behavior.
 
@@ -77,7 +82,8 @@ Common local paths:
 - Run the binary against a local Postgres database.
 - Run the chart in `cluster+database` mode with CloudNativePG on OrbStack or kind.
 - Set `REQUIRE_USER_AUTH=false` only for local development.
-- Point `app.committeeServiceURL` at a local query-service or API gateway.
+- Point `app.nats.url` at the local platform NATS (default `nats://lfx-platform-nats.lfx.svc.cluster.local:4222`).
+- Set `app.send.fanoutEnabled=false` to exercise recipient resolution without dispatching real mail.
 
 ## Change Checklist
 

@@ -30,7 +30,7 @@ Built per `lfx-architecture-scratch/2026-05-DevX-Time-to-Merge/service-kb-resear
 | --- | --- | --- |
 | `security.md` | 6 (5 Critical, 1 Important) | handler / middleware / config / schema changes touching response bodies, JWT validation, auth env, or unauthenticated-endpoint persistence |
 | `persistence-and-schema.md` | 6 (2 Critical, 4 Important) | `internal/schema/schema.sql`, `internal/schema/schema.go`, or `internal/repository/postgres.go` changed |
-| `recipient-resolution-and-http.md` | 6 (all Important) | `send_orchestrator.go`, `internal/infrastructure/upstream/**`, `internal/handler/send.go`, `internal/handler/http.go`, or `internal/service/newsletter.go` changed |
+| `recipient-resolution-and-http.md` | 6 (all Important) | `send_orchestrator.go`, `internal/infrastructure/nats/**`, `internal/handler/send.go`, `internal/handler/http.go`, or `internal/service/newsletter.go` changed |
 | `chart.md` | 4 (2 Critical, 1 Important, 1 Nit) | any `charts/lfx-v2-newsletter-service/**` changed |
 
 **Total: 22 patterns** + `known-false-positives.md` (7 entries).

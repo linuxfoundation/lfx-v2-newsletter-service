@@ -139,7 +139,7 @@ Flag changes in:
 - Newsletter DTO/API contracts: `pkg/api/newsletter.go`, `internal/handler/http.go`, `internal/handler/*.go`, `docs/newsletter-service-contract.md`
 - Embedded schema: `internal/schema/schema.go`, `internal/schema/schema.sql`
 - Postgres/Bun repository: `internal/repository/postgres.go`
-- Recipient resolution: `internal/service/send_orchestrator.go`, `internal/infrastructure/upstream/*.go`, `docs/recipient-resolution.md`
+- Recipient resolution and send fan-out: `internal/service/send_orchestrator.go`, `internal/infrastructure/nats/*.go`, `docs/recipient-resolution.md`
 - Charts: `charts/lfx-v2-newsletter-service/**`
 - Go module metadata: `go.mod`, `go.sum`
 - Build system: `Makefile`
@@ -181,7 +181,7 @@ Group the summary by newsletter-service ownership area:
 2. Handler or HTTP behavior changes.
 3. Domain/service state-transition changes.
 4. Postgres/Bun repository or embedded schema changes.
-5. Recipient resolution or upstream query-service behavior changes.
+5. Recipient resolution, NATS upstream, or email fan-out behavior changes.
 6. Helm chart or deployment changes.
 7. Go module, build, Claude guidance, or contract-doc changes.
 

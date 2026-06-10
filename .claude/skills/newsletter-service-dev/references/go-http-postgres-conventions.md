@@ -15,7 +15,7 @@ Use this reference when editing implementation code in `lfx-v2-newsletter-servic
 | `internal/service/` | Business rules, validation, draft/send orchestration, recipient normalization. |
 | `internal/repository/` | Bun/Postgres persistence and cursor encoding. |
 | `internal/schema/` | Embedded SQL schema applied at startup. |
-| `internal/infrastructure/upstream/` | HTTP clients for sibling services. |
+| `internal/infrastructure/nats/` | NATS request/reply clients for sibling services and subject constants. |
 
 Do not put business rules in handlers or transport concerns in repositories.
 
@@ -38,8 +38,9 @@ Do not put business rules in handlers or transport concerns in repositories.
 ## Upstream Calls
 
 - Use interfaces from `internal/domain/port`.
-- Forward bearer tokens only after this service has validated them.
-- Read `lfx-v2-query-service/docs/query-service-contract.md` before changing query-service calls.
+- All sibling-service calls are NATS request/reply; never forward the inbound bearer token (outbound calls carry no token).
+- Keep subject constants in `internal/infrastructure/nats/subjects.go` in sync with the owning services.
+- Read `docs/recipient-resolution.md` and the owning service's contract before changing NATS payloads.
 
 ## Testing
 

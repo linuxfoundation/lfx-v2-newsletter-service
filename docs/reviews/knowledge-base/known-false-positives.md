@@ -67,7 +67,7 @@ Used by the `lfx-skills:lfx-newsletter-service-learnings-reviewer` subagent (Ste
 
 **Pattern matched:** a finding that `EDName` (or a similar field) is required-but-unused on a send/test-send input.
 
-**Why false:** this was already resolved on PR #3 — the hard `EDName == ""` rejection was dropped and the field is now explicitly kept on the input struct "for forward-compatibility with the legacy UI contract." Flagging the retained field as dead code re-litigates a closed maintainer decision.
+**Why false:** this was already resolved on PR #3 — the hard `EDName == ""` rejection was dropped and the field was explicitly kept on the input struct "for forward-compatibility with the legacy UI contract." Flagging the retained field as dead code re-litigates a closed maintainer decision. (The field has since left the public DTOs in the project-scoping rewrite; today `EDName` only exists on the internal `render.Chrome`, populated from the resolved sender name — do not re-flag that either.)
 
 **Source:** PR #3 `internal/service/send_orchestrator.go:62` — resolved in `959e23d`: "dropped the `EDName == ""` rejection … Kept the field … with a comment explaining it's accepted for forward-compatibility."
 

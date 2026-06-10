@@ -56,7 +56,7 @@ Flag protected files by intersecting `git diff --name-only <base>...HEAD` with t
 | Newsletter DTO/API contracts | `pkg/api/newsletter.go`, `internal/handler/http.go`, `internal/handler/*.go`, `docs/newsletter-service-contract.md` |
 | Embedded schema | `internal/schema/schema.go`, `internal/schema/schema.sql` |
 | Postgres/Bun repository | `internal/repository/postgres.go` |
-| Recipient resolution | `internal/service/send_orchestrator.go`, `internal/infrastructure/upstream/*.go`, `docs/recipient-resolution.md` |
+| Recipient resolution and send fan-out | `internal/service/send_orchestrator.go`, `internal/infrastructure/nats/*.go`, `docs/recipient-resolution.md` |
 | Charts | `charts/lfx-v2-newsletter-service/**` |
 | Go module metadata | `go.mod`, `go.sum` |
 | Build system | `Makefile` |

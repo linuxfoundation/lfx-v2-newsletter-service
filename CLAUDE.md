@@ -17,29 +17,24 @@
 
 The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It owns:
 
-- **Persistence** of newsletter drafts and send history in PostgreSQL (CloudNativePG-backed).
-- **Recipient resolution** via HTTP calls to the LFX v2 query service.
-- **State transitions** for drafts (draft → sent).
+- **Persistence** of project-scoped newsletter drafts and send history in PostgreSQL (CloudNativePG-backed).
+- **Recipient resolution** via NATS request/reply to committee-service (`lfx.committee-api.list_members`).
+- **Email dispatch**: the send orchestrator mints the email-service `group_id`, renders email chrome, and fans out per-recipient sends to `lfx-v2-email-service` over NATS (`lfx.email-service.send_email`).
+- **State transitions** for drafts (draft → sent; a draft is marked sent only when at least one recipient was delivered to).
+- **Unsubscribe**: per-recipient HMAC-signed, project-scoped opt-out links served at `GET /newsletters/unsubscribe`.
 
-> **Out of scope right now:** actual email delivery. `/newsletters/test-send`
-> and `/newsletters/drafts/{id}/send` validate input and mark the persisted
-> draft as sent — but do not dispatch any email. Wiring up a real email
-> publisher (e.g. publishing to `lfx-v2-email-service` over NATS) is a
-> planned follow-up.
->
-> AI content generation continues to live in `lfx-v2-ui`; this service does
-> not proxy AI calls.
+> AI content generation does not live in this service; it does not proxy AI calls.
 
 ## Repo Role
 
-This repo owns newsletter drafts, sent-state persistence, recipient preview/count behavior, local open tracking, newsletter analytics, the newsletter HTTP API, and the service-local Helm chart. It consumes query-service for committee-member recipient lookup and persists the email-service `groupId` supplied by the caller when a draft is marked sent.
+This repo owns project-scoped newsletter drafts, sent-state persistence, recipient preview/count behavior, email dispatch and send fan-out, unsubscribe opt-outs, local open tracking, newsletter analytics (local opens overlaid with email-service engagement totals), the newsletter HTTP API, and the service-local Helm chart. It consumes committee-service for committee-member recipient lookup, project-service for project name/slug, auth-service for the sender's display name, and email-service for send fan-out and engagement analytics — all over NATS request/reply. It mints and persists the email-service `group_id` when a draft is marked sent.
 
-It does not currently dispatch email, render AI content, publish indexer messages, or emit FGA tuples.
+It does not render AI content, publish indexer messages, or emit FGA tuples.
 
 ## Authoritative Repo Docs
 
-- `docs/newsletter-service-contract.md`: HTTP routes, public DTOs, ETag behavior, state transitions, errors, analytics, and open tracking.
-- `docs/recipient-resolution.md`: query-service consumption, bearer-token propagation, recipient normalization, and email-service `groupId` handoff.
+- `docs/newsletter-service-contract.md`: HTTP routes, public DTOs, ETag behavior, state transitions, errors, analytics, open tracking, and unsubscribe.
+- `docs/recipient-resolution.md`: committee-service member lookup over NATS, unsubscribe exclusion, recipient normalization, and the email-service send fan-out / `group_id` handoff.
 - `docs/service-helm-chart.md`: service-local chart values, Postgres database modes, Gateway/Heimdall wiring, and deployment handoffs.
 - `charts/lfx-v2-newsletter-service/`: service-local Helm templates and defaults.
 
@@ -47,9 +42,10 @@ Read the relevant contract before changing `pkg/api`, handlers, database schema,
 
 ## Consumed Cross-Repo Contracts
 
-- Query API and pagination: `lfx-v2-query-service/docs/query-service-contract.md`
-- Committee-member indexed data and tags: `lfx-v2-committee-service/docs/indexer-contract.md`
-- Email send and engagement tracking: `lfx-v2-email-service/docs/email-service-contract.md`
+- Committee members over NATS (`lfx.committee-api.list_members`): `lfx-v2-committee-service`
+- Project name/slug over NATS (`lfx.projects-api.get_name` / `get_slug`): `lfx-v2-project-service`
+- Email send and engagement tracking over NATS (`lfx.email-service.*`): `lfx-v2-email-service/docs/email-service-contract.md`
+- Sender display name over NATS (`lfx.auth-service.user_metadata.read`): `lfx-v2-auth-service/docs/user_metadata.md`
 - Shared service chart conventions: `lfx-v2-helm/docs/service-chart-patterns.md`
 - Deployed values, image tags, database secrets, ExternalSecret wiring: `lfx-v2-argocd`
 
@@ -59,6 +55,7 @@ Use `lfx-skills:lfx` if an owner repo is missing locally, a path has moved, or t
 
 - **Language**: Go 1.25+
 - **HTTP**: stdlib `net/http` with Go 1.22+ mux pattern
+- **Messaging**: NATS request/reply for all service-to-service calls (committee, project, email, auth) — no upstream HTTP calls
 - **Database**: PostgreSQL via [pgx](https://github.com/jackc/pgx) + [bun](https://bun.uptrace.dev), provisioned by [CloudNativePG](https://cloudnative-pg.io)
 - **Schema**: single embedded `schema.sql` applied idempotently on startup (CREATE … IF NOT EXISTS), serialized across pods via a Postgres advisory transaction lock
 - **Auth**: Heimdall-issued JWTs verified via JWKS (`MicahParks/keyfunc`)
@@ -76,13 +73,17 @@ cmd/newsletter-api/
     └── implementations.go    # Wires infrastructure into service structs
 
 internal/domain/
-├── model/                    # Pure data: Newsletter, Status, ContextType, CommitteeMember
-├── port/                     # Interfaces: NewsletterRepository, CommitteeClient
+├── model/                    # Pure data: Newsletter, Status, CommitteeMember, Unsubscribe
+├── port/                     # Interfaces: NewsletterRepository, CommitteeClient, ProjectMetadataClient, EmailDispatcher, UserMetadataReader
 └── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
-└── send_orchestrator.go      # Resolve recipients, mark draft sent (no email dispatch)
+├── send_orchestrator.go      # Resolve recipients, render chrome, fan out sends, mark draft sent
+├── analytics.go              # Local opens overlaid with email-service engagement totals
+├── unsubscribe.go            # HMAC token mint/verify + project-scoped opt-out persistence
+└── render/
+    └── email_chrome.go       # HTML/text email chrome around the draft body
 
 internal/repository/
 └── postgres.go               # bun-backed NewsletterRepository with optimistic locking
@@ -93,11 +94,12 @@ internal/schema/
 
 internal/handler/
 ├── http.go                   # Routes() + JSON helpers + error mapper
-├── drafts.go                 # /newsletters/drafts CRUD + ETag helpers
-├── send.go                   # /send, /test-send, /recipients, /recipient-count
-├── list.go                   # GET /newsletters unified list
-├── analytics.go              # GET /newsletter-analytics/{id}
-├── open.go                   # GET /newsletter-opens/{id} tracking pixel
+├── drafts.go                 # /projects/{project_uid}/newsletters CRUD + ETag helpers
+├── send.go                   # …/send, …/test-send, …/recipients, …/recipient-count
+├── list.go                   # GET /projects/{project_uid}/newsletters unified list
+├── analytics.go              # GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics
+├── open.go                   # GET /projects/{project_uid}/newsletter-opens/{newsletter_uid} tracking pixel
+├── unsubscribe.go            # GET /newsletters/unsubscribe (unauthenticated, HMAC token)
 ├── health.go                 # /livez, /readyz
 ├── middleware.go             # JWKS auth (AuthValidator), request log
 └── request_id.go             # X-Request-ID propagation
@@ -106,9 +108,14 @@ internal/infrastructure/
 ├── observability/
 │   ├── log.go                # slog + OTel handler init
 │   └── otel.go               # OTel SDK bootstrap
-└── upstream/
-    ├── committee_client.go   # HTTP client for committee/query service
-    └── http_helpers.go       # bearer token context, JSON parser
+├── nats/
+│   ├── client.go             # NATS connection + request/reply helper
+│   ├── subjects.go           # Centralized upstream subject constants
+│   ├── committee_client.go   # lfx.committee-api.list_members
+│   ├── project_client.go     # lfx.projects-api.get_name / get_slug
+│   ├── email_dispatcher.go   # lfx.email-service.send_email + engagement analytics
+│   └── user_metadata_client.go # lfx.auth-service.user_metadata.read
+└── upstream/                 # Retired HTTP client package (placeholder only)
 
 pkg/api/
 └── newsletter.go             # Public contract: request/response DTOs
@@ -208,7 +215,10 @@ Every `.go` file must start with:
 
 ## Related Services
 
-| Service                    | Relationship                                                      |
-| -------------------------- | ----------------------------------------------------------------- |
-| `lfx-v2-query-service`     | Source of committee member emails (via `/query/resources` HTTP)   |
-| `lfx-v2-ui` Express server | HTTP client; proxies UI requests to this service                  |
+| Service                    | Relationship                                                              |
+| -------------------------- | ------------------------------------------------------------------------- |
+| `lfx-v2-committee-service` | Source of committee member emails (`lfx.committee-api.list_members` NATS) |
+| `lfx-v2-project-service`   | Project name/slug lookup (`lfx.projects-api.get_name` / `get_slug` NATS)  |
+| `lfx-v2-email-service`     | Per-recipient send fan-out and engagement analytics (NATS)                |
+| `lfx-v2-auth-service`      | Sender display-name lookup (`lfx.auth-service.user_metadata.read` NATS)   |
+| LFX UI / Self Serve        | HTTP consumer of this service's project-scoped newsletter API             |

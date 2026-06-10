@@ -69,13 +69,13 @@ Patterns specific to this repo's embedded-`schema.sql` model and its Bun/Postgre
 
 **Pattern:** a keyset (`ORDER BY updated_at DESC, id DESC`, cursor `(updated_at, id) < (?, ?)`) list query has no composite index covering the filter columns plus the cursor order, so every list call does a heap scan + sort.
 
-**Detect:** for `ListAll` keyset queries in `internal/repository/postgres.go`, confirm `schema.sql` has an index covering `(context_type, context_uid, updated_at DESC, id DESC)` (the repo's `idx_newsletters_list`). Flag a new keyset query whose ordering/filter columns aren't covered by an index.
+**Detect:** for `ListAll` keyset queries in `internal/repository/postgres.go`, confirm `schema.sql` has an index covering the filter plus cursor order — currently `(project_uid, updated_at DESC, id DESC)` (the repo's `idx_newsletters_list`; the original was `(context_type, context_uid, …)` before project scoping). Flag a new keyset query whose ordering/filter columns aren't covered by an index.
 
 **Empirical citation:** PR #3 `internal/repository/postgres.go:119` — dealako (minor) — "the schema has no composite index covering `(context_type, context_uid, updated_at DESC, id DESC)`. List queries will do a heap scan + sort on every call." Resolved in `959e23d` by adding `idx_newsletters_list`.
 
 **Failure message:** keyset list query not backed by a composite index covering filter + cursor order — heap scan + sort per call.
 
-**Fix:** add `CREATE INDEX IF NOT EXISTS … ON newsletters (context_type, context_uid, updated_at DESC, id DESC)` (or the equivalent for the new query) covering both filter and cursor columns.
+**Fix:** add `CREATE INDEX IF NOT EXISTS … ON newsletters (project_uid, updated_at DESC, id DESC)` (or the equivalent for the new query) covering both filter and cursor columns.
 
 ---
 

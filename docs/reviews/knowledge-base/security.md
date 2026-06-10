@@ -81,9 +81,9 @@ Empirical security patterns flagged on this repo: leaking internal detail throug
 
 ## `security/dev-mode-forwards-invalid-token` — Important
 
-**Pattern:** in local auth-disabled mode (`REQUIRE_USER_AUTH=false`), a failed JWT validation still stores the unvalidated bearer token on the request context (`upstream.BearerTokenContextKey`), so downstream `CommitteeQueryClient` calls forward an invalid token upstream.
+**Pattern:** in local auth-disabled mode (`REQUIRE_USER_AUTH=false`), a failed JWT validation still stores the unvalidated bearer token (or user identity) on the request context, so downstream calls act on unvalidated credentials.
 
-**Detect:** in `internal/handler/middleware.go`, on the dev-mode validation-failure path, confirm the bearer is NOT attached to context. The token should be propagated only when validation succeeds (or when auth is disabled at boot, `h.auth == nil`, where there is nothing to validate).
+**Detect:** in `internal/handler/middleware.go`, confirm the bearer token is never attached to the request context at all — the outbound NATS clients carry no token, and the middleware deliberately drops the bearer after validation. On the dev-mode validation-failure path, confirm neither the user identity nor the bearer reaches context. Flag any change that reintroduces bearer-token propagation to outbound calls.
 
 **Empirical citation:** PR #3 `internal/handler/middleware.go:147` — Copilot — "In dev mode (RequireUserAuth=false), if JWT validation fails you still store the unvalidated bearer token in context … downstream CommitteeQueryClient calls may forward an invalid token and fail unexpectedly." Resolved in `e9e61b0`: "we now skip attaching both the user identity and the bearer to the request context."
 
