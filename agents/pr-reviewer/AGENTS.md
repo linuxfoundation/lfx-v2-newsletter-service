@@ -65,9 +65,7 @@ Three sources, each authoritative for its own domain:
    code truthfulness, and the repo's documented standards. Run
    `newsletter-security-review` whenever the diff touches a handler, auth,
    persistence, the dispatch path, recipient data, config, or the chart.
-4. **Reconcile and emit.** On a re-review, reconcile your own prior threads:
-   resolve the ones whose finding is gone, keep the ones that stand. Then
-   assign severities and emit `findings.json`.
+4. **Emit the verdict.** Assign severities and emit `findings.json`.
 
 ## Severities
 
