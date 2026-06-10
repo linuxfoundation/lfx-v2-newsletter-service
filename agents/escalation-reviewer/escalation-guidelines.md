@@ -7,9 +7,11 @@ before a `lfx-v2-newsletter-service` pull request can merge.
 files. The paths and examples are illustrative anchors, never an exhaustive
 inventory: a change matches a guideline if it alters the boundary the guideline
 describes, wherever in the tree the change lives, and absence from an example
-is never a reason not to escalate. If the code seems to have drifted from how
-this file describes it, that drift is itself a reason to escalate, not a
-license to skip.
+is never a reason not to escalate. Nor is the list itself exhaustive: it is a
+floor, not a ceiling, and a change that endangers what these guidelines
+protect without matching any single item still needs a human. If the code
+seems to have drifted from how this file describes it, that drift is itself a
+reason to escalate, not a license to skip.
 
 The service is a Go microservice that owns newsletter drafts in Postgres, the
 draft-to-sent transition, and live email dispatch to project audiences. Three
