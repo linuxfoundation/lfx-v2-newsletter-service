@@ -15,6 +15,9 @@ paths:
 allowed-tools: Read, Glob, Grep, Edit, Write, Bash
 ---
 
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # Development Conventions
 
 Repo-owned conventions for `lfx-v2-newsletter-service`. This service owns project-scoped newsletter drafts, sent-state persistence, recipient resolution, email dispatch (per-recipient fan-out to email-service over NATS), unsubscribe opt-outs, local open tracking, and newsletter analytics. It is not a Goa service and does not emit indexer or FGA messages.
