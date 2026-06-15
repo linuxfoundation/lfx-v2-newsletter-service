@@ -37,7 +37,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `POST` | `/projects/{project_uid}/newsletters/test-send` | yes | Dispatch a single test email (no persistence, no analytics). |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics` | yes | Return analytics for one newsletter. |
 | `GET` | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}` | no | Tracking pixel. Records open by recipient hash and returns a GIF. |
-| `GET` | `/newsletters/unsubscribe` | no | One-click unsubscribe via HMAC-signed `t` token. Returns HTML. HEAD is a no-op so link previews don't unsubscribe. |
+| `GET` | `/newsletters/unsubscribe` | no | One-click unsubscribe via HMAC-signed `t` token. Returns HTML. A direct-service HEAD is a no-op so link previews don't unsubscribe; the gateway ruleset allows only `GET`, so HEAD is blocked at the gateway. |
 
 Auth routes expect a Heimdall-issued JWT. `REQUIRE_USER_AUTH=false` is only for local development; startup refuses auth-disabled mode outside local/dev `LFX_ENVIRONMENT` values.
 
@@ -75,6 +75,7 @@ Core state:
 - New newsletters are created with `status=draft`.
 - Drafts can be updated and deleted.
 - `POST …/newsletters/{newsletter_uid}/send` validates the draft, resolves recipients (excluding project-scoped unsubscribes), mints a `group_id`, fans out per-recipient sends to email-service, and — only when at least one recipient was delivered to — sets `status=sent`, `sent_at`, `total_recipients`, persists `group_id`, and increments `version`. A fully-failed fan-out leaves the row a draft so the operator can retry.
+  - **Zero-recipient edge case:** the "leave as draft" retry guard only applies when there was at least one resolved recipient to deliver to. If recipient resolution yields an empty set — for example every resolved committee member is filtered out by a project-scoped unsubscribe — the send still completes successfully: the draft is marked `status=sent` with `total_recipients=0` (and `sent=0`, `failed=0`), and `group_id` is persisted. No email is dispatched, and the newsletter cannot be sent again.
 - Sent newsletters cannot be updated, deleted, or sent again.
 
 The database enforces `status='sent' => group_id IS NOT NULL` and UUID format on `group_id`.
@@ -101,7 +102,7 @@ The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sen
 - local open rows, unique open counts by recipient hash, daily open buckets, open rate
 - email-service engagement totals fetched by `group_id` over NATS (delivered/failed counts; per-event opens via `opened_at_list` when present), overlaid best-effort — a failed email-service call falls back to local-only analytics
 
-`GET /newsletters/unsubscribe?t=<token>` is intentionally unauthenticated; authorization comes from the HMAC-signed token binding `(project_uid, email)`. Invalid tokens return `400` HTML. Successful opt-outs are idempotent and project-scoped. The endpoint always renders HTML, and HEAD requests are a no-op so mail-client link previews cannot unsubscribe recipients.
+`GET /newsletters/unsubscribe?t=<token>` is intentionally unauthenticated; authorization comes from the HMAC-signed token binding `(project_uid, email)`. Invalid tokens return `400` HTML. Successful opt-outs are idempotent and project-scoped. The endpoint always renders HTML, and a HEAD request handled directly by the service is a no-op so mail-client link previews cannot unsubscribe recipients. Note that the gateway ruleset (`charts/lfx-v2-newsletter-service/templates/ruleset.yaml`) allows only `GET` on this path, so HEAD probes are blocked at the gateway and never reach the handler; the handler's HEAD no-op is a defensive fallback for direct-service traffic that bypasses the gateway.
 
 ## Error Mapping
 

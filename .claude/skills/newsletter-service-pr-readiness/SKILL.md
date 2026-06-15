@@ -19,7 +19,7 @@ You are checking whether local `lfx-v2-newsletter-service` commits are shaped co
 
 Do not audit implementation quality here. Do not run format, lint, build, or tests here. Run `/newsletter-service-preflight` after this shape check passes or after any shape issues are addressed.
 
-**Output:** structured shape report with verdict `NOT READY | READY WITH CHANGES | READY`. No git mutations, no PR side effects.
+**Output:** structured shape report with verdict `NOT READY | READY WITH CHANGES | READY`. No working-tree mutations, no commits, and no PR side effects. The one exception is the `git fetch origin` in Phase 2, which is part of the base-branch freshness check (it updates remote-tracking refs only — it does not touch the working tree, local branches, or commits).
 
 ## Phase 1: Parse Arguments
 

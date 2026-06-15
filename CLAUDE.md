@@ -151,14 +151,14 @@ make lint        # golangci-lint
 
    **Post-commit mode prompt (exact, all three subagents):** `target repo: lfx-v2-newsletter-service\n\nReview the latest commit.` Append `extra: <focus>` on a new line only when there is a priority hint to add. Do NOT pass `branch` here. If this work cycle is launched from the LFX workspace parent, the `target repo:` line is required so the reviewers operate in this repo.
 3. **Keep working.** Start the next commit while the reviewers run. Do not block on them.
-4. **When the reviews return:** read both reports. Roll every Critical finding and every reasonable Important finding into the next commit.
+4. **When the reviews return:** read all three reports. Roll every Critical finding and every reasonable Important finding into the next commit.
 
 ### Pre-PR (drain the queue, sweep cumulative state, then open)
 
 When the work is done and no more code commits are planned:
 
 1. **Wait for every running review to complete.**
-2. **If any returned review flags Critical or reasonable Important:** add a fix commit, launch both reviewers again on the new state, wait, and loop until clean or explicitly documented as a trade-off.
+2. **If any returned review flags Critical or reasonable Important:** add a fix commit, launch all three reviewers again on the new state, wait, and loop until clean or explicitly documented as a trade-off.
 3. **Full-branch sweep — only if the branch has more than one commit.** Launch all three reviewer subagents again in parallel via the Agent tool. The Agent `prompt` parameter for each subagent must include the `branch` keyword so the subagent audits the branch's diff against `origin/main` instead of just the latest commit:
    - **`lfx-skills:lfx-general-code-reviewer`**, prompt: **`target repo: lfx-v2-newsletter-service\nbranch\n\nReview the branch's diff against origin/main.`**
    - **`lfx-skills:lfx-newsletter-service-code-reviewer`**, prompt: **`target repo: lfx-v2-newsletter-service\nbranch\n\nReview the branch's diff against origin/main.`**
