@@ -1,0 +1,196 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+#
+# Production agentic review. Two parallel, least-privilege jobs run Codex agents
+# over the PR diff and reach GitHub only through deterministic scripts:
+#   - pr-reviewer posts findings, reconciles prior threads, and sets the
+#     per-commit agentic-review/clean status.
+#   - escalation judge sets the sticky needs-human label.
+# Neither agent can approve or merge; only the separate gate workflow approves.
+# Untrusted PR text (title, body) is passed via env, never interpolated into a
+# run script, to avoid script injection.
+#
+# The two jobs share an identical prepare sequence (checkout, key check, install
+# Codex + skills, compute merge base, render brief) so both agents review the
+# SAME brief. Keep those steps in sync; a later shared-harness extraction
+# (architecture section 7) will dedupe them across repos.
+---
+name: Agentic Review
+
+"on":
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: agentic-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  BASE_REF: ${{ github.base_ref }}
+  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  PR_TITLE: ${{ github.event.pull_request.title }}
+  PR_BODY: ${{ github.event.pull_request.body }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  CODEX_EFFORT: xhigh
+
+jobs:
+  pr-reviewer:
+    name: pr-reviewer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Check model key
+        id: key
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "OPENAI_API_KEY is not configured; agentic review skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Codex CLI
+        if: steps.key.outputs.present == 'true'
+        run: npm install -g @openai/codex
+
+      - name: Install central LFX skills (best effort)
+        if: steps.key.outputs.present == 'true'
+        continue-on-error: true
+        run: |
+          git clone --depth=1 https://github.com/linuxfoundation/lfx-skills "$RUNNER_TEMP/lfx-skills"
+          "$RUNNER_TEMP/lfx-skills/install.sh"
+
+      # Review against the merge-base (the state of the base when the PR
+      # branched), not the current base tip, so changes made on the base since
+      # then do not pollute the diff. Matches agents/simulate/simulate.sh.
+      - name: Compute merge base
+        id: mb
+        if: steps.key.outputs.present == 'true'
+        run: |
+          if ! git fetch --no-tags origin "$BASE_REF"; then
+            echo "::warning::could not fetch base ref $BASE_REF; falling back to base.sha"
+          fi
+          MB="$(git merge-base FETCH_HEAD "$HEAD_SHA" 2>/dev/null || true)"
+          if [ -z "$MB" ]; then
+            echo "::warning::merge-base via base ref failed; using base.sha"
+            MB="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          fi
+          echo "merge_base=$MB" >> "$GITHUB_OUTPUT"
+
+      - name: Render brief
+        if: steps.key.outputs.present == 'true'
+        env:
+          BASE_SHA: ${{ steps.mb.outputs.merge_base }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/body.txt"
+          PR_BODY_FILE="$RUNNER_TEMP/body.txt" \
+            ./.github/scripts/agentic/render-brief.sh > "$RUNNER_TEMP/brief.md"
+
+      - name: Run pr-reviewer (Codex)
+        if: steps.key.outputs.present == 'true'
+        run: |
+          ./.github/scripts/agentic/run-agent.sh \
+            pr-reviewer "$RUNNER_TEMP/findings.json" "$RUNNER_TEMP/brief.md"
+
+      - name: Post comments and reconcile threads
+        id: review
+        if: steps.key.outputs.present == 'true'
+        env:
+          FINDINGS: ${{ runner.temp }}/findings.json
+        run: ./.github/scripts/agentic/post-comments.sh
+
+      - name: Publish agentic-review/clean status
+        if: steps.key.outputs.present == 'true'
+        run: |
+          if [ "${{ steps.review.outputs.clean }}" = "true" ]; then
+            STATE=success; DESC="No blocking issues remain."
+          else
+            STATE=failure; DESC="Blocking issues remain; resolve the review threads with fixes."
+          fi
+          gh api "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state="$STATE" \
+            -f context=agentic-review/clean \
+            -f description="$DESC"
+
+  escalation:
+    name: escalation-judge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Check model key
+        id: key
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "OPENAI_API_KEY is not configured; escalation judge skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Codex CLI
+        if: steps.key.outputs.present == 'true'
+        run: npm install -g @openai/codex
+
+      - name: Install central LFX skills (best effort)
+        if: steps.key.outputs.present == 'true'
+        continue-on-error: true
+        run: |
+          git clone --depth=1 https://github.com/linuxfoundation/lfx-skills "$RUNNER_TEMP/lfx-skills"
+          "$RUNNER_TEMP/lfx-skills/install.sh"
+
+      - name: Compute merge base
+        id: mb
+        if: steps.key.outputs.present == 'true'
+        run: |
+          if ! git fetch --no-tags origin "$BASE_REF"; then
+            echo "::warning::could not fetch base ref $BASE_REF; falling back to base.sha"
+          fi
+          MB="$(git merge-base FETCH_HEAD "$HEAD_SHA" 2>/dev/null || true)"
+          if [ -z "$MB" ]; then
+            echo "::warning::merge-base via base ref failed; using base.sha"
+            MB="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          fi
+          echo "merge_base=$MB" >> "$GITHUB_OUTPUT"
+
+      - name: Render brief
+        if: steps.key.outputs.present == 'true'
+        env:
+          BASE_SHA: ${{ steps.mb.outputs.merge_base }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/body.txt"
+          PR_BODY_FILE="$RUNNER_TEMP/body.txt" \
+            ./.github/scripts/agentic/render-brief.sh > "$RUNNER_TEMP/brief.md"
+
+      - name: Run escalation judge (Codex)
+        if: steps.key.outputs.present == 'true'
+        run: |
+          ./.github/scripts/agentic/run-agent.sh \
+            escalation-reviewer "$RUNNER_TEMP/escalation.json" "$RUNNER_TEMP/brief.md"
+
+      - name: Apply needs-human verdict
+        if: steps.key.outputs.present == 'true'
+        env:
+          VERDICT: ${{ runner.temp }}/escalation.json
+        run: ./.github/scripts/agentic/apply-verdict.sh

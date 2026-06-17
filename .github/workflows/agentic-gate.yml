@@ -1,0 +1,143 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+#
+# The gate: the only workflow that approves. No model runs here. It re-derives
+# from the current head SHA and, when agentic-review/clean is green and the
+# needs-human label is absent, posts an approving review as the lfx-one machine
+# user (reusing the existing argocd OIDC role + Secrets Manager PAT). It only
+# ever approves, never merges, so a code owner can always override.
+#
+# Approval is guarded by the AGENTIC_GATE_ENABLED repository variable. Until it
+# is set to "true" the gate computes and logs its verdict but posts nothing
+# (shadow mode), so it can be validated before it is allowed to approve.
+#
+# Companion branch-protection control: "dismiss stale reviews on push" must be
+# enabled so an approval is invalidated if the head advances after this gate
+# verified the clean status (the gh CLI cannot pin an approval to a SHA).
+#
+# It triggers only on the things that change its decision: agentic-review/clean
+# is set via the Status API, which fires the `status` event (not check_run), and
+# the needs-human label change fires `pull_request` labeled/unlabeled. Thread
+# resolution does not affect the gate's decision (it is a separate branch-
+# protection requirement), so it is not a trigger here.
+---
+name: Agentic Gate
+
+"on":
+  status: {}
+  pull_request:
+    types: [labeled, unlabeled]
+
+# Keyed per PR number (label events) or per commit SHA (status events) to avoid
+# cross-PR cancellation. The two event types can briefly run concurrently for
+# one PR; that is harmless because a duplicate approval collapses to one.
+concurrency:
+  group: gate-${{ github.event.pull_request.number || github.event.sha || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: read
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    steps:
+      # Find the open PR this event refers to. review_thread and label events
+      # carry the PR; a status event carries only the commit SHA, so map it to
+      # an open PR.
+      - name: Resolve PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          EVENT_SHA: ${{ github.event.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$EVENT_PR" ]; then
+            PR="$EVENT_PR"
+          else
+            # status event: map the commit to its open PR(s). Require exactly
+            # one, so an ambiguous head shared by several open PRs fails closed
+            # rather than approving an arbitrary one.
+            PRS="$(gh api "repos/$REPO/commits/$EVENT_SHA/pulls" \
+                    --jq '.[] | select(.state=="open") | .number' 2>/dev/null || true)"
+            COUNT="$(printf '%s\n' "$PRS" | grep -c . || true)"
+            if [ "${COUNT:-0}" -ne 1 ]; then
+              echo "status event maps to ${COUNT:-0} open PR(s); need exactly one. Not gating."
+              echo "found=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            PR="$PRS"
+          fi
+          if [ -z "$PR" ]; then
+            echo "No open PR for this event; nothing to gate."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HEAD="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
+          {
+            echo "pr=$PR"
+            echo "head=$HEAD"
+            echo "found=true"
+          } >> "$GITHUB_OUTPUT"
+
+      # Approvable only when the current head's clean status is success (no
+      # status means not approvable: fail closed) and needs-human is absent.
+      # Thread resolution is enforced separately by branch protection.
+      - name: Evaluate gate
+        id: gate
+        if: steps.pr.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.pr }}
+          HEAD: ${{ steps.pr.outputs.head }}
+        run: |
+          set -euo pipefail
+          CLEAN="$(gh api "repos/$REPO/commits/$HEAD/status" \
+                    --jq '.statuses[] | select(.context=="agentic-review/clean") | .state' \
+                    2>/dev/null | head -1 || true)"
+          NEEDS_HUMAN="$(gh pr view "$PR" --repo "$REPO" --json labels \
+                          --jq 'any(.labels[].name; . == "needs-human")')"
+          echo "clean=$CLEAN needs-human=$NEEDS_HUMAN (head $HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$CLEAN" = "success" ] && [ "$NEEDS_HUMAN" != "true" ]; then
+            echo "approve=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "approve=false" >> "$GITHUB_OUTPUT"
+            echo "Withholding approval." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Shadow mode (gate disabled)
+        if: steps.gate.outputs.approve == 'true' && vars.AGENTIC_GATE_ENABLED != 'true'
+        run: |
+          echo "Gate would approve PR #${{ steps.pr.outputs.pr }} (clean, no needs-human)." >> "$GITHUB_STEP_SUMMARY"
+          echo "AGENTIC_GATE_ENABLED is not 'true'; no approval posted (shadow mode)." >> "$GITHUB_STEP_SUMMARY"
+
+      # --- Approve path: reuse the existing lfx-one PAT exactly as argocd does.
+      - name: Configure AWS credentials
+        if: steps.gate.outputs.approve == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
+        with:
+          role-to-assume: arn:aws:iam::788942260905:role/github-actions-deploy
+          aws-region: us-east-2
+
+      - name: Get lfx-one token from AWS Secrets Manager
+        if: steps.gate.outputs.approve == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
+        uses: aws-actions/aws-secretsmanager-get-secrets@3a411b6ec5cace3d626412dd917e7bfeac242cfa # v3
+        with:
+          secret-ids: |
+            GH, /cloudops/managed-secrets/cloud/github/linuxfoundation/lfx-one-pat
+          parse-json-secrets: true
+
+      - name: Approve as lfx-one
+        if: steps.gate.outputs.approve == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
+        env:
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.pr }}
+        run: |
+          gh pr review "$PR" --repo "$REPO" --approve \
+            --body "LFX agentic reviewer: clean and non-critical. A code owner can override by reviewing directly."
