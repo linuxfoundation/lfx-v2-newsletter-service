@@ -1,0 +1,27 @@
+<!-- SCHEMA: {
+  "title": {"type":"text","label":"Title"},
+  "body": {"type":"richtext","label":"Body"},
+  "poll_option_1_label": {"type":"text","label":"Poll option 1 label"},
+  "poll_option_1_link": {"type":"text","label":"Poll option 1 link"},
+  "poll_option_2_label": {"type":"text","label":"Poll option 2 label"},
+  "poll_option_2_link": {"type":"text","label":"Poll option 2 link"}
+} -->
+<Section class="card">
+  <div style="padding:15px 15px 5px">
+    <Text class="eyebrow">HOT TAKE</Text>
+    <Heading if="title" class="title">{{title}}</Heading>
+    <richtext field="body" class="body" />
+  </div>
+  <Section if="poll_option_1_label">
+    <div style="padding:0 5px 15px">
+      <Row>
+        <Column style="width:50%;text-align:center;padding:5px">
+          <Button href="{{poll_option_1_link}}" style="background-color:#4086c6;color:#ffffff;font-weight:bold;padding:10px 18px;border-radius:6px;text-decoration:none">{{poll_option_1_label}}</Button>
+        </Column>
+        <Column if="poll_option_2_label" style="width:50%;text-align:center;padding:5px">
+          <Button href="{{poll_option_2_link}}" style="background-color:#4086c6;color:#ffffff;font-weight:bold;padding:10px 18px;border-radius:6px;text-decoration:none">{{poll_option_2_label}}</Button>
+        </Column>
+      </Row>
+    </div>
+  </Section>
+</Section>

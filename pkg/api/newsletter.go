@@ -125,6 +125,43 @@ type SendNewsletterResponse struct {
 	Failures        []SendFailure `json:"failures,omitempty"`
 }
 
+// LayoutBlock is a single recursive content node in a newsletter layout.
+// BlockType selects the declarative template; Content holds the field bindings
+// the template consumes; Blocks holds nested child blocks. It mirrors the
+// emitter's internal Block so the public contract does not leak an internal
+// type.
+type LayoutBlock struct {
+	BlockType string         `json:"block_type"`
+	Content   map[string]any `json:"content,omitempty"`
+	Blocks    []LayoutBlock  `json:"blocks,omitempty"`
+}
+
+// NewsletterLayout is the structured newsletter body: a wrapper key plus the
+// ordered top-level blocks that render inside the wrapper's body slot.
+type NewsletterLayout struct {
+	WrapperKey string        `json:"wrapper_key"`
+	Blocks     []LayoutBlock `json:"blocks"`
+}
+
+// RenderPreviewRequest is the body of POST
+// /projects/{project_uid}/newsletters/render-preview.
+//
+// BodyLayout is the structured layout to render. WrapperContent supplies the
+// runtime values the wrapper template binds against (e.g. edition.date,
+// edition.unsubscribe_url); it is optional and may be omitted when the wrapper
+// needs no runtime data.
+type RenderPreviewRequest struct {
+	BodyLayout     NewsletterLayout `json:"body_layout"`
+	WrapperContent map[string]any   `json:"wrapper_content,omitempty"`
+}
+
+// RenderPreviewResponse is the body of POST
+// /projects/{project_uid}/newsletters/render-preview. BodyHTML is the rendered,
+// email-safe HTML produced by the declarative emitter.
+type RenderPreviewResponse struct {
+	BodyHTML string `json:"body_html"`
+}
+
 // NewsletterListItem is one row in the unified list response. Inherits the
 // Newsletter shape and adds engagement fields populated only when status='sent'.
 type NewsletterListItem struct {

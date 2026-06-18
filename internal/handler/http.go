@@ -104,6 +104,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("POST /projects/{project_uid}/newsletters/recipients", h.withAuth(http.HandlerFunc(h.Recipients)))
 	mux.Handle("POST /projects/{project_uid}/newsletters/test-send", h.withAuth(http.HandlerFunc(h.TestSend)))
 
+	// Stateless render preview — JWT auth. Binds a layout against the embedded
+	// declarative templates and returns email-safe HTML; nothing is persisted.
+	mux.Handle("POST /projects/{project_uid}/newsletters/render-preview", h.withAuth(http.HandlerFunc(h.RenderPreview)))
+
 	// Per-newsletter analytics — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics", h.withAuth(http.HandlerFunc(h.GetAnalytics)))
 
@@ -213,6 +217,8 @@ func classifyError(err error) (int, string) {
 		return http.StatusConflict, "send_in_progress"
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest, "invalid_request"
+	case errors.Is(err, domain.ErrUnprocessable):
+		return http.StatusUnprocessableEntity, "unprocessable_entity"
 	case errors.As(err, &svcUnavailable):
 		return http.StatusServiceUnavailable, "service_unavailable"
 	case errors.As(err, &notFound):

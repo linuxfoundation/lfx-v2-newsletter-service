@@ -5,8 +5,9 @@ package declarative
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
-	"path/filepath"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -57,29 +58,39 @@ func (t Templates) block(blockType string) (string, error) {
 	return b, nil
 }
 
-// LoadTemplates reads a declarative template directory into a Templates value.
-// It expects a "wrappers" subdirectory and any of "blocks" and "bricks"
-// subdirectories; the latter two load into the same Blocks map (unified
-// model). Only files with a ".html" extension are loaded.
+// LoadTemplates reads a declarative template directory from the filesystem into
+// a Templates value. It expects a "wrappers" subdirectory and any of "blocks"
+// and "bricks" subdirectories; the latter two load into the same Blocks map
+// (unified model). Only files with a ".html" extension are loaded.
+//
+// It delegates to loadFromFS over os.DirFS(root) so the parsing logic is shared
+// with LoadEmbedded.
 func LoadTemplates(root string) (Templates, error) {
+	return loadFromFS(os.DirFS(root), ".")
+}
+
+// loadFromFS reads the declarative templates rooted at root within fsys into a
+// Templates value. root is an fs-style (slash-separated) path; pass "." for the
+// fs root. It is the shared core behind both LoadTemplates (os.DirFS) and
+// LoadEmbedded (the embedded FS).
+func loadFromFS(fsys fs.FS, root string) (Templates, error) {
 	t := Templates{
 		Wrappers: map[string]string{},
 		Blocks:   map[string]string{},
 	}
 
-	if err := loadDir(filepath.Join(root, "wrappers"), t.Wrappers); err != nil {
+	if err := loadDir(fsys, path.Join(root, "wrappers"), t.Wrappers); err != nil {
 		return Templates{}, err
 	}
 	// blocks/ and bricks/ both populate Blocks under the unified model. Both
 	// are optional, but at least one must exist.
-	blocksDir := filepath.Join(root, "blocks")
-	bricksDir := filepath.Join(root, "bricks")
 	loadedAny := false
-	for _, dir := range []string{blocksDir, bricksDir} {
-		if _, err := os.Stat(dir); err != nil {
+	for _, sub := range []string{"blocks", "bricks"} {
+		dir := path.Join(root, sub)
+		if _, err := fs.Stat(fsys, dir); err != nil {
 			continue
 		}
-		if err := loadDir(dir, t.Blocks); err != nil {
+		if err := loadDir(fsys, dir, t.Blocks); err != nil {
 			return Templates{}, err
 		}
 		loadedAny = true
@@ -93,10 +104,10 @@ func LoadTemplates(root string) (Templates, error) {
 	return t, nil
 }
 
-// loadDir reads every *.html file in dir into dst, keyed by filename without
-// the extension.
-func loadDir(dir string, dst map[string]string) error {
-	entries, err := os.ReadDir(dir)
+// loadDir reads every *.html file in dir (within fsys) into dst, keyed by
+// filename without the extension.
+func loadDir(fsys fs.FS, dir string, dst map[string]string) error {
+	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		return fmt.Errorf("declarative: read template dir %q: %w", dir, err)
 	}
@@ -104,10 +115,10 @@ func loadDir(dir string, dst map[string]string) error {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".html") {
 			continue
 		}
-		path := filepath.Join(dir, e.Name())
-		data, readErr := os.ReadFile(path) //nolint:gosec // template dir is operator-controlled
+		p := path.Join(dir, e.Name())
+		data, readErr := fs.ReadFile(fsys, p)
 		if readErr != nil {
-			return fmt.Errorf("declarative: read template %q: %w", path, readErr)
+			return fmt.Errorf("declarative: read template %q: %w", p, readErr)
 		}
 		key := strings.TrimSuffix(e.Name(), ".html")
 		dst[key] = string(data)
