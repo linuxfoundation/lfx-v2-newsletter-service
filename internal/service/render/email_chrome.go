@@ -229,6 +229,15 @@ func stripHTML(html string) string {
 	return strings.TrimSpace(out)
 }
 
+// StripHTMLForText derives a plain-text body from a full HTML email. It is the
+// exported counterpart to EmailText for the layout-based send path, where the
+// emitter already owns the whole email and there is no Chrome to wrap. Link
+// destinations are preserved (`label (href)`) before tags are stripped so the
+// plain-text fallback keeps its URLs, matching EmailText's body treatment.
+func StripHTMLForText(html string) string {
+	return stripHTML(preserveLinkDestinations(html))
+}
+
 // renderComplianceFooterHTML emits the sender attribution + reply-to + UNSUBSCRIBE
 // block. Empty when input.IncludeComplianceFooter is false.
 func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {

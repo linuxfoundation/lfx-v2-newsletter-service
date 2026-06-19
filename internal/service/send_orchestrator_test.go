@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -1192,5 +1193,228 @@ func TestDraftGuardsWhileSending(t *testing.T) {
 
 	if err := svc.DeleteDraft(ctx, "p1", draft.ID); !errors.Is(err, domain.ErrSendInProgress) {
 		t.Fatalf("DeleteDraft while sending: got err=%v, want ErrSendInProgress", err)
+	}
+}
+
+// addLayoutDraft stores a layout-based draft: BodyLayout is non-empty (so the
+// orchestrator takes the layout send path) and BodyHTML is the full emitter
+// email with the three runtime placeholders embedded, exactly as the
+// render-on-write step persists it.
+func (r *fakeNewsletterRepo) addLayoutDraft(projectUID string, committeeUIDs []string) *model.Newsletter {
+	n := &model.Newsletter{
+		ID:         uuid.New(),
+		ProjectUID: projectUID,
+		Subject:    "Layout Hello",
+		// A minimal stand-in for the emitter's full email: a <body>-level
+		// document with the wrapper's runtime placeholders. It deliberately
+		// contains none of the email_chrome envelope markers.
+		BodyHTML: `<!DOCTYPE html><html><body>` +
+			`<div id="emitter-content">Emitter body</div>` +
+			`<a href="` + ViewOnlineURLPlaceholder + `">View Online</a>` +
+			`<a href="` + UnsubscribeURLPlaceholder + `">Unsubscribe</a>` +
+			`<a href="` + ManageSubscriptionsURLPlaceholder + `">Manage your email preferences</a>` +
+			`</body></html>`,
+		BodyLayout:    json.RawMessage(`{"wrapperKey":"default","blocks":[{"blockType":"intro_paragraph"}]}`),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: committeeUIDs,
+		Status:        model.StatusDraft,
+		Version:       1,
+	}
+	r.drafts[n.ID] = n
+	return n
+}
+
+// chromeEnvelopeMarkers are strings the email_chrome renderer always emits but
+// that a raw emitter (layout) email never contains. Their absence proves the
+// layout path did NOT re-wrap the body in chrome.
+var chromeEnvelopeMarkers = []string{
+	"&middot; Newsletter", // chrome header eyebrow
+	"Sent by",             // compliance footer attribution
+	"Delivered by",        // compliance footer LFX line
+}
+
+// TestSendNewsletterLayoutNotDoubleWrapped asserts a layout-based newsletter is
+// dispatched with body_html used directly (emitter content present, no chrome
+// envelope) and with the three runtime placeholders substituted to real
+// per-recipient values.
+func TestSendNewsletterLayoutNotDoubleWrapped(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addLayoutDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 2 {
+		t.Fatalf("got %d sends, want 2", len(email.sends))
+	}
+	for _, s := range email.sends {
+		// Emitter content must be present (body_html used directly).
+		if !strings.Contains(s.HTML, "Emitter body") {
+			t.Errorf("send to %s: emitter content missing: %s", s.To, s.HTML)
+		}
+		// No chrome envelope markers — the layout path must not double-wrap.
+		for _, marker := range chromeEnvelopeMarkers {
+			if strings.Contains(s.HTML, marker) {
+				t.Errorf("send to %s: chrome marker %q leaked into layout email (double-wrapped)", s.To, marker)
+			}
+		}
+		// All three placeholders substituted: none of the raw sentinels remain.
+		for _, ph := range []string{UnsubscribeURLPlaceholder, ManageSubscriptionsURLPlaceholder, ViewOnlineURLPlaceholder} {
+			if strings.Contains(s.HTML, ph) {
+				t.Errorf("send to %s: placeholder %q not substituted", s.To, ph)
+			}
+		}
+		// Unsubscribe + manage both resolve to the recipient's signed link.
+		wantURL := unsub.BuildURL("p1", s.To)
+		if got := strings.Count(s.HTML, wantURL); got != 2 {
+			t.Errorf("send to %s: expected unsubscribe+manage to both use %q (2 occurrences), got %d in %s", s.To, wantURL, got, s.HTML)
+		}
+		// View Online resolved to empty (no hosted web version yet) — the href
+		// collapses to an empty string rather than leaving the sentinel.
+		if !strings.Contains(s.HTML, `<a href="">View Online</a>`) {
+			t.Errorf("send to %s: view-online placeholder not emptied: %s", s.To, s.HTML)
+		}
+		// Text body derived from the final HTML via the strip pass.
+		if !strings.Contains(s.Text, "Emitter body") {
+			t.Errorf("send to %s: text body missing emitter content: %q", s.To, s.Text)
+		}
+		// The substituted unsubscribe URL survives into text (link preserved).
+		if !strings.Contains(s.Text, wantURL) {
+			t.Errorf("send to %s: text body missing unsubscribe URL: %q", s.To, s.Text)
+		}
+	}
+}
+
+// TestSendNewsletterLegacyStillUsesChrome asserts the legacy (no-layout) path is
+// unchanged: the body is wrapped in the email_chrome envelope, complete with
+// the header eyebrow and compliance footer.
+func TestSendNewsletterLegacyStillUsesChrome(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addDraft("p1", []string{"c1"}) // legacy: BodyLayout nil
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	// Every chrome envelope marker must be present on the legacy path.
+	for _, marker := range chromeEnvelopeMarkers {
+		if !strings.Contains(s.HTML, marker) {
+			t.Errorf("legacy send missing chrome marker %q: %s", marker, s.HTML)
+		}
+	}
+	// Authored body still rendered inside the envelope.
+	if !strings.Contains(s.HTML, "Body") {
+		t.Errorf("legacy send missing authored body: %s", s.HTML)
+	}
+	// Unsubscribe placeholder substituted to the recipient's link, and the
+	// layout-only sentinels never appear in a legacy body.
+	if strings.Contains(s.HTML, UnsubscribeURLPlaceholder) {
+		t.Errorf("legacy send left unsubscribe placeholder unsubstituted: %s", s.HTML)
+	}
+	if !strings.Contains(s.HTML, unsub.BuildURL("p1", s.To)) {
+		t.Errorf("legacy send missing per-recipient unsubscribe link: %s", s.HTML)
+	}
+}
+
+// TestTestSendLayoutNotDoubleWrapped asserts the test-send path honours the
+// same layout branch: IsLayout=true dispatches body_html directly (no chrome)
+// with the placeholders bound for the single test recipient.
+func TestTestSendLayoutNotDoubleWrapped(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	layoutHTML := `<!DOCTYPE html><html><body>` +
+		`<div id="emitter-content">Emitter body</div>` +
+		`<a href="` + UnsubscribeURLPlaceholder + `">Unsubscribe</a>` +
+		`<a href="` + ManageSubscriptionsURLPlaceholder + `">Manage</a>` +
+		`<a href="` + ViewOnlineURLPlaceholder + `">View Online</a>` +
+		`</body></html>`
+
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   layoutHTML,
+		ToEmail:    "tester@example.com",
+		IsLayout:   true,
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	if !strings.Contains(s.HTML, "Emitter body") {
+		t.Errorf("test-send layout missing emitter content: %s", s.HTML)
+	}
+	for _, marker := range chromeEnvelopeMarkers {
+		if strings.Contains(s.HTML, marker) {
+			t.Errorf("test-send layout double-wrapped: chrome marker %q present: %s", marker, s.HTML)
+		}
+	}
+	wantURL := unsub.BuildURL("p1", "tester@example.com")
+	if got := strings.Count(s.HTML, wantURL); got != 2 {
+		t.Errorf("test-send: expected unsubscribe+manage to use %q (2x), got %d: %s", wantURL, got, s.HTML)
+	}
+	if strings.Contains(s.HTML, ViewOnlineURLPlaceholder) {
+		t.Errorf("test-send: view-online placeholder not substituted: %s", s.HTML)
+	}
+}
+
+// TestTestSendLegacyStillUsesChrome asserts the legacy test-send (IsLayout
+// false / unset) is unchanged: chrome-wrapped, no compliance footer (test
+// sends never carry it).
+func TestTestSendLegacyStillUsesChrome(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "tester@example.com",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	// Chrome header eyebrow present; the compliance footer is intentionally
+	// absent on the test-send path, so only assert the header marker.
+	if !strings.Contains(s.HTML, "&middot; Newsletter") {
+		t.Errorf("legacy test-send missing chrome header: %s", s.HTML)
+	}
+	if strings.Contains(s.HTML, "Sent by") {
+		t.Errorf("test-send must not carry the compliance footer: %s", s.HTML)
+	}
+	if !strings.Contains(s.HTML, "Body") {
+		t.Errorf("legacy test-send missing authored body: %s", s.HTML)
 	}
 }

@@ -98,9 +98,15 @@ type RecipientsResponse struct {
 
 // TestSendRequest is the body of POST /projects/{project_uid}/newsletters/test-send.
 type TestSendRequest struct {
-	Subject      string `json:"subject"`
-	BodyHTML     string `json:"body_html"`
-	ToEmail      string `json:"to_email"`
+	Subject  string `json:"subject"`
+	BodyHTML string `json:"body_html"`
+	ToEmail  string `json:"to_email"`
+	// IsLayout marks body_html as a full layout-based emitter email (gatewaze
+	// wrapper + blocks, already rendered, with %%…%% runtime placeholders).
+	// When true the service dispatches body_html directly instead of wrapping
+	// it in email_chrome — mirroring the layout branch of the real send path.
+	// Omitted/false keeps the legacy chrome-wrapped test send.
+	IsLayout     bool   `json:"is_layout,omitempty"`
 	EDReplyEmail string `json:"ed_reply_email,omitempty"`
 }
 
