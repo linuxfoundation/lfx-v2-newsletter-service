@@ -69,6 +69,17 @@ func (h *Handler) RenderPreview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(r.Context(), w, http.StatusOK, publicapi.RenderPreviewResponse{BodyHTML: html})
 }
 
+// toEmitterLayoutPtr converts an optional public-API layout into an optional
+// emitter Layout pointer. nil in → nil out, so the service's "layout absent"
+// (legacy body_html) branch is preserved when the request omits body_layout.
+func toEmitterLayoutPtr(l *publicapi.NewsletterLayout) *declarative.Layout {
+	if l == nil {
+		return nil
+	}
+	layout := toEmitterLayout(*l)
+	return &layout
+}
+
 // toEmitterLayout converts the public-API layout DTO into the emitter's
 // internal Layout, keeping the internal type out of the public contract.
 func toEmitterLayout(l publicapi.NewsletterLayout) declarative.Layout {

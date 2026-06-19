@@ -25,6 +25,15 @@ import (
 // envelope for every recipient.
 const UnsubscribeURLPlaceholder = "%%UNSUBSCRIBE_URL%%"
 
+// ViewOnlineURLPlaceholder and ManageSubscriptionsURLPlaceholder are the
+// sibling sentinels for the wrapper's other per-recipient runtime URLs. The
+// render-on-write step binds them so the wrapper's guarded chrome rows render;
+// the send path substitutes the real per-recipient values (increment 2b).
+const (
+	ViewOnlineURLPlaceholder          = "%%VIEW_ONLINE_URL%%"
+	ManageSubscriptionsURLPlaceholder = "%%MANAGE_SUBSCRIPTIONS_URL%%"
+)
+
 // unsubscribePath is the public route the handler registers for the
 // one-click unsubscribe link.
 const unsubscribePath = "/newsletters/unsubscribe"

@@ -4,7 +4,9 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,6 +37,7 @@ func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
 		ProjectUID:    projectUID,
 		Subject:       body.Subject,
 		BodyHTML:      body.BodyHTML,
+		BodyLayout:    toEmitterLayoutPtr(body.BodyLayout),
 		EDReplyEmail:  body.EDReplyEmail,
 		CommitteeUIDs: body.CommitteeUIDs,
 		CreatedBy:     user,
@@ -94,6 +97,7 @@ func (h *Handler) UpdateNewsletter(w http.ResponseWriter, r *http.Request) {
 		ExpectedVersion: expectedVersion,
 		Subject:         body.Subject,
 		BodyHTML:        body.BodyHTML,
+		BodyLayout:      toEmitterLayoutPtr(body.BodyLayout),
 		EDReplyEmail:    body.EDReplyEmail,
 		CommitteeUIDs:   body.CommitteeUIDs,
 	})
@@ -158,6 +162,7 @@ func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
 		ProjectUID:      n.ProjectUID,
 		Subject:         n.Subject,
 		BodyHTML:        n.BodyHTML,
+		BodyLayout:      toAPILayout(n.BodyLayout),
 		EDReplyEmail:    n.EDReplyEmail,
 		CommitteeUIDs:   n.CommitteeUIDs,
 		Status:          publicapi.Status(n.Status),
@@ -169,4 +174,23 @@ func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
 		CreatedAt:       n.CreatedAt,
 		UpdatedAt:       n.UpdatedAt,
 	}
+}
+
+// toAPILayout decodes the stored raw layout JSON back into the public-API
+// layout shape. The stored JSON uses the same snake_case field names as the
+// public contract (the emitter Layout and NewsletterLayout share json tags), so
+// this is a direct unmarshal. A nil/empty payload (legacy / html-only
+// newsletter) yields nil. A decode failure is logged and treated as absent
+// rather than failing the read — the body_html is still valid and serving it is
+// better than a 500 on a row that was already persisted.
+func toAPILayout(raw json.RawMessage) *publicapi.NewsletterLayout {
+	if len(raw) == 0 {
+		return nil
+	}
+	var layout publicapi.NewsletterLayout
+	if err := json.Unmarshal(raw, &layout); err != nil {
+		slog.Warn("decode stored body_layout failed; omitting from response", "error", err)
+		return nil
+	}
+	return &layout
 }

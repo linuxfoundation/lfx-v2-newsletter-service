@@ -24,14 +24,18 @@ const (
 
 // Newsletter is the response shape returned by single-resource endpoints.
 type Newsletter struct {
-	ID            string     `json:"id"`
-	ProjectUID    string     `json:"project_uid"`
-	Subject       string     `json:"subject"`
-	BodyHTML      string     `json:"body_html"`
-	EDReplyEmail  string     `json:"ed_reply_email"`
-	CommitteeUIDs []string   `json:"committee_uids"`
-	Status        Status     `json:"status"`
-	SentAt        *time.Time `json:"sent_at,omitempty"`
+	ID         string `json:"id"`
+	ProjectUID string `json:"project_uid"`
+	Subject    string `json:"subject"`
+	BodyHTML   string `json:"body_html"`
+	// BodyLayout is the editor's structured layout. Present only for layout-based
+	// newsletters; body_html is derived from it. Omitted for legacy / html-only
+	// newsletters.
+	BodyLayout    *NewsletterLayout `json:"body_layout,omitempty"`
+	EDReplyEmail  string            `json:"ed_reply_email"`
+	CommitteeUIDs []string          `json:"committee_uids"`
+	Status        Status            `json:"status"`
+	SentAt        *time.Time        `json:"sent_at,omitempty"`
 	// GroupID is the lfx-v2-email-service correlation identifier, set when
 	// the newsletter is sent. Null on drafts.
 	GroupID         *string   `json:"group_id,omitempty"`
@@ -43,19 +47,27 @@ type Newsletter struct {
 }
 
 // CreateNewsletterRequest is the body of POST /projects/{project_uid}/newsletters.
+//
+// BodyLayout is optional. When supplied, the service renders it to body_html via
+// the declarative emitter and persists both — any body_html in the request is
+// ignored. When omitted, body_html is taken from the request as-is (legacy path).
 type CreateNewsletterRequest struct {
-	Subject       string   `json:"subject"`
-	BodyHTML      string   `json:"body_html"`
-	EDReplyEmail  string   `json:"ed_reply_email"`
-	CommitteeUIDs []string `json:"committee_uids"`
+	Subject       string            `json:"subject"`
+	BodyHTML      string            `json:"body_html"`
+	BodyLayout    *NewsletterLayout `json:"body_layout,omitempty"`
+	EDReplyEmail  string            `json:"ed_reply_email"`
+	CommitteeUIDs []string          `json:"committee_uids"`
 }
 
 // UpdateNewsletterRequest is the body of PUT /projects/{project_uid}/newsletters/{newsletter_uid}.
+//
+// BodyLayout is optional with the same semantics as CreateNewsletterRequest.
 type UpdateNewsletterRequest struct {
-	Subject       string   `json:"subject"`
-	BodyHTML      string   `json:"body_html"`
-	EDReplyEmail  string   `json:"ed_reply_email"`
-	CommitteeUIDs []string `json:"committee_uids"`
+	Subject       string            `json:"subject"`
+	BodyHTML      string            `json:"body_html"`
+	BodyLayout    *NewsletterLayout `json:"body_layout,omitempty"`
+	EDReplyEmail  string            `json:"ed_reply_email"`
+	CommitteeUIDs []string          `json:"committee_uids"`
 }
 
 // RecipientCountRequest is the body of POST /projects/{project_uid}/newsletters/recipient-count.

@@ -10,18 +10,21 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/mail"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render/declarative"
 )
 
 // recipientHashPattern matches the lowercase-hex SHA-256 token used in
@@ -35,6 +38,25 @@ const (
 	maxCommitteesPerDraft = 50
 )
 
+// embeddedTemplates carries the declarative templates baked into the binary,
+// parsed once and shared by every NewsletterService. Parsing is deterministic
+// and side-effect free, so a process-wide guarded singleton avoids re-parsing
+// on every write without forcing the parse to happen at construction time.
+var (
+	embeddedTemplatesOnce sync.Once
+	embeddedTemplates     declarative.Templates
+	embeddedTemplatesErr  error
+)
+
+// loadEmbeddedTemplates returns the process-wide embedded templates, parsing
+// them on first use.
+func loadEmbeddedTemplates() (declarative.Templates, error) {
+	embeddedTemplatesOnce.Do(func() {
+		embeddedTemplates, embeddedTemplatesErr = declarative.LoadEmbedded()
+	})
+	return embeddedTemplates, embeddedTemplatesErr
+}
+
 // NewsletterService implements business logic for draft management.
 type NewsletterService struct {
 	repo port.NewsletterRepository
@@ -46,21 +68,29 @@ func NewNewsletterService(repo port.NewsletterRepository) *NewsletterService {
 }
 
 // CreateDraftInput is the typed input for CreateDraft.
+//
+// BodyLayout is optional. When non-nil, the service renders it to HTML via the
+// declarative emitter and stores both the layout and the derived BodyHTML; any
+// BodyHTML supplied in the input is ignored. When nil, BodyHTML is taken as-is.
 type CreateDraftInput struct {
 	ProjectUID    string
 	Subject       string
 	BodyHTML      string
+	BodyLayout    *declarative.Layout
 	EDReplyEmail  string
 	CommitteeUIDs []string
 	CreatedBy     string
 }
 
 // UpdateDraftInput is the typed input for UpdateDraft.
+//
+// BodyLayout has the same optional semantics as CreateDraftInput.BodyLayout.
 type UpdateDraftInput struct {
 	ID              uuid.UUID
 	ExpectedVersion int64
 	Subject         string
 	BodyHTML        string
+	BodyLayout      *declarative.Layout
 	EDReplyEmail    string
 	CommitteeUIDs   []string
 }
@@ -73,9 +103,6 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	if err := validateSubject(in.Subject); err != nil {
 		return nil, err
 	}
-	if err := validateBodyHTML(in.BodyHTML); err != nil {
-		return nil, err
-	}
 	if err := validateEDReplyEmail(in.EDReplyEmail); err != nil {
 		return nil, err
 	}
@@ -86,10 +113,26 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 		return nil, fmt.Errorf("%w: createdBy is required", domain.ErrInvalidRequest)
 	}
 
+	// When a layout is supplied the emitter owns the whole email: body_html is
+	// DERIVED from it and the request's body_html is ignored. Otherwise the
+	// legacy body_html-only path applies and body_html must be valid as-is.
+	bodyHTML := in.BodyHTML
+	var bodyLayout json.RawMessage
+	if in.BodyLayout != nil {
+		html, raw, err := renderLayout(in.BodyLayout, "")
+		if err != nil {
+			return nil, err
+		}
+		bodyHTML, bodyLayout = html, raw
+	} else if err := validateBodyHTML(in.BodyHTML); err != nil {
+		return nil, err
+	}
+
 	n := &model.Newsletter{
 		ProjectUID:    in.ProjectUID,
 		Subject:       strings.TrimSpace(in.Subject),
-		BodyHTML:      in.BodyHTML,
+		BodyHTML:      bodyHTML,
+		BodyLayout:    bodyLayout,
 		EDReplyEmail:  strings.TrimSpace(in.EDReplyEmail),
 		CommitteeUIDs: normalizeCommitteeUIDs(in.CommitteeUIDs),
 		Status:        model.StatusDraft,
@@ -224,13 +267,24 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	if err := validateSubject(in.Subject); err != nil {
 		return nil, err
 	}
-	if err := validateBodyHTML(in.BodyHTML); err != nil {
-		return nil, err
-	}
 	if err := validateEDReplyEmail(in.EDReplyEmail); err != nil {
 		return nil, err
 	}
 	if err := validateCommitteeUIDs(in.CommitteeUIDs); err != nil {
+		return nil, err
+	}
+
+	// Render-on-write (or validate the legacy body_html) BEFORE the load so an
+	// unrenderable layout fails fast and persists nothing.
+	bodyHTML := in.BodyHTML
+	var bodyLayout json.RawMessage
+	if in.BodyLayout != nil {
+		html, raw, err := renderLayout(in.BodyLayout, "")
+		if err != nil {
+			return nil, err
+		}
+		bodyHTML, bodyLayout = html, raw
+	} else if err := validateBodyHTML(in.BodyHTML); err != nil {
 		return nil, err
 	}
 
@@ -253,7 +307,10 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	}
 
 	existing.Subject = strings.TrimSpace(in.Subject)
-	existing.BodyHTML = in.BodyHTML
+	existing.BodyHTML = bodyHTML
+	// nil clears any prior layout so a legacy (html-only) update makes body_html
+	// the source of truth again; a non-nil value replaces it.
+	existing.BodyLayout = bodyLayout
 	existing.EDReplyEmail = strings.TrimSpace(in.EDReplyEmail)
 	existing.CommitteeUIDs = normalizeCommitteeUIDs(in.CommitteeUIDs)
 
@@ -358,6 +415,44 @@ func normalizeCommitteeUIDs(in []string) []string {
 		out = append(out, trimmed)
 	}
 	return out
+}
+
+// renderLayout derives the email-safe body_html from a structured layout and
+// returns it alongside the raw layout JSON to persist. The emitter owns the
+// whole email (wrapper chrome + blocks), so the wrapper's per-recipient runtime
+// fields are bound to PLACEHOLDER sentinels here; the send path substitutes the
+// real per-recipient values later (increment 2b). edition.date is the
+// newsletter's date when available, else empty so the guarded row drops.
+//
+// A render failure is surfaced as ErrInvalidRequest so the caller persists
+// nothing and the handler returns a client error rather than a 500.
+func renderLayout(layout *declarative.Layout, editionDate string) (bodyHTML string, raw json.RawMessage, err error) {
+	templates, err := loadEmbeddedTemplates()
+	if err != nil {
+		// Template parse failure is a deployment defect (templates ship with the
+		// binary), not a client error — bubble it up untyped so it maps to 500.
+		return "", nil, fmt.Errorf("load render templates: %w", err)
+	}
+
+	wrapperContent := map[string]any{
+		"edition": map[string]any{
+			"date":                     editionDate,
+			"view_online_link":         ViewOnlineURLPlaceholder,
+			"unsubscribe_url":          UnsubscribeURLPlaceholder,
+			"manage_subscriptions_url": ManageSubscriptionsURLPlaceholder,
+		},
+	}
+
+	html, err := declarative.Render(*layout, templates, wrapperContent)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: render body_layout: %v", domain.ErrInvalidRequest, err)
+	}
+
+	raw, err = json.Marshal(layout)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: marshal body_layout: %v", domain.ErrInvalidRequest, err)
+	}
+	return html, raw, nil
 }
 
 // IsValidationError reports whether err is a validation/domain ErrInvalidRequest.
