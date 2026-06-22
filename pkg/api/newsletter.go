@@ -144,9 +144,11 @@ type NewsletterAnalytics struct {
 	TotalRecipients int        `json:"total_recipients"`
 	Delivered       int        `json:"delivered"`
 	Failed          int        `json:"failed"`
-	// FailedRecipients lists the recipient email addresses that failed delivery
-	// (best-effort; see model.Analytics). Always present, empty when there are
-	// no known failures or per-recipient status is unavailable.
+	// FailedRecipients lists the lowercased recipient email addresses that
+	// failed delivery. Always present; empty when there are no known failures
+	// or per-recipient delivery status is unavailable. Best-effort: the list
+	// may briefly lag the Failed count while delivery status propagates. See
+	// docs/newsletter-service-contract.md for the full semantics.
 	FailedRecipients []string               `json:"failed_recipients"`
 	TotalOpens       int                    `json:"total_opens"`
 	UniqueOpens      int                    `json:"unique_opens"`

@@ -59,6 +59,10 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 	if err != nil {
 		return nil, err
 	}
+	// Honor the FailedRecipients "always present" invariant on every return
+	// path (draft, engagement/status fetch error, empty records); overwritten
+	// below when per-recipient records report failures.
+	local.FailedRecipients = []string{}
 
 	// For drafts, skip the email-service call — there's nothing to aggregate.
 	if n.Status != model.StatusSent || n.GroupID == nil || *n.GroupID == "" {

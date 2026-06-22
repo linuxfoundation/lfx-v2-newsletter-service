@@ -349,4 +349,12 @@ func TestAnalyticsGet_DegradesGracefullyOnGroupStatusError(t *testing.T) {
 	if len(got.DailyOpens) != 0 {
 		t.Errorf("DailyOpens: got %d buckets, want 0 (no records available)", len(got.DailyOpens))
 	}
+	// The "always present" invariant holds even when the status fetch fails:
+	// FailedRecipients is a non-nil empty slice, never nil.
+	if got.FailedRecipients == nil {
+		t.Error("FailedRecipients: got nil, want non-nil empty slice on the degraded path")
+	}
+	if len(got.FailedRecipients) != 0 {
+		t.Errorf("FailedRecipients: got %v, want empty on the degraded path", got.FailedRecipients)
+	}
 }
