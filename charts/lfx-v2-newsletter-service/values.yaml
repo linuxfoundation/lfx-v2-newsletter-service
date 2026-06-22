@@ -71,6 +71,13 @@ app:
     # newsletter. Domain must be in the email-service allowlist. Empty falls
     # back to the app default (newsletter@lfx.linuxfoundation.org).
     fromAddress: ""
+    # fromAddressOverrides selects a per-project From address by project slug,
+    # overriding fromAddress for those projects. Format is a comma-separated
+    # list of `slug=address` pairs, e.g. "aaif=newsletter@lfx.aaif.io". Each
+    # override domain must ALSO be in the email-service allowlist
+    # (SMTP_ALLOWED_FROM_DOMAINS) or send_email rejects the message. Empty
+    # disables per-project overrides.
+    fromAddressOverrides: "aaif=newsletter@lfx.aaif.io"
 
   # unsubscribe configures the per-recipient one-click opt-out link
   # embedded in the email footer. publicBaseURL is the externally-reachable

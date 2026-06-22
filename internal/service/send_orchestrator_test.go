@@ -28,12 +28,24 @@ func (f *fakeCommitteeClient) ListMembers(_ context.Context, committeeUID string
 	return f.members[committeeUID], nil
 }
 
-type fakeProjectClient struct{}
+// fakeProjectClient returns "Test Project" / "test-project" by default. Tests
+// exercising the per-project From override set slug/slugErr to drive
+// resolveFromAddress deterministically.
+type fakeProjectClient struct {
+	slug    string
+	slugErr error
+}
 
 func (f *fakeProjectClient) Name(_ context.Context, _ string) (string, error) {
 	return "Test Project", nil
 }
 func (f *fakeProjectClient) Slug(_ context.Context, _ string) (string, error) {
+	if f.slugErr != nil {
+		return "", f.slugErr
+	}
+	if f.slug != "" {
+		return f.slug, nil
+	}
 	return "test-project", nil
 }
 
@@ -736,5 +748,114 @@ func TestTestSendPopulatesEnvelope(t *testing.T) {
 				t.Errorf("ReplyTo=%q, want %q", s.ReplyTo, tc.wantReplyTo)
 			}
 		})
+	}
+}
+
+// orchestratorWithOverrides wires an orchestrator with a configurable project
+// client and From-address override map, bypassing the shared test helpers
+// (which hardcode the project client and omit overrides).
+func orchestratorWithOverrides(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService, project port.ProjectMetadataClient, overrides map[string]string) *SendOrchestrator {
+	return NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:                 repo,
+		Committee:            committee,
+		Project:              project,
+		Email:                email,
+		Unsubscribe:          unsub,
+		Concurrency:          2,
+		FanoutEnabled:        true,
+		FromAddressOverrides: overrides,
+	})
+}
+
+func TestSendNewsletterFromAddressOverride(t *testing.T) {
+	const overrideAddr = "newsletter@lfx.aaif.io"
+	overrides := map[string]string{"aaif": overrideAddr}
+
+	tests := []struct {
+		name      string
+		project   *fakeProjectClient
+		overrides map[string]string
+		wantFrom  string
+	}{
+		{
+			name:      "slug matches override",
+			project:   &fakeProjectClient{slug: "aaif"},
+			overrides: overrides,
+			wantFrom:  overrideAddr,
+		},
+		{
+			name:      "slug matches override case-insensitively",
+			project:   &fakeProjectClient{slug: "AAIF"},
+			overrides: overrides,
+			wantFrom:  overrideAddr,
+		},
+		{
+			name:      "slug absent from overrides uses default",
+			project:   &fakeProjectClient{slug: "kubernetes"},
+			overrides: overrides,
+			wantFrom:  defaultFromAddress,
+		},
+		{
+			name:      "no overrides configured uses default",
+			project:   &fakeProjectClient{slug: "aaif"},
+			overrides: nil,
+			wantFrom:  defaultFromAddress,
+		},
+		{
+			name:      "slug lookup error falls back to default",
+			project:   &fakeProjectClient{slugErr: errors.New("projects-service unavailable")},
+			overrides: overrides,
+			wantFrom:  defaultFromAddress,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+				"c1": {{Email: "alice@example.com"}},
+			}}
+			email := &fakeEmailDispatcher{}
+			unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+			orch := orchestratorWithOverrides(repo, committee, email, unsub, tc.project, tc.overrides)
+
+			draft := repo.addDraft("p1", []string{"c1"})
+			if _, err := orch.SendNewsletter(context.Background(), SendNewsletterInput{
+				ProjectUID:   "p1",
+				NewsletterID: draft.ID,
+			}); err != nil {
+				t.Fatalf("SendNewsletter: %v", err)
+			}
+			if len(email.sends) != 1 {
+				t.Fatalf("got %d sends, want 1", len(email.sends))
+			}
+			if got := email.sends[0].From; got != tc.wantFrom {
+				t.Errorf("From=%q, want %q", got, tc.wantFrom)
+			}
+		})
+	}
+}
+
+func TestTestSendFromAddressOverride(t *testing.T) {
+	const overrideAddr = "newsletter@lfx.aaif.io"
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := orchestratorWithOverrides(repo, &fakeCommitteeClient{}, email, unsub,
+		&fakeProjectClient{slug: "aaif"}, map[string]string{"aaif": overrideAddr})
+
+	if err := orch.TestSend(context.Background(), TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "tester@example.com",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if got := email.sends[0].From; got != overrideAddr {
+		t.Errorf("From=%q, want %q", got, overrideAddr)
 	}
 }
