@@ -150,6 +150,97 @@ func TestAnalyticsGet_DailyOpensFromGroupStatus(t *testing.T) {
 	}
 }
 
+// TestAnalyticsGet_FailedRecipients verifies the analytics service surfaces the
+// deduplicated list of recipient addresses email-service marked failed, drawn
+// from the per-recipient status records.
+func TestAnalyticsGet_FailedRecipients(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	newsletterID := uuid.New()
+	groupID := "group-xyz"
+	sentAt := time.Date(2026, 6, 1, 22, 26, 26, 0, time.UTC)
+	open := time.Date(2026, 6, 1, 22, 30, 0, 0, time.UTC)
+
+	repo := &analyticsRepoFake{
+		newsletter: &model.Newsletter{
+			ID:              newsletterID,
+			ProjectUID:      projectUID,
+			Status:          model.StatusSent,
+			GroupID:         &groupID,
+			SentAt:          &sentAt,
+			TotalRecipients: 4,
+		},
+		base: &model.Analytics{
+			NewsletterID:    newsletterID,
+			Status:          model.StatusSent,
+			SentAt:          &sentAt,
+			TotalRecipients: 4,
+		},
+	}
+	email := &statusByGroupFake{
+		engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: 4, Delivered: 1, Opened: 1, Failed: 2},
+		records: []port.EmailRecipientRecord{
+			{EmailID: "e1", To: "good@x", Delivered: true, Opened: true, LastOpened: &open},
+			{EmailID: "e2", To: "bounce@x", Failed: true},
+			{EmailID: "e3", To: "Bounce@X", Failed: true}, // duplicate address, different case
+			{EmailID: "e4", To: " complaint@x ", Failed: true},
+			{EmailID: "e5", To: "", Failed: true}, // missing address is skipped
+		},
+	}
+
+	svc := NewAnalyticsService(repo, email)
+	got, err := svc.Get(context.Background(), projectUID, newsletterID)
+	if err != nil {
+		t.Fatalf("Get: unexpected error: %v", err)
+	}
+	// Addresses are lowercased and trimmed; the mixed-case duplicate collapses.
+	want := []string{"bounce@x", "complaint@x"}
+	if len(got.FailedRecipients) != len(want) {
+		t.Fatalf("FailedRecipients: got %v, want %v", got.FailedRecipients, want)
+	}
+	for i, addr := range want {
+		if got.FailedRecipients[i] != addr {
+			t.Errorf("FailedRecipients[%d]: got %q, want %q", i, got.FailedRecipients[i], addr)
+		}
+	}
+}
+
+// TestAnalyticsGet_NoFailedRecipients verifies the failed list is empty (not a
+// panic) when every per-recipient record delivered successfully.
+func TestAnalyticsGet_NoFailedRecipients(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	newsletterID := uuid.New()
+	groupID := "group-xyz"
+	sentAt := time.Date(2026, 6, 1, 22, 26, 26, 0, time.UTC)
+	open := time.Date(2026, 6, 1, 22, 30, 0, 0, time.UTC)
+
+	repo := &analyticsRepoFake{
+		newsletter: &model.Newsletter{
+			ID:              newsletterID,
+			ProjectUID:      projectUID,
+			Status:          model.StatusSent,
+			GroupID:         &groupID,
+			SentAt:          &sentAt,
+			TotalRecipients: 1,
+		},
+		base: &model.Analytics{NewsletterID: newsletterID, Status: model.StatusSent, SentAt: &sentAt, TotalRecipients: 1},
+	}
+	email := &statusByGroupFake{
+		engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: 1, Delivered: 1, Opened: 1},
+		records: []port.EmailRecipientRecord{
+			{EmailID: "e1", To: "good@x", Delivered: true, Opened: true, LastOpened: &open},
+		},
+	}
+
+	svc := NewAnalyticsService(repo, email)
+	got, err := svc.Get(context.Background(), projectUID, newsletterID)
+	if err != nil {
+		t.Fatalf("Get: unexpected error: %v", err)
+	}
+	if len(got.FailedRecipients) != 0 {
+		t.Errorf("FailedRecipients: got %v, want empty", got.FailedRecipients)
+	}
+}
+
 // TestAnalyticsGet_CountsPerEventOpens verifies aggregation when email-service
 // exposes opened_at_list — multiple opens by the same recipient are each
 // counted into per-day Opens, while UniqueOpens still counts the recipient
@@ -257,5 +348,13 @@ func TestAnalyticsGet_DegradesGracefullyOnGroupStatusError(t *testing.T) {
 	}
 	if len(got.DailyOpens) != 0 {
 		t.Errorf("DailyOpens: got %d buckets, want 0 (no records available)", len(got.DailyOpens))
+	}
+	// The "always present" invariant holds even when the status fetch fails:
+	// FailedRecipients is a non-nil empty slice, never nil.
+	if got.FailedRecipients == nil {
+		t.Error("FailedRecipients: got nil, want non-nil empty slice on the degraded path")
+	}
+	if len(got.FailedRecipients) != 0 {
+		t.Errorf("FailedRecipients: got %v, want empty on the degraded path", got.FailedRecipients)
 	}
 }

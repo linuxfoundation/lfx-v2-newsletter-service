@@ -42,18 +42,23 @@ func toAPIAnalytics(a *model.Analytics) publicapi.NewsletterAnalytics {
 			UniqueOpens: d.UniqueOpens,
 		})
 	}
+	failedRecipients := a.FailedRecipients
+	if failedRecipients == nil {
+		failedRecipients = []string{}
+	}
 	return publicapi.NewsletterAnalytics{
-		NewsletterID:    a.NewsletterID.String(),
-		Subject:         a.Subject,
-		Status:          publicapi.Status(a.Status),
-		SentAt:          a.SentAt,
-		TotalRecipients: a.TotalRecipients,
-		Delivered:       a.Delivered,
-		Failed:          a.Failed,
-		TotalOpens:      a.TotalOpens,
-		UniqueOpens:     a.UniqueOpens,
-		OpenRate:        a.OpenRate,
-		DailyOpens:      daily,
-		LastEventAt:     a.LastEventAt,
+		NewsletterID:     a.NewsletterID.String(),
+		Subject:          a.Subject,
+		Status:           publicapi.Status(a.Status),
+		SentAt:           a.SentAt,
+		TotalRecipients:  a.TotalRecipients,
+		Delivered:        a.Delivered,
+		Failed:           a.Failed,
+		FailedRecipients: failedRecipients,
+		TotalOpens:       a.TotalOpens,
+		UniqueOpens:      a.UniqueOpens,
+		OpenRate:         a.OpenRate,
+		DailyOpens:       daily,
+		LastEventAt:      a.LastEventAt,
 	}
 }

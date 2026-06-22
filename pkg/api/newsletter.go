@@ -137,16 +137,22 @@ type NewsletterDailyOpens struct {
 
 // NewsletterAnalytics is the body of GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics.
 type NewsletterAnalytics struct {
-	NewsletterID    string                 `json:"newsletter_id"`
-	Subject         string                 `json:"subject"`
-	Status          Status                 `json:"status"`
-	SentAt          *time.Time             `json:"sent_at,omitempty"`
-	TotalRecipients int                    `json:"total_recipients"`
-	Delivered       int                    `json:"delivered"`
-	Failed          int                    `json:"failed"`
-	TotalOpens      int                    `json:"total_opens"`
-	UniqueOpens     int                    `json:"unique_opens"`
-	OpenRate        float64                `json:"open_rate"`
-	DailyOpens      []NewsletterDailyOpens `json:"daily_opens"`
-	LastEventAt     *time.Time             `json:"last_event_at,omitempty"`
+	NewsletterID    string     `json:"newsletter_id"`
+	Subject         string     `json:"subject"`
+	Status          Status     `json:"status"`
+	SentAt          *time.Time `json:"sent_at,omitempty"`
+	TotalRecipients int        `json:"total_recipients"`
+	Delivered       int        `json:"delivered"`
+	Failed          int        `json:"failed"`
+	// FailedRecipients lists the lowercased recipient email addresses that
+	// failed delivery. Always present; empty when there are no known failures
+	// or per-recipient delivery status is unavailable. Best-effort: the list
+	// may briefly lag the Failed count while delivery status propagates. See
+	// docs/newsletter-service-contract.md for the full semantics.
+	FailedRecipients []string               `json:"failed_recipients"`
+	TotalOpens       int                    `json:"total_opens"`
+	UniqueOpens      int                    `json:"unique_opens"`
+	OpenRate         float64                `json:"open_rate"`
+	DailyOpens       []NewsletterDailyOpens `json:"daily_opens"`
+	LastEventAt      *time.Time             `json:"last_event_at,omitempty"`
 }

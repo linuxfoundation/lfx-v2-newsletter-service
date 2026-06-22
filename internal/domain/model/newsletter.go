@@ -66,18 +66,24 @@ type DailyOpens struct {
 
 // Analytics aggregates engagement metrics for a sent newsletter.
 type Analytics struct {
-	NewsletterID    uuid.UUID    `json:"newsletterId"`
-	Subject         string       `json:"subject"`
-	Status          Status       `json:"status"`
-	SentAt          *time.Time   `json:"sentAt,omitempty"`
-	TotalRecipients int          `json:"totalRecipients"`
-	Delivered       int          `json:"delivered"`
-	Failed          int          `json:"failed"`
-	TotalOpens      int          `json:"totalOpens"`
-	UniqueOpens     int          `json:"uniqueOpens"`
-	OpenRate        float64      `json:"openRate"`
-	DailyOpens      []DailyOpens `json:"dailyOpens"`
-	LastEventAt     *time.Time   `json:"lastEventAt,omitempty"`
+	NewsletterID    uuid.UUID  `json:"newsletterId"`
+	Subject         string     `json:"subject"`
+	Status          Status     `json:"status"`
+	SentAt          *time.Time `json:"sentAt,omitempty"`
+	TotalRecipients int        `json:"totalRecipients"`
+	Delivered       int        `json:"delivered"`
+	Failed          int        `json:"failed"`
+	// FailedRecipients is the best-effort list of recipient email addresses
+	// email-service marked failed (synchronous send errors plus async bounce /
+	// complaint events). It is sourced from the per-recipient status records, so
+	// it may not exactly equal Failed (the scalar engagement count) while the
+	// group index is still propagating, and is empty when the status fetch fails.
+	FailedRecipients []string     `json:"failedRecipients"`
+	TotalOpens       int          `json:"totalOpens"`
+	UniqueOpens      int          `json:"uniqueOpens"`
+	OpenRate         float64      `json:"openRate"`
+	DailyOpens       []DailyOpens `json:"dailyOpens"`
+	LastEventAt      *time.Time   `json:"lastEventAt,omitempty"`
 }
 
 // CommitteeMember is the slice of a committee member the newsletter needs for personalization.
