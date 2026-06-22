@@ -137,16 +137,20 @@ type NewsletterDailyOpens struct {
 
 // NewsletterAnalytics is the body of GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics.
 type NewsletterAnalytics struct {
-	NewsletterID    string                 `json:"newsletter_id"`
-	Subject         string                 `json:"subject"`
-	Status          Status                 `json:"status"`
-	SentAt          *time.Time             `json:"sent_at,omitempty"`
-	TotalRecipients int                    `json:"total_recipients"`
-	Delivered       int                    `json:"delivered"`
-	Failed          int                    `json:"failed"`
-	TotalOpens      int                    `json:"total_opens"`
-	UniqueOpens     int                    `json:"unique_opens"`
-	OpenRate        float64                `json:"open_rate"`
-	DailyOpens      []NewsletterDailyOpens `json:"daily_opens"`
-	LastEventAt     *time.Time             `json:"last_event_at,omitempty"`
+	NewsletterID    string     `json:"newsletter_id"`
+	Subject         string     `json:"subject"`
+	Status          Status     `json:"status"`
+	SentAt          *time.Time `json:"sent_at,omitempty"`
+	TotalRecipients int        `json:"total_recipients"`
+	Delivered       int        `json:"delivered"`
+	Failed          int        `json:"failed"`
+	// FailedRecipients lists the recipient email addresses that failed delivery
+	// (best-effort; see model.Analytics). Always present, empty when there are
+	// no known failures or per-recipient status is unavailable.
+	FailedRecipients []string               `json:"failed_recipients"`
+	TotalOpens       int                    `json:"total_opens"`
+	UniqueOpens      int                    `json:"unique_opens"`
+	OpenRate         float64                `json:"open_rate"`
+	DailyOpens       []NewsletterDailyOpens `json:"daily_opens"`
+	LastEventAt      *time.Time             `json:"last_event_at,omitempty"`
 }

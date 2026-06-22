@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -105,6 +106,7 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 		if lastEvent != nil && (local.LastEventAt == nil || lastEvent.After(*local.LastEventAt)) {
 			local.LastEventAt = lastEvent
 		}
+		local.FailedRecipients = failedRecipients(records)
 	}
 
 	denominator := local.TotalRecipients
@@ -115,6 +117,32 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 		local.OpenRate = float64(local.UniqueOpens) / float64(denominator)
 	}
 	return local, nil
+}
+
+// failedRecipients extracts the deduplicated email addresses of recipients
+// email-service marked failed. Addresses are lowercased and deduplicated to
+// match the recipient-resolution convention (the send path lowercases before
+// dispatch), so the same recipient never appears twice in different cases.
+// Order follows first appearance in records. Returns a non-nil empty slice when
+// nothing failed.
+func failedRecipients(records []port.EmailRecipientRecord) []string {
+	seen := make(map[string]struct{}, len(records))
+	out := make([]string, 0)
+	for _, r := range records {
+		if !r.Failed || r.To == "" {
+			continue
+		}
+		email := strings.ToLower(strings.TrimSpace(r.To))
+		if email == "" {
+			continue
+		}
+		if _, dup := seen[email]; dup {
+			continue
+		}
+		seen[email] = struct{}{}
+		out = append(out, email)
+	}
+	return out
 }
 
 // aggregatePerRecipient buckets per-recipient open events into a sorted
