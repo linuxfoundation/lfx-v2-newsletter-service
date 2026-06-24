@@ -367,6 +367,10 @@ func writeInline(b *strings.Builder, nodes []*node) {
 			// Raw text or richtext-less raw node.
 			b.WriteString(n.Raw)
 		case n.Tag == "richtext":
+			// SECURITY: richtext is emitted verbatim (writer-trusted WYSIWYG HTML,
+			// not a sanitizer — see model.go trust boundary). Safe for email, but
+			// the derived body_html MUST be sanitized before any web "view online"
+			// surface serves it (that follow-up owns the sanitization).
 			b.WriteString(n.Raw)
 		case n.Tag == "link":
 			writeLink(b, n)

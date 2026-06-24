@@ -8,17 +8,18 @@ import (
 	"testing"
 )
 
-// loadTestTemplates loads the copied fixture subset under testdata/.
+// loadTestTemplates loads the EMBEDDED production templates (the same set the
+// binary ships) so render tests can never drift from what is actually emitted.
 func loadTestTemplates(t *testing.T) Templates {
 	t.Helper()
-	tmpl, err := LoadTemplates("testdata")
+	tmpl, err := LoadEmbedded()
 	if err != nil {
-		t.Fatalf("LoadTemplates: %v", err)
+		t.Fatalf("LoadEmbedded: %v", err)
 	}
 	return tmpl
 }
 
-func TestLoadTemplates(t *testing.T) {
+func TestLoadEmbedded(t *testing.T) {
 	tmpl := loadTestTemplates(t)
 	if _, ok := tmpl.Wrappers["default"]; !ok {
 		t.Fatalf("expected default wrapper to load")

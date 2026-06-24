@@ -123,6 +123,12 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 		if err != nil {
 			return nil, err
 		}
+		// Bound the DERIVED body_html to the same ceiling the legacy path enforces
+		// — the layout input is only 1 MiB-capped, and MJML compilation expands it,
+		// so an unbounded derived body could otherwise be persisted + emailed.
+		if err := validateBodyHTML(html); err != nil {
+			return nil, err
+		}
 		bodyHTML, bodyLayout = html, raw
 	} else if err := validateBodyHTML(in.BodyHTML); err != nil {
 		return nil, err
@@ -281,6 +287,12 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	if in.BodyLayout != nil {
 		html, raw, err := renderLayout(in.BodyLayout, "")
 		if err != nil {
+			return nil, err
+		}
+		// Bound the DERIVED body_html to the same ceiling the legacy path enforces
+		// — the layout input is only 1 MiB-capped, and MJML compilation expands it,
+		// so an unbounded derived body could otherwise be persisted + emailed.
+		if err := validateBodyHTML(html); err != nil {
 			return nil, err
 		}
 		bodyHTML, bodyLayout = html, raw
