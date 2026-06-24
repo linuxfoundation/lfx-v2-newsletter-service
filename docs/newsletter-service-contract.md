@@ -35,6 +35,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `POST` | `/projects/{project_uid}/newsletters/recipient-count` | yes | Resolve committees and return unique recipient count. |
 | `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Resolve committees and return unique recipient preview. |
 | `POST` | `/projects/{project_uid}/newsletters/test-send` | yes | Dispatch a single test email (no persistence, no analytics). |
+| `POST` | `/projects/{project_uid}/newsletters/render-preview` | yes | Render a `NewsletterLayout` to email-safe HTML for the editor's live preview. Stateless — nothing is persisted. Returns `422 unprocessable_entity` when the layout cannot be rendered. |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics` | yes | Return analytics for one newsletter. |
 | `GET` | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}` | no | Tracking pixel. Records open by recipient hash and returns a GIF. |
 | `GET` | `/newsletters/unsubscribe` | no | One-click unsubscribe via HMAC-signed `t` token. Returns HTML. A direct-service HEAD is a no-op so link previews don't unsubscribe; the gateway ruleset allows only `GET`, so HEAD is blocked at the gateway. |
@@ -53,7 +54,8 @@ Core state:
 | `id` | Newsletter UUID. |
 | `project_uid` | Owning project UID (also in the URL path). |
 | `subject` | Subject line. |
-| `body_html` | Newsletter HTML body. |
+| `body_html` | Newsletter HTML body. For layout-based newsletters this is derived from `body_layout` on write (see below); for legacy newsletters it is the authored HTML. |
+| `body_layout` | Optional `NewsletterLayout` — the editor's structured layout. Present only for layout-based newsletters; omitted (`omitempty`) for legacy / html-only newsletters. |
 | `ed_reply_email` | Reply-to address. |
 | `committee_uids` | Committees used for recipient resolution. |
 | `status` | `draft`, `sending`, or `sent`. |
@@ -65,6 +67,35 @@ Core state:
 
 `POST …/send` returns `SendNewsletterResponse`: the newsletter plus `group_id`, `total_recipients`, `sent`, `failed`, and per-recipient `failures`. The send is asynchronous: acceptance returns `202` with the newsletter in `status=sending` and `sent=0`; clients observe the outcome by re-fetching the newsletter (branch on `newsletter.status`, not the HTTP status code). The zero-recipient edge case settles synchronously and returns `200` with `status=sent`.
 
+### Declarative Layout
+
+`CreateNewsletterRequest` and `UpdateNewsletterRequest` accept an optional `body_layout` (`NewsletterLayout`) alongside `subject`, `body_html`, `ed_reply_email`, and `committee_uids`. When `body_layout` is supplied the service renders it to `body_html` via the declarative emitter and persists both; any `body_html` in the request is ignored. When `body_layout` is omitted, `body_html` is taken from the request as-is (legacy path).
+
+`NewsletterLayout` is the structured newsletter body:
+
+| Field | Description |
+| --- | --- |
+| `wrapper_key` | Selects the wrapper template the top-level blocks render inside. |
+| `blocks` | Ordered top-level `LayoutBlock`s rendered in the wrapper's body slot. |
+
+`LayoutBlock` is a recursive content node:
+
+| Field | Description |
+| --- | --- |
+| `block_type` | Selects the declarative block template. |
+| `content` | Optional map of field bindings the template consumes (`omitempty`). |
+| `blocks` | Optional nested child `LayoutBlock`s (`omitempty`). |
+
+`POST …/render-preview` takes a `RenderPreviewRequest` and returns a `RenderPreviewResponse`:
+
+| DTO | Field | Description |
+| --- | --- | --- |
+| `RenderPreviewRequest` | `body_layout` | The `NewsletterLayout` to render. |
+| `RenderPreviewRequest` | `wrapper_content` | Optional map of runtime values the wrapper template binds against (e.g. `edition.date`); may be omitted (`omitempty`). |
+| `RenderPreviewResponse` | `body_html` | The rendered, email-safe HTML produced by the declarative emitter. |
+
+`TestSendRequest` (the `…/test-send` body) carries an optional `is_layout` boolean (`omitempty`). When `true`, `body_html` is treated as a full layout-based emitter email (wrapper + blocks, already rendered, with `%%…%%` runtime placeholders) and is dispatched directly instead of being wrapped in email chrome — mirroring the layout branch of the real send path. Omitted/false keeps the legacy chrome-wrapped test send.
+
 ## Optimistic Locking
 
 `POST /projects/{project_uid}/newsletters`, `GET …/newsletters/{newsletter_uid}`, and `PUT …/newsletters/{newsletter_uid}` return a strong ETag formatted as the current integer version.
@@ -75,6 +106,7 @@ Core state:
 
 - New newsletters are created with `status=draft`.
 - Drafts can be updated and deleted.
+- On create and update, layout-based newsletters (request includes `body_layout`) derive the persisted `body_html` from `body_layout` via the declarative emitter; legacy newsletters persist the authored `body_html` as-is.
 - `POST …/newsletters/{newsletter_uid}/send` accepts the send synchronously and completes it asynchronously:
   - **Synchronous (inside the request):** validates the draft, resolves recipients (excluding project-scoped unsubscribes), renders the email envelope, mints a `group_id`, and atomically transitions `draft → sending` — persisting `group_id` and `total_recipients` and incrementing `version`. This single optimistically-locked transition is the duplicate-send guard across replicas: a concurrent or repeated send observes the row is no longer a draft and gets `409 send_in_progress`. The endpoint then returns `202`.
   - **Asynchronous (detached background job):** fans out per-recipient sends to email-service, then — when at least one recipient was delivered to — sets `status=sent`, `sent_at`, and increments `version`. A fully-failed fan-out reverts the row to `draft` (clearing `group_id` and `total_recipients`) so the operator can retry. The job is detached from the HTTP request context, so client disconnects and proxy timeouts cannot cancel a partially-dispatched send or orphan the status; its runtime is bounded by `SEND_JOB_TIMEOUT` (default 30m).
@@ -124,11 +156,14 @@ The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sen
 | Draft already sent | 409 | `already_sent` |
 | Send fan-out still in flight | 409 | `send_in_progress` |
 | Invalid request | 400 | `invalid_request` |
+| Render-preview layout cannot be rendered (unknown `block_type`, malformed markup, MJML compile failure) | 422 | `unprocessable_entity` |
 | Upstream conflict (typed `pkgerrors.Conflict`) | 409 | `conflict` |
 | Upstream dependency unavailable | 503 | `service_unavailable` |
 | Unexpected server error | 500 | `internal_error` |
 
 Domain sentinels match first; typed `pkgerrors.*` wrappers from the NATS upstream clients (committee, project, email-dispatcher) match by `errors.As`. 5xx responses intentionally use a generic client message. Details are logged server-side.
+
+`422 unprocessable_entity` is a client/markup error — the render request was well-formed but its layout could not be rendered. It is distinct from a render-preview template-load failure, which is a deployment defect (the templates ship with the binary) and surfaces as `500 internal_error`.
 
 ## Change Checklist
 

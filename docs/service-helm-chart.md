@@ -72,11 +72,11 @@ When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 `ruleset.yaml` authentication and authorization:
 
 - Most authenticated project routes (newsletter CRUD, analytics, etc.) authenticate via OIDC and fall back to `allow_all` when `openfga.enabled=false`. When OpenFGA is enabled, these routes enforce `viewer` (read) or `writer` (write) roles.
+- The block-composer routes are gated the same way: the stateless `…/newsletters/render-preview` route carries a project-scoped `writer` rule (mirroring `…/test-send` — a write-scoped authoring action), and the editor template routes (`…/newsletters/templates`, `…/newsletters/templates/{key}/manifest`) carry `viewer` (read) rules for the palette/catalog data. All are FGA-gated, not JWT-only.
 - The opt-out list endpoint (`/projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor` role and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` or OpenFGA is misconfigured — that is intentional for PII security.
 - The open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` are intentionally unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
 
 `openfga.enabled=false` is the default. When false, most routes still work via `allow_all`, but the opt-out endpoint becomes unreachable. Enable OpenFGA to access the opt-out list endpoint.
-
 ## Local Development
 
 Use `charts/lfx-v2-newsletter-service/values.local.yaml.example` as the starting point for local overrides. The local values file is gitignored at `charts/lfx-v2-newsletter-service/values.local.yaml`.
