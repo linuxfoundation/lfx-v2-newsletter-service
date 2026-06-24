@@ -25,6 +25,12 @@ var urlAttrs = map[string]bool{"href": true, "src": true}
 // email-client scheme stripping that normally neutralises this does not apply.
 var allowedURLSchemes = map[string]bool{"http": true, "https": true, "mailto": true}
 
+// placeholderSentinel matches a WHOLE-VALUE send-time sentinel such as
+// %%UNSUBSCRIBE_URL%% — the entire href/src is the sentinel. Requiring an exact
+// match (not a substring) prevents a writer value like "javascript:alert(1)%%"
+// from masquerading as a sentinel to bypass scheme validation.
+var placeholderSentinel = regexp.MustCompile(`^%%[A-Z0-9_]+%%$`)
+
 // node is a resolved element in the bound tree. After binding, every node is
 // either an element (Tag set, possibly with Children) or raw text/HTML (Tag
 // empty, Raw set). Directive attributes (if/each/field) are consumed during
@@ -170,11 +176,10 @@ func bindAttrs(attrs map[string]string, content map[string]any) map[string]strin
 		bound := mustachePattern.ReplaceAllStringFunc(v, func(m string) string {
 			return html.EscapeString(lookupString(content, mustacheField(m)))
 		})
-		// Deferred send-time sentinels (%%…%%) — e.g. the wrapper's
-		// view-online / unsubscribe / manage links — resolve to server-generated
-		// URLs at send time, so pass them through here. Any other URL-attr value
-		// must use a safe scheme.
-		if urlAttrs[k] && !strings.Contains(bound, "%%") && !safeURL(bound) {
+		// A whole-value deferred send-time sentinel (e.g. %%UNSUBSCRIBE_URL%%)
+		// resolves to a server-generated URL at send time, so pass it through.
+		// Any other URL-attr value must use a safe scheme.
+		if urlAttrs[k] && !placeholderSentinel.MatchString(bound) && !safeURL(bound) {
 			continue
 		}
 		out[k] = bound

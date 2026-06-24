@@ -119,7 +119,7 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	bodyHTML := in.BodyHTML
 	var bodyLayout json.RawMessage
 	if in.BodyLayout != nil {
-		html, raw, err := renderLayout(in.BodyLayout, "")
+		html, raw, err := renderLayout(ctx, in.BodyLayout, "")
 		if err != nil {
 			return nil, err
 		}
@@ -285,7 +285,7 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	bodyHTML := in.BodyHTML
 	var bodyLayout json.RawMessage
 	if in.BodyLayout != nil {
-		html, raw, err := renderLayout(in.BodyLayout, "")
+		html, raw, err := renderLayout(ctx, in.BodyLayout, "")
 		if err != nil {
 			return nil, err
 		}
@@ -436,9 +436,14 @@ func normalizeCommitteeUIDs(in []string) []string {
 // real per-recipient values later (increment 2b). edition.date is the
 // newsletter's date when available, else empty so the guarded row drops.
 //
+// view_online_link is left EMPTY until a hosted "view online" surface exists, so
+// the wrapper's `if=`-guarded View Online row drops at render time — rather than
+// emitting a row whose href would substitute to empty at send. (The
+// %%VIEW_ONLINE_URL%% send-time substitution then becomes a harmless no-op.)
+//
 // A render failure is surfaced as ErrInvalidRequest so the caller persists
 // nothing and the handler returns a client error rather than a 500.
-func renderLayout(layout *declarative.Layout, editionDate string) (bodyHTML string, raw json.RawMessage, err error) {
+func renderLayout(ctx context.Context, layout *declarative.Layout, editionDate string) (bodyHTML string, raw json.RawMessage, err error) {
 	templates, err := loadEmbeddedTemplates()
 	if err != nil {
 		// Template parse failure is a deployment defect (templates ship with the
@@ -449,13 +454,13 @@ func renderLayout(layout *declarative.Layout, editionDate string) (bodyHTML stri
 	wrapperContent := map[string]any{
 		"edition": map[string]any{
 			"date":                     editionDate,
-			"view_online_link":         ViewOnlineURLPlaceholder,
+			"view_online_link":         "",
 			"unsubscribe_url":          UnsubscribeURLPlaceholder,
 			"manage_subscriptions_url": ManageSubscriptionsURLPlaceholder,
 		},
 	}
 
-	html, err := declarative.Render(*layout, templates, wrapperContent)
+	html, err := declarative.Render(ctx, *layout, templates, wrapperContent)
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: render body_layout: %v", domain.ErrInvalidRequest, err)
 	}

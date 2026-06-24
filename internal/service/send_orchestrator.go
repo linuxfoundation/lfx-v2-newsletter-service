@@ -819,8 +819,10 @@ func (o *SendOrchestrator) renderBody(isLayout bool, in bodyRenderInput) (htmlBo
 //     distinct preferences endpoint today, so it reuses the unsubscribe URL —
 //     the same single opt-out surface the legacy chrome footer points at.
 //   - %%VIEW_ONLINE_URL%%          → the hosted "view online" link. No hosted
-//     web-version exists yet, so this resolves to empty; the wrapper's
-//     `if="edition.view_online_link"` guard then drops the View Online row.
+//     web-version exists yet, so render-on-write leaves edition.view_online_link
+//     empty and the wrapper's `if=` guard drops the View Online row at RENDER
+//     time — the rendered body therefore never contains this sentinel, and the
+//     substitution below is a harmless no-op kept for when the surface ships.
 //
 // When the unsubscribe service is not configured (Enabled() false) the
 // unsubscribe/manage sentinels are replaced with empty strings rather than left

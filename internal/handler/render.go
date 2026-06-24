@@ -57,7 +57,7 @@ func (h *Handler) RenderPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	html, err := declarative.Render(toEmitterLayout(body.BodyLayout), templates, body.WrapperContent)
+	html, err := declarative.Render(r.Context(), toEmitterLayout(body.BodyLayout), templates, body.WrapperContent)
 	if err != nil {
 		// The layout parsed but could not be rendered — 422. Wrap the emitter
 		// error so the message reaches the client while the status maps via the

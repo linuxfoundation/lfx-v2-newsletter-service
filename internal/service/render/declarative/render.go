@@ -19,15 +19,19 @@ import (
 // if= guards resolve. Pass nil when the wrapper needs no runtime data; its
 // if=-guarded chrome rows then drop.
 //
-// The returned HTML is intended to populate render.Chrome.BodyHTML. Render does
-// not add the outer email envelope (header/footer chrome) — that is the
-// chrome layer's job.
-func Render(layout Layout, templates Templates, wrapperContent map[string]any) (string, error) {
+// The returned HTML is the complete email body for a LAYOUT newsletter — the
+// layout send path dispatches it directly, with no email_chrome envelope. (On
+// the legacy path the chrome layer still wraps an authored body_html; Render
+// itself never adds the outer header/footer chrome.)
+//
+// ctx bounds the mjml-go (wasm) compile so a slow render can be canceled — e.g.
+// a /render-preview request that hits its deadline.
+func Render(ctx context.Context, layout Layout, templates Templates, wrapperContent map[string]any) (string, error) {
 	mjmlDoc, err := RenderMJML(layout, templates, wrapperContent)
 	if err != nil {
 		return "", err
 	}
-	out, err := mjml.ToHTML(context.Background(), mjmlDoc, mjml.WithMinify(false))
+	out, err := mjml.ToHTML(ctx, mjmlDoc, mjml.WithMinify(false))
 	if err != nil {
 		return "", fmt.Errorf("declarative: compile mjml: %w", err)
 	}

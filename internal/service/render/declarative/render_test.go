@@ -4,6 +4,7 @@
 package declarative
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -149,7 +150,7 @@ func TestRender_CompilesToTableHTML(t *testing.T) {
 		},
 	}
 
-	out, err := Render(layout, tmpl, nil)
+	out, err := Render(context.Background(), layout, tmpl, nil)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -185,6 +186,8 @@ func TestBindAttrs_URLSchemeGate(t *testing.T) {
 		{"relative dropped", "/relative/path", ""},
 		{"empty dropped", "", ""},
 		{"deferred sentinel kept", "%%UNSUBSCRIBE_URL%%", "%%UNSUBSCRIBE_URL%%"},
+		{"partial %% is not a sentinel", "javascript:alert(1)%%", ""},
+		{"unsafe with trailing sentinel dropped", "javascript:alert(1)%%X%%", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -245,7 +248,7 @@ func TestRenderMJML_PollColumnsSideBySide(t *testing.T) {
 	// And the compiled HTML must use MJML's two-column (50% each) layout, which
 	// is what renders the buttons side-by-side; a stacked single column would
 	// be mj-column-per-100.
-	out, err := Render(layout, tmpl, nil)
+	out, err := Render(context.Background(), layout, tmpl, nil)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -290,7 +293,7 @@ func TestRender_EmptyIfOmitsContent(t *testing.T) {
 		},
 	}
 
-	out, err := Render(layout, tmpl, nil)
+	out, err := Render(context.Background(), layout, tmpl, nil)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -328,7 +331,7 @@ func TestRender_WrapperEditionFields(t *testing.T) {
 		},
 	}
 
-	out, err := Render(layout, tmpl, wrapperContent)
+	out, err := Render(context.Background(), layout, tmpl, wrapperContent)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -347,7 +350,7 @@ func TestRender_WrapperEditionFields(t *testing.T) {
 	}
 
 	// When no wrapperContent is supplied, the guarded rows drop entirely.
-	bare, err := Render(layout, tmpl, nil)
+	bare, err := Render(context.Background(), layout, tmpl, nil)
 	if err != nil {
 		t.Fatalf("Render(nil): %v", err)
 	}

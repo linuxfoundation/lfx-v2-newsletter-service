@@ -19,8 +19,8 @@ package declarative
 // Layout is the structured newsletter: a wrapper plus the ordered top-level
 // blocks that render inside the wrapper's <slot name="body" />.
 type Layout struct {
-	// WrapperKey selects which wrapper template to use. When empty, the
-	// Templates' single registered wrapper is used.
+	// WrapperKey selects which wrapper template to use. When empty, the "default"
+	// wrapper key is used (see Templates.wrapper).
 	WrapperKey string `json:"wrapper_key"`
 	// Blocks are the ordered top-level blocks of the edition body.
 	Blocks []Block `json:"blocks"`
