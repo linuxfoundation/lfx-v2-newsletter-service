@@ -119,6 +119,10 @@ func bindWrapperNode(n *parsedNode, ctx bindCtx, body []*node) ([]*node, error) 
 		return nil, nil
 	}
 	// Text and richtext/slot(children) fall back to the standard binder.
+	// NOTE: an `each=` wrapper element also falls back to bindNode, which does
+	// not thread `body` — so a `<slot name="body" />` must NOT be nested inside
+	// an `each=` element in a wrapper template (it would render empty). The
+	// shipped default.html keeps the body slot at the top level.
 	if n.Tag == "" || n.isSlot || n.richtextField != "" || n.each != "" {
 		return bindNode(n, ctx)
 	}

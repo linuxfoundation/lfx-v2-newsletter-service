@@ -167,6 +167,34 @@ func TestRender_CompilesToTableHTML(t *testing.T) {
 	}
 }
 
+// TestBindAttrs_URLSchemeGate asserts that bound href/src values are gated by
+// scheme: unsafe schemes (javascript:) and empty/relative values are dropped,
+// http/https/mailto are kept, and deferred %%…%% send-time sentinels pass through.
+func TestBindAttrs_URLSchemeGate(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  string // "" means the href is expected to be dropped
+	}{
+		{"https kept", "https://example.com/x", "https://example.com/x"},
+		{"http kept", "http://example.com", "http://example.com"},
+		{"mailto kept", "mailto:a@example.com", "mailto:a@example.com"},
+		{"javascript dropped", "javascript:alert(1)", ""},
+		{"data dropped", "data:text/html,<script>1</script>", ""},
+		{"relative dropped", "/relative/path", ""},
+		{"empty dropped", "", ""},
+		{"deferred sentinel kept", "%%UNSUBSCRIBE_URL%%", "%%UNSUBSCRIBE_URL%%"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := bindAttrs(map[string]string{"href": "{{link}}"}, map[string]any{"link": tc.value})
+			if got["href"] != tc.want {
+				t.Errorf("href = %q, want %q", got["href"], tc.want)
+			}
+		})
+	}
+}
+
 // TestRenderMJML_PollColumnsSideBySide asserts that hot_take's poll — a nested
 // Row of two Columns inside a block — breaks out into its own mj-section with
 // two side-by-side mj-columns (one button each) rather than stacking both

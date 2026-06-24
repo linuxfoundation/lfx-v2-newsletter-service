@@ -6,12 +6,24 @@ package declarative
 import (
 	"fmt"
 	"html"
+	"net/url"
 	"regexp"
 	"strings"
 
 	nethtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 )
+
+// urlAttrs are forwarded attributes whose value is a URL and must pass scheme
+// validation before emission.
+var urlAttrs = map[string]bool{"href": true, "src": true}
+
+// allowedURLSchemes are the schemes permitted in a bound href/src. Anything else
+// (javascript:, data:, vbscript:, …) is dropped so writer-supplied content can't
+// inject an active-scheme URL into the rendered HTML — which is also returned
+// over the API and may be shown in a future web "view online" surface where the
+// email-client scheme stripping that normally neutralises this does not apply.
+var allowedURLSchemes = map[string]bool{"http": true, "https": true, "mailto": true}
 
 // node is a resolved element in the bound tree. After binding, every node is
 // either an element (Tag set, possibly with Children) or raw text/HTML (Tag
@@ -146,18 +158,44 @@ func bindNode(n *parsedNode, ctx bindCtx) ([]*node, error) {
 }
 
 // bindAttrs forwards allowlisted attributes, substituting {{mustache}} in
-// their values (escaped).
+// their values (escaped). URL attributes (href/src) are additionally gated
+// through safeURL — a bound value with a non-allowlisted scheme (javascript:,
+// data:, …) or an empty/relative value is dropped rather than emitted.
 func bindAttrs(attrs map[string]string, content map[string]any) map[string]string {
 	out := map[string]string{}
 	for k, v := range attrs {
 		if !forwardedAttrs[k] {
 			continue
 		}
-		out[k] = mustachePattern.ReplaceAllStringFunc(v, func(m string) string {
+		bound := mustachePattern.ReplaceAllStringFunc(v, func(m string) string {
 			return html.EscapeString(lookupString(content, mustacheField(m)))
 		})
+		// Deferred send-time sentinels (%%…%%) — e.g. the wrapper's
+		// view-online / unsubscribe / manage links — resolve to server-generated
+		// URLs at send time, so pass them through here. Any other URL-attr value
+		// must use a safe scheme.
+		if urlAttrs[k] && !strings.Contains(bound, "%%") && !safeURL(bound) {
+			continue
+		}
+		out[k] = bound
 	}
 	return out
+}
+
+// safeURL reports whether a bound href/src value uses an allowed scheme. Empty
+// and relative/scheme-less values are rejected (they don't resolve in email
+// anyway); only http/https/mailto pass. The scheme is the leading token, so the
+// check is unaffected by the HTML-escaping already applied to the value.
+func safeURL(raw string) bool {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return false
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return false
+	}
+	return allowedURLSchemes[strings.ToLower(u.Scheme)]
 }
 
 // mustacheField extracts the field path from a "{{ field }}" match.

@@ -162,7 +162,7 @@ func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
 		ProjectUID:      n.ProjectUID,
 		Subject:         n.Subject,
 		BodyHTML:        n.BodyHTML,
-		BodyLayout:      toAPILayout(n.BodyLayout),
+		BodyLayout:      toAPILayout(n.BodyLayout, n.ID.String()),
 		EDReplyEmail:    n.EDReplyEmail,
 		CommitteeUIDs:   n.CommitteeUIDs,
 		Status:          publicapi.Status(n.Status),
@@ -183,13 +183,17 @@ func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
 // newsletter) yields nil. A decode failure is logged and treated as absent
 // rather than failing the read — the body_html is still valid and serving it is
 // better than a 500 on a row that was already persisted.
-func toAPILayout(raw json.RawMessage) *publicapi.NewsletterLayout {
+func toAPILayout(raw json.RawMessage, newsletterID string) *publicapi.NewsletterLayout {
 	if len(raw) == 0 {
 		return nil
 	}
 	var layout publicapi.NewsletterLayout
 	if err := json.Unmarshal(raw, &layout); err != nil {
-		slog.Warn("decode stored body_layout failed; omitting from response", "error", err)
+		// Corrupt stored layout: serve the (still valid) body_html rather than a
+		// 500. Log WITH the id — the newsletter then reads as html-only, so a
+		// later save would clear the structured layout; the id makes that
+		// silent-loss case traceable.
+		slog.Warn("decode stored body_layout failed; omitting from response", "newsletter_id", newsletterID, "error", err)
 		return nil
 	}
 	return &layout

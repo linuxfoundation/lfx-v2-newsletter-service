@@ -263,6 +263,35 @@ spec:
             values:
               aud: {{ .Values.app.audience }}
 
+    # render-preview compiles a draft layout to email HTML; it is a write-scoped
+    # authoring action (writer), mirroring test-send.
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:render_preview"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/render-preview
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
     # ---------------------------------------------------------------------
     # Newsletter opt-outs list (project-scoped). Returns PII (email addresses).
     # Requires `auditor` role. Does NOT fall back to allow_all — OpenFGA must be
