@@ -112,8 +112,8 @@ func TestCreateDraft_UnrenderableLayout_ErrorsAndPersistsNothing(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unrenderable layout, got nil")
 	}
-	if !IsValidationError(err) {
-		t.Errorf("expected validation error, got %v", err)
+	if !IsUnprocessableError(err) {
+		t.Errorf("expected unprocessable (422) error, got %v", err)
 	}
 	repo.mu.Lock()
 	n := len(repo.drafts)
@@ -162,6 +162,51 @@ func TestUpdateDraft_WithLayout_PersistsLayoutAndDerivedHTML(t *testing.T) {
 	}
 }
 
+func TestUpdateDraft_OmittingLayout_KeepsExistingLayout(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo)
+
+	// A saved LAYOUT newsletter: body_layout present, body_html is the derived
+	// emitter document (wrapper + blocks + %%…%% sentinels).
+	const derivedHTML = "<html><body>derived emitter document</body></html>"
+	existing := &model.Newsletter{
+		ID:            uuid.New(),
+		ProjectUID:    "p1",
+		Subject:       "Old",
+		BodyHTML:      derivedHTML,
+		BodyLayout:    json.RawMessage(`{"wrapper_key":"default","blocks":[{"block_type":"intro_paragraph","content":{"text":"hi"}}]}`),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		Status:        model.StatusDraft,
+		Version:       1,
+	}
+	repo.drafts[existing.ID] = existing
+
+	// Update WITHOUT body_layout — e.g. an autosave that round-trips only body_html.
+	// The stored layout must be KEPT, not silently cleared (which would route the
+	// next send down the legacy path and re-wrap the full emitter document).
+	updated, err := svc.UpdateDraft(context.Background(), "p1", UpdateDraftInput{
+		ID:              existing.ID,
+		ExpectedVersion: 1,
+		Subject:         "New subject",
+		BodyHTML:        "<p>just html</p>",
+		EDReplyEmail:    "ed@example.com",
+		CommitteeUIDs:   []string{"c1"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateDraft: %v", err)
+	}
+	if len(updated.BodyLayout) == 0 {
+		t.Fatal("expected the existing body_layout to be kept when the update omits it")
+	}
+	if updated.BodyHTML != derivedHTML {
+		t.Errorf("expected the derived body_html kept, not overwritten; got %q", updated.BodyHTML)
+	}
+	if updated.Subject != "New subject" {
+		t.Errorf("expected other fields to still update; subject = %q", updated.Subject)
+	}
+}
+
 func TestUpdateDraft_UnrenderableLayout_ErrorsAndPersistsNothing(t *testing.T) {
 	repo := newFakeRepo()
 	svc := NewNewsletterService(repo)
@@ -189,10 +234,11 @@ func TestUpdateDraft_UnrenderableLayout_ErrorsAndPersistsNothing(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unrenderable layout")
 	}
-	if !IsValidationError(err) {
-		t.Errorf("expected validation error, got %v", err)
+	if !IsUnprocessableError(err) {
+		t.Errorf("expected unprocessable (422) error, got %v", err)
 	}
-	// The existing row must be untouched (render failed before the load/update).
+	// The existing row must be untouched: the update is only applied after a
+	// successful render, so a render failure leaves the loaded row unmodified.
 	if existing.BodyHTML != "<p>original body</p>" || existing.Subject != "Old" {
 		t.Errorf("existing draft mutated despite render failure: %+v", existing)
 	}

@@ -119,7 +119,7 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	bodyHTML := in.BodyHTML
 	var bodyLayout json.RawMessage
 	if in.BodyLayout != nil {
-		html, raw, err := renderLayout(ctx, in.BodyLayout, "")
+		html, raw, err := renderLayout(ctx, in.BodyLayout)
 		if err != nil {
 			return nil, err
 		}
@@ -280,26 +280,6 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 		return nil, err
 	}
 
-	// Render-on-write (or validate the legacy body_html) BEFORE the load so an
-	// unrenderable layout fails fast and persists nothing.
-	bodyHTML := in.BodyHTML
-	var bodyLayout json.RawMessage
-	if in.BodyLayout != nil {
-		html, raw, err := renderLayout(ctx, in.BodyLayout, "")
-		if err != nil {
-			return nil, err
-		}
-		// Bound the DERIVED body_html to the same ceiling the legacy path enforces
-		// — the layout input is only 1 MiB-capped, and MJML compilation expands it,
-		// so an unbounded derived body could otherwise be persisted + emailed.
-		if err := validateBodyHTML(html); err != nil {
-			return nil, err
-		}
-		bodyHTML, bodyLayout = html, raw
-	} else if err := validateBodyHTML(in.BodyHTML); err != nil {
-		return nil, err
-	}
-
 	existing, err := s.repo.Get(ctx, in.ID)
 	if err != nil {
 		return nil, err
@@ -318,10 +298,38 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 		return nil, domain.ErrSendInProgress
 	}
 
+	// Resolve the body. A render failure returns before repo.Update, so nothing
+	// is persisted.
+	bodyHTML := in.BodyHTML
+	var bodyLayout json.RawMessage
+	switch {
+	case in.BodyLayout != nil:
+		// New / updated layout: the emitter owns the whole email; body_html is
+		// DERIVED and the request's body_html is ignored.
+		html, raw, renderErr := renderLayout(ctx, in.BodyLayout)
+		if renderErr != nil {
+			return nil, renderErr
+		}
+		// Bound the DERIVED body_html to the same ceiling the legacy path enforces.
+		if validateErr := validateBodyHTML(html); validateErr != nil {
+			return nil, validateErr
+		}
+		bodyHTML, bodyLayout = html, raw
+	case len(existing.BodyLayout) > 0:
+		// The saved newsletter IS a layout newsletter and this update omits
+		// body_layout — KEEP the stored layout + its derived body_html rather than
+		// silently downgrading to plain body_html (which would make the next send
+		// re-wrap the full emitter document in email_chrome → a broken email).
+		bodyHTML, bodyLayout = existing.BodyHTML, existing.BodyLayout
+	default:
+		// Legacy html-only newsletter: body_html must be valid as authored.
+		if validateErr := validateBodyHTML(in.BodyHTML); validateErr != nil {
+			return nil, validateErr
+		}
+	}
+
 	existing.Subject = strings.TrimSpace(in.Subject)
 	existing.BodyHTML = bodyHTML
-	// nil clears any prior layout so a legacy (html-only) update makes body_html
-	// the source of truth again; a non-nil value replaces it.
 	existing.BodyLayout = bodyLayout
 	existing.EDReplyEmail = strings.TrimSpace(in.EDReplyEmail)
 	existing.CommitteeUIDs = normalizeCommitteeUIDs(in.CommitteeUIDs)
@@ -433,17 +441,18 @@ func normalizeCommitteeUIDs(in []string) []string {
 // returns it alongside the raw layout JSON to persist. The emitter owns the
 // whole email (wrapper chrome + blocks), so the wrapper's per-recipient runtime
 // fields are bound to PLACEHOLDER sentinels here; the send path substitutes the
-// real per-recipient values later (increment 2b). edition.date is the
-// newsletter's date when available, else empty so the guarded row drops.
+// real per-recipient values later (increment 2b).
 //
-// view_online_link is left EMPTY until a hosted "view online" surface exists, so
-// the wrapper's `if=`-guarded View Online row drops at render time — rather than
-// emitting a row whose href would substitute to empty at send. (The
-// %%VIEW_ONLINE_URL%% send-time substitution then becomes a harmless no-op.)
+// edition.date and edition.view_online_link are left EMPTY: there is no
+// newsletter-date field and no hosted "view online" surface yet, so the
+// wrapper's `if=` guards drop both rows at render time (rather than emitting a
+// row whose href would substitute to empty at send). The %%VIEW_ONLINE_URL%%
+// send-time substitution is then a harmless no-op. Both get a real source in a
+// later increment.
 //
-// A render failure is surfaced as ErrInvalidRequest so the caller persists
-// nothing and the handler returns a client error rather than a 500.
-func renderLayout(ctx context.Context, layout *declarative.Layout, editionDate string) (bodyHTML string, raw json.RawMessage, err error) {
+// A render failure is surfaced as ErrUnprocessable (422), matching render-preview
+// for the same unrenderable layout — the request itself is well-formed.
+func renderLayout(ctx context.Context, layout *declarative.Layout) (bodyHTML string, raw json.RawMessage, err error) {
 	templates, err := loadEmbeddedTemplates()
 	if err != nil {
 		// Template parse failure is a deployment defect (templates ship with the
@@ -453,7 +462,7 @@ func renderLayout(ctx context.Context, layout *declarative.Layout, editionDate s
 
 	wrapperContent := map[string]any{
 		"edition": map[string]any{
-			"date":                     editionDate,
+			"date":                     "",
 			"view_online_link":         "",
 			"unsubscribe_url":          UnsubscribeURLPlaceholder,
 			"manage_subscriptions_url": ManageSubscriptionsURLPlaceholder,
@@ -462,12 +471,12 @@ func renderLayout(ctx context.Context, layout *declarative.Layout, editionDate s
 
 	html, err := declarative.Render(ctx, *layout, templates, wrapperContent)
 	if err != nil {
-		return "", nil, fmt.Errorf("%w: render body_layout: %v", domain.ErrInvalidRequest, err)
+		return "", nil, fmt.Errorf("%w: render body_layout: %v", domain.ErrUnprocessable, err)
 	}
 
 	raw, err = json.Marshal(layout)
 	if err != nil {
-		return "", nil, fmt.Errorf("%w: marshal body_layout: %v", domain.ErrInvalidRequest, err)
+		return "", nil, fmt.Errorf("%w: marshal body_layout: %v", domain.ErrUnprocessable, err)
 	}
 	return html, raw, nil
 }
@@ -475,4 +484,10 @@ func renderLayout(ctx context.Context, layout *declarative.Layout, editionDate s
 // IsValidationError reports whether err is a validation/domain ErrInvalidRequest.
 func IsValidationError(err error) bool {
 	return errors.Is(err, domain.ErrInvalidRequest)
+}
+
+// IsUnprocessableError reports whether err is a domain ErrUnprocessable (422) —
+// e.g. a well-formed request whose body_layout could not be rendered.
+func IsUnprocessableError(err error) bool {
+	return errors.Is(err, domain.ErrUnprocessable)
 }

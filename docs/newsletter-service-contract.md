@@ -156,14 +156,14 @@ The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sen
 | Draft already sent | 409 | `already_sent` |
 | Send fan-out still in flight | 409 | `send_in_progress` |
 | Invalid request | 400 | `invalid_request` |
-| Render-preview layout cannot be rendered (unknown `block_type`, malformed markup, MJML compile failure) | 422 | `unprocessable_entity` |
+| A layout cannot be rendered — unknown `block_type`, malformed markup, MJML compile failure (on `render-preview`, or render-on-write during create/update) | 422 | `unprocessable_entity` |
 | Upstream conflict (typed `pkgerrors.Conflict`) | 409 | `conflict` |
 | Upstream dependency unavailable | 503 | `service_unavailable` |
 | Unexpected server error | 500 | `internal_error` |
 
 Domain sentinels match first; typed `pkgerrors.*` wrappers from the NATS upstream clients (committee, project, email-dispatcher) match by `errors.As`. 5xx responses intentionally use a generic client message. Details are logged server-side.
 
-`422 unprocessable_entity` is a client/markup error — the render request was well-formed but its layout could not be rendered. It is distinct from a render-preview template-load failure, which is a deployment defect (the templates ship with the binary) and surfaces as `500 internal_error`.
+`422 unprocessable_entity` is a client/markup error — the request was well-formed but its layout could not be rendered. The same status applies whether the layout fails on `render-preview` or on render-on-write during create/update, so an editor that previews then saves the same bad layout sees a consistent code. It is distinct from a template-load failure, which is a deployment defect (the templates ship with the binary) and surfaces as `500 internal_error`.
 
 ## Change Checklist
 

@@ -1197,9 +1197,11 @@ func TestDraftGuardsWhileSending(t *testing.T) {
 }
 
 // addLayoutDraft stores a layout-based draft: BodyLayout is non-empty (so the
-// orchestrator takes the layout send path) and BodyHTML is the full emitter
-// email with the three runtime placeholders embedded, exactly as the
-// render-on-write step persists it.
+// orchestrator takes the layout send path) and BodyHTML is a hand-built stand-in
+// that embeds all three runtime placeholders so the test exercises placeholder
+// substitution (including %%VIEW_ONLINE_URL%% collapsing to empty). It is NOT a
+// byte-for-byte mirror of render-on-write output, which drops the View Online row
+// and persists snake_case layout JSON.
 func (r *fakeNewsletterRepo) addLayoutDraft(projectUID string, committeeUIDs []string) *model.Newsletter {
 	n := &model.Newsletter{
 		ID:         uuid.New(),
@@ -1214,7 +1216,7 @@ func (r *fakeNewsletterRepo) addLayoutDraft(projectUID string, committeeUIDs []s
 			`<a href="` + UnsubscribeURLPlaceholder + `">Unsubscribe</a>` +
 			`<a href="` + ManageSubscriptionsURLPlaceholder + `">Manage your email preferences</a>` +
 			`</body></html>`,
-		BodyLayout:    json.RawMessage(`{"wrapperKey":"default","blocks":[{"blockType":"intro_paragraph"}]}`),
+		BodyLayout:    json.RawMessage(`{"wrapper_key":"default","blocks":[{"block_type":"intro_paragraph"}]}`),
 		EDReplyEmail:  "ed@example.com",
 		CommitteeUIDs: committeeUIDs,
 		Status:        model.StatusDraft,

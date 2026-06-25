@@ -13,6 +13,11 @@ import (
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
 
+// maxRenderedHTMLBytes caps the render-preview output, mirroring the persist
+// path's body_html ceiling (service.maxBodyHTMLLength, 100 KB) so a pathological
+// layout can't return an unbounded document.
+const maxRenderedHTMLBytes = 100_000
+
 // embeddedTemplates holds the declarative templates baked into the binary,
 // loaded once on first render-preview request. Parsing the embedded FS is
 // deterministic and side-effect free, so a process-wide singleton is safe and
@@ -63,6 +68,14 @@ func (h *Handler) RenderPreview(w http.ResponseWriter, r *http.Request) {
 		// error so the message reaches the client while the status maps via the
 		// domain sentinel.
 		writeError(r.Context(), w, fmt.Errorf("%w: %v", domain.ErrUnprocessable, err))
+		return
+	}
+
+	if len(html) > maxRenderedHTMLBytes {
+		// Parity with the persist path's body_html cap: a pathological layout (e.g.
+		// many each= items) can expand under MJML into an oversized document. Input
+		// is already 1 MiB-capped by decodeJSON; this bounds the OUTPUT.
+		writeError(r.Context(), w, fmt.Errorf("%w: rendered HTML exceeds %d bytes", domain.ErrUnprocessable, maxRenderedHTMLBytes))
 		return
 	}
 
