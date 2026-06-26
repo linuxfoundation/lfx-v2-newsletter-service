@@ -205,6 +205,21 @@ spec:
             - name: OTEL_PROPAGATORS
               value: {{ $otelPropagators | quote }}
             {{- end }}
+            {{- $otelTracesSamplerArg := .Values.app.otel.tracesSamplerArg | toString | trim }}
+            {{- if ne $otelTracesSamplerArg "" }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ $otelTracesSamplerArg | quote }}
+            {{- end }}
+            {{- $otelMetricsExporter := .Values.app.otel.metricsExporter | toString | trim }}
+            {{- if ne $otelMetricsExporter "" }}
+            - name: OTEL_METRICS_EXPORTER
+              value: {{ $otelMetricsExporter | quote }}
+            {{- end }}
+            {{- $otelLogsExporter := .Values.app.otel.logsExporter | toString | trim }}
+            {{- if ne $otelLogsExporter "" }}
+            - name: OTEL_LOGS_EXPORTER
+              value: {{ $otelLogsExporter | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /livez
