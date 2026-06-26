@@ -33,6 +33,10 @@ spec:
         runAsUser: 65532
         seccompProfile:
           type: RuntimeDefault
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: app
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"

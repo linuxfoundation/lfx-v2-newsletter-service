@@ -25,6 +25,9 @@ podDisruptionBudget:
   enabled: false
   # minAvailable: 1
 
+# topologySpreadConstraints controls how pods are spread across nodes/zones.
+topologySpreadConstraints: []
+
 # resources is the container resource request and limit configuration.
 resources:
   limits:
