@@ -51,6 +51,12 @@ type AppConfig struct {
 	// the request.
 	EmailFromAddress string
 
+	// EmailFromAddressOverrides maps a normalized (lowercased) project slug to
+	// the bare From address used for that project's newsletters, overriding
+	// EmailFromAddress. Empty when unset. As with EmailFromAddress, each override
+	// domain must be in the email-service allowlist or send_email rejects it.
+	EmailFromAddressOverrides map[string]string
+
 	// UnsubscribeSecret is the HMAC key signing per-recipient unsubscribe
 	// tokens. When empty, the footer falls back to the legacy "reply with
 	// UNSUBSCRIBE" copy and the public endpoint rejects all requests.
@@ -83,22 +89,23 @@ const (
 // where reasonable. It returns an error if a required variable is missing.
 func AppConfigFromEnv() (AppConfig, error) {
 	cfg := AppConfig{
-		Port:              envOr("PORT", defaultPort),
-		LogLevel:          os.Getenv("LOG_LEVEL"),
-		DatabaseURL:       os.Getenv("DATABASE_URL"),
-		NATSURL:           envOr("NATS_URL", defaultNATSURL),
-		NATSTimeout:       durationOr("NATS_TIMEOUT", defaultNATSTimeout),
-		NATSMaxReconnect:  intOr("NATS_MAX_RECONNECT", -1),
-		NATSReconnectWait: durationOr("NATS_RECONNECT_WAIT", time.Duration(defaultNATSReconnectWaitSecs)*time.Second),
-		SendFanoutEnabled: boolOr("SEND_FANOUT_ENABLED", true),
-		SendConcurrency:   intOr("SEND_CONCURRENCY", defaultSendConcurrency),
-		EmailFromAddress:  envOr("EMAIL_FROM_ADDRESS", defaultEmailFromAddress),
-		UnsubscribeSecret: os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
-		PublicBaseURL:     strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
-		JWKSURL:           os.Getenv("JWKS_URL"),
-		ExpectedAudience:  os.Getenv("JWT_AUDIENCE"),
-		RequireUserAuth:   boolOr("REQUIRE_USER_AUTH", true),
-		LFXEnvironment:    os.Getenv("LFX_ENVIRONMENT"),
+		Port:                      envOr("PORT", defaultPort),
+		LogLevel:                  os.Getenv("LOG_LEVEL"),
+		DatabaseURL:               os.Getenv("DATABASE_URL"),
+		NATSURL:                   envOr("NATS_URL", defaultNATSURL),
+		NATSTimeout:               durationOr("NATS_TIMEOUT", defaultNATSTimeout),
+		NATSMaxReconnect:          intOr("NATS_MAX_RECONNECT", -1),
+		NATSReconnectWait:         durationOr("NATS_RECONNECT_WAIT", time.Duration(defaultNATSReconnectWaitSecs)*time.Second),
+		SendFanoutEnabled:         boolOr("SEND_FANOUT_ENABLED", true),
+		SendConcurrency:           intOr("SEND_CONCURRENCY", defaultSendConcurrency),
+		EmailFromAddress:          envOr("EMAIL_FROM_ADDRESS", defaultEmailFromAddress),
+		EmailFromAddressOverrides: parseFromAddressOverrides(os.Getenv("EMAIL_FROM_ADDRESS_OVERRIDES")),
+		UnsubscribeSecret:         os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
+		PublicBaseURL:             strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
+		JWKSURL:                   os.Getenv("JWKS_URL"),
+		ExpectedAudience:          os.Getenv("JWT_AUDIENCE"),
+		RequireUserAuth:           boolOr("REQUIRE_USER_AUTH", true),
+		LFXEnvironment:            os.Getenv("LFX_ENVIRONMENT"),
 	}
 
 	// If DATABASE_URL is not set, compose it from PG* env vars in-process so
@@ -160,6 +167,28 @@ func composeDatabaseURL() (string, bool) {
 // Validate is reserved for future invariant checks; currently a no-op.
 func (c AppConfig) Validate() error {
 	return nil
+}
+
+// parseFromAddressOverrides parses a comma-separated list of `slug=address`
+// pairs into a slug→address map. Slug keys are trimmed and lowercased so
+// matching against a project slug is case-insensitive; addresses are trimmed.
+// Malformed entries (no `=`, empty slug, or empty address) are skipped. An
+// empty or all-malformed input yields an empty (non-nil) map.
+func parseFromAddressOverrides(raw string) map[string]string {
+	out := make(map[string]string)
+	for pair := range strings.SplitSeq(raw, ",") {
+		key, value, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		slug := strings.ToLower(strings.TrimSpace(key))
+		addr := strings.TrimSpace(value)
+		if slug == "" || addr == "" {
+			continue
+		}
+		out[slug] = addr
+	}
+	return out
 }
 
 func envOr(key, fallback string) string {
