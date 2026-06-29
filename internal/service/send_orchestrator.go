@@ -48,6 +48,7 @@ type SendOrchestrator struct {
 	concurrency   int
 	fanoutEnabled bool
 	fromAddress   string
+	fromOverrides map[string]string
 }
 
 // SendOrchestratorConfig configures a SendOrchestrator.
@@ -66,6 +67,10 @@ type SendOrchestratorConfig struct {
 	// FromAddress is the SMTP envelope From applied to every outbound email.
 	// Empty falls back to defaultFromAddress.
 	FromAddress string
+	// FromAddressOverrides maps a normalized (lowercased) project slug to the
+	// From address used for that project, overriding FromAddress. Nil/empty
+	// means every project uses FromAddress.
+	FromAddressOverrides map[string]string
 }
 
 // NewSendOrchestrator wires a SendOrchestrator.
@@ -78,6 +83,17 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	if from == "" {
 		from = defaultFromAddress
 	}
+	// Normalize override keys defensively so matching is case-insensitive even
+	// if a caller wires the map without going through config parsing.
+	overrides := make(map[string]string, len(cfg.FromAddressOverrides))
+	for slug, addr := range cfg.FromAddressOverrides {
+		slug = strings.ToLower(strings.TrimSpace(slug))
+		addr = strings.TrimSpace(addr)
+		if slug == "" || addr == "" {
+			continue
+		}
+		overrides[slug] = addr
+	}
 	return &SendOrchestrator{
 		repo:          cfg.Repo,
 		committee:     cfg.Committee,
@@ -88,6 +104,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		concurrency:   c,
 		fanoutEnabled: cfg.FanoutEnabled,
 		fromAddress:   from,
+		fromOverrides: overrides,
 	}
 }
 
@@ -181,7 +198,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		Subject:         draft.Subject,
 		HTML:            htmlBody,
 		Text:            textBody,
-		From:            o.fromAddress,
+		From:            o.resolveFromAddress(ctx, draft.ProjectUID),
 		FromDisplayName: fromDisplayName,
 		ReplyTo:         draft.EDReplyEmail,
 		GroupID:         groupID,
@@ -296,7 +313,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		Subject:         in.Subject,
 		HTML:            htmlBody,
 		Text:            textBody,
-		From:            o.fromAddress,
+		From:            o.resolveFromAddress(ctx, in.ProjectUID),
 		FromDisplayName: fromDisplayName,
 		ReplyTo:         strings.TrimSpace(in.EDReplyEmail),
 	}); dispatchErr != nil {
@@ -549,6 +566,28 @@ func (o *SendOrchestrator) resolveSenderName(ctx context.Context, principal stri
 		return "", pkgerrors.NewUnexpected(fmt.Sprintf("invalid sender display name from auth-service: %v", err))
 	}
 	return parsed.Name, nil
+}
+
+// resolveFromAddress returns the project-specific From override keyed by the
+// project slug, falling back to the deployment default when no override is
+// configured or the slug isn't mapped. A slug-lookup failure is non-fatal: we
+// log and use the default rather than block the send.
+func (o *SendOrchestrator) resolveFromAddress(ctx context.Context, projectUID string) string {
+	if len(o.fromOverrides) == 0 {
+		return o.fromAddress
+	}
+	slug, err := o.project.Slug(ctx, projectUID)
+	if err != nil {
+		slog.WarnContext(ctx, "from-address override: project slug lookup failed, using default From",
+			"project_uid", projectUID,
+			"error", err,
+		)
+		return o.fromAddress
+	}
+	if override, ok := o.fromOverrides[strings.ToLower(strings.TrimSpace(slug))]; ok {
+		return override
+	}
+	return o.fromAddress
 }
 
 func fallbackString(value, fallback string) string {
