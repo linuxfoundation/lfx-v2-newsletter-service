@@ -36,7 +36,7 @@ Important templates:
 | `app.send.fanoutEnabled` | `SEND_FANOUT_ENABLED` | Toggles real email dispatch; false validates and resolves recipients without sending. |
 | `app.send.concurrency` | `SEND_CONCURRENCY` | Caps in-flight email-service requests during fan-out (default 5). |
 | `app.send.fromAddress` | `EMAIL_FROM_ADDRESS` | SMTP envelope From; domain must be in the email-service allowlist. |
-| `app.send.fromAddressOverrides` | `EMAIL_FROM_ADDRESS_OVERRIDES` | Per-project From override as comma-separated `slug=address` pairs (e.g. `aaif=newsletter@lfx.aaif.io`); each override domain must also be in the email-service allowlist. Empty disables overrides. |
+| `app.send.fromAddressOverrides` | `EMAIL_FROM_ADDRESS_OVERRIDES` | Per-project From override as comma-separated `slug=address` pairs (e.g. `agentic-ai-foundation=newsletter@lfx.aaif.io`); each override domain must also be in the email-service allowlist. Empty disables overrides. |
 | `app.unsubscribe.publicBaseURL` | `NEWSLETTER_PUBLIC_BASE_URL` | Externally-reachable origin used to build unsubscribe links. Defaults to `https://lfx-api.<lfx.domain>`. Required when fan-out is enabled. |
 | `app.unsubscribe.secret` / `secretRef` | `NEWSLETTER_UNSUBSCRIBE_SECRET` | HMAC key signing unsubscribe tokens. Required when fan-out is enabled; prefer `secretRef`. |
 | `app.requireUserAuth` | `REQUIRE_USER_AUTH` | Disable only for local development. |
