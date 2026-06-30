@@ -13,6 +13,10 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
@@ -88,9 +92,27 @@ func (c *Client) IsReady() error {
 func (c *Client) Request(ctx context.Context, subject string, data []byte) ([]byte, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	msg, err := c.conn.RequestWithContext(reqCtx, subject, data)
+
+	reqCtx, span := tracer.Start(reqCtx, "nats.request",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "nats"),
+			attribute.String("messaging.destination.name", subject),
+			attribute.Int("messaging.message.body.size", len(data)),
+		),
+	)
+	defer span.End()
+
+	msg := nats.NewMsg(subject)
+	msg.Header = make(nats.Header)
+	msg.Data = data
+	otel.GetTextMapPropagator().Inject(reqCtx, natsHeaderCarrier(msg.Header))
+
+	reply, err := c.conn.RequestMsgWithContext(reqCtx, msg)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, pkgerrors.NewServiceUnavailable("NATS request failed", err)
 	}
-	return msg.Data, nil
+	return reply.Data, nil
 }

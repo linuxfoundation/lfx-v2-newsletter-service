@@ -18,6 +18,7 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // Handler is the HTTP handler aggregate that owns the service-layer dependencies
@@ -116,9 +117,19 @@ func (h *Handler) Routes() http.Handler {
 	// HMAC-signed token in the query string.
 	mux.HandleFunc("GET /newsletters/unsubscribe", h.Unsubscribe)
 
-	// Outermost middleware first: request ID so it appears on every log line,
+	// Outermost middleware first: otelhttp creates a span per request (health
+	// probes excluded), then request ID so it appears on every log line,
 	// then request log so it captures status + duration.
-	return withRequestID(h.withRequestLog(mux))
+	// Go 1.22+ ServeMux sets r.Pattern on matched routes so otelhttp names
+	// spans after the matched pattern (e.g. GET /projects/{project_uid}/newsletters).
+	return otelhttp.NewHandler(
+		withRequestID(h.withRequestLog(mux)),
+		"newsletter-service",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			p := r.URL.Path
+			return p != "/livez" && p != "/readyz"
+		}),
+	)
 }
 
 // writeJSON serializes v as JSON and writes the given status. Errors are logged

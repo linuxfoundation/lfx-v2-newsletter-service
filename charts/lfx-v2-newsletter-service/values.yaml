@@ -119,13 +119,20 @@ app:
   extraEnv: []
 
   # otel is the configuration for OpenTelemetry observability.
+  # Exporters and propagators are read by autoexport/autoprop from the standard
+  # OTEL_TRACES_EXPORTER, OTEL_METRICS_EXPORTER, OTEL_LOGS_EXPORTER, and
+  # OTEL_PROPAGATORS environment variables. The tracesSamplerArg value maps to
+  # OTEL_TRACES_SAMPLER_ARG (read natively by the OTel SDK).
   otel:
     serviceName: "lfx-v2-newsletter-service"
     protocol: "grpc"
     endpoint: ""
     insecure: "false"
     tracesExporter: "none"
-    tracesSampleRatio: "1.0"
+    # tracesSamplerArg sets OTEL_TRACES_SAMPLER_ARG (sampling ratio, 0.0–1.0).
+    # Only meaningful when OTEL_TRACES_SAMPLER is "traceidratio" or
+    # "parentbased_traceidratio". Empty string omits the env var.
+    tracesSamplerArg: "1.0"
     metricsExporter: "none"
     logsExporter: "none"
     propagators: "tracecontext,baggage,jaeger"
