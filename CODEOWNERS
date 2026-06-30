@@ -1,2 +1,3 @@
 # LFX Platform team owns LFX One Services
-* @linuxfoundation/lfx-platform
+# lfx-reviewer is the agentic-review machine user (auto-merge pilot); either owner satisfies code-owner review
+* @linuxfoundation/lfx-platform @lfx-reviewer
