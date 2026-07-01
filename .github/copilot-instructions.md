@@ -1,3 +1,6 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # lfx-v2-newsletter-service — agentic review
 
 This repo runs agentic review on its pull requests. Read the task you were given

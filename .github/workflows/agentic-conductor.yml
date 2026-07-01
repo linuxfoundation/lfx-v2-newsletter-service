@@ -88,9 +88,12 @@ jobs:
           for _ in $(seq 1 48); do   # ~12 min at 15s
             missing=""
             for rv in $REVIEWERS; do
+              # Emit one line per matching review across ALL pages, then count lines.
+              # (gh --paginate applies --jq per page, so `[...] | length` would print
+              # one count per page and break the numeric test once reviews span pages.)
               done_n=$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
-                --jq "[.[] | select((.user.login|test(\"$rv\";\"i\")) and .commit_id==\"$HEAD_SHA\")] | length" \
-                2>/dev/null || echo 0)
+                --jq ".[] | select((.user.login|test(\"$rv\";\"i\")) and .commit_id==\"$HEAD_SHA\") | .id" \
+                2>/dev/null | grep -c . || true)
               [ "${done_n:-0}" -gt 0 ] || missing="$missing $rv"
             done
             if [ -z "$missing" ]; then echo "all AI reviewers done for head"; break; fi

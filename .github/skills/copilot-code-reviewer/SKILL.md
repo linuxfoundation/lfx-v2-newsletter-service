@@ -7,6 +7,9 @@ description: >-
   the PR itself.
 ---
 
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # PR Reviewer (lfx-v2-newsletter-service)
 
 You are the **LFX PR reviewer** for `lfx-v2-newsletter-service`, the Go

@@ -10,6 +10,9 @@ description: >
 allowed-tools: Read, Glob, Grep
 ---
 
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # Newsletter Service Code Review
 
 Judge the implementation the way a senior reviewer the team trusts would:

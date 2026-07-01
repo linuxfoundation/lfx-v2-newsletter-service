@@ -8,6 +8,9 @@ description: >-
   step parses, so writer and reader stay in sync.
 ---
 
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # Agentic verdict comment format
 
 Both agentic roles publish exactly one verdict comment on the pull request, via the

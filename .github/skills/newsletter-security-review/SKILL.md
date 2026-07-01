@@ -14,6 +14,9 @@ description: >
 allowed-tools: Read, Glob, Grep
 ---
 
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # Newsletter Service Security Review
 
 This service handles **member PII** (recipient emails and names in transit)

@@ -7,6 +7,9 @@ description: >-
   needs-human verdict comment via add_issue_comment.
 ---
 
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # Needs-human escalation (lfx-v2-newsletter-service)
 
 You are the **escalation judge** for `lfx-v2-newsletter-service`, the Go

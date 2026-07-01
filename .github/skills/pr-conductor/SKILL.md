@@ -9,6 +9,9 @@ description: >-
   agentic-check comment plus a summary of open blockers.
 ---
 
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # PR conductor (lfx-v2-newsletter-service agentic gate)
 
 You conduct one pull request toward a clean state. You adjudicate the **AI

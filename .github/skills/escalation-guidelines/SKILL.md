@@ -8,6 +8,9 @@ description: >-
   detail behind the `needs-human-escalation` skill.
 ---
 
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # Escalation guidelines (lfx-v2-newsletter-service)
 
 These detail the boundaries behind the escalation decision: the service's
