@@ -1,0 +1,102 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+#
+# Reactive write layer. The escalation task and the @copilot conductor produce only
+# comments; every GitHub write is done here, keyed to a comment authored by the
+# trusted agent identity so a developer cannot forge a verdict:
+#   - a `needs-human: yes` comment  -> set the sticky needs-human label
+#   - an `<!-- agentic:check v1 -->` block -> resolve the threads it marks fixed /
+#     rebutted-valid, and set the agentic-review/clean commit status on the head.
+#
+# TRUST IDENTITY: the agents post via the writable GitHub MCP, which authenticates
+# with the COPILOT_MCP_GITHUB_PERSONAL_ACCESS_TOKEN, so their comments are authored
+# by that PAT's OWNER (not copilot-swe-agent). That PAT belongs to the dedicated
+# lfx-reviewer machine account, which no developer controls, so a verdict comment
+# carrying lfx-reviewer's identity is unforgeable: a developer cannot post as
+# lfx-reviewer, so cannot fake a needs-human verdict or an agentic-check.
+#
+# This runs on the agent's own comment (triggering actor = Copilot). It works only
+# because the repo has "require approval for Copilot workflow runs" turned OFF; that
+# is what lets us react instead of polling. It runs from the default branch (trusted
+# code, not anything the agent wrote).
+#
+# Writes use REVIEWER_PAT_GENERAL (needs Issues, Pull requests, and Commit statuses
+# read/write). The comment body is passed via env, never interpolated into the run
+# script, to avoid script injection.
+---
+name: Agentic Apply
+
+"on":
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: agentic-apply-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    # Only PR comments authored by the trusted agent identity (the MCP PAT owner,
+    # the lfx-reviewer machine account) are acted on, so a verdict is unforgeable.
+    if: >-
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.login == 'lfx-reviewer'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.REVIEWER_PAT_GENERAL }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.issue.number }}
+      BODY: ${{ github.event.comment.body }}
+    steps:
+      - name: Set sticky needs-human label
+        run: |
+          if printf '%s' "$BODY" | grep -qiE 'needs-human:[[:space:]]*yes'; then
+            present=$(gh api "repos/$REPO/issues/$PR/labels" --jq '[.[].name] | index("needs-human")')
+            if [ "$present" = "null" ] || [ -z "$present" ]; then
+              gh api --method POST "repos/$REPO/issues/$PR/labels" -f "labels[]=needs-human"
+              echo "needs-human label set"
+            else
+              echo "needs-human already present (sticky) — no-op"
+            fi
+          fi
+      - name: Apply agentic-check (resolve threads + set status)
+        run: |
+          printf '%s' "$BODY" | grep -q '<!-- agentic:check v1 -->' || { echo "no agentic-check block; skip"; exit 0; }
+
+          HEAD_SHA=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
+          CLEAN=$(printf '%s' "$BODY" | grep -iE 'clean:[[:space:]]*(true|false)' | head -1 | grep -oiE 'true|false' | tr '[:upper:]' '[:lower:]')
+          echo "head=$HEAD_SHA clean=$CLEAN"
+
+          # Act on each thread the conductor listed. Non-blocking states get resolved;
+          # still-blocking states get re-opened if they were resolved prematurely, so
+          # the thread state can never contradict the gate (which reads this block).
+          printf '%s\n' "$BODY" | grep -E '^[[:space:]]*-[[:space:]]*id:' | while IFS= read -r line; do
+            tid=$(printf '%s' "$line" | sed -nE 's/.*id:[[:space:]]*([^[:space:]]+).*/\1/p')
+            st=$(printf '%s' "$line" | sed -nE 's/.*status:[[:space:]]*([^[:space:]]+).*/\1/p')
+            case "$st" in
+              fixed|obsolete|rebutted-valid)
+                # shellcheck disable=SC2016  # $id is a GraphQL variable, not a shell expansion
+                if gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id="$tid" >/dev/null 2>&1; then
+                  echo "resolved $tid ($st)"
+                else
+                  echo "::warning::could not resolve thread $tid"
+                fi ;;
+              outstanding|rebutted-invalid)
+                # shellcheck disable=SC2016  # $id is a GraphQL variable, not a shell expansion
+                if gh api graphql -f query='mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id="$tid" >/dev/null 2>&1; then
+                  echo "kept open $tid ($st)"
+                else
+                  echo "::warning::could not unresolve thread $tid"
+                fi ;;
+              *) : ;;
+            esac
+          done
+
+          STATE=failure
+          [ "$CLEAN" = "true" ] && STATE=success
+          gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state="$STATE" -f context=agentic-review/clean \
+            -f description="conductor: clean=$CLEAN"
+          echo "agentic-review/clean = $STATE"

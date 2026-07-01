@@ -1,0 +1,52 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+#
+# On PR open: fire the needs-human escalation as an Agent Tasks API task pinned to
+# gpt-5.5. This one task does two jobs at once: it is the FIRST session on the PR, so
+# it seeds the gpt-5.5 session that later @copilot conductor runs continue, and it
+# runs the escalation and posts its needs-human verdict comment via the writable
+# GitHub MCP (add_issue_comment). The native review is requested by agentic-conductor,
+# which also waits for it before reconciling.
+#
+# We do NOT poll or wait here. The repo has "require approval for Copilot workflow
+# runs" turned OFF, so the agent's own comment triggers agentic-apply.yml, which
+# reads the verdict and sets the sticky needs-human label. Fire and forget.
+#
+# Runs as REVIEWER_PAT_GENERAL (write + a Copilot seat, to request the reviewer and
+# start the task).
+---
+name: Agentic Escalation (open)
+
+"on":
+  pull_request:
+    types: [opened, reopened]
+
+permissions: {}
+
+concurrency:
+  group: agentic-escalation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  escalate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.REVIEWER_PAT_GENERAL }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+    steps:
+      - name: Guard PAT
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::error::REVIEWER_PAT_GENERAL not set"; exit 1; }
+
+      - name: Fire escalation task (gpt-5.5) — seeds the session and posts the verdict
+        run: |
+          TID=$(gh api "/agents/repos/$REPO/tasks" \
+            -H "X-GitHub-Api-Version: 2026-03-10" --method POST \
+            -f model=gpt-5.5 -F create_pull_request=false \
+            -f base_ref="$BASE_REF" -f head_ref="$HEAD_REF" \
+            -f prompt="Run the needs-human escalation for pull request #$PR in $REPO, following the repository instructions exactly. Post your machine-readable needs-human verdict comment using the add_issue_comment tool." \
+            --jq '.id')
+          echo "escalation task: $TID (seeds the gpt-5.5 session; agentic-apply reacts to its comment)"
