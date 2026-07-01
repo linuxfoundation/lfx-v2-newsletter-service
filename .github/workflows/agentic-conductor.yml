@@ -41,11 +41,21 @@ jobs:
       PR: ${{ github.event.pull_request.number }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
-      - name: Guard PAT
+      - name: Check reviewer PAT
+        id: cfg
         run: |
-          [ -n "$GH_TOKEN" ] || { echo "::error::REVIEWER_PAT_GENERAL not set"; exit 1; }
+          # Skip (green) until the machine account's PAT is configured, so this repo
+          # can merge the setup before it is wired. Once REVIEWER_PAT_GENERAL is set,
+          # the conductor runs for real.
+          if [ -z "$GH_TOKEN" ]; then
+            echo "REVIEWER_PAT_GENERAL not configured; agentic conductor skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Mark the head not-yet-clean (block the gate until the conductor judges)
+        if: steps.cfg.outputs.present == 'true'
         run: |
           # Every new head starts blocked, from the first seconds of this run, so there
           # is never a window where the PR looks mergeable before the baseline lands.
@@ -57,6 +67,7 @@ jobs:
           echo "agentic-review/clean = pending (awaiting conductor)"
 
       - name: Request the native review for the current head
+        if: steps.cfg.outputs.present == 'true'
         run: |
           # On a new commit the diff changed, so this triggers a fresh pass; on open it
           # is the first request. Best-effort: it may already be requested.
@@ -66,6 +77,7 @@ jobs:
             || echo "::notice::native review not (re-)requested (already pending, or unchanged diff)"
 
       - name: Wait for all AI reviewers to finish for the current head
+        if: steps.cfg.outputs.present == 'true'
         run: |
           # AI reviewers to wait for, as login regexes. Add 'github-actions' when pi is
           # enabled on the repo. We wait only for AI reviewers; humans review on their
@@ -90,6 +102,7 @@ jobs:
           fi
 
       - name: Mention @copilot to run the pr-conductor
+        if: steps.cfg.outputs.present == 'true'
         run: |
           gh api "repos/$REPO/issues/$PR/comments" \
             -f body="@copilot Reconcile the AI-reviewer threads on this pull request against the latest commit and any developer replies, following the repository instructions." \
