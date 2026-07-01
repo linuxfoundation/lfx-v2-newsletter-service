@@ -124,17 +124,42 @@ app:
   # OTEL_PROPAGATORS environment variables. The tracesSamplerArg value maps to
   # OTEL_TRACES_SAMPLER_ARG (read natively by the OTel SDK).
   otel:
+    # serviceName is the service name for OpenTelemetry resource identification
+    # (default: "lfx-v2-newsletter-service")
     serviceName: "lfx-v2-newsletter-service"
+    # serviceVersion is the service version for OpenTelemetry resource identification
+    # (default: build-time Version variable)
+    serviceVersion: ""
+    # protocol specifies the OTLP protocol: "grpc" or "http"
+    # (default: "grpc")
     protocol: "grpc"
+    # endpoint is the OTLP collector endpoint
+    # For gRPC: typically "host:4317", for HTTP: typically "host:4318"
     endpoint: ""
+    # insecure disables TLS for the OTLP connection
+    # Set to "true" for in-cluster communication without TLS
     insecure: "false"
+    # tracesExporter specifies the traces exporter: "otlp" or "none"
+    # (default: "none")
     tracesExporter: "none"
+    # tracesSampler specifies the OTEL_TRACES_SAMPLER type. Supported values:
+    # "always_on", "always_off", "traceidratio", "parentbased_always_on",
+    # "parentbased_always_off", "parentbased_traceidratio".
+    # When empty, the application defaults to parentbased_traceidratio.
+    tracesSampler: ""
     # tracesSamplerArg sets OTEL_TRACES_SAMPLER_ARG (sampling ratio, 0.0–1.0).
     # Only meaningful when OTEL_TRACES_SAMPLER is "traceidratio" or
     # "parentbased_traceidratio". Empty string omits the env var.
     tracesSamplerArg: "1.0"
+    # metricsExporter specifies the metrics exporter: "otlp" or "none"
+    # (default: "none")
     metricsExporter: "none"
+    # logsExporter specifies the logs exporter: "otlp" or "none"
+    # (default: "none")
     logsExporter: "none"
+    # propagators specifies the trace context propagators to use
+    # Comma-separated list of: "tracecontext", "baggage", "jaeger"
+    # (default: "tracecontext,baggage,jaeger")
     propagators: "tracecontext,baggage,jaeger"
 
 # database configures the PostgreSQL backend.
