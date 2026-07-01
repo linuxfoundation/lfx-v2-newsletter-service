@@ -32,13 +32,21 @@ concurrency:
   group: gate-${{ github.event.pull_request.number || github.event.sha || github.run_id }}
   cancel-in-progress: true
 
+# Least privilege for GITHUB_TOKEN: this workflow only READS with it (PR, labels,
+# commit status). The approve/dismiss steps authenticate with REVIEWER_PAT_GENERAL,
+# whose power comes from the PAT, not from these permissions.
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
+  pull-requests: read
+  statuses: read
 
 jobs:
   gate:
+    # A status event fires for every context (CI statuses too); only react to our own
+    # agentic-review/clean status. Label events always pass this guard.
+    if: >-
+      github.event_name != 'status' ||
+      github.event.context == 'agentic-review/clean'
     runs-on: ubuntu-latest
     steps:
       - name: Resolve PR

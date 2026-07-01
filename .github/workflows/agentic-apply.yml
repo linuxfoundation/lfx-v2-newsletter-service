@@ -65,9 +65,18 @@ jobs:
         run: |
           printf '%s' "$BODY" | grep -q '<!-- agentic:check v1 -->' || { echo "no agentic-check block; skip"; exit 0; }
 
-          HEAD_SHA=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
+          # Set the status on the SHA the verdict was produced for (carried in the
+          # block as `head:`), NOT the PR's current head. Otherwise a commit that
+          # races in between the verdict and this run could mark a newer, unreviewed
+          # head clean. If the SHA differs from the current head, the gate re-derives
+          # from the current head (still pending) and fails closed — which is correct.
+          TARGET_SHA=$(printf '%s' "$BODY" | grep -iE '^[[:space:]]*head:[[:space:]]*[0-9a-f]{7,40}[[:space:]]*$' | head -1 | grep -oiE '[0-9a-f]{7,40}' | head -1)
+          if [ -z "$TARGET_SHA" ]; then
+            TARGET_SHA=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
+            echo "::warning::agentic-check block carries no head:; falling back to current head $TARGET_SHA"
+          fi
           CLEAN=$(printf '%s' "$BODY" | grep -iE 'clean:[[:space:]]*(true|false)' | head -1 | grep -oiE 'true|false' | tr '[:upper:]' '[:lower:]')
-          echo "head=$HEAD_SHA clean=$CLEAN"
+          echo "target=$TARGET_SHA clean=$CLEAN"
 
           # Act on each thread the conductor listed. Non-blocking states get resolved;
           # still-blocking states get re-opened if they were resolved prematurely, so
@@ -96,7 +105,7 @@ jobs:
 
           STATE=failure
           [ "$CLEAN" = "true" ] && STATE=success
-          gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
+          gh api --method POST "repos/$REPO/statuses/$TARGET_SHA" \
             -f state="$STATE" -f context=agentic-review/clean \
             -f description="conductor: clean=$CLEAN"
-          echo "agentic-review/clean = $STATE"
+          echo "agentic-review/clean = $STATE on $TARGET_SHA"

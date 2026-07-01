@@ -150,8 +150,9 @@ or the session's copilot tokens, which cannot write the GitHub API), in the exac
 format defined in `/agentic-comment-format` for the agentic-check verdict: a human
 summary of the blocking issues (what remains, why, the next step, and what the change
 handled well) followed by the fenced `<!-- agentic:check v1 -->` block that carries
-`clean:` and one `- id:` line per thread you adjudicated. Only a block in a comment
-authored by you (the lfx-reviewer machine account) is trusted.
+`head:` (the full SHA of the commit you judged), `clean:`, and one `- id:` line per
+thread you adjudicated. Only a block in a comment authored by you (the lfx-reviewer
+machine account) is trusted.
 
 Per-thread replies to the engineer are separate short comments on those threads (via
 `add_reply_to_pull_request_comment`); your **one** issue comment carries the block and
