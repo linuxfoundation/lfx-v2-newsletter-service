@@ -78,7 +78,7 @@ Posted after each review round. A human summary first, then one fenced machine b
 head: <full 40-char commit SHA of the head you judged>
 clean: true|false
 threads:
-- id: <thread_node_id> status: fixed|obsolete|outstanding|rebutted-valid|rebutted-invalid severity: critical|high|should-fix|nit reason: <one short sentence>
+- id: <thread_node_id>, status: fixed|obsolete|outstanding|rebutted-valid|rebutted-invalid, severity: critical|high|should-fix|nit, reason: <one short sentence>
 ```
 
 Rules the deterministic step depends on, so be exact:
@@ -89,8 +89,10 @@ Rules the deterministic step depends on, so be exact:
   cannot inherit this verdict (it re-derives as not-yet-clean and the gate stays shut).
 - `clean:` is `true` only when no thread blocks (none is `outstanding` or
   `rebutted-invalid`); otherwise `false`.
-- One `- id:` line per thread you adjudicated, each carrying `status`, `severity`, and a
-  one-sentence `reason`, in that order, all on the one line.
+- One `- id:` line per thread you adjudicated, its four fields comma-separated —
+  `id`, `status`, `severity`, then a one-sentence `reason` — in that order, all on
+  the one line. The commas keep the fields scannable for both the engineer and the
+  parser.
 - The **Blocking** table lists only the blocking rows and mirrors the block. When
   `clean: true` there are no blocking rows: drop the table and say plainly that it is
   clean.

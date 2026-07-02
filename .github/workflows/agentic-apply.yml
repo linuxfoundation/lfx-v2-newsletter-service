@@ -82,8 +82,13 @@ jobs:
           # still-blocking states get re-opened if they were resolved prematurely, so
           # the thread state can never contradict the gate (which reads this block).
           printf '%s\n' "$BODY" | grep -E '^[[:space:]]*-[[:space:]]*id:' | while IFS= read -r line; do
-            tid=$(printf '%s' "$line" | sed -nE 's/.*id:[[:space:]]*([^[:space:]]+).*/\1/p')
-            st=$(printf '%s' "$line" | sed -nE 's/.*status:[[:space:]]*([^[:space:]]+).*/\1/p')
+            # Fields are comma-separated (id, status, severity, reason). Drop the
+            # free-text reason before extracting, so a sentence mentioning "id:" or
+            # "status:" can never pollute the fields, and exclude commas from the
+            # captures so the separators are not swallowed.
+            meta=${line%%reason:*}
+            tid=$(printf '%s' "$meta" | sed -nE 's/.*id:[[:space:]]*([^[:space:],]+).*/\1/p')
+            st=$(printf '%s' "$meta" | sed -nE 's/.*status:[[:space:]]*([^[:space:],]+).*/\1/p')
             case "$st" in
               fixed|obsolete|rebutted-valid)
                 # shellcheck disable=SC2016  # $id is a GraphQL variable, not a shell expansion
