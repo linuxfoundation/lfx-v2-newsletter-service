@@ -49,7 +49,7 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Fire escalation task (gpt-5.5) — seeds the session and posts the verdict
+      - name: Fire escalation task (gpt-5.5) — posts the needs-human verdict
         if: steps.cfg.outputs.present == 'true'
         run: |
           TID=$(gh api "/agents/repos/$REPO/tasks" \
