@@ -50,9 +50,25 @@ jobs:
       PR: ${{ github.event.issue.number }}
       BODY: ${{ github.event.comment.body }}
     steps:
-      - name: Set sticky needs-human label
+      - name: Check reviewer PAT
+        id: cfg
         run: |
-          if printf '%s' "$BODY" | grep -qiE 'needs-human:[[:space:]]*yes'; then
+          # Skip (green) until the machine account's PAT is configured, matching the
+          # conductor and escalation workflows, so a missing secret shows up as a
+          # clear skip instead of an opaque auth failure.
+          if [ -z "$GH_TOKEN" ]; then
+            echo "REVIEWER_PAT_GENERAL not configured; agentic apply skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set sticky needs-human label
+        if: steps.cfg.outputs.present == 'true'
+        run: |
+          # Match the exact hidden marker from /agentic-comment-format, not any
+          # prose that happens to contain "needs-human: yes".
+          if printf '%s' "$BODY" | grep -qiE '<!--[[:space:]]*needs-human:[[:space:]]*yes[[:space:]]*-->'; then
             present=$(gh api "repos/$REPO/issues/$PR/labels" --jq '[.[].name] | index("needs-human")')
             if [ "$present" = "null" ] || [ -z "$present" ]; then
               gh api --method POST "repos/$REPO/issues/$PR/labels" -f "labels[]=needs-human"
@@ -62,6 +78,7 @@ jobs:
             fi
           fi
       - name: Apply agentic-check (resolve threads + set status)
+        if: steps.cfg.outputs.present == 'true'
         run: |
           printf '%s' "$BODY" | grep -q '<!-- agentic:check v1 -->' || { echo "no agentic-check block; skip"; exit 0; }
 
@@ -75,7 +92,9 @@ jobs:
             TARGET_SHA=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
             echo "::warning::agentic-check block carries no head:; falling back to current head $TARGET_SHA"
           fi
-          CLEAN=$(printf '%s' "$BODY" | grep -iE 'clean:[[:space:]]*(true|false)' | head -1 | grep -oiE 'true|false' | tr '[:upper:]' '[:lower:]')
+          # Anchored to the whole line, like head:, so prose mentioning "clean:"
+          # outside the machine block can never set the verdict.
+          CLEAN=$(printf '%s' "$BODY" | grep -iE '^[[:space:]]*clean:[[:space:]]*(true|false)[[:space:]]*$' | head -1 | grep -oiE 'true|false' | tr '[:upper:]' '[:lower:]')
           echo "target=$TARGET_SHA clean=$CLEAN"
 
           # Act on each thread the conductor listed. Non-blocking states get resolved;
