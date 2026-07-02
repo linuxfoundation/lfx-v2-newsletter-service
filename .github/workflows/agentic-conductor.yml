@@ -21,7 +21,7 @@
 # the review bot. Developer events are un-gated, so we start freely and observe the
 # review rather than being triggered by it.
 #
-# Runs as REVIEWER_PAT_GENERAL (write + a Copilot seat, to request reviewers and
+# Runs as LFX_REVIEWER (write + a Copilot seat, to request reviewers and
 # start agent tasks).
 ---
 name: Agentic Conductor (reconcile)
@@ -42,7 +42,7 @@ jobs:
   reconcile:
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.REVIEWER_PAT_GENERAL }}
+      GH_TOKEN: ${{ secrets.LFX_REVIEWER }}
       REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -53,10 +53,10 @@ jobs:
         id: cfg
         run: |
           # Skip (green) until the machine account's PAT is configured, so this repo
-          # can merge the setup before it is wired. Once REVIEWER_PAT_GENERAL is set,
+          # can merge the setup before it is wired. Once LFX_REVIEWER is set,
           # the conductor runs for real.
           if [ -z "$GH_TOKEN" ]; then
-            echo "REVIEWER_PAT_GENERAL not configured; agentic conductor skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "LFX_REVIEWER not configured; agentic conductor skipped." >> "$GITHUB_STEP_SUMMARY"
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"

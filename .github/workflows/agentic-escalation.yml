@@ -11,7 +11,7 @@
 # runs" turned OFF, so the agent's own comment triggers agentic-apply.yml, which
 # reads the verdict and sets the sticky needs-human label. Fire and forget.
 #
-# Runs as REVIEWER_PAT_GENERAL (write + a Copilot seat, to request the reviewer and
+# Runs as LFX_REVIEWER (write + a Copilot seat, to request the reviewer and
 # start the task).
 ---
 name: Agentic Escalation (open)
@@ -30,7 +30,7 @@ jobs:
   escalate:
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.REVIEWER_PAT_GENERAL }}
+      GH_TOKEN: ${{ secrets.LFX_REVIEWER }}
       REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -40,10 +40,10 @@ jobs:
         id: cfg
         run: |
           # Skip (green) until the machine account's PAT is configured, so this repo
-          # can merge the setup before it is wired. Once REVIEWER_PAT_GENERAL is set,
+          # can merge the setup before it is wired. Once LFX_REVIEWER is set,
           # the escalation runs for real.
           if [ -z "$GH_TOKEN" ]; then
-            echo "REVIEWER_PAT_GENERAL not configured; agentic escalation skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "LFX_REVIEWER not configured; agentic escalation skipped." >> "$GITHUB_STEP_SUMMARY"
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"

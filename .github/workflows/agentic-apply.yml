@@ -20,7 +20,7 @@
 # is what lets us react instead of polling. It runs from the default branch (trusted
 # code, not anything the agent wrote).
 #
-# Writes use REVIEWER_PAT_GENERAL (needs Issues, Pull requests, and Commit statuses
+# Writes use LFX_REVIEWER (needs Issues, Pull requests, and Commit statuses
 # read/write). The comment body is passed via env, never interpolated into the run
 # script, to avoid script injection.
 ---
@@ -45,7 +45,7 @@ jobs:
       github.event.comment.user.login == 'lfx-reviewer'
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.REVIEWER_PAT_GENERAL }}
+      GH_TOKEN: ${{ secrets.LFX_REVIEWER }}
       REPO: ${{ github.repository }}
       PR: ${{ github.event.issue.number }}
       BODY: ${{ github.event.comment.body }}
@@ -57,7 +57,7 @@ jobs:
           # conductor and escalation workflows, so a missing secret shows up as a
           # clear skip instead of an opaque auth failure.
           if [ -z "$GH_TOKEN" ]; then
-            echo "REVIEWER_PAT_GENERAL not configured; agentic apply skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "LFX_REVIEWER not configured; agentic apply skipped." >> "$GITHUB_STEP_SUMMARY"
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"

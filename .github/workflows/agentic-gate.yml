@@ -33,7 +33,7 @@ concurrency:
   cancel-in-progress: true
 
 # Least privilege for GITHUB_TOKEN: this workflow only READS with it (PR, labels,
-# commit status). The approve/dismiss steps authenticate with REVIEWER_PAT_GENERAL,
+# commit status). The approve/dismiss steps authenticate with LFX_REVIEWER,
 # whose power comes from the PAT, not from these permissions.
 permissions:
   contents: read
@@ -109,7 +109,7 @@ jobs:
       - name: Post approving review (lfx-reviewer)
         if: steps.gate.outputs.approve == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
         env:
-          GH_TOKEN: ${{ secrets.REVIEWER_PAT_GENERAL }}
+          GH_TOKEN: ${{ secrets.LFX_REVIEWER }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.pr }}
           HEAD: ${{ steps.pr.outputs.head }}
@@ -129,7 +129,7 @@ jobs:
       - name: Dismiss stale approval (withheld verdict)
         if: steps.gate.outputs.approve == 'false' && steps.pr.outputs.found == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
         env:
-          GH_TOKEN: ${{ secrets.REVIEWER_PAT_GENERAL }}
+          GH_TOKEN: ${{ secrets.LFX_REVIEWER }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.pr }}
         run: |
