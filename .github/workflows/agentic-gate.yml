@@ -33,20 +33,25 @@ concurrency:
   cancel-in-progress: true
 
 # Least privilege for GITHUB_TOKEN: this workflow only READS with it (PR, labels,
-# commit status). The approve/dismiss steps authenticate with LFX_REVIEWER,
-# whose power comes from the PAT, not from these permissions.
+# commit status). The approve/dismiss steps authenticate with the lfx-reviewer PAT
+# fetched from AWS Secrets Manager via OIDC (id-token), whose power comes from the
+# PAT, not from these permissions.
 permissions:
   contents: read
   pull-requests: read
   statuses: read
+  id-token: write
 
 jobs:
   gate:
-    # A status event fires for every context (CI statuses too); only react to our own
-    # agentic-review/clean status. Label events always pass this guard.
+    # Only react to the two gating signals: our own agentic-review/clean status (a
+    # status event fires for every context, CI statuses too) and the needs-human
+    # label (label events fire for every label, so routine label churn is ignored).
     if: >-
-      github.event_name != 'status' ||
-      github.event.context == 'agentic-review/clean'
+      (github.event_name != 'status' ||
+       github.event.context == 'agentic-review/clean') &&
+      (github.event_name != 'pull_request' ||
+       github.event.label.name == 'needs-human')
     runs-on: ubuntu-latest
     steps:
       - name: Resolve PR
@@ -54,7 +59,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          EVENT_NAME: ${{ github.event_name }}
           EVENT_PR: ${{ github.event.pull_request.number }}
           EVENT_SHA: ${{ github.event.sha }}
         run: |
@@ -106,14 +110,39 @@ jobs:
           echo "Gate WOULD approve PR #${{ steps.pr.outputs.pr }} (clean, no needs-human)." >> "$GITHUB_STEP_SUMMARY"
           echo "AGENTIC_GATE_ENABLED != 'true'; nothing posted (shadow mode)." >> "$GITHUB_STEP_SUMMARY"
 
+      # The write paths below authenticate as lfx-reviewer. Fetch its PAT from AWS
+      # Secrets Manager via OIDC (argocd's lfx-one pattern) only when the gate is
+      # live and a verdict must be posted or revoked. Fail soft: if the role trust
+      # or the secret is not wired yet, the write steps skip instead of erroring.
+      - name: Configure AWS credentials
+        if: steps.pr.outputs.found == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
+        with:
+          role-to-assume: arn:aws:iam::788942260905:role/github-actions-deploy
+          aws-region: us-east-2
+
+      - name: Get lfx-reviewer token from AWS Secrets Manager
+        if: steps.pr.outputs.found == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
+        continue-on-error: true
+        uses: aws-actions/aws-secretsmanager-get-secrets@3a411b6ec5cace3d626412dd917e7bfeac242cfa # v3
+        with:
+          secret-ids: |
+            GH, /cloudops/managed-secrets/cloud/github/linuxfoundation/lfx-reviewer-pat
+          parse-json-secrets: true
+
       - name: Post approving review (lfx-reviewer)
         if: steps.gate.outputs.approve == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
         env:
-          GH_TOKEN: ${{ secrets.LFX_REVIEWER }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.pr }}
           HEAD: ${{ steps.pr.outputs.head }}
         run: |
+          # GH_TOKEN is the lfx-reviewer PAT exported by the Secrets Manager step.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "lfx-reviewer PAT unavailable (OIDC role or secret not wired); not approving." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           # Approve as lfx-reviewer, but only if it has not already approved this exact
           # head, so repeated gate events for the same commit do not stack approvals.
           already="$(gh api "repos/$REPO/pulls/$PR/reviews" \
@@ -129,10 +158,14 @@ jobs:
       - name: Dismiss stale approval (withheld verdict)
         if: steps.gate.outputs.approve == 'false' && steps.pr.outputs.found == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
         env:
-          GH_TOKEN: ${{ secrets.LFX_REVIEWER }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.pr }}
         run: |
+          # GH_TOKEN is the lfx-reviewer PAT exported by the Secrets Manager step.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "lfx-reviewer PAT unavailable (OIDC role or secret not wired); nothing dismissed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           # If lfx-reviewer approved earlier but the PR has since regressed (a blocking
           # finding reappeared, needs-human was set, or a new commit is not yet clean),
           # revoke that approval so the gate never leaves stale sign-off on the PR.

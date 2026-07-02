@@ -20,9 +20,11 @@
 # is what lets us react instead of polling. It runs from the default branch (trusted
 # code, not anything the agent wrote).
 #
-# Writes use LFX_REVIEWER (needs Issues, Pull requests, and Commit statuses
-# read/write). The comment body is passed via env, never interpolated into the run
-# script, to avoid script injection.
+# Writes use the lfx-reviewer PAT (needs Issues, Pull requests, and Commit statuses
+# read/write), fetched at runtime from AWS Secrets Manager via OIDC — the same
+# pattern lfx-v2-argocd uses for the lfx-one PAT — so no GitHub secret is
+# provisioned per repo. The comment body is passed via env, never interpolated
+# into the run script, to avoid script injection.
 ---
 name: Agentic Apply
 
@@ -30,7 +32,10 @@ name: Agentic Apply
   issue_comment:
     types: [created]
 
-permissions: {}
+# id-token is what lets the job assume the AWS role via OIDC; everything the job
+# writes on GitHub goes through the fetched PAT, not the workflow token.
+permissions:
+  id-token: write
 
 concurrency:
   group: agentic-apply-${{ github.event.issue.number }}
@@ -45,19 +50,37 @@ jobs:
       github.event.comment.user.login == 'lfx-reviewer'
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.LFX_REVIEWER }}
       REPO: ${{ github.repository }}
       PR: ${{ github.event.issue.number }}
       BODY: ${{ github.event.comment.body }}
     steps:
+      # Fail soft: until the OIDC role trust covers this repo, these steps error
+      # and the guard below skips the job green, so the setup can merge before
+      # the wiring exists.
+      - name: Configure AWS credentials
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
+        with:
+          role-to-assume: arn:aws:iam::788942260905:role/github-actions-deploy
+          aws-region: us-east-2
+
+      - name: Get lfx-reviewer token from AWS Secrets Manager
+        continue-on-error: true
+        uses: aws-actions/aws-secretsmanager-get-secrets@3a411b6ec5cace3d626412dd917e7bfeac242cfa # v3
+        with:
+          secret-ids: |
+            GH, /cloudops/managed-secrets/cloud/github/linuxfoundation/lfx-reviewer-pat
+          parse-json-secrets: true
+
       - name: Check reviewer PAT
         id: cfg
         run: |
-          # Skip (green) until the machine account's PAT is configured, matching the
-          # conductor and escalation workflows, so a missing secret shows up as a
-          # clear skip instead of an opaque auth failure.
-          if [ -z "$GH_TOKEN" ]; then
-            echo "LFX_REVIEWER not configured; agentic apply skipped." >> "$GITHUB_STEP_SUMMARY"
+          # The Secrets Manager step exports the secret's `token` key as GH_TOKEN
+          # for the remaining steps. Skip (green) when it is not available, so a
+          # missing role grant shows up as a clear skip instead of an opaque
+          # auth failure.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "lfx-reviewer PAT unavailable (OIDC role or secret not wired); agentic apply skipped." >> "$GITHUB_STEP_SUMMARY"
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
@@ -82,25 +105,31 @@ jobs:
         run: |
           printf '%s' "$BODY" | grep -q '<!-- agentic:check v1 -->' || { echo "no agentic-check block; skip"; exit 0; }
 
+          # Parse ONLY the machine block (from its marker to the end of the
+          # comment, where /agentic-comment-format puts it), so prose in the
+          # human summary that happens to start a line with "head:", "clean:",
+          # or "- id:" can never steer the verdict or the thread actions.
+          BLOCK=$(printf '%s\n' "$BODY" | sed -n '/<!-- agentic:check v1 -->/,$p')
+
           # Set the status on the SHA the verdict was produced for (carried in the
           # block as `head:`), NOT the PR's current head. Otherwise a commit that
           # races in between the verdict and this run could mark a newer, unreviewed
           # head clean. If the SHA differs from the current head, the gate re-derives
           # from the current head (still pending) and fails closed — which is correct.
-          TARGET_SHA=$(printf '%s' "$BODY" | grep -iE '^[[:space:]]*head:[[:space:]]*[0-9a-f]{7,40}[[:space:]]*$' | head -1 | grep -oiE '[0-9a-f]{7,40}' | head -1)
+          TARGET_SHA=$(printf '%s' "$BLOCK" | grep -iE '^[[:space:]]*head:[[:space:]]*[0-9a-f]{7,40}[[:space:]]*$' | head -1 | grep -oiE '[0-9a-f]{7,40}' | head -1)
           if [ -z "$TARGET_SHA" ]; then
             TARGET_SHA=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
             echo "::warning::agentic-check block carries no head:; falling back to current head $TARGET_SHA"
           fi
           # Anchored to the whole line, like head:, so prose mentioning "clean:"
           # outside the machine block can never set the verdict.
-          CLEAN=$(printf '%s' "$BODY" | grep -iE '^[[:space:]]*clean:[[:space:]]*(true|false)[[:space:]]*$' | head -1 | grep -oiE 'true|false' | tr '[:upper:]' '[:lower:]')
+          CLEAN=$(printf '%s' "$BLOCK" | grep -iE '^[[:space:]]*clean:[[:space:]]*(true|false)[[:space:]]*$' | head -1 | grep -oiE 'true|false' | tr '[:upper:]' '[:lower:]')
           echo "target=$TARGET_SHA clean=$CLEAN"
 
           # Act on each thread the conductor listed. Non-blocking states get resolved;
           # still-blocking states get re-opened if they were resolved prematurely, so
           # the thread state can never contradict the gate (which reads this block).
-          printf '%s\n' "$BODY" | grep -E '^[[:space:]]*-[[:space:]]*id:' | while IFS= read -r line; do
+          printf '%s\n' "$BLOCK" | grep -E '^[[:space:]]*-[[:space:]]*id:' | while IFS= read -r line; do
             # Fields are comma-separated (id, status, severity, reason). Drop the
             # free-text reason before extracting, so a sentence mentioning "id:" or
             # "status:" can never pollute the fields, and exclude commas from the

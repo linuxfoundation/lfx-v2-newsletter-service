@@ -11,8 +11,10 @@
 # runs" turned OFF, so the agent's own comment triggers agentic-apply.yml, which
 # reads the verdict and sets the sticky needs-human label. Fire and forget.
 #
-# Runs as LFX_REVIEWER (write + a Copilot seat, to request the reviewer and
-# start the task).
+# Runs as the lfx-reviewer machine account (write + a Copilot seat, to request the
+# reviewer and start the task). The PAT is fetched at runtime from AWS Secrets
+# Manager via OIDC — the same pattern lfx-v2-argocd uses for the lfx-one PAT — so
+# no GitHub secret is provisioned per repo.
 ---
 name: Agentic Escalation (open)
 
@@ -20,7 +22,10 @@ name: Agentic Escalation (open)
   pull_request:
     types: [opened, reopened]
 
-permissions: {}
+# id-token is what lets the job assume the AWS role via OIDC; everything the job
+# writes on GitHub goes through the fetched PAT, not the workflow token.
+permissions:
+  id-token: write
 
 concurrency:
   group: agentic-escalation-${{ github.event.pull_request.number }}
@@ -30,20 +35,36 @@ jobs:
   escalate:
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.LFX_REVIEWER }}
       REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
       BASE_REF: ${{ github.event.pull_request.base.ref }}
     steps:
+      # Fail soft: until the OIDC role trust covers this repo (and on fork PRs,
+      # which get no id-token), these steps error and the guard below skips the
+      # job green, so the setup can merge before the wiring exists.
+      - name: Configure AWS credentials
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
+        with:
+          role-to-assume: arn:aws:iam::788942260905:role/github-actions-deploy
+          aws-region: us-east-2
+
+      - name: Get lfx-reviewer token from AWS Secrets Manager
+        continue-on-error: true
+        uses: aws-actions/aws-secretsmanager-get-secrets@3a411b6ec5cace3d626412dd917e7bfeac242cfa # v3
+        with:
+          secret-ids: |
+            GH, /cloudops/managed-secrets/cloud/github/linuxfoundation/lfx-reviewer-pat
+          parse-json-secrets: true
+
       - name: Check reviewer PAT
         id: cfg
         run: |
-          # Skip (green) until the machine account's PAT is configured, so this repo
-          # can merge the setup before it is wired. Once LFX_REVIEWER is set,
-          # the escalation runs for real.
-          if [ -z "$GH_TOKEN" ]; then
-            echo "LFX_REVIEWER not configured; agentic escalation skipped." >> "$GITHUB_STEP_SUMMARY"
+          # The Secrets Manager step exports the secret's `token` key as GH_TOKEN
+          # for the remaining steps. Skip (green) when it is not available.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "lfx-reviewer PAT unavailable (OIDC role or secret not wired); agentic escalation skipped." >> "$GITHUB_STEP_SUMMARY"
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
