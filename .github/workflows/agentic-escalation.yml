@@ -2,11 +2,10 @@
 # SPDX-License-Identifier: MIT
 #
 # On PR open: fire the needs-human escalation as an Agent Tasks API task pinned to
-# gpt-5.5. This one task does two jobs at once: it is the FIRST session on the PR, so
-# it seeds the gpt-5.5 session that later @copilot conductor runs continue, and it
-# runs the escalation and posts its needs-human verdict comment via the writable
-# GitHub MCP (add_issue_comment). The native review is requested by agentic-conductor,
-# which also waits for it before reconciling.
+# gpt-5.5. It runs the escalation and posts its needs-human verdict comment via the
+# writable GitHub MCP (add_issue_comment). The native review is requested by
+# agentic-conductor, which also waits for it before firing its own per-round
+# reconcile task.
 #
 # We do NOT poll or wait here. The repo has "require approval for Copilot workflow
 # runs" turned OFF, so the agent's own comment triggers agentic-apply.yml, which

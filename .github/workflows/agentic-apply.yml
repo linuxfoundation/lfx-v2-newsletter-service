@@ -1,7 +1,7 @@
 # Copyright The Linux Foundation and each contributor to LFX.
 # SPDX-License-Identifier: MIT
 #
-# Reactive write layer. The escalation task and the @copilot conductor produce only
+# Reactive write layer. The escalation and reconcile agent tasks produce only
 # comments; every GitHub write is done here, keyed to a comment authored by the
 # trusted agent identity so a developer cannot forge a verdict:
 #   - a `needs-human: yes` comment  -> set the sticky needs-human label
