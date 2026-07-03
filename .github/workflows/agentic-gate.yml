@@ -54,6 +54,11 @@ jobs:
        github.event.label.name == 'needs-human')
     runs-on: ubuntu-latest
     steps:
+      - uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
       - name: Resolve PR
         id: pr
         env:
@@ -147,8 +152,11 @@ jobs:
           fi
           # Approve as lfx-reviewer, but only if it has not already approved this exact
           # head, so repeated gate events for the same commit do not stack approvals.
-          already="$(gh api "repos/$REPO/pulls/$PR/reviews" \
-            --jq "[.[] | select(.user.login==\"lfx-reviewer\" and .state==\"APPROVED\" and .commit_id==\"$HEAD\")] | length")"
+          # Paginate and count matching lines (--paginate applies --jq per page, so
+          # the `[...] | length` form would emit one count per page and break).
+          already="$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
+            --jq ".[] | select(.user.login==\"lfx-reviewer\" and .state==\"APPROVED\" and .commit_id==\"$HEAD\") | .id" \
+            | grep -c . || true)"
           if [ "${already:-0}" -gt 0 ]; then
             echo "lfx-reviewer already approved $HEAD; no-op." >> "$GITHUB_STEP_SUMMARY"
           else
@@ -173,8 +181,8 @@ jobs:
           # If lfx-reviewer approved earlier but the PR has since regressed (a blocking
           # finding reappeared, needs-human was set, or a new commit is not yet clean),
           # revoke that approval so the gate never leaves stale sign-off on the PR.
-          ids="$(gh api "repos/$REPO/pulls/$PR/reviews" \
-            --jq '[.[] | select(.user.login=="lfx-reviewer" and .state=="APPROVED") | .id][]' 2>/dev/null || true)"
+          ids="$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
+            --jq '.[] | select(.user.login=="lfx-reviewer" and .state=="APPROVED") | .id' 2>/dev/null || true)"
           if [ -z "$ids" ]; then
             echo "Gate: WITHHOLD (no prior lfx-reviewer approval to dismiss)." >> "$GITHUB_STEP_SUMMARY"
           else
