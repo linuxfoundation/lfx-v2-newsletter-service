@@ -13,7 +13,8 @@
 # re-derives from the current head, so a PR that advanced past the reviewed SHA
 # fails closed.
 #
-# Guarded by the AGENTIC_GATE_ENABLED repo variable (shadow mode until 'true').
+# The gate is always live: it posts and revokes real approvals. The fail-soft PAT
+# fetch is the only thing between it and acting — an unwired repo skips cleanly.
 #
 # The gate posts an approving review as the lfx-reviewer machine account (a non-author
 # with write + a Copilot seat, listed in CODEOWNERS), so the approval counts under
@@ -109,18 +110,12 @@ jobs:
             echo "Withholding approval." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Shadow mode (gate disabled)
-        if: steps.gate.outputs.approve == 'true' && vars.AGENTIC_GATE_ENABLED != 'true'
-        run: |
-          echo "Gate WOULD approve PR #${{ steps.pr.outputs.pr }} (clean, no needs-human)." >> "$GITHUB_STEP_SUMMARY"
-          echo "AGENTIC_GATE_ENABLED != 'true'; nothing posted (shadow mode)." >> "$GITHUB_STEP_SUMMARY"
-
       # The write paths below authenticate as lfx-reviewer. Fetch its PAT from AWS
-      # Secrets Manager via OIDC (argocd's lfx-one pattern) only when the gate is
-      # live and a verdict must be posted or revoked. Fail soft: if the role trust
-      # or the secret is not wired yet, the write steps skip instead of erroring.
+      # Secrets Manager via OIDC (argocd's lfx-one pattern) only when a verdict
+      # must be posted or revoked. Fail soft: if the role trust or the secret is
+      # not wired yet, the write steps skip instead of erroring.
       - name: Configure AWS credentials
-        if: steps.pr.outputs.found == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
+        if: steps.pr.outputs.found == 'true'
         continue-on-error: true
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
         with:
@@ -128,7 +123,7 @@ jobs:
           aws-region: us-east-2
 
       - name: Get lfx-reviewer token from AWS Secrets Manager
-        if: steps.pr.outputs.found == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
+        if: steps.pr.outputs.found == 'true'
         continue-on-error: true
         uses: aws-actions/aws-secretsmanager-get-secrets@3a411b6ec5cace3d626412dd917e7bfeac242cfa # v3
         with:
@@ -137,7 +132,7 @@ jobs:
           parse-json-secrets: true
 
       - name: Post approving review (lfx-reviewer)
-        if: steps.gate.outputs.approve == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
+        if: steps.gate.outputs.approve == 'true'
         env:
           # The Secrets Manager step exports the secret's PAT key as GH_PAT; gh
           # reads GH_TOKEN, so map it here. Empty when the fetch failed soft.
@@ -166,7 +161,7 @@ jobs:
           fi
 
       - name: Dismiss stale approval (withheld verdict)
-        if: steps.gate.outputs.approve == 'false' && steps.pr.outputs.found == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
+        if: steps.gate.outputs.approve == 'false' && steps.pr.outputs.found == 'true'
         env:
           # The Secrets Manager step exports the secret's PAT key as GH_PAT; gh
           # reads GH_TOKEN, so map it here. Empty when the fetch failed soft.
