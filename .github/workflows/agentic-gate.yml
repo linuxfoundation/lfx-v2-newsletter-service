@@ -134,11 +134,13 @@ jobs:
       - name: Post approving review (lfx-reviewer)
         if: steps.gate.outputs.approve == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
         env:
+          # The Secrets Manager step exports the secret's PAT key as GH_PAT; gh
+          # reads GH_TOKEN, so map it here. Empty when the fetch failed soft.
+          GH_TOKEN: ${{ env.GH_PAT }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.pr }}
           HEAD: ${{ steps.pr.outputs.head }}
         run: |
-          # GH_TOKEN is the lfx-reviewer PAT exported by the Secrets Manager step.
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "lfx-reviewer PAT unavailable (OIDC role or secret not wired); not approving." >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -158,10 +160,12 @@ jobs:
       - name: Dismiss stale approval (withheld verdict)
         if: steps.gate.outputs.approve == 'false' && steps.pr.outputs.found == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
         env:
+          # The Secrets Manager step exports the secret's PAT key as GH_PAT; gh
+          # reads GH_TOKEN, so map it here. Empty when the fetch failed soft.
+          GH_TOKEN: ${{ env.GH_PAT }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.pr }}
         run: |
-          # GH_TOKEN is the lfx-reviewer PAT exported by the Secrets Manager step.
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "lfx-reviewer PAT unavailable (OIDC role or secret not wired); nothing dismissed." >> "$GITHUB_STEP_SUMMARY"
             exit 0

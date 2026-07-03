@@ -75,14 +75,15 @@ jobs:
       - name: Check reviewer PAT
         id: cfg
         run: |
-          # The Secrets Manager step exports the secret's `token` key as GH_TOKEN
-          # for the remaining steps. Skip (green) when it is not available, so a
-          # missing role grant shows up as a clear skip instead of an opaque
-          # auth failure.
-          if [ -z "${GH_TOKEN:-}" ]; then
+          # The Secrets Manager step exports the secret's `PAT` key as GH_PAT.
+          # Map it to GH_TOKEN (what gh reads) for the remaining steps, and skip
+          # (green) when it is not available, so a missing role grant shows up
+          # as a clear skip instead of an opaque auth failure.
+          if [ -z "${GH_PAT:-}" ]; then
             echo "lfx-reviewer PAT unavailable (OIDC role or secret not wired); agentic apply skipped." >> "$GITHUB_STEP_SUMMARY"
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
+            echo "GH_TOKEN=$GH_PAT" >> "$GITHUB_ENV"
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
