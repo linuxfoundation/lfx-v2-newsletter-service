@@ -7,9 +7,10 @@
 # agentic-conductor, which also waits for it before firing its own per-round
 # reconcile task.
 #
-# We do NOT poll or wait here. The repo has "require approval for Copilot workflow
-# runs" turned OFF, so the agent's own comment triggers agentic-apply.yml, which
-# reads the verdict and sets the sticky needs-human label. Fire and forget.
+# We do NOT poll or wait here. The agent posts its verdict via the MCP PAT, so the
+# comment is attributed to lfx-reviewer (not a Copilot actor) and triggers
+# agentic-apply.yml un-gated, which reads the verdict and sets the sticky
+# needs-human label. Fire and forget.
 #
 # Runs as the lfx-reviewer machine account (write + a Copilot seat, to request the
 # reviewer and start the task). The PAT is fetched at runtime from AWS Secrets

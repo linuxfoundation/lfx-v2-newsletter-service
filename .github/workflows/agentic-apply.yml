@@ -15,9 +15,10 @@
 # carrying lfx-reviewer's identity is unforgeable: a developer cannot post as
 # lfx-reviewer, so cannot fake a needs-human verdict or an agentic-check.
 #
-# This runs on the agent's own comment (triggering actor = Copilot). It works only
-# because the repo has "require approval for Copilot workflow runs" turned OFF; that
-# is what lets us react instead of polling. It runs from the default branch (trusted
+# This runs on the agent's verdict comment. Because the agents post via the MCP
+# PAT, the comment — and therefore this run — is attributed to the PAT owner
+# (lfx-reviewer), NOT to a Copilot actor, so Copilot workflow gating never applies
+# and we can react instead of polling. It runs from the default branch (trusted
 # code, not anything the agent wrote).
 #
 # Writes use the lfx-reviewer PAT (needs Issues, Pull requests, and Commit statuses
