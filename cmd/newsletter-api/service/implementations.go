@@ -158,9 +158,14 @@ func HTTPHandler() http.Handler { return httpHandler }
 // SQLDB returns the runtime *sql.DB for use by health probes during startup.
 func SQLDB() *sql.DB { return sqlDB }
 
+// stuckSendRecoverer is the narrow repository slice the recovery sweep needs.
+type stuckSendRecoverer interface {
+	RecoverStuckSending(ctx context.Context, olderThan time.Duration) (int64, error)
+}
+
 // startStuckSendRecovery launches the background sweep that settles
 // newsletters stranded in 'sending'. Stopped via recoveryStop in Shutdown.
-func startStuckSendRecovery(repo *repository.PostgresNewsletterRepo, ttl time.Duration) {
+func startStuckSendRecovery(repo stuckSendRecoverer, ttl time.Duration) {
 	recoveryStop = make(chan struct{})
 	go func() {
 		sweep := func() {
@@ -198,6 +203,7 @@ func startStuckSendRecovery(repo *repository.PostgresNewsletterRepo, ttl time.Du
 func Shutdown() {
 	if recoveryStop != nil {
 		close(recoveryStop)
+		recoveryStop = nil
 	}
 	// Give in-flight background send jobs a bounded chance to settle before
 	// the NATS and DB connections go away. An undrained job is recovered by

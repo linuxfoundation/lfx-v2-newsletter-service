@@ -253,9 +253,14 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	}
 
 	// Zero recipients: nothing to fan out — settle to sent synchronously,
-	// preserving the historical contract for empty audiences.
+	// preserving the historical contract for empty audiences. The write must
+	// not ride the request context: a client disconnect after MarkSending
+	// would cancel it and strand the row in 'sending' until the recovery
+	// sweep.
 	if len(recipients) == 0 {
-		updated, markErr := o.repo.MarkSent(ctx, sending.ID, time.Now().UTC(), sending.Version)
+		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
+		defer cancel()
+		updated, markErr := o.repo.MarkSent(persistCtx, sending.ID, time.Now().UTC(), sending.Version)
 		if markErr != nil {
 			return nil, fmt.Errorf("mark sent: %w", markErr)
 		}
@@ -317,8 +322,11 @@ func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsle
 			"failed", failed,
 			"first_failure", firstFailureError(failures),
 		)
+		// The revert can also fail because another actor already settled the
+		// row (RevertSending gates on status='sending'), so the log must not
+		// assert the resulting state.
 		if err := o.repo.RevertSending(persistCtx, sending.ID); err != nil {
-			slog.ErrorContext(ctx, "newsletter send: revert to draft failed — row stays 'sending' until the recovery sweep",
+			slog.ErrorContext(ctx, "newsletter send: revert to draft failed; the recovery sweep settles any row still 'sending'",
 				"newsletter_id", sending.ID,
 				"error", err,
 			)
@@ -339,7 +347,7 @@ func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsle
 			)
 			return
 		}
-		slog.ErrorContext(ctx, "newsletter send: mark sent failed after fan-out — row stays 'sending' until the recovery sweep",
+		slog.ErrorContext(ctx, "newsletter send: mark sent failed after fan-out; the recovery sweep settles any row still 'sending'",
 			"newsletter_id", sending.ID,
 			"group_id", envelope.GroupID,
 			"sent", sent,
