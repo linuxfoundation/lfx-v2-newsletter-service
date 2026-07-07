@@ -28,10 +28,11 @@ spec:
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name | default .Chart.Name }}
       automountServiceAccountToken: false
-      # Must cover the sequential shutdown budget: HTTP drain (25s) followed by
-      # the background send-job drain (20s). The k8s default of 30s would
-      # SIGKILL mid-drain when a slow request eats into the first window.
-      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 60 }}
+      # Must cover the sequential shutdown budget: HTTP drain (25s), then the
+      # background send-job drain (20s), then the deferred OTel flush (25s
+      # ceiling). The k8s default of 30s would SIGKILL mid-drain when a slow
+      # request eats into the first window.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 75 }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
