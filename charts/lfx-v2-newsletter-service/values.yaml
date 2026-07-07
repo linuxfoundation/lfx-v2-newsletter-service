@@ -70,6 +70,15 @@ app:
     # concurrency caps in-flight email-service requests during fan-out.
     # Empty string falls back to the app default (5).
     concurrency: ""
+    # jobTimeout bounds the detached background fan-out that runs after a send
+    # is accepted (Go duration string, e.g. "30m"). Empty string falls back to
+    # the app default (30m).
+    jobTimeout: ""
+    # stuckSendTTL is the age after which a newsletter stranded in 'sending'
+    # (pod crash mid-fan-out) is recovered to 'sent' by the periodic sweep
+    # (Go duration string). Empty string falls back to the app default (45m);
+    # the app enforces a minimum of jobTimeout + 5m.
+    stuckSendTTL: ""
     # fromAddress is the SMTP envelope From applied to every outbound
     # newsletter. Domain must be in the email-service allowlist. Empty falls
     # back to the app default (newsletter@lfx.linuxfoundation.org).

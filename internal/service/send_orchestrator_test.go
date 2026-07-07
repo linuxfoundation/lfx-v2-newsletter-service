@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
@@ -118,6 +119,8 @@ func newFakeRepo() *fakeNewsletterRepo {
 }
 
 func (r *fakeNewsletterRepo) addDraft(projectUID string, committeeUIDs []string) *model.Newsletter {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	n := &model.Newsletter{
 		ID:            uuid.New(),
 		ProjectUID:    projectUID,
@@ -129,15 +132,32 @@ func (r *fakeNewsletterRepo) addDraft(projectUID string, committeeUIDs []string)
 		Version:       1,
 	}
 	r.drafts[n.ID] = n
-	return n
+	cp := *n
+	return &cp
+}
+
+// get returns a snapshot of the stored newsletter for test assertions.
+func (r *fakeNewsletterRepo) get(id uuid.UUID) model.Newsletter {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return *r.drafts[id]
 }
 
 func (r *fakeNewsletterRepo) Create(_ context.Context, n *model.Newsletter) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.drafts[n.ID] = n
 	return nil
 }
 func (r *fakeNewsletterRepo) Get(_ context.Context, id uuid.UUID) (*model.Newsletter, error) {
-	return r.drafts[id], nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.drafts[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	cp := *n
+	return &cp, nil
 }
 func (r *fakeNewsletterRepo) List(_ context.Context, _ string) ([]*model.Newsletter, error) {
 	return nil, nil
@@ -149,13 +169,64 @@ func (r *fakeNewsletterRepo) Update(_ context.Context, n *model.Newsletter, _ in
 	return n, nil
 }
 func (r *fakeNewsletterRepo) Delete(_ context.Context, _ uuid.UUID) error { return nil }
-func (r *fakeNewsletterRepo) MarkSent(_ context.Context, id uuid.UUID, sentAt time.Time, total int, groupID string, _ int64) (*model.Newsletter, error) {
-	n := r.drafts[id]
+func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupID string, total int, expectedVersion int64) (*model.Newsletter, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.drafts[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	if n.Status == model.StatusSent {
+		return nil, domain.ErrAlreadySent
+	}
+	if n.Status == model.StatusSending {
+		return nil, domain.ErrSendInProgress
+	}
+	if n.Version != expectedVersion {
+		return nil, domain.ErrVersionMismatch
+	}
+	n.Status = model.StatusSending
+	g := groupID
+	n.GroupID = &g
+	n.TotalRecipients = total
+	n.Version++
+	cp := *n
+	return &cp, nil
+}
+func (r *fakeNewsletterRepo) MarkSent(_ context.Context, id uuid.UUID, sentAt time.Time, expectedVersion int64) (*model.Newsletter, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.drafts[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	if n.Status == model.StatusSent {
+		return nil, domain.ErrAlreadySent
+	}
+	if n.Status != model.StatusSending || n.Version != expectedVersion {
+		return nil, domain.ErrVersionMismatch
+	}
 	n.Status = model.StatusSent
 	n.SentAt = &sentAt
-	n.TotalRecipients = total
-	n.GroupID = &groupID
-	return n, nil
+	n.Version++
+	cp := *n
+	return &cp, nil
+}
+func (r *fakeNewsletterRepo) RevertSending(_ context.Context, id uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.drafts[id]
+	if !ok || n.Status != model.StatusSending {
+		return domain.ErrNotFound
+	}
+	n.Status = model.StatusDraft
+	n.GroupID = nil
+	n.TotalRecipients = 0
+	n.Version++
+	return nil
+}
+func (r *fakeNewsletterRepo) RecoverStuckSending(_ context.Context, _ time.Duration) (int64, error) {
+	return 0, nil
 }
 func (r *fakeNewsletterRepo) RecordOpen(_ context.Context, _ uuid.UUID, _ string) error { return nil }
 func (r *fakeNewsletterRepo) Analytics(_ context.Context, _ uuid.UUID) (*model.Analytics, error) {
@@ -276,6 +347,7 @@ func TestFanOutInjectsPerRecipientUnsubscribeURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendNewsletter: %v", err)
 	}
+	orch.Drain(context.Background())
 	if len(email.sends) != 2 {
 		t.Fatalf("got %d sends, want 2", len(email.sends))
 	}
@@ -321,8 +393,12 @@ func TestSendUnsubscribeResendExcludes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first send: %v", err)
 	}
+	orch.Drain(ctx)
 	if res.TotalRecipients != 2 || len(email.sends) != 2 {
 		t.Fatalf("first send: got %d recipients / %d dispatches, want 2/2", res.TotalRecipients, len(email.sends))
+	}
+	if got := repo.get(first.ID); got.Status != model.StatusSent {
+		t.Fatalf("first send settled to status %q, want %q", got.Status, model.StatusSent)
 	}
 
 	// --- 2. Extract alice's unsubscribe URL from the HTML she was sent.
@@ -366,6 +442,7 @@ func TestSendUnsubscribeResendExcludes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second send: %v", err)
 	}
+	orch.Drain(ctx)
 	got := email.recipients()
 	if res.TotalRecipients != 1 || len(got) != 1 || got[0] != "bob@example.com" {
 		t.Fatalf("second send: got recipients %v (total=%d), want [bob@example.com]", got, res.TotalRecipients)
@@ -378,6 +455,7 @@ func TestSendUnsubscribeResendExcludes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("p2 send: %v", err)
 	}
+	orch.Drain(ctx)
 	got = email.recipients()
 	hasAlice := false
 	for _, r := range got {
@@ -406,6 +484,7 @@ func TestSendNewsletterPopulatesEnvelope(t *testing.T) {
 	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
 		t.Fatalf("SendNewsletter: %v", err)
 	}
+	orch.Drain(ctx)
 	if len(email.sends) != 2 {
 		t.Fatalf("got %d sends, want 2", len(email.sends))
 	}
@@ -444,6 +523,7 @@ func TestSendNewsletterUsesAuthServiceName(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SendNewsletter: %v", err)
 	}
+	orch.Drain(ctx)
 	if len(email.sends) != 2 {
 		t.Fatalf("got %d sends, want 2", len(email.sends))
 	}
@@ -504,6 +584,7 @@ func TestSendNewsletterValidatesAuthServiceName(t *testing.T) {
 			if err != nil {
 				t.Fatalf("SendNewsletter: %v", err)
 			}
+			orch.Drain(ctx)
 			if len(email.sends) != tc.wantSent {
 				t.Fatalf("got %d sends, want %d", len(email.sends), tc.wantSent)
 			}
@@ -634,6 +715,7 @@ func TestSendNewsletterDevModeFallback(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SendNewsletter (dev mode): %v", err)
 	}
+	orch.Drain(ctx)
 	if len(email.sends) != 1 {
 		t.Fatalf("got %d sends, want 1", len(email.sends))
 	}
@@ -695,6 +777,7 @@ func TestSendNewsletterRespectsFromAddressOverride(t *testing.T) {
 	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
 		t.Fatalf("SendNewsletter: %v", err)
 	}
+	orch.Drain(ctx)
 	if len(email.sends) != 1 {
 		t.Fatalf("got %d sends, want 1", len(email.sends))
 	}
@@ -826,6 +909,7 @@ func TestSendNewsletterFromAddressOverride(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("SendNewsletter: %v", err)
 			}
+			orch.Drain(context.Background())
 			if len(email.sends) != 1 {
 				t.Fatalf("got %d sends, want 1", len(email.sends))
 			}
@@ -857,5 +941,244 @@ func TestTestSendFromAddressOverride(t *testing.T) {
 	}
 	if got := email.sends[0].From; got != overrideAddr {
 		t.Errorf("From=%q, want %q", got, overrideAddr)
+	}
+}
+
+// ---- async send behavior ----------------------------------------------------
+
+// gatedEmailDispatcher blocks every SendEmail until release is closed, letting
+// tests observe the accepted-but-still-sending state deterministically.
+type gatedEmailDispatcher struct {
+	fakeEmailDispatcher
+	release chan struct{}
+	started chan struct{}
+}
+
+func (g *gatedEmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
+	select {
+	case g.started <- struct{}{}:
+	default:
+	}
+	<-g.release
+	return g.fakeEmailDispatcher.SendEmail(ctx, in)
+}
+
+// failingEmailDispatcher rejects every SendEmail, driving the total-failure path.
+type failingEmailDispatcher struct {
+	fakeEmailDispatcher
+}
+
+func (f *failingEmailDispatcher) SendEmail(_ context.Context, _ port.SendEmailInput) (string, error) {
+	return "", errors.New("email-service unreachable")
+}
+
+func newGatedOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email port.EmailDispatcher) *SendOrchestrator {
+	return NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Committee:     committee,
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		Unsubscribe:   NewUnsubscribeService(repo, []byte("k"), "https://api.example"),
+		Concurrency:   2,
+		FanoutEnabled: true,
+	})
+}
+
+// TestSendNewsletterAcceptsBeforeFanOutCompletes asserts the send returns the
+// sending-state newsletter while the fan-out is still in flight, and that the
+// row settles to sent once the fan-out completes.
+func TestSendNewsletterAcceptsBeforeFanOutCompletes(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	gate := &gatedEmailDispatcher{release: make(chan struct{}), started: make(chan struct{}, 1)}
+	orch := newGatedOrchestrator(repo, committee, gate)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	res, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	if res.Newsletter.Status != model.StatusSending {
+		t.Fatalf("accepted send returned status %q, want %q", res.Newsletter.Status, model.StatusSending)
+	}
+	if res.Sent != 0 || res.Failed != 0 || len(res.Failures) != 0 {
+		t.Fatalf("accepted send reported sent=%d failed=%d failures=%d, want all zero", res.Sent, res.Failed, len(res.Failures))
+	}
+	if res.TotalRecipients != 2 {
+		t.Fatalf("TotalRecipients=%d, want 2", res.TotalRecipients)
+	}
+	if got := repo.get(draft.ID); got.Status != model.StatusSending {
+		t.Fatalf("row status %q while fan-out in flight, want %q", got.Status, model.StatusSending)
+	}
+	if got := repo.get(draft.ID); got.GroupID == nil || *got.GroupID != res.GroupID {
+		t.Fatalf("group_id not persisted at the sending transition")
+	}
+
+	close(gate.release)
+	orch.Drain(ctx)
+
+	settled := repo.get(draft.ID)
+	if settled.Status != model.StatusSent {
+		t.Fatalf("row settled to %q, want %q", settled.Status, model.StatusSent)
+	}
+	if settled.SentAt == nil {
+		t.Fatalf("sent_at not set on settle")
+	}
+	if len(gate.recipients()) != 2 {
+		t.Fatalf("dispatched %d, want 2", len(gate.recipients()))
+	}
+}
+
+// TestSendNewsletterDetachedFromCallerCancel asserts that cancelling the
+// request context after acceptance neither cancels the in-flight fan-out nor
+// orphans the status transition — the scenario behind the production bug where
+// a BFF 30s abort stranded delivered newsletters in draft.
+func TestSendNewsletterDetachedFromCallerCancel(t *testing.T) {
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	gate := &gatedEmailDispatcher{release: make(chan struct{}), started: make(chan struct{}, 1)}
+	orch := newGatedOrchestrator(repo, committee, gate)
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(reqCtx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+
+	// Simulate the client (BFF) aborting while the fan-out is blocked mid-flight.
+	<-gate.started
+	cancel()
+	close(gate.release)
+	orch.Drain(context.Background())
+
+	if got := gate.recipients(); len(got) != 2 {
+		t.Fatalf("dispatched %d recipients after caller cancel, want 2 (fan-out must be detached)", len(got))
+	}
+	if got := repo.get(draft.ID); got.Status != model.StatusSent {
+		t.Fatalf("row settled to %q after caller cancel, want %q", got.Status, model.StatusSent)
+	}
+}
+
+// TestSendNewsletterRejectsConcurrentSend asserts the sending status is an
+// effective duplicate-send guard: a second send request while the first
+// fan-out is in flight is rejected with ErrSendInProgress and dispatches
+// nothing extra.
+func TestSendNewsletterRejectsConcurrentSend(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	gate := &gatedEmailDispatcher{release: make(chan struct{}), started: make(chan struct{}, 1)}
+	orch := newGatedOrchestrator(repo, committee, gate)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if !errors.Is(err, domain.ErrSendInProgress) {
+		t.Fatalf("second send while in flight: got err=%v, want ErrSendInProgress", err)
+	}
+
+	close(gate.release)
+	orch.Drain(ctx)
+	if got := gate.recipients(); len(got) != 1 {
+		t.Fatalf("dispatched %d total, want 1 (no duplicate fan-out)", len(got))
+	}
+
+	// After the send settles, a re-send is rejected as already sent.
+	_, err = orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if !errors.Is(err, domain.ErrAlreadySent) {
+		t.Fatalf("re-send after settle: got err=%v, want ErrAlreadySent", err)
+	}
+}
+
+// TestSendNewsletterTotalFailureRevertsToDraft asserts the safety gate: when
+// zero recipients could be delivered to, the newsletter reverts to draft (with
+// send-time fields cleared) so the operator can retry.
+func TestSendNewsletterTotalFailureRevertsToDraft(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	orch := newGatedOrchestrator(repo, committee, &failingEmailDispatcher{})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	res, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	if res.Newsletter.Status != model.StatusSending {
+		t.Fatalf("accepted send returned status %q, want %q", res.Newsletter.Status, model.StatusSending)
+	}
+
+	orch.Drain(ctx)
+
+	got := repo.get(draft.ID)
+	if got.Status != model.StatusDraft {
+		t.Fatalf("total failure settled to %q, want %q (retry path)", got.Status, model.StatusDraft)
+	}
+	if got.GroupID != nil || got.TotalRecipients != 0 || got.SentAt != nil {
+		t.Fatalf("revert did not clear send-time fields: group_id=%v total=%d sent_at=%v", got.GroupID, got.TotalRecipients, got.SentAt)
+	}
+}
+
+// TestSendNewsletterZeroRecipientsSettlesSynchronously asserts the historical
+// zero-audience contract: no fan-out, marked sent before the response returns.
+func TestSendNewsletterZeroRecipientsSettlesSynchronously(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{}}
+	email := &fakeEmailDispatcher{}
+	orch := newGatedOrchestrator(repo, committee, email)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	res, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	if res.Newsletter.Status != model.StatusSent {
+		t.Fatalf("zero-recipient send returned status %q, want %q", res.Newsletter.Status, model.StatusSent)
+	}
+	if res.TotalRecipients != 0 || len(email.sends) != 0 {
+		t.Fatalf("zero-recipient send dispatched %d to %d recipients, want none", len(email.sends), res.TotalRecipients)
+	}
+}
+
+// TestDraftGuardsWhileSending asserts edits and deletes are rejected while a
+// send fan-out is in flight — the server-side backstop for the autosave race
+// that stranded delivered newsletters in draft.
+func TestDraftGuardsWhileSending(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := repo.MarkSending(ctx, draft.ID, uuid.NewString(), 1, draft.Version); err != nil {
+		t.Fatalf("MarkSending: %v", err)
+	}
+
+	_, err := svc.UpdateDraft(ctx, "p1", UpdateDraftInput{
+		ID:              draft.ID,
+		ExpectedVersion: draft.Version + 1,
+		Subject:         "Edited",
+		BodyHTML:        "<p>Edited</p>",
+		EDReplyEmail:    "ed@example.com",
+		CommitteeUIDs:   []string{"c1"},
+	})
+	if !errors.Is(err, domain.ErrSendInProgress) {
+		t.Fatalf("UpdateDraft while sending: got err=%v, want ErrSendInProgress", err)
+	}
+
+	if err := svc.DeleteDraft(ctx, "p1", draft.ID); !errors.Is(err, domain.ErrSendInProgress) {
+		t.Fatalf("DeleteDraft while sending: got err=%v, want ErrSendInProgress", err)
 	}
 }

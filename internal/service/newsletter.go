@@ -136,20 +136,28 @@ type ListNewslettersInput struct {
 
 // ListNewsletters returns a page of newsletters for the given project, ordered
 // by most-recently-updated first.
+//
+// The public 'sent' filter also matches in-flight 'sending' rows so a
+// newsletter whose fan-out is still running appears on the Sent tab instead of
+// vanishing from both tabs while it settles.
 func (s *NewsletterService) ListNewsletters(ctx context.Context, in ListNewslettersInput) (*port.ListPage, error) {
 	if err := validateProjectUID(in.ProjectUID); err != nil {
 		return nil, err
 	}
-	if in.Status != "" {
-		switch in.Status {
-		case model.StatusDraft, model.StatusSent:
-		default:
-			return nil, fmt.Errorf("%w: status must be 'draft' or 'sent'", domain.ErrInvalidRequest)
-		}
+	var statuses []model.Status
+	switch in.Status {
+	case "":
+		// No filter — every state.
+	case model.StatusDraft, model.StatusSending:
+		statuses = []model.Status{in.Status}
+	case model.StatusSent:
+		statuses = []model.Status{model.StatusSent, model.StatusSending}
+	default:
+		return nil, fmt.Errorf("%w: status must be 'draft', 'sending', or 'sent'", domain.ErrInvalidRequest)
 	}
 	return s.repo.ListAll(ctx, port.ListFilters{
 		ProjectUID: in.ProjectUID,
-		Status:     in.Status,
+		Statuses:   statuses,
 		PageToken:  in.PageToken,
 	})
 }
@@ -236,6 +244,13 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	if existing.Status == model.StatusSent {
 		return nil, domain.ErrAlreadySent
 	}
+	// Block edits while a send fan-out is running: a version bump mid-send
+	// would otherwise race the terminal sending → sent transition (this is
+	// exactly how the UI's autosave used to strand delivered newsletters in
+	// draft).
+	if existing.Status == model.StatusSending {
+		return nil, domain.ErrSendInProgress
+	}
 
 	existing.Subject = strings.TrimSpace(in.Subject)
 	existing.BodyHTML = in.BodyHTML
@@ -260,6 +275,9 @@ func (s *NewsletterService) DeleteDraft(ctx context.Context, projectUID string, 
 	}
 	if existing.Status == model.StatusSent {
 		return domain.ErrAlreadySent
+	}
+	if existing.Status == model.StatusSending {
+		return domain.ErrSendInProgress
 	}
 	return s.repo.Delete(ctx, id)
 }

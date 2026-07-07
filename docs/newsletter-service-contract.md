@@ -31,7 +31,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Get one newsletter and return its ETag. |
 | `PUT` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Update a draft. Requires `If-Match`. |
 | `DELETE` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Delete a draft. |
-| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/send` | yes | Resolve recipients, fan out per-recipient sends, mark the draft sent. Requires `If-Match`. |
+| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/send` | yes | Accept the send: resolve recipients, transition the draft to `sending`, return `202`; the fan-out and the `sent` transition complete in a detached background job. Requires `If-Match`. |
 | `POST` | `/projects/{project_uid}/newsletters/recipient-count` | yes | Resolve committees and return unique recipient count. |
 | `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Resolve committees and return unique recipient preview. |
 | `POST` | `/projects/{project_uid}/newsletters/test-send` | yes | Dispatch a single test email (no persistence, no analytics). |
@@ -55,14 +55,14 @@ Core state:
 | `body_html` | Newsletter HTML body. |
 | `ed_reply_email` | Reply-to address. |
 | `committee_uids` | Committees used for recipient resolution. |
-| `status` | `draft` or `sent`. |
+| `status` | `draft`, `sending`, or `sent`. |
 | `sent_at` | Set when status becomes `sent`. |
-| `total_recipients` | Recipient count snapshot taken at send time. |
-| `group_id` | `lfx-v2-email-service` correlation ID, minted by this service on send. Null on drafts. |
+| `total_recipients` | Recipient count snapshot taken at send-acceptance time. |
+| `group_id` | `lfx-v2-email-service` correlation ID, minted by this service when a send is accepted. Null on drafts. |
 | `created_by` | Authenticated principal or local fallback. |
 | `version` | Optimistic-locking version. |
 
-`POST …/send` returns `SendNewsletterResponse`: the updated newsletter plus `group_id`, `total_recipients`, `sent`, `failed`, and per-recipient `failures`.
+`POST …/send` returns `SendNewsletterResponse`: the newsletter plus `group_id`, `total_recipients`, `sent`, `failed`, and per-recipient `failures`. The send is asynchronous: acceptance returns `202` with the newsletter in `status=sending` and `sent=0`; clients observe the outcome by re-fetching the newsletter (branch on `newsletter.status`, not the HTTP status code). The zero-recipient edge case settles synchronously and returns `200` with `status=sent`.
 
 ## Optimistic Locking
 
@@ -74,11 +74,17 @@ Core state:
 
 - New newsletters are created with `status=draft`.
 - Drafts can be updated and deleted.
-- `POST …/newsletters/{newsletter_uid}/send` validates the draft, resolves recipients (excluding project-scoped unsubscribes), mints a `group_id`, fans out per-recipient sends to email-service, and — only when at least one recipient was delivered to — sets `status=sent`, `sent_at`, `total_recipients`, persists `group_id`, and increments `version`. A fully-failed fan-out leaves the row a draft so the operator can retry.
-  - **Zero-recipient edge case:** the "leave as draft" retry guard only applies when there was at least one resolved recipient to deliver to. If recipient resolution yields an empty set — for example every resolved committee member is filtered out by a project-scoped unsubscribe — the send still completes successfully: the draft is marked `status=sent` with `total_recipients=0` (and `sent=0`, `failed=0`), and `group_id` is persisted. No email is dispatched, and the newsletter cannot be sent again.
-- Sent newsletters cannot be updated, deleted, or sent again.
+- `POST …/newsletters/{newsletter_uid}/send` accepts the send synchronously and completes it asynchronously:
+  - **Synchronous (inside the request):** validates the draft, resolves recipients (excluding project-scoped unsubscribes), renders the email envelope, mints a `group_id`, and atomically transitions `draft → sending` — persisting `group_id` and `total_recipients` and incrementing `version`. This single optimistically-locked transition is the duplicate-send guard across replicas: a concurrent or repeated send observes the row is no longer a draft and gets `409 send_in_progress`. The endpoint then returns `202`.
+  - **Asynchronous (detached background job):** fans out per-recipient sends to email-service, then — when at least one recipient was delivered to — sets `status=sent`, `sent_at`, and increments `version`. A fully-failed fan-out reverts the row to `draft` (clearing `group_id` and `total_recipients`) so the operator can retry. The job is detached from the HTTP request context, so client disconnects and proxy timeouts cannot cancel a partially-dispatched send or orphan the status; its runtime is bounded by `SEND_JOB_TIMEOUT` (default 30m).
+  - **Zero-recipient edge case:** if recipient resolution yields an empty set — for example every resolved committee member is filtered out by a project-scoped unsubscribe — the send settles synchronously: the draft is marked `status=sent` with `total_recipients=0` (and `sent=0`, `failed=0`), `group_id` is persisted, and the endpoint returns `200`. No email is dispatched, and the newsletter cannot be sent again.
+- Newsletters in `sending` cannot be updated, deleted, or sent again (`409 send_in_progress`). This also closes the race where an autosave landing mid-fan-out bumped the version and stranded a delivered newsletter in `draft`.
+- Sent newsletters cannot be updated, deleted, or sent again (`409 already_sent`).
+- **Crash recovery:** a pod dying mid-fan-out leaves `status=sending`. A sweep (startup + every 5 minutes) marks `sending` rows older than `STUCK_SEND_TTL` (default 45m, always ≥ `SEND_JOB_TIMEOUT` + 5m) as `sent` — after a crash an unknown number of emails already went out, so re-arming Send would guarantee duplicates, while settling to `sent` at worst under-reports a remainder that analytics (via `group_id`) makes visible. The rare crash-before-first-dispatch case can be repaired manually: `UPDATE newsletters SET status='draft', group_id=NULL, total_recipients=0, version=version+1 WHERE id='…' AND status='sending';` before the TTL elapses.
 
-The database enforces `status='sent' => group_id IS NOT NULL` and UUID format on `group_id`.
+The list endpoint's `status=sent` filter also matches `sending` rows so an in-flight send stays visible on the Sent tab; `status=sending` is accepted as an explicit filter.
+
+The database enforces `status IN ('draft','sending','sent')`, `status='sent' => group_id IS NOT NULL`, and UUID format on `group_id`.
 
 ## Recipient And Send APIs
 
@@ -113,6 +119,7 @@ The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sen
 | Missing record | 404 | `not_found` |
 | Stale `If-Match` | 412 | `version_mismatch` |
 | Draft already sent | 409 | `already_sent` |
+| Send fan-out still in flight | 409 | `send_in_progress` |
 | Invalid request | 400 | `invalid_request` |
 | Upstream conflict (typed `pkgerrors.Conflict`) | 409 | `conflict` |
 | Upstream dependency unavailable | 503 | `service_unavailable` |

@@ -14,9 +14,16 @@ import (
 type Status string
 
 // Status values persisted in the database. Mirrored by the schema CHECK constraint.
+//
+// StatusSending is the transient state between accepting a send request and
+// completing the per-recipient fan-out. It is the cross-replica duplicate-send
+// guard: the draft → sending transition is a single optimistically-locked
+// UPDATE, so a concurrent or repeated send request observes the row is no
+// longer a draft and is rejected with ErrSendInProgress.
 const (
-	StatusDraft Status = "draft"
-	StatusSent  Status = "sent"
+	StatusDraft   Status = "draft"
+	StatusSending Status = "sending"
+	StatusSent    Status = "sent"
 )
 
 // Newsletter is the aggregate root persisted in the newsletters table.

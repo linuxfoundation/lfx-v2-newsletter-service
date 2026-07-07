@@ -80,6 +80,14 @@ spec:
             - name: SEND_CONCURRENCY
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.app.send.jobTimeout }}
+            - name: SEND_JOB_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.stuckSendTTL }}
+            - name: STUCK_SEND_TTL
+              value: {{ . | quote }}
+            {{- end }}
             {{- with .Values.app.send.fromAddress }}
             - name: EMAIL_FROM_ADDRESS
               value: {{ . | quote }}
