@@ -66,6 +66,11 @@ type NewsletterRepository interface {
 	// after the TTL an unknown number of emails may already have gone out, so
 	// re-arming Send would guarantee duplicates — marking sent at worst
 	// under-reports a remainder that analytics (via group_id) makes visible.
+	// Known sub-case where sent-over-draft over-reports instead: a total
+	// fan-out failure whose RevertSending write also failed (double fault)
+	// leaves a zero-delivery row that the sweep settles as sent; the sweep
+	// cannot distinguish it from a crash mid-fan-out, and analytics (zero
+	// delivered under the group_id) exposes it for manual repair.
 	// Returns the number of recovered rows.
 	RecoverStuckSending(ctx context.Context, olderThan time.Duration) (int64, error)
 

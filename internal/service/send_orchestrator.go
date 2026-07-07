@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/mail"
@@ -87,6 +88,11 @@ type SendOrchestratorConfig struct {
 	FromAddressOverrides map[string]string
 	// SendJobTimeout bounds the detached background fan-out that runs after a
 	// send is accepted. Zero falls back to defaultSendJobTimeout.
+	//
+	// Coupled invariant: any stuck-'sending' recovery sweep wired alongside
+	// this orchestrator must use a TTL comfortably greater than this timeout
+	// (AppConfigFromEnv enforces TTL >= SendJobTimeout + 5m), or the sweep can
+	// settle a row 'sent' while its fan-out job is still running.
 	SendJobTimeout time.Duration
 }
 
@@ -321,6 +327,18 @@ func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsle
 	}
 
 	if _, err := o.repo.MarkSent(persistCtx, sending.ID, time.Now().UTC(), sending.Version); err != nil {
+		// ErrAlreadySent means another actor (normally the stuck-sending
+		// recovery sweep, under a misconfigured TTL) settled the row first —
+		// the newsletter IS sent, only this job lost the race to record it.
+		if errors.Is(err, domain.ErrAlreadySent) {
+			slog.WarnContext(ctx, "newsletter send: row was already settled 'sent' by another actor",
+				"newsletter_id", sending.ID,
+				"group_id", envelope.GroupID,
+				"sent", sent,
+				"failed", failed,
+			)
+			return
+		}
 		slog.ErrorContext(ctx, "newsletter send: mark sent failed after fan-out — row stays 'sending' until the recovery sweep",
 			"newsletter_id", sending.ID,
 			"group_id", envelope.GroupID,

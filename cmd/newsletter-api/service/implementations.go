@@ -40,7 +40,11 @@ var (
 
 // stuckSendSweepInterval is how often the recovery sweep re-checks for
 // newsletters stranded in 'sending' by a crashed pod.
-const stuckSendSweepInterval = 5 * time.Minute
+// stuckSendSweepTimeout bounds a single sweep iteration.
+const (
+	stuckSendSweepInterval = 5 * time.Minute
+	stuckSendSweepTimeout  = 30 * time.Second
+)
 
 // drainTimeout bounds how long Shutdown waits for in-flight background send
 // jobs. Kept under main's 25s graceful-shutdown window; anything that doesn't
@@ -159,8 +163,11 @@ func SQLDB() *sql.DB { return sqlDB }
 func startStuckSendRecovery(repo *repository.PostgresNewsletterRepo, ttl time.Duration) {
 	recoveryStop = make(chan struct{})
 	go func() {
-		ctx := context.Background()
 		sweep := func() {
+			// Bound each iteration so a hung DB call can't wedge the sweep
+			// goroutine (Shutdown closes recoveryStop without awaiting it).
+			ctx, cancel := context.WithTimeout(context.Background(), stuckSendSweepTimeout)
+			defer cancel()
 			recovered, err := repo.RecoverStuckSending(ctx, ttl)
 			if err != nil {
 				slog.ErrorContext(ctx, "stuck-sending recovery sweep failed", "error", err)
@@ -194,12 +201,15 @@ func Shutdown() {
 	}
 	// Give in-flight background send jobs a bounded chance to settle before
 	// the NATS and DB connections go away. An undrained job is recovered by
-	// the stuck-sending sweep on the next pod.
+	// the stuck-sending sweep on the next pod. This drain is race-free only
+	// because main.go stops the HTTP server (the sole source of jobs.Add)
+	// before the deferred Shutdown runs; the pod's terminationGracePeriodSeconds
+	// must cover both windows sequentially (see chart values.yaml).
 	if sendSvc != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		defer cancel()
 		if !sendSvc.Drain(drainCtx) {
-			slog.Warn("shutdown: background send jobs did not drain in time; stuck-sending sweep will recover them")
+			slog.WarnContext(drainCtx, "shutdown: background send jobs did not drain in time; stuck-sending sweep will recover them")
 		}
 	}
 	if natsClient != nil {

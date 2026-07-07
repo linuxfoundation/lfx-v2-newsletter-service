@@ -28,6 +28,12 @@ podDisruptionBudget:
 # topologySpreadConstraints controls how pods are spread across nodes/zones.
 topologySpreadConstraints: []
 
+# terminationGracePeriodSeconds must cover the sequential shutdown budget:
+# HTTP drain (25s) + background send-job drain (20s). Undrained send jobs are
+# recovered by the stuck-sending sweep on the next pod, so exceeding this is
+# safe but noisy.
+terminationGracePeriodSeconds: 60
+
 # resources is the container resource request and limit configuration.
 resources:
   limits:
