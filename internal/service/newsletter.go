@@ -52,7 +52,7 @@ var (
 // them on first use.
 func loadEmbeddedTemplates() (declarative.Templates, error) {
 	embeddedTemplatesOnce.Do(func() {
-		embeddedTemplates, embeddedTemplatesErr = declarative.LoadEmbedded()
+		embeddedTemplates, embeddedTemplatesErr = declarative.LoadEmbeddedTemplate(declarative.RenderTemplateKey)
 	})
 	return embeddedTemplates, embeddedTemplatesErr
 }

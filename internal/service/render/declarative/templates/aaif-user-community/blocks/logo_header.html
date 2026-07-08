@@ -1,0 +1,18 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- CATEGORY: navigation -->
+<!-- SCHEMA: {
+  "image_url": {"type":"image","label":"Banner image URL","default":""},
+  "brand_label": {"type":"text","label":"Brand label (right side)","default":""},
+  "link": {"type":"text","label":"Link URL","default":""}
+} -->
+<Section style="padding:16px 24px">
+  <Row>
+    <Column style="width:50%;vertical-align:middle">
+      <Link href="{{link}}"><Img if="image_url" src="{{image_url}}" alt="" width="98" style="display:block;border:0" /></Link>
+    </Column>
+    <Column style="width:50%;vertical-align:middle;text-align:right">
+      <Text if="brand_label" style="margin:0;font-size:13px;color:#7B7D81;text-align:right">{{brand_label}}</Text>
+    </Column>
+  </Row>
+</Section>

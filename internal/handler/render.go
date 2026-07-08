@@ -33,7 +33,7 @@ var (
 // the binary), so it surfaces as a 500 rather than a client error.
 func loadRenderTemplates() (declarative.Templates, error) {
 	embeddedTemplatesOnce.Do(func() {
-		embeddedTemplates, embeddedTemplatesErr = declarative.LoadEmbedded()
+		embeddedTemplates, embeddedTemplatesErr = declarative.LoadEmbeddedTemplate(declarative.RenderTemplateKey)
 	})
 	return embeddedTemplates, embeddedTemplatesErr
 }

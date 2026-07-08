@@ -1,0 +1,21 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: {
+  "title": {"type":"text","label":"Title"},
+  "description": {"type":"richtext","label":"Description"},
+  "video_link": {"type":"text","label":"Video link"},
+  "spotify_link": {"type":"text","label":"Spotify link"},
+  "apple_link": {"type":"text","label":"Apple link"}
+} -->
+<Section style="padding:0 15px">
+  <Heading if="title" class="brick-title">{{title}}</Heading>
+  <richtext field="description" class="body" />
+  <Text class="body" style="margin-top:8px">
+    <strong>
+      <Link if="video_link" href="{{video_link}}" class="link">Video</Link>
+      <span if="spotify_link"> &middot; <Link href="{{spotify_link}}" class="link">Spotify</Link></span>
+      <span if="apple_link"> &middot; <Link href="{{apple_link}}" class="link">Apple</Link></span>
+    </strong>
+  </Text>
+  <Hr class="divider" />
+</Section>

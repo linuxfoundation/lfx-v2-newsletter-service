@@ -72,7 +72,7 @@ func LoadTemplates(root string) (Templates, error) {
 // loadFromFS reads the declarative templates rooted at root within fsys into a
 // Templates value. root is an fs-style (slash-separated) path; pass "." for the
 // fs root. It is the shared core behind both LoadTemplates (os.DirFS) and
-// LoadEmbedded (the embedded FS).
+// LoadEmbeddedTemplate (the embedded FS).
 func loadFromFS(fsys fs.FS, root string) (Templates, error) {
 	t := Templates{
 		Wrappers: map[string]string{},

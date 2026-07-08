@@ -13,14 +13,14 @@ import (
 // binary ships) so render tests can never drift from what is actually emitted.
 func loadTestTemplates(t *testing.T) Templates {
 	t.Helper()
-	tmpl, err := LoadEmbedded()
+	tmpl, err := LoadEmbeddedTemplate(RenderTemplateKey)
 	if err != nil {
-		t.Fatalf("LoadEmbedded: %v", err)
+		t.Fatalf("LoadEmbeddedTemplate: %v", err)
 	}
 	return tmpl
 }
 
-func TestLoadEmbedded(t *testing.T) {
+func TestLoadEmbeddedTemplate(t *testing.T) {
 	tmpl := loadTestTemplates(t)
 	if _, ok := tmpl.Wrappers["default"]; !ok {
 		t.Fatalf("expected default wrapper to load")

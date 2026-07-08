@@ -108,6 +108,15 @@ func (h *Handler) Routes() http.Handler {
 	// declarative templates and returns email-safe HTML; nothing is persisted.
 	mux.Handle("POST /projects/{project_uid}/newsletters/render-preview", h.withAuth(http.HandlerFunc(h.RenderPreview)))
 
+	// Editor template sets — JWT auth. Serves the hard-coded (embedded)
+	// template catalog and per-key editor manifests; the block composer's
+	// palette is driven entirely by these, so the embedded templates are the
+	// single source of truth for both editing and rendering. The literal
+	// "templates" segment wins over the {newsletter_uid} wildcard in the
+	// ServeMux, so these do not collide with the per-newsletter routes.
+	mux.Handle("GET /projects/{project_uid}/newsletters/templates", h.withAuth(http.HandlerFunc(h.ListTemplates)))
+	mux.Handle("GET /projects/{project_uid}/newsletters/templates/{template_key}/manifest", h.withAuth(http.HandlerFunc(h.GetTemplateManifest)))
+
 	// Per-newsletter analytics — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics", h.withAuth(http.HandlerFunc(h.GetAnalytics)))
 
