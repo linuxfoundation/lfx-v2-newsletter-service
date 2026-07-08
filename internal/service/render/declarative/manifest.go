@@ -86,10 +86,17 @@ func buildManifestFromFS(fsys fs.FS, root string) (Manifest, error) {
 	// Deterministic order so responses are stable across restarts.
 	sort.Slice(m.Blocks, func(i, j int) bool { return m.Blocks[i].BlockType < m.Blocks[j].BlockType })
 
+	// The default wrapper is required, matching the render loader's contract
+	// (loadFromFS fails a set with no wrappers): a template set without page
+	// chrome is a packaging defect, and silently degrading the editor preview
+	// while rendering hard-fails would be an inconsistent contract for the
+	// same defect.
 	wrapperPath := path.Join(root, "wrappers", "default.html")
-	if wrapperSrc, err := fs.ReadFile(fsys, wrapperPath); err == nil {
-		m.Wrapper = stripAllComments(string(wrapperSrc))
+	wrapperSrc, err := fs.ReadFile(fsys, wrapperPath)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("declarative: read wrapper %q: %w", wrapperPath, err)
 	}
+	m.Wrapper = stripAllComments(string(wrapperSrc))
 
 	return m, nil
 }

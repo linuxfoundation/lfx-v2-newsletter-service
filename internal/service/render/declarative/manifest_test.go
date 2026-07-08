@@ -123,15 +123,30 @@ func TestBuildEmbeddedManifest_Default(t *testing.T) {
 	if len(m.Blocks) != 4 {
 		t.Errorf("expected 4 palette entries in the default template, got %d", len(m.Blocks))
 	}
-	// Every default block must also exist in the render superset, so anything
-	// composed from the default manifest is guaranteed to render.
+}
+
+// TestRenderSupersetInvariant enforces the render guarantee for EVERY embedded
+// template set: all render paths load RenderTemplateKey's set, so every block
+// any manifest can offer must exist there — otherwise a newsletter composed
+// from that manifest fails at render time with "block template not found".
+func TestRenderSupersetInvariant(t *testing.T) {
 	super, err := LoadEmbeddedTemplate(RenderTemplateKey)
 	if err != nil {
 		t.Fatalf("LoadEmbeddedTemplate(%s): %v", RenderTemplateKey, err)
 	}
-	for _, b := range m.Blocks {
-		if _, ok := super.Blocks[b.BlockType]; !ok {
-			t.Errorf("default block %q missing from the render superset %q", b.BlockType, RenderTemplateKey)
+	keys, err := EmbeddedTemplateKeys()
+	if err != nil {
+		t.Fatalf("EmbeddedTemplateKeys: %v", err)
+	}
+	for _, key := range keys {
+		m, err := BuildEmbeddedManifest(key)
+		if err != nil {
+			t.Fatalf("BuildEmbeddedManifest(%s): %v", key, err)
+		}
+		for _, b := range m.Blocks {
+			if _, ok := super.Blocks[b.BlockType]; !ok {
+				t.Errorf("template %q block %q missing from the render superset %q", key, b.BlockType, RenderTemplateKey)
+			}
 		}
 	}
 }

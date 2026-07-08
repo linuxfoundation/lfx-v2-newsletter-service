@@ -36,6 +36,8 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Resolve committees and return unique recipient preview. |
 | `POST` | `/projects/{project_uid}/newsletters/test-send` | yes | Dispatch a single test email (no persistence, no analytics). |
 | `POST` | `/projects/{project_uid}/newsletters/render-preview` | yes | Render a `NewsletterLayout` to email-safe HTML for the editor's live preview. Stateless — nothing is persisted. Returns `422 unprocessable_entity` when the layout cannot be rendered. |
+| `GET` | `/projects/{project_uid}/newsletters/templates` | yes | List the embedded editor template sets (`{"templates": [{"key", "label"}]}`). The catalog is compiled into the binary and identical for every project. |
+| `GET` | `/projects/{project_uid}/newsletters/templates/{template_key}/manifest` | yes | Return the editor manifest for one template set: the palette of block types (`block_type`, `label`, `category`, `schema`, optional `is_container`, comment-stripped `template`) plus the page-chrome `wrapper` and `wrapper_key`. Unknown keys return `404 not_found`. Mirrors `NewsletterTemplateManifest` in `@lfx-one/shared`. |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics` | yes | Return analytics for one newsletter. |
 | `GET` | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}` | no | Tracking pixel. Records open by recipient hash and returns a GIF. |
 | `GET` | `/newsletters/unsubscribe` | no | One-click unsubscribe via HMAC-signed `t` token. Returns HTML. A direct-service HEAD is a no-op so link previews don't unsubscribe; the gateway ruleset allows only `GET`, so HEAD is blocked at the gateway. |
@@ -95,6 +97,8 @@ On update, `body_layout` is tri-state: **absent** preserves a layout newsletter'
 | `RenderPreviewRequest` | `body_layout` | The `NewsletterLayout` to render. |
 | `RenderPreviewRequest` | `wrapper_content` | Optional map of runtime values the wrapper template binds against (e.g. `edition.date`); may be omitted (`omitempty`). |
 | `RenderPreviewResponse` | `body_html` | The rendered, email-safe HTML produced by the declarative emitter. |
+
+`GET …/newsletters/templates` returns `{"templates": [{"key", "label"}]}`. `GET …/templates/{template_key}/manifest` returns the editor manifest for one embedded template set — `wrapper_key`, `blocks` (each with `block_type`, `label`, `category`, `schema`, optional `is_container`, and a comment-stripped `template` body), and the page-chrome `wrapper`. The shape is produced by `internal/service/render/declarative.Manifest` and mirrors `NewsletterTemplateManifest` in `@lfx-one/shared`, which the block composer consumes; the embedded per-key template sets are the single source of truth for both the editor palette and rendering.
 
 `TestSendRequest` (the `…/test-send` body) carries an optional `is_layout` boolean (`omitempty`). When `true`, `body_html` is treated as a full layout-based emitter email (wrapper + blocks, already rendered, with `%%…%%` runtime placeholders) and is dispatched directly instead of being wrapped in email chrome — mirroring the layout branch of the real send path. Omitted/false keeps the legacy chrome-wrapped test send.
 

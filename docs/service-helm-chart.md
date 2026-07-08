@@ -72,7 +72,8 @@ When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 `ruleset.yaml` authentication and authorization:
 
 - Most authenticated project routes (newsletter CRUD, analytics, etc.) authenticate via OIDC and fall back to `allow_all` when `openfga.enabled=false`. When OpenFGA is enabled, these routes enforce `viewer` (read) or `writer` (write) roles.
-- The block-composer routes are gated the same way: the stateless `…/newsletters/render-preview` route carries a project-scoped `writer` rule (mirroring `…/test-send` — a write-scoped authoring action), and the editor template routes (`…/newsletters/templates`, `…/newsletters/templates/{key}/manifest`) carry `viewer` (read) rules for the palette/catalog data. All are FGA-gated, not JWT-only.
+- The stateless `…/newsletters/render-preview` route carries a project-scoped `writer` rule (mirroring `…/test-send` — a write-scoped authoring action), so it is FGA-gated, not JWT-only.
+- The editor template routes (`…/newsletters/templates` and `…/newsletters/templates/{template_key}/manifest`) carry explicit project-scoped `viewer` rules. The list path would otherwise match the `{newsletter_uid}` GET rule only by coincidence, and the six-segment manifest path matches no other rule at all, so both are declared rather than inherited.
 - The opt-out list endpoint (`/projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor` role and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` or OpenFGA is misconfigured — that is intentional for PII security.
 - The open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` are intentionally unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
 
