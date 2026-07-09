@@ -28,6 +28,11 @@ spec:
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name | default .Chart.Name }}
       automountServiceAccountToken: false
+      # Must cover the sequential shutdown budget: HTTP drain (25s), then the
+      # background send-job drain (20s), then the deferred OTel flush (25s
+      # ceiling). The k8s default of 30s would SIGKILL mid-drain when a slow
+      # request eats into the first window.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 75 }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -78,6 +83,14 @@ spec:
               value: {{ .Values.app.send.fanoutEnabled | quote }}
             {{- with .Values.app.send.concurrency }}
             - name: SEND_CONCURRENCY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.jobTimeout }}
+            - name: SEND_JOB_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.stuckSendTTL }}
+            - name: STUCK_SEND_TTL
               value: {{ . | quote }}
             {{- end }}
             {{- with .Values.app.send.fromAddress }}

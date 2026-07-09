@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/mail"
@@ -24,6 +25,16 @@ import (
 
 // defaultSendConcurrency caps in-flight email-service requests during fan-out.
 const defaultSendConcurrency = 5
+
+// defaultSendJobTimeout bounds the detached background fan-out. Generous by
+// design: at the default concurrency of 5 and ~1s per email-service
+// round-trip, 30 minutes covers ~9000 recipients.
+const defaultSendJobTimeout = 30 * time.Minute
+
+// persistTimeout bounds the terminal MarkSent / RevertSending write issued by
+// the background job. Deliberately independent of the job context, which may
+// already be exhausted when the fan-out consumed the full job timeout.
+const persistTimeout = 30 * time.Second
 
 // defaultFromAddress is the SMTP envelope From used when the orchestrator is
 // constructed without an explicit FromAddress (e.g. tests). Production wiring
@@ -49,6 +60,10 @@ type SendOrchestrator struct {
 	fanoutEnabled bool
 	fromAddress   string
 	fromOverrides map[string]string
+	jobTimeout    time.Duration
+	// jobs tracks detached background send goroutines so graceful shutdown
+	// (and tests) can wait for in-flight fan-outs via Drain.
+	jobs sync.WaitGroup
 }
 
 // SendOrchestratorConfig configures a SendOrchestrator.
@@ -71,6 +86,14 @@ type SendOrchestratorConfig struct {
 	// From address used for that project, overriding FromAddress. Nil/empty
 	// means every project uses FromAddress.
 	FromAddressOverrides map[string]string
+	// SendJobTimeout bounds the detached background fan-out that runs after a
+	// send is accepted. Zero falls back to defaultSendJobTimeout.
+	//
+	// Coupled invariant: any stuck-'sending' recovery sweep wired alongside
+	// this orchestrator must use a TTL comfortably greater than this timeout
+	// (AppConfigFromEnv enforces TTL >= SendJobTimeout + 5m), or the sweep can
+	// settle a row 'sent' while its fan-out job is still running.
+	SendJobTimeout time.Duration
 }
 
 // NewSendOrchestrator wires a SendOrchestrator.
@@ -94,6 +117,10 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		}
 		overrides[slug] = addr
 	}
+	jobTimeout := cfg.SendJobTimeout
+	if jobTimeout <= 0 {
+		jobTimeout = defaultSendJobTimeout
+	}
 	return &SendOrchestrator{
 		repo:          cfg.Repo,
 		committee:     cfg.Committee,
@@ -105,6 +132,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		fanoutEnabled: cfg.FanoutEnabled,
 		fromAddress:   from,
 		fromOverrides: overrides,
+		jobTimeout:    jobTimeout,
 	}
 }
 
@@ -138,9 +166,18 @@ type SendResult struct {
 	Failures        []SendFailure
 }
 
-// SendNewsletter resolves the draft, mints group_id, renders the email envelope,
-// fans out per-recipient sends to email-service, and transitions the draft to
-// status=sent.
+// SendNewsletter accepts a send request: it validates the draft, resolves
+// recipients, renders the email envelope, and atomically transitions the draft
+// to status=sending (the cross-replica duplicate-send guard). The per-recipient
+// fan-out and the terminal sending → sent transition then run in a background
+// goroutine detached from the request context, so a client disconnect or proxy
+// timeout can neither cancel the fan-out mid-flight nor orphan the status.
+//
+// The returned SendResult carries the sending-state newsletter with Sent=0 —
+// callers observe completion by re-fetching the newsletter (status settles to
+// sent, or back to draft when zero recipients could be delivered to). The
+// zero-recipient edge case keeps the historical contract and is marked sent
+// synchronously.
 func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletterInput) (*SendResult, error) {
 	if err := validateProjectUID(in.ProjectUID); err != nil {
 		return nil, err
@@ -155,6 +192,9 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	}
 	if draft.Status == model.StatusSent {
 		return nil, domain.ErrAlreadySent
+	}
+	if draft.Status == model.StatusSending {
+		return nil, domain.ErrSendInProgress
 	}
 	if in.ExpectedVersion != 0 && draft.Version != in.ExpectedVersion {
 		return nil, domain.ErrVersionMismatch
@@ -203,46 +243,155 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		ReplyTo:         draft.EDReplyEmail,
 		GroupID:         groupID,
 	}
-	sent, failed, failures := o.fanOut(ctx, draft.ProjectUID, recipients, envelope)
 
-	// Only flip the draft to `sent` when at least one recipient was delivered
-	// to. If every send failed (email-service unreachable, all recipients
-	// rejected, etc.) the row stays a draft so the operator can retry without
-	// emails ever having gone out. Without this gate, a fully-failed send is
-	// permanently indistinguishable from a successful one — no retry path.
-	if sent == 0 && len(recipients) > 0 {
-		slog.WarnContext(ctx, "newsletter send failed: no recipients delivered, leaving as draft",
-			"newsletter_id", draft.ID,
-			"project_uid", draft.ProjectUID,
-			"group_id", groupID,
-			"total_recipients", len(recipients),
-			"failed", failed,
-		)
-		return nil, fmt.Errorf("send failed: 0 of %d recipients delivered", len(recipients))
+	// The duplicate-send guard: a single optimistically-locked UPDATE gated on
+	// status='draft'. From here on no concurrent or repeated send request can
+	// enter the fan-out for this newsletter.
+	sending, err := o.repo.MarkSending(ctx, draft.ID, groupID, len(recipients), draft.Version)
+	if err != nil {
+		return nil, fmt.Errorf("mark sending: %w", err)
 	}
 
-	updated, markErr := o.repo.MarkSent(ctx, draft.ID, time.Now().UTC(), len(recipients), groupID, draft.Version)
-	if markErr != nil {
-		return nil, fmt.Errorf("mark sent: %w", markErr)
+	// Zero recipients: nothing to fan out — settle to sent synchronously,
+	// preserving the historical contract for empty audiences. The write must
+	// not ride the request context: a client disconnect after MarkSending
+	// would cancel it and strand the row in 'sending' until the recovery
+	// sweep.
+	if len(recipients) == 0 {
+		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
+		defer cancel()
+		updated, markErr := o.repo.MarkSent(persistCtx, sending.ID, time.Now().UTC(), sending.Version)
+		if markErr != nil {
+			return nil, fmt.Errorf("mark sent: %w", markErr)
+		}
+		return &SendResult{
+			Newsletter:      updated,
+			GroupID:         groupID,
+			TotalRecipients: 0,
+		}, nil
+	}
+
+	// Detach the fan-out from the request lifetime. WithoutCancel keeps the
+	// context values (trace/log correlation) but severs cancellation, so a BFF
+	// timeout or client disconnect cannot abort a partially-dispatched send.
+	jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), o.jobTimeout)
+	o.jobs.Add(1)
+	go func() {
+		defer o.jobs.Done()
+		defer cancel()
+		o.runSendJob(jobCtx, sending, recipients, envelope)
+	}()
+
+	slog.InfoContext(ctx, "newsletter send accepted",
+		"newsletter_id", sending.ID,
+		"project_uid", sending.ProjectUID,
+		"group_id", groupID,
+		"total_recipients", len(recipients),
+	)
+
+	return &SendResult{
+		Newsletter:      sending,
+		GroupID:         groupID,
+		TotalRecipients: len(recipients),
+	}, nil
+}
+
+// runSendJob is the detached background half of SendNewsletter: fan out to
+// every recipient, then settle the newsletter — sent when at least one
+// recipient was delivered to, reverted to draft when none were.
+func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsletter, recipients []model.CommitteeMember, envelope emailEnvelope) {
+	sent, failed, failures := o.fanOut(ctx, sending.ProjectUID, recipients, envelope)
+
+	// The terminal persistence write must not depend on the job context: a
+	// fan-out that consumed the entire job timeout would otherwise leave the
+	// row stuck in 'sending' until the recovery sweep picks it up.
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
+	defer cancel()
+
+	// Only settle to `sent` when at least one recipient was delivered to. If
+	// every send failed (email-service unreachable, all recipients rejected,
+	// etc.) the row reverts to draft so the operator can retry without emails
+	// ever having gone out. Without this gate, a fully-failed send would be
+	// permanently indistinguishable from a successful one — no retry path.
+	if sent == 0 {
+		slog.WarnContext(ctx, "newsletter send failed: no recipients delivered, reverting to draft",
+			"newsletter_id", sending.ID,
+			"project_uid", sending.ProjectUID,
+			"group_id", envelope.GroupID,
+			"total_recipients", len(recipients),
+			"failed", failed,
+			"first_failure", firstFailureError(failures),
+		)
+		// The revert can also fail because another actor already settled the
+		// row (RevertSending gates on status='sending'), so the log must not
+		// assert the resulting state.
+		if err := o.repo.RevertSending(persistCtx, sending.ID); err != nil {
+			slog.ErrorContext(ctx, "newsletter send: revert to draft failed; the recovery sweep settles any row still 'sending'",
+				"newsletter_id", sending.ID,
+				"error", err,
+			)
+		}
+		return
+	}
+
+	if _, err := o.repo.MarkSent(persistCtx, sending.ID, time.Now().UTC(), sending.Version); err != nil {
+		// ErrAlreadySent means another actor (normally the stuck-sending
+		// recovery sweep, under a misconfigured TTL) settled the row first —
+		// the newsletter IS sent, only this job lost the race to record it.
+		if errors.Is(err, domain.ErrAlreadySent) {
+			slog.WarnContext(ctx, "newsletter send: row was already settled 'sent' by another actor",
+				"newsletter_id", sending.ID,
+				"group_id", envelope.GroupID,
+				"sent", sent,
+				"failed", failed,
+			)
+			return
+		}
+		slog.ErrorContext(ctx, "newsletter send: mark sent failed after fan-out; the recovery sweep settles any row still 'sending'",
+			"newsletter_id", sending.ID,
+			"group_id", envelope.GroupID,
+			"sent", sent,
+			"failed", failed,
+			"error", err,
+		)
+		return
 	}
 
 	slog.InfoContext(ctx, "newsletter sent",
-		"newsletter_id", draft.ID,
-		"project_uid", draft.ProjectUID,
-		"group_id", groupID,
+		"newsletter_id", sending.ID,
+		"project_uid", sending.ProjectUID,
+		"group_id", envelope.GroupID,
 		"total_recipients", len(recipients),
 		"sent", sent,
 		"failed", failed,
 	)
+}
 
-	return &SendResult{
-		Newsletter:      updated,
-		GroupID:         groupID,
-		TotalRecipients: len(recipients),
-		Sent:            sent,
-		Failed:          failed,
-		Failures:        failures,
-	}, nil
+// Drain blocks until every detached send job has finished, or the context is
+// done. Returns true when fully drained. Called during graceful shutdown so
+// in-flight fan-outs get a chance to settle before the process exits; a job
+// outliving the shutdown window is recovered by the stuck-sending sweep on the
+// next pod.
+func (o *SendOrchestrator) Drain(ctx context.Context) bool {
+	done := make(chan struct{})
+	go func() {
+		o.jobs.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// firstFailureError surfaces one representative fan-out error for logging.
+func firstFailureError(failures []SendFailure) string {
+	if len(failures) == 0 {
+		return ""
+	}
+	return failures[0].Error
 }
 
 // TestSendInput is the typed input for TestSend.

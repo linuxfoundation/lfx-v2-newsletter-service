@@ -44,6 +44,16 @@ type AppConfig struct {
 	// SendConcurrency caps in-flight per-recipient sends during fan-out.
 	SendConcurrency int
 
+	// SendJobTimeout bounds the detached background fan-out that runs after a
+	// send is accepted (the HTTP request returns 202 as soon as the draft
+	// transitions to 'sending').
+	SendJobTimeout time.Duration
+
+	// StuckSendTTL is the age after which a newsletter stranded in 'sending'
+	// (pod crash mid-fan-out) is recovered to 'sent' by the periodic sweep.
+	// Kept above SendJobTimeout so the sweep never races a live job.
+	StuckSendTTL time.Duration
+
 	// EmailFromAddress is the bare address used as the SMTP envelope From on
 	// outbound newsletters. Defaults to newsletter@lfx.linuxfoundation.org; override
 	// per environment when a different sender is configured upstream. The
@@ -83,6 +93,12 @@ const (
 	defaultNATSURL               = "nats://nats:4222"
 	defaultSendConcurrency       = 5
 	defaultEmailFromAddress      = "newsletter@lfx.linuxfoundation.org"
+	defaultSendJobTimeout        = 30 * time.Minute
+	defaultStuckSendTTL          = 45 * time.Minute
+	// minStuckSendSlack is the minimum margin enforced between SendJobTimeout
+	// and StuckSendTTL so the recovery sweep never marks a row 'sent' while
+	// its fan-out job is still running.
+	minStuckSendSlack = 5 * time.Minute
 )
 
 // AppConfigFromEnv reads AppConfig from environment variables, applying defaults
@@ -98,6 +114,8 @@ func AppConfigFromEnv() (AppConfig, error) {
 		NATSReconnectWait:         durationOr("NATS_RECONNECT_WAIT", time.Duration(defaultNATSReconnectWaitSecs)*time.Second),
 		SendFanoutEnabled:         boolOr("SEND_FANOUT_ENABLED", true),
 		SendConcurrency:           intOr("SEND_CONCURRENCY", defaultSendConcurrency),
+		SendJobTimeout:            durationOr("SEND_JOB_TIMEOUT", defaultSendJobTimeout),
+		StuckSendTTL:              durationOr("STUCK_SEND_TTL", defaultStuckSendTTL),
 		EmailFromAddress:          envOr("EMAIL_FROM_ADDRESS", defaultEmailFromAddress),
 		EmailFromAddressOverrides: parseFromAddressOverrides(os.Getenv("EMAIL_FROM_ADDRESS_OVERRIDES")),
 		UnsubscribeSecret:         os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
@@ -135,6 +153,12 @@ func AppConfigFromEnv() (AppConfig, error) {
 	}
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
+	}
+
+	// Keep the stuck-send sweep strictly behind the job timeout so it can
+	// never mark a row 'sent' while its fan-out is still running.
+	if cfg.StuckSendTTL < cfg.SendJobTimeout+minStuckSendSlack {
+		cfg.StuckSendTTL = cfg.SendJobTimeout + minStuckSendSlack
 	}
 
 	return cfg, nil

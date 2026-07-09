@@ -28,6 +28,13 @@ podDisruptionBudget:
 # topologySpreadConstraints controls how pods are spread across nodes/zones.
 topologySpreadConstraints: []
 
+# terminationGracePeriodSeconds must cover the sequential (LIFO-deferred)
+# shutdown budget: HTTP drain (25s) + background send-job drain (20s) + OTel
+# flush (25s ceiling, normally sub-second). Send state is protected first —
+# only trailing telemetry is at risk near the limit, and undrained send jobs
+# are recovered by the stuck-sending sweep on the next pod.
+terminationGracePeriodSeconds: 75
+
 # resources is the container resource request and limit configuration.
 resources:
   limits:
@@ -70,6 +77,15 @@ app:
     # concurrency caps in-flight email-service requests during fan-out.
     # Empty string falls back to the app default (5).
     concurrency: ""
+    # jobTimeout bounds the detached background fan-out that runs after a send
+    # is accepted (Go duration string, e.g. "30m"). Empty string falls back to
+    # the app default (30m).
+    jobTimeout: ""
+    # stuckSendTTL is the age after which a newsletter stranded in 'sending'
+    # (pod crash mid-fan-out) is recovered to 'sent' by the periodic sweep
+    # (Go duration string). Empty string falls back to the app default (45m);
+    # the app enforces a minimum of jobTimeout + 5m.
+    stuckSendTTL: ""
     # fromAddress is the SMTP envelope From applied to every outbound
     # newsletter. Domain must be in the email-service allowlist. Empty falls
     # back to the app default (newsletter@lfx.linuxfoundation.org).

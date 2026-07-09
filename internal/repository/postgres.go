@@ -103,8 +103,8 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 		Order("id DESC").
 		Limit(limit + 1)
 
-	if filters.Status != "" {
-		q = q.Where("status = ?", filters.Status)
+	if len(filters.Statuses) > 0 {
+		q = q.Where("status IN (?)", bun.In(filters.Statuses))
 	}
 
 	if filters.PageToken != "" {
@@ -186,21 +186,50 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 	return nil
 }
 
-// MarkSent transitions a draft to status=sent atomically, gated on the expected
-// version. Captures the audience size and the lfx-v2-email-service group_id
-// at send time so analytics can compute open rates without re-resolving
-// committee membership and can locate the per-recipient engagement records.
-func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, totalRecipients int, groupID string, expectedVersion int64) (*model.Newsletter, error) {
+// MarkSending transitions a draft to status=sending atomically, gated on the
+// expected version. Captures the audience size and the lfx-v2-email-service
+// group_id at acceptance time: group_id must be persisted before any email is
+// dispatched so a crash-recovered row can be marked sent without violating the
+// status='sent' ⇒ group_id NOT NULL CHECK, and so analytics can locate the
+// per-recipient engagement records. The single UPDATE is the duplicate-send
+// guard — a concurrent send observes zero rows affected and is classified.
+func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, groupID string, totalRecipients int, expectedVersion int64) (*model.Newsletter, error) {
+	updated := &model.Newsletter{}
+	res, err := r.db.NewUpdate().
+		Model(updated).
+		Set("status = ?", model.StatusSending).
+		Set("group_id = ?", groupID).
+		Set("total_recipients = ?", totalRecipients).
+		Set("updated_at = now()").
+		Set("version = version + 1").
+		Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusDraft).
+		Returning("*").
+		Exec(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mark sending: %w", err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("mark sending rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return nil, r.classifySendTransitionMiss(ctx, id, expectedVersion)
+	}
+	return updated, nil
+}
+
+// MarkSent transitions sending → sent, gated on the version produced by
+// MarkSending. group_id and total_recipients were persisted at the sending
+// transition, so only the terminal status and sent_at remain to be written.
+func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, expectedVersion int64) (*model.Newsletter, error) {
 	updated := &model.Newsletter{}
 	res, err := r.db.NewUpdate().
 		Model(updated).
 		Set("status = ?", model.StatusSent).
 		Set("sent_at = ?", sentAt).
-		Set("total_recipients = ?", totalRecipients).
-		Set("group_id = ?", groupID).
 		Set("updated_at = now()").
 		Set("version = version + 1").
-		Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusDraft).
+		Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusSending).
 		Returning("*").
 		Exec(ctx)
 	if err != nil {
@@ -211,9 +240,60 @@ func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sen
 		return nil, fmt.Errorf("mark sent rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
-		return nil, r.classifyMarkSentMiss(ctx, id, expectedVersion)
+		return nil, r.classifySendTransitionMiss(ctx, id, expectedVersion)
 	}
 	return updated, nil
+}
+
+// RevertSending returns a sending newsletter to draft after a total fan-out
+// failure. Clears the send-time fields so the reverted draft is
+// indistinguishable from one that never attempted a send; the next attempt
+// mints a fresh group_id.
+func (r *PostgresNewsletterRepo) RevertSending(ctx context.Context, id uuid.UUID) error {
+	res, err := r.db.NewUpdate().
+		Model((*model.Newsletter)(nil)).
+		Set("status = ?", model.StatusDraft).
+		Set("group_id = NULL").
+		Set("total_recipients = 0").
+		Set("updated_at = now()").
+		Set("version = version + 1").
+		Where("id = ? AND status = ?", id, model.StatusSending).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("revert sending: %w", err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("revert sending rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// RecoverStuckSending marks sending rows whose updated_at is older than the
+// given age as sent. See the port doc for why recovery lands on sent rather
+// than draft. group_id was persisted at the sending transition, so the
+// status='sent' ⇒ group_id NOT NULL CHECK holds.
+func (r *PostgresNewsletterRepo) RecoverStuckSending(ctx context.Context, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-olderThan)
+	res, err := r.db.NewUpdate().
+		Model((*model.Newsletter)(nil)).
+		Set("status = ?", model.StatusSent).
+		Set("sent_at = now()").
+		Set("updated_at = now()").
+		Set("version = version + 1").
+		Where("status = ? AND updated_at < ?", model.StatusSending, cutoff).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("recover stuck sending: %w", err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("recover stuck sending rows affected: %w", err)
+	}
+	return rowsAffected, nil
 }
 
 // RecordOpen inserts a single open event. Repeat hits from the same recipient
@@ -360,9 +440,13 @@ func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UU
 	return domain.ErrVersionMismatch
 }
 
-// classifyMarkSentMiss distinguishes the three reasons a MarkSent update can
-// affect zero rows: not found, wrong version, or already sent.
-func (r *PostgresNewsletterRepo) classifyMarkSentMiss(ctx context.Context, id uuid.UUID, expectedVersion int64) error {
+// classifySendTransitionMiss distinguishes the reasons a MarkSending or
+// MarkSent update can affect zero rows: not found, already sent, another send
+// in progress, or wrong version. Status checks take precedence over the
+// version check because the send-transition UPDATEs bump the version — a row
+// that moved to sending/sent necessarily has a different version too, and the
+// status is the more actionable signal for the caller.
+func (r *PostgresNewsletterRepo) classifySendTransitionMiss(ctx context.Context, id uuid.UUID, expectedVersion int64) error {
 	existing := &model.Newsletter{}
 	err := r.db.NewSelect().
 		Model(existing).
@@ -372,10 +456,13 @@ func (r *PostgresNewsletterRepo) classifyMarkSentMiss(ctx context.Context, id uu
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.ErrNotFound
 		}
-		return fmt.Errorf("classify mark sent miss: %w", err)
+		return fmt.Errorf("classify send transition miss: %w", err)
 	}
 	if existing.Status == model.StatusSent {
 		return domain.ErrAlreadySent
+	}
+	if existing.Status == model.StatusSending {
+		return domain.ErrSendInProgress
 	}
 	if existing.Version != expectedVersion {
 		return domain.ErrVersionMismatch
