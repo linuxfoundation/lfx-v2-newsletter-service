@@ -53,6 +53,7 @@ concurrency:
 permissions:
   contents: read
   pull-requests: read
+  issues: read      # escalation verdict comments + needs-human label timeline
   statuses: read
   id-token: write
 
