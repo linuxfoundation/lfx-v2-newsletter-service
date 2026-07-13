@@ -32,7 +32,9 @@ Shared rules:
 
 ## Needs-human verdict (escalation judge)
 
-Posted once, when the PR opens. When a human must sign off before merge:
+Posted when the PR opens and again for each new head (the escalation re-runs per
+push; the label it drives is sticky and add-only). When a human must sign off
+before merge:
 
 ```
 <!-- agentic:needs-human v1 -->

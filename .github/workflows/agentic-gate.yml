@@ -166,23 +166,39 @@ jobs:
           if [ "${already:-0}" -gt 0 ]; then
             echo "lfx-reviewer already approved $HEAD; no-op." >> "$GITHUB_STEP_SUMMARY"
           else
-            # Re-validate at the last moment: the approval lands on the PR's state
-            # at execution time, so if a push slipped in since evaluation, abort
-            # (fail closed) — the new head's own round re-derives from scratch.
-            # The review is also bound to the evaluated commit via commit_id.
-            # Residual race (push between this check and the POST) is closed by
-            # branch protection's "dismiss stale approvals on push", which the
-            # rollout enables, plus the dismiss backstop below on the next signal.
-            NOW_HEAD="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
-            if [ "$NOW_HEAD" != "$HEAD" ]; then
-              echo "Head moved ($HEAD -> $NOW_HEAD) since evaluation; not approving." >> "$GITHUB_STEP_SUMMARY"
+            # Re-validate ALL gate inputs at the last moment, not just the head:
+            # status-event and label-event gate runs race on different concurrency
+            # keys, so a regression run may have dismissed while this run was
+            # queued behind its evaluation. Any change since evaluation aborts
+            # (fail closed) — the signal that changed things re-derives on its own.
+            recheck() {
+              NOW_HEAD="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
+              NOW_CLEAN="$(gh api "repos/$REPO/commits/$HEAD/status" \
+                --jq '.statuses[] | select(.context=="agentic-review/clean") | .state' \
+                2>/dev/null | head -1 || true)"
+              NOW_LABEL="$(gh pr view "$PR" --repo "$REPO" --json labels \
+                --jq 'any(.labels[].name; . == "needs-human")')"
+              [ "$NOW_HEAD" = "$HEAD" ] && [ "$NOW_CLEAN" = "success" ] && [ "$NOW_LABEL" != "true" ]
+            }
+            if ! recheck; then
+              echo "Gate inputs changed since evaluation (head=$NOW_HEAD clean=$NOW_CLEAN needs-human=$NOW_LABEL); not approving." >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            gh api --method POST "repos/$REPO/pulls/$PR/reviews" \
+            RID="$(gh api --method POST "repos/$REPO/pulls/$PR/reviews" \
               -f commit_id="$HEAD" -f event=APPROVE \
               -f body="Agentic gate: no blocking AI-review findings remain and no needs-human label is set. Approving on behalf of the automated review; a human review is still expected." \
-              >/dev/null
-            echo "Gate: APPROVED PR #$PR as lfx-reviewer (head $HEAD)." >> "$GITHUB_STEP_SUMMARY"
+              --jq '.id')"
+            echo "Gate: APPROVED PR #$PR as lfx-reviewer (head $HEAD, review $RID)." >> "$GITHUB_STEP_SUMMARY"
+            # Compensating check: if an input regressed in the instant between the
+            # re-check and the POST, revoke our own approval right here instead of
+            # waiting for the next signal. Together with branch protection's
+            # "dismiss stale approvals on push" this closes the approve-time race.
+            if ! recheck; then
+              gh api --method PUT "repos/$REPO/pulls/$PR/reviews/$RID/dismissals" \
+                -f message="Agentic gate: inputs changed while approving; revoking the automated approval." \
+                -f event=DISMISS >/dev/null
+              echo "Gate: inputs regressed during approval; self-dismissed review $RID." >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
 
       - name: Dismiss stale approval (withheld verdict)

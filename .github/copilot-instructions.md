@@ -11,8 +11,10 @@ that handles that job. Follow it exactly.
 
 When the task is to **review a change** for correctness, design, and security, use
 the `/copilot-code-reviewer` skill and follow it exactly. Post one inline comment
-per finding (each prefixed with a severity like `[high]`) plus a summary, via the
-GitHub MCP server.
+per finding (each prefixed with a severity like `[high]`) plus a summary, through
+your native review publishing (the code-review flow creates inline review threads
+itself; the GitHub MCP server's write tools are for the escalation and conductor
+tasks, which only add issue comments and thread replies).
 
 ## 2. needs-human escalation
 
