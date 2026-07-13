@@ -12,6 +12,7 @@
 package render
 
 import (
+	"html"
 	"regexp"
 	"strings"
 )
@@ -234,11 +235,24 @@ func stripHTML(html string) string {
 // the snippet useful without shipping the whole body twice.
 const preheaderMaxLen = 140
 
-// previewText derives the inbox-preview snippet from the authored body: tags
-// stripped, whitespace collapsed to single spaces, truncated at a word
-// boundary. Empty when the body has no text content.
+// blockBoundaryRe matches closing block-level tags and self-standing breaks.
+// The editor can serialize adjacent blocks without whitespace, so these must
+// become separators before the tag strip or "<p>Hello</p><p>members</p>"
+// reads "Hellomembers".
+var blockBoundaryRe = regexp.MustCompile(`(?i)</(?:p|div|li|ul|ol|h[1-6]|blockquote|pre|tr|table)>|<(?:br|hr)(\s[^>]*)?/?>`)
+
+// previewText derives the inbox-preview snippet from the authored body: block
+// boundaries turned into spaces, tags stripped, character references decoded,
+// whitespace collapsed to single spaces, truncated at a word boundary. Empty
+// when the body has no text content.
 func previewText(bodyHTML string) string {
-	text := strings.Join(strings.Fields(stripHTML(bodyHTML)), " ")
+	text := stripHTML(blockBoundaryRe.ReplaceAllString(bodyHTML, " "))
+	// stripHTML only decodes the entity set the chrome emits; authored bodies
+	// can carry any named or numeric reference (&mdash;, &#8217;, …), which
+	// must become characters here or the final escaping pass turns them into
+	// visible entity syntax.
+	text = html.UnescapeString(text)
+	text = strings.Join(strings.Fields(text), " ")
 	runes := []rune(text)
 	if len(runes) <= preheaderMaxLen {
 		return text

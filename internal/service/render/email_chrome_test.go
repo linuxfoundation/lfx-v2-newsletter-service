@@ -36,6 +36,21 @@ func TestPreviewText(t *testing.T) {
 			bodyHTML: "<p>Hello members</p>",
 			want:     "Hello members",
 		},
+		{
+			name:     "adjacent blocks get separators",
+			bodyHTML: "<p>Hello</p><p>members</p><h2>News</h2><ul><li>one</li><li>two</li></ul>",
+			want:     "Hello members News one two",
+		},
+		{
+			name:     "line breaks get separators, inline tags do not",
+			bodyHTML: "<p>first<br/>second <strong>bo</strong>ld</p>",
+			want:     "first second bold",
+		},
+		{
+			name:     "named and numeric entities decode to characters",
+			bodyHTML: "<p>May update &mdash; what&#8217;s new &amp; next</p>",
+			want:     "May update — what’s new & next",
+		},
 	}
 
 	for _, tt := range tests {
