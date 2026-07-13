@@ -102,8 +102,19 @@ jobs:
                     2>/dev/null | head -1 || true)"
           NEEDS_HUMAN="$(gh pr view "$PR" --repo "$REPO" --json labels \
                           --jq 'any(.labels[].name; . == "needs-human")')"
-          echo "clean=$CLEAN needs-human=$NEEDS_HUMAN (head $HEAD)" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$CLEAN" = "success" ] && [ "$NEEDS_HUMAN" != "true" ]; then
+          # An escalation verdict must EXIST before approval: label absence only
+          # means "no" once the judge has actually posted. The escalation task is
+          # fire-and-forget — it can lag behind a fast clean round, or die and
+          # never post — and in both cases the gate must fail closed, not open.
+          # Paginate and count matching lines (--paginate applies --jq per page).
+          ESC_N="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.user.login=="lfx-reviewer" and (.body | contains("<!-- agentic:needs-human v1 -->"))) | .id' \
+            2>/dev/null | grep -c . || true)"
+          echo "clean=$CLEAN needs-human=$NEEDS_HUMAN escalation-verdicts=$ESC_N (head $HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${ESC_N:-0}" -eq 0 ]; then
+            echo "No escalation verdict posted yet; the needs-human question is unanswered." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$CLEAN" = "success" ] && [ "$NEEDS_HUMAN" != "true" ] && [ "${ESC_N:-0}" -gt 0 ]; then
             echo "approve=true" >> "$GITHUB_OUTPUT"
           else
             echo "approve=false" >> "$GITHUB_OUTPUT"
@@ -155,8 +166,22 @@ jobs:
           if [ "${already:-0}" -gt 0 ]; then
             echo "lfx-reviewer already approved $HEAD; no-op." >> "$GITHUB_STEP_SUMMARY"
           else
-            gh pr review "$PR" --repo "$REPO" --approve \
-              --body "Agentic gate: no blocking AI-review findings remain and no needs-human label is set. Approving on behalf of the automated review; a human review is still expected."
+            # Re-validate at the last moment: the approval lands on the PR's state
+            # at execution time, so if a push slipped in since evaluation, abort
+            # (fail closed) — the new head's own round re-derives from scratch.
+            # The review is also bound to the evaluated commit via commit_id.
+            # Residual race (push between this check and the POST) is closed by
+            # branch protection's "dismiss stale approvals on push", which the
+            # rollout enables, plus the dismiss backstop below on the next signal.
+            NOW_HEAD="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
+            if [ "$NOW_HEAD" != "$HEAD" ]; then
+              echo "Head moved ($HEAD -> $NOW_HEAD) since evaluation; not approving." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            gh api --method POST "repos/$REPO/pulls/$PR/reviews" \
+              -f commit_id="$HEAD" -f event=APPROVE \
+              -f body="Agentic gate: no blocking AI-review findings remain and no needs-human label is set. Approving on behalf of the automated review; a human review is still expected." \
+              >/dev/null
             echo "Gate: APPROVED PR #$PR as lfx-reviewer (head $HEAD)." >> "$GITHUB_STEP_SUMMARY"
           fi
 

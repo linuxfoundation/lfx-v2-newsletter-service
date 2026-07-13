@@ -136,7 +136,16 @@ jobs:
           # Anchored to the whole line, like head:, so prose mentioning "clean:"
           # outside the machine block can never set the verdict.
           CLEAN=$(printf '%s' "$BLOCK" | grep -iE '^[[:space:]]*clean:[[:space:]]*(true|false)[[:space:]]*$' | head -1 | grep -oiE 'true|false' | tr '[:upper:]' '[:lower:]')
-          echo "target=$TARGET_SHA clean=$CLEAN"
+          # Cross-check the flag against the thread rows (the parser enforces the
+          # writer contract): if any listed thread is still blocking, a
+          # `clean: true` flag is malformed — fail closed and publish failure,
+          # never success. Reasons are stripped first so free text cannot match.
+          BLOCKING_N=$(printf '%s\n' "$BLOCK" | grep -E '^[[:space:]]*-[[:space:]]*id:' | sed -E 's/reason:.*//' | grep -ciE 'status:[[:space:]]*(outstanding|rebutted-invalid)' || true)
+          if [ "$CLEAN" = "true" ] && [ "${BLOCKING_N:-0}" -gt 0 ]; then
+            echo "::warning::agentic-check block inconsistent: clean=true with $BLOCKING_N blocking row(s); failing closed"
+            CLEAN=false
+          fi
+          echo "target=$TARGET_SHA clean=$CLEAN blocking_rows=${BLOCKING_N:-0}"
 
           # Act on each thread the conductor listed. Non-blocking states get resolved;
           # still-blocking states get re-opened if they were resolved prematurely, so

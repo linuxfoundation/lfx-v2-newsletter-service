@@ -1,11 +1,14 @@
 # Copyright The Linux Foundation and each contributor to LFX.
 # SPDX-License-Identifier: MIT
 #
-# On PR open: fire the needs-human escalation as an Agent Tasks API task pinned to
-# gpt-5.5. It runs the escalation and posts its needs-human verdict comment via the
-# writable GitHub MCP (add_issue_comment). The native review is requested by
-# agentic-conductor, which also waits for it before firing its own per-round
-# reconcile task.
+# On PR open AND on every new head: fire the needs-human escalation as an Agent
+# Tasks API task pinned to gpt-5.5. It runs the escalation and posts its
+# needs-human verdict comment via the writable GitHub MCP (add_issue_comment).
+# Re-running per head is safe and necessary: the label is sticky and add-only, so
+# a later "yes" can only add it, and a PR whose scope grows mid-review (auth,
+# schema, send-path) gets re-judged instead of riding the opening verdict. The
+# native review is requested by agentic-conductor, which also waits for it before
+# firing its own per-round reconcile task.
 #
 # We do NOT poll or wait here. The agent posts its verdict via the MCP PAT, so the
 # comment is attributed to lfx-reviewer (not a Copilot actor) and triggers
@@ -17,11 +20,11 @@
 # Manager via OIDC — the same pattern lfx-v2-argocd uses for the lfx-one PAT — so
 # no GitHub secret is provisioned per repo.
 ---
-name: Agentic Escalation (open)
+name: Agentic Escalation
 
 "on":
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, synchronize]
 
 # id-token is what lets the job assume the AWS role via OIDC; everything the job
 # writes on GitHub goes through the fetched PAT, not the workflow token.

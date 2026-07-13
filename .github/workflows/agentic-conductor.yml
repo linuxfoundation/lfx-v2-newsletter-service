@@ -137,7 +137,12 @@ jobs:
             sleep 15
           done
           if [ -n "$missing" ]; then
-            echo "::warning::timed out waiting for reviewers:$missing — firing conductor with the reviews present"
+            # Fail closed: reviewer events cannot trigger another conductor run, so
+            # a reconcile fired now would judge an incomplete round and a late
+            # review would never be reconciled for this head. Leave the head
+            # pending (set above) and fail visibly; the next push retries.
+            echo "::error::timed out waiting for reviewers:$missing — failing closed, head stays pending"
+            exit 1
           fi
 
       - name: Announce the round and fire the reconcile task (gpt-5.5)

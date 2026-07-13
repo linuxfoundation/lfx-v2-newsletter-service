@@ -102,15 +102,22 @@ blocking issue disappear; only a genuine `fixed`, `obsolete`, or `rebutted-valid
 does. This is deliberate: the gate reads your block, not the threads' open/closed
 state, so no one clears the gate by resolving a thread.
 
-Your new block is therefore exactly:
+Your new block lists **every thread you adjudicated this round, one row each,
+whatever its status** — `fixed`, `obsolete`, `rebutted-valid`, `outstanding`, or
+`rebutted-invalid`. The deterministic step acts on all of them: it resolves the
+cleared rows and re-opens the blocking ones, so a cleared thread whose row you
+omit stays open forever. That means:
 
-- every carried-forward issue that is **still blocking**, plus
-- every **new** non-nit finding any reviewer raised this round that is blocking.
+- every carried-forward issue appears again with its newly judged status
+  (blocking or cleared), plus
+- every **new** non-nit finding any reviewer raised this round with its status.
 
-So an issue that is never fixed appears in the first round's block, and again after
-the next commit, and again after the next, until it is genuinely addressed. You never
-silently drop a blocking issue. (If there is no previous agentic-check, this is the
-first round: judge every open thread fresh.)
+`clean` derives from the **blocking subset only** (`outstanding` /
+`rebutted-invalid`), exactly as defined above. So an issue that is never fixed
+appears as a blocking row in the first round's block, and again after the next
+commit, and again after the next, until it is genuinely addressed. You never
+silently drop a blocking issue. (If there is no previous agentic-check, this is
+the first round: judge every open thread fresh.)
 
 ## Close what you resolve
 
