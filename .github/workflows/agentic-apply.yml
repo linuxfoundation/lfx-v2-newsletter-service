@@ -96,9 +96,12 @@ jobs:
       - name: Set sticky needs-human label
         if: steps.cfg.outputs.present == 'true'
         run: |
-          # Match the exact hidden marker from /agentic-comment-format, not any
-          # prose that happens to contain "needs-human: yes".
-          if printf '%s' "$BODY" | grep -qiE '<!--[[:space:]]*needs-human:[[:space:]]*yes[[:space:]]*-->'; then
+          # Match the exact hidden markers from /agentic-comment-format, not any
+          # prose that happens to contain "needs-human: yes". Require BOTH the
+          # format marker and the signal line, so an unrelated trusted comment
+          # that quotes the signal string can never set the sticky label.
+          if printf '%s' "$BODY" | grep -qiE '<!--[[:space:]]*agentic:needs-human[[:space:]]+v1[[:space:]]*-->' && \
+             printf '%s' "$BODY" | grep -qiE '<!--[[:space:]]*needs-human:[[:space:]]*yes[[:space:]]*-->'; then
             present=$(gh api "repos/$REPO/issues/$PR/labels" --jq '[.[].name] | index("needs-human")')
             if [ "$present" = "null" ] || [ -z "$present" ]; then
               gh api --method POST "repos/$REPO/issues/$PR/labels" -f "labels[]=needs-human"
