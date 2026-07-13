@@ -21,6 +21,13 @@
 # code-owner branch protection. On a withheld verdict it dismisses any stale
 # lfx-reviewer approval, so a PR that regressed past a clean state loses its sign-off.
 # It approves or dismisses only; it never merges. A human review is still expected.
+#
+# The needs-human label is the HUMAN override surface, by design: the escalation
+# judge can only raise the flag (the label is sticky and add-only), and a human
+# with triage permission removing the label is the sanctioned way to say "I have
+# looked, this may proceed". The gate honoring label absence after a human removed
+# it is therefore intended behavior, not a bypass — the escalation verdict for the
+# current head must still exist, and the clean status must still be green.
 ---
 name: Agentic Gate
 
@@ -102,13 +109,14 @@ jobs:
                     2>/dev/null | head -1 || true)"
           NEEDS_HUMAN="$(gh pr view "$PR" --repo "$REPO" --json labels \
                           --jq 'any(.labels[].name; . == "needs-human")')"
-          # An escalation verdict must EXIST before approval: label absence only
-          # means "no" once the judge has actually posted. The escalation task is
-          # fire-and-forget — it can lag behind a fast clean round, or die and
-          # never post — and in both cases the gate must fail closed, not open.
-          # Paginate and count matching lines (--paginate applies --jq per page).
+          # An escalation verdict must EXIST FOR THIS HEAD before approval: label
+          # absence only means "no" once the judge has actually posted about the
+          # commits being approved. The verdict carries a `head:` marker (see
+          # /agentic-comment-format), so a stale verdict from an earlier push can
+          # never vouch for newer commits, and a slow or dead escalation task
+          # fails closed. Paginate and count lines (--paginate applies --jq per page).
           ESC_N="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq '.[] | select(.user.login=="lfx-reviewer" and (.body | contains("<!-- agentic:needs-human v1 -->"))) | .id' \
+            --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"<!-- agentic:needs-human v1 -->\")) and (.body | contains(\"<!-- head: $HEAD -->\"))) | .id" \
             2>/dev/null | grep -c . || true)"
           echo "clean=$CLEAN needs-human=$NEEDS_HUMAN escalation-verdicts=$ESC_N (head $HEAD)" >> "$GITHUB_STEP_SUMMARY"
           if [ "${ESC_N:-0}" -eq 0 ]; then
@@ -178,7 +186,10 @@ jobs:
                 2>/dev/null | head -1 || true)"
               NOW_LABEL="$(gh pr view "$PR" --repo "$REPO" --json labels \
                 --jq 'any(.labels[].name; . == "needs-human")')"
-              [ "$NOW_HEAD" = "$HEAD" ] && [ "$NOW_CLEAN" = "success" ] && [ "$NOW_LABEL" != "true" ]
+              NOW_ESC="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"<!-- agentic:needs-human v1 -->\")) and (.body | contains(\"<!-- head: $HEAD -->\"))) | .id" \
+                2>/dev/null | grep -c . || true)"
+              [ "$NOW_HEAD" = "$HEAD" ] && [ "$NOW_CLEAN" = "success" ] && [ "$NOW_LABEL" != "true" ] && [ "${NOW_ESC:-0}" -gt 0 ]
             }
             if ! recheck; then
               echo "Gate inputs changed since evaluation (head=$NOW_HEAD clean=$NOW_CLEAN needs-human=$NOW_LABEL); not approving." >> "$GITHUB_STEP_SUMMARY"

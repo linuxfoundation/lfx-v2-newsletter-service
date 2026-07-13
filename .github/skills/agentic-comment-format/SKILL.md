@@ -39,6 +39,7 @@ before merge:
 ```
 <!-- agentic:needs-human v1 -->
 <!-- needs-human: yes -->
+<!-- head: <full 40-char SHA of the head you judged> -->
 ### Needs a human before merge
 
 **Why:** <one specific sentence: what a lead needs to know about and why>
@@ -49,6 +50,7 @@ When no human sign-off is required:
 ```
 <!-- agentic:needs-human v1 -->
 <!-- needs-human: no -->
+<!-- head: <full 40-char SHA of the head you judged> -->
 ### No human sign-off required
 
 <one specific sentence: what you checked and why this change is routine>
@@ -58,6 +60,11 @@ The `<!-- needs-human: yes -->` / `<!-- needs-human: no -->` line is the machine
 The deterministic step sets the sticky `needs-human` label when it is `yes`, and does
 nothing when it is `no`. Do not set the label yourself, and write the marker exactly —
 it is the only place the words `needs-human: yes|no` may appear in your comment.
+
+The `<!-- head: ... -->` line binds your verdict to the exact head you judged: read
+the PR's current head SHA immediately before posting and write all 40 characters.
+The gate only honors a verdict whose `head:` equals the head it is about to
+approve, so a stale verdict from an earlier push can never vouch for newer commits.
 
 ## Agentic-check verdict (conductor)
 

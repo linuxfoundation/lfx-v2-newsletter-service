@@ -32,10 +32,12 @@ with the engineer on findings that go against the architecture, references
 `/newsletter-code-review` and `/newsletter-security-review`, and posts its
 agentic-check verdict in the format defined by `/agentic-comment-format`.
 
-## You act through the GitHub MCP server
+## The agent tasks act through the GitHub MCP server
 
-Whatever your role, publish your output yourself with the **`add_issue_comment`**
-tool, which posts a comment on the pull request. The conductor also has
+In the **escalation and conductor tasks** (sections 2 and 3 — not the code review,
+which publishes inline threads through its own native review pipeline), publish
+your output yourself with the **`add_issue_comment`** tool, which posts a comment
+on the pull request. The conductor also has
 **`add_reply_to_pull_request_comment`** to reply on a review thread (to explain why a
 thread is now resolved, or why it still blocks). Those are the only write tools
 configured for you; everything else in the GitHub MCP is read-only, on purpose. Do **not**
