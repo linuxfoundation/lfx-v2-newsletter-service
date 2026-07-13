@@ -110,7 +110,7 @@ jobs:
           # posts its agentic-check. pending (not failure) because it is not yet judged.
           gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
             -f state=pending -f context=agentic-review/clean \
-            -f description="conductor: awaiting first review" >/dev/null
+            -f description="conductor pr=#$PR: awaiting review round" >/dev/null
           echo "agentic-review/clean = pending (awaiting conductor)"
 
       - name: Request the native review for the current head

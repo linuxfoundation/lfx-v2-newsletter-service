@@ -90,21 +90,32 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT_PR: ${{ github.event.pull_request.number || github.event.issue.number }}
           EVENT_SHA: ${{ github.event.sha }}
+          EVENT_DESC: ${{ github.event.description }}
         run: |
           set -euo pipefail
           PR=""
           if [ -n "$EVENT_PR" ]; then
             PR="$EVENT_PR"
           elif [ -n "$EVENT_SHA" ]; then
-            # status event: map the commit to its single open PR, else fail closed.
-            PRS="$(gh api "repos/$REPO/commits/$EVENT_SHA/pulls" \
-                    --jq '.[] | select(.state=="open") | .number' 2>/dev/null || true)"
-            COUNT="$(printf '%s\n' "$PRS" | grep -c . || true)"
-            if [ "${COUNT:-0}" -ne 1 ]; then
-              echo "status maps to ${COUNT:-0} open PR(s); need exactly one. Not gating."
-              echo "found=false" >> "$GITHUB_OUTPUT"; exit 0
+            # status event: prefer the PR that apply stamped into the status
+            # description (pr=#N), verified open — this keeps the gate alive when
+            # one SHA backs several open PRs. Fall back to mapping the commit to
+            # its single open PR, else fail closed.
+            DESC_PR="$(printf '%s' "$EVENT_DESC" | sed -nE 's/.*pr=#([0-9]+):.*/\1/p')"
+            if [ -n "$DESC_PR" ]; then
+              STATE="$(gh api "repos/$REPO/pulls/$DESC_PR" --jq '.state' 2>/dev/null || true)"
+              [ "$STATE" = "open" ] && PR="$DESC_PR"
             fi
-            PR="$PRS"
+            if [ -z "$PR" ]; then
+              PRS="$(gh api "repos/$REPO/commits/$EVENT_SHA/pulls" \
+                      --jq '.[] | select(.state=="open") | .number' 2>/dev/null || true)"
+              COUNT="$(printf '%s\n' "$PRS" | grep -c . || true)"
+              if [ "${COUNT:-0}" -ne 1 ]; then
+                echo "status maps to ${COUNT:-0} open PR(s); need exactly one. Not gating."
+                echo "found=false" >> "$GITHUB_OUTPUT"; exit 0
+              fi
+              PR="$PRS"
+            fi
           fi
           if [ -z "$PR" ]; then echo "found=false" >> "$GITHUB_OUTPUT"; exit 0; fi
           HEAD="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"

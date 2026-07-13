@@ -17,11 +17,14 @@
 # KNOWN TRUST BOUNDARY: the MCP credential is configured repo-wide for the Copilot
 # coding agent, so ANY agent session on this repo (including one a write-access
 # user starts by assigning @copilot) posts through the same identity. A write-access
-# insider could therefore have an agent emit verdict-shaped comments. GitHub offers
-# no per-task MCP credentials today, so this is documented rather than closed:
-# forging is an insider-level act, fully auditable in the comment trail, the gate
-# never merges (a human review is still expected on every PR), and branch
-# protection can require additional human approvals independently of this system.
+# insider could therefore have an agent emit verdict-shaped comments, drive the
+# gate to a CODEOWNERS approval of their own PR, and merge it without independent
+# human review. GitHub offers no per-task MCP credentials today, so this is
+# documented rather than closed, and accepted for the pilot: it is an insider-level
+# act, fully auditable (the forged comments, the status, and the approval all name
+# the machine identity and stay on the PR), reversible, and repos where that trade
+# is unacceptable can require an additional human approval via branch protection
+# independently of this system. Per-task credential isolation is the platform ask.
 #
 # This runs on the agent's verdict comment. Because the agents post via the MCP
 # PAT, the comment — and therefore this run — is attributed to the PAT owner
@@ -46,9 +49,12 @@ name: Agentic Apply
 permissions:
   id-token: write
 
-concurrency:
-  group: agentic-apply-${{ github.event.issue.number }}
-  cancel-in-progress: false
+# Deliberately NO concurrency group: GitHub keeps at most ONE pending run per
+# group and a newer queued run replaces it, so a burst of trusted comments
+# (escalation verdict + announce + check verdict land close together) could
+# silently discard a verdict's run and leave the PR gated. Every comment gets
+# its own run instead; all writes are idempotent (sticky label, per-SHA status,
+# thread resolves) and each run acts only on its own triggering comment.
 
 jobs:
   apply:
@@ -167,14 +173,17 @@ jobs:
           # writer contract): if any listed thread is still blocking, a
           # `clean: true` flag is malformed — fail closed and publish failure,
           # never success. Reasons are stripped first so free text cannot match.
-          ROWS=$(printf '%s\n' "$BLOCK" | grep -E '^[[:space:]]*-[[:space:]]*id:' | sed -E 's/reason:.*//' || true)
+          ROWS_FULL=$(printf '%s\n' "$BLOCK" | grep -E '^[[:space:]]*-[[:space:]]*id:' || true)
+          ROWS=$(printf '%s\n' "$ROWS_FULL" | sed -E 's/reason:.*//' || true)
           BLOCKING_N=0; INVALID_N=0; UNKNOWN_N=0
-          if [ -n "$ROWS" ]; then
+          if [ -n "$ROWS_FULL" ]; then
             BLOCKING_N=$(printf '%s\n' "$ROWS" | grep -ciE 'status:[[:space:]]*(outstanding|rebutted-invalid)([[:space:],]|$)' || true)
-            # Schema check: every row must carry an ALLOWED status. A misspelled
-            # status (e.g. "outstandng") would otherwise slip past both the count
-            # above and the action loop below and let clean=true publish success.
-            INVALID_N=$(printf '%s\n' "$ROWS" | grep -vciE 'status:[[:space:]]*(fixed|obsolete|rebutted-valid|outstanding|rebutted-invalid)([[:space:],]|$)' || true)
+            # Schema check: every row must match the FULL documented shape from
+            # /agentic-comment-format — nonempty id, allowed status, allowed
+            # severity, nonempty reason, in that order. Anything else (a
+            # misspelled status, an empty id that would silently skip the
+            # membership loop) is malformed and forces the failure state.
+            INVALID_N=$(printf '%s\n' "$ROWS_FULL" | grep -vciE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*[^[:space:],]+,[[:space:]]*status:[[:space:]]*(fixed|obsolete|rebutted-valid|outstanding|rebutted-invalid),[[:space:]]*severity:[[:space:]]*(critical|high|should-fix|nit),[[:space:]]*reason:[[:space:]]*[^[:space:]]' || true)
             # Membership check: the agent's thread ids are untrusted too. Restrict
             # mutations to AI-AUTHORED threads of THIS PR (first comment author is
             # one of the AI reviewers), so a wrong or injected id can never touch
