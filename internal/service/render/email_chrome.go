@@ -229,6 +229,42 @@ func stripHTML(html string) string {
 	return strings.TrimSpace(out)
 }
 
+// preheaderMaxLen caps the hidden inbox-preview snippet. Gmail shows roughly
+// 90–110 characters after the subject and Apple Mail up to ~140, so 140 keeps
+// the snippet useful without shipping the whole body twice.
+const preheaderMaxLen = 140
+
+// previewText derives the inbox-preview snippet from the authored body: tags
+// stripped, whitespace collapsed to single spaces, truncated at a word
+// boundary. Empty when the body has no text content.
+func previewText(bodyHTML string) string {
+	text := strings.Join(strings.Fields(stripHTML(bodyHTML)), " ")
+	runes := []rune(text)
+	if len(runes) <= preheaderMaxLen {
+		return text
+	}
+	cut := string(runes[:preheaderMaxLen])
+	if idx := strings.LastIndex(cut, " "); idx > 0 {
+		cut = cut[:idx]
+	}
+	return cut + "…"
+}
+
+// renderPreheaderHTML emits the hidden div email clients read for the inbox
+// preview line. Without it, clients fall back to the first rendered text —
+// the header chrome, which just repeats the subject. The trailing
+// zero-width-joiner padding stops that chrome from bleeding into the preview
+// after a short snippet.
+func renderPreheaderHTML(bodyHTML string) string {
+	preview := previewText(bodyHTML)
+	if preview == "" {
+		return ""
+	}
+	return `<div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">` +
+		escapeHTML(preview) + strings.Repeat("&nbsp;&zwnj;", 30) + `</div>
+`
+}
+
 // renderComplianceFooterHTML emits the sender attribution + reply-to + UNSUBSCRIBE
 // block. Empty when input.IncludeComplianceFooter is false.
 func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
@@ -273,6 +309,7 @@ func EmailHTML(input Chrome) string {
 	displayNameSafe := escapeHTML(display)
 	styledBody := convertStandaloneCtas(inlineBodyStyles(input.BodyHTML))
 	complianceFooter := renderComplianceFooterHTML(input, displayNameSafe)
+	preheader := renderPreheaderHTML(input.BodyHTML)
 
 	logoCell := ""
 	if input.LogoURL != "" {
@@ -298,7 +335,7 @@ func EmailHTML(input Chrome) string {
 </style>
 </head>
 <body style="margin:0;padding:0;background-color:` + colorGray50 + `;font-family:` + fontStack + `;">
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:` + colorGray50 + `;padding:16px 8px;">
+` + preheader + `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:` + colorGray50 + `;padding:16px 8px;">
 <tr>
 <td align="center">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;max-width:680px;background-color:` + colorWhite + `;border:1px solid ` + colorGray200 + `;border-radius:8px;overflow:hidden;">
