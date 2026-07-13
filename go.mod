@@ -3,7 +3,7 @@
 
 module github.com/linuxfoundation/lfx-v2-newsletter-service
 
-go 1.25.11
+go 1.25.12
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.3.5
