@@ -434,8 +434,10 @@ jobs:
                     --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | .id" \
                     2>/dev/null | head -1 || true)"
             [ -n "$HAS" ] || continue
-            # One failed dispatch must not starve the rest of the loop.
-            if gh workflow run agentic-gate.yml --ref "${GITHUB_REF_NAME}" -f pr="$PR" 2>/dev/null; then
+            # One failed dispatch must not starve the rest of the loop. --repo is
+            # required: this job never checks out the repository, so gh has no
+            # git remote to infer it from.
+            if gh workflow run agentic-gate.yml --repo "$REPO" --ref "${GITHUB_REF_NAME}" -f pr="$PR" 2>/dev/null; then
               echo "dispatched gate for pr=#$PR" >> "$GITHUB_STEP_SUMMARY"
             else
               echo "::warning::could not dispatch gate for PR #$PR"
