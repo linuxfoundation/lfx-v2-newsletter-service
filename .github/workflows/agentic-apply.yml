@@ -126,7 +126,9 @@ jobs:
           # races in between the verdict and this run could mark a newer, unreviewed
           # head clean. If the SHA differs from the current head, the gate re-derives
           # from the current head (still pending) and fails closed — which is correct.
-          TARGET_SHA=$(printf '%s' "$BLOCK" | grep -iE '^[[:space:]]*head:[[:space:]]*[0-9a-f]{7,40}[[:space:]]*$' | head -1 | grep -oiE '[0-9a-f]{7,40}' | head -1)
+          # Exactly 40 hex chars: /agentic-comment-format requires the full SHA,
+          # so the parser rejects abbreviated (ambiguous) ones.
+          TARGET_SHA=$(printf '%s' "$BLOCK" | grep -iE '^[[:space:]]*head:[[:space:]]*[0-9a-f]{40}[[:space:]]*$' | head -1 | grep -oiE '[0-9a-f]{40}' | head -1)
           if [ -z "$TARGET_SHA" ]; then
             TARGET_SHA=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
             echo "::warning::agentic-check block carries no head:; falling back to current head $TARGET_SHA"
