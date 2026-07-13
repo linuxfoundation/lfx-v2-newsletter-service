@@ -81,6 +81,9 @@ Posted after each review round. A human summary first, then one fenced machine b
 | --- | --- | --- |
 | high | <short finding> | <what a real fix needs> |
 
+**Remaining tidiness:** <only when clean with unresolved nit threads: name them and
+say the gate approves once each is fixed, or answered with a reply and resolved>
+
 **Handled well:** <one line on what the change got right, when there is something>
 
 <!-- agentic:check v1 -->
@@ -105,6 +108,11 @@ Rules the deterministic step depends on, so be exact:
 - The **Blocking** table lists only the blocking rows and mirrors the block. When
   `clean: true` there are no blocking rows: drop the table and say plainly that it is
   clean.
+- **Never** emit an `outstanding` or `rebutted-invalid` row for a nit: the
+  deterministic step re-opens threads with those statuses, and a nit must stay
+  resolvable by the engineer (fix it, or reply and resolve). An unaddressed nit is
+  prose only — the **Remaining tidiness** line — because the gate withholds its
+  approving review while any thread is unresolved, even on a clean change.
 
 ## What the deterministic step reads
 

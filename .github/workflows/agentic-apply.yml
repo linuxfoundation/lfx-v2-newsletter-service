@@ -219,17 +219,17 @@ jobs:
             case "$st" in
               fixed|obsolete|rebutted-valid)
                 # shellcheck disable=SC2016  # $id is a GraphQL variable, not a shell expansion
-                if gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id="$tid" >/dev/null 2>&1; then
+                if OUT="$(gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id="$tid" 2>&1)"; then
                   echo "resolved $tid ($st)"
                 else
-                  echo "::warning::could not resolve thread $tid"
+                  echo "::warning::could not resolve thread $tid: $(printf '%s' "$OUT" | tr '\n' ' ')"
                 fi ;;
               outstanding|rebutted-invalid)
                 # shellcheck disable=SC2016  # $id is a GraphQL variable, not a shell expansion
-                if gh api graphql -f query='mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id="$tid" >/dev/null 2>&1; then
+                if OUT="$(gh api graphql -f query='mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id="$tid" 2>&1)"; then
                   echo "kept open $tid ($st)"
                 else
-                  echo "::warning::could not unresolve thread $tid"
+                  echo "::warning::could not unresolve thread $tid: $(printf '%s' "$OUT" | tr '\n' ' ')"
                 fi ;;
               *) : ;;
             esac

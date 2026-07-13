@@ -85,7 +85,15 @@ If none of those hold, it **blocks**:
 
 Reconcile **all** the reviewers' threads together in one pass (native Copilot review,
 pi): a blocking finding from any reviewer blocks the change. **Nits never block** and
-are never reopened.
+are never reopened — but they are not invisible either. Adjudicate every open nit
+thread with the same three questions: a nit that was genuinely addressed gets a
+`fixed` / `obsolete` / `rebutted-valid` row (so the deterministic step resolves its
+thread), and a nit that was not addressed gets **no row at all** — never `outstanding`
+or `rebutted-invalid`, because the deterministic step would hold its thread open and
+fight an engineer who chooses to resolve it with a comment instead of fixing it.
+Unaddressed nits belong in the human summary (see below): the gate withholds its
+approving review while any thread is unresolved, so the engineer must either fix
+each nit or reply on the thread and resolve it.
 
 `clean` is `true` if and only if there are **zero blocking AI threads** —
 `outstanding` and `rebutted-invalid` block; `fixed`, `obsolete`, `rebutted-valid`,
@@ -149,6 +157,11 @@ correct change that can merge.
 - **Keep the human summary actionable:** list what is still blocking, why, and the
   concrete next step for each, and note what the change handled well. This summary is
   how the engineer knows what to do to reach clean.
+- **When the change is clean but unresolved nit threads remain, say so explicitly:**
+  the review is clean and the PR is approve-eligible, but the gate holds the
+  approving review until every thread is resolved — each remaining nit must be
+  either fixed or answered with a reply and the thread resolved. List those threads
+  so the engineer knows exactly what stands between them and the approval.
 
 ## How you post
 
