@@ -28,8 +28,14 @@
 ---
 name: Agentic Conductor (reconcile)
 
+# pull_request_target, not pull_request: this job holds id-token: write and
+# fetches the lfx-reviewer PAT, so its definition must come from the DEFAULT
+# branch — a pull_request trigger would run the PR's modified copy of this file
+# with those privileges, letting a same-repo PR exfiltrate the credential.
+# pull_request_target is safe here because the job never checks out or executes
+# PR code; it only reads the GitHub API and starts an agent task.
 "on":
-  pull_request:
+  pull_request_target:
     types: [opened, reopened, synchronize]
 
 # id-token is what lets the job assume the AWS role via OIDC; everything the job
@@ -148,6 +154,15 @@ jobs:
       - name: Announce the round and fire the reconcile task (gpt-5.5)
         if: steps.cfg.outputs.present == 'true'
         run: |
+          # The branch may have moved between the poll and this step, and a task
+          # fired now would judge a head whose reviews were never awaited (the
+          # task survives this workflow's cancellation). Abort quietly: the
+          # synchronize run for the new head owns the next round.
+          NOW_HEAD="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')"
+          if [ "$NOW_HEAD" != "$HEAD_SHA" ]; then
+            echo "::notice::head moved ($HEAD_SHA -> $NOW_HEAD) after the poll; aborting this round"
+            exit 0
+          fi
           # Informational comment only — no bot mention. The task below does the work.
           gh api "repos/$REPO/issues/$PR/comments" \
             -f body="The LFX reviewer cloud agent is reconciling the AI-reviewer threads on this pull request against the latest commit and any developer replies." \
@@ -156,6 +171,6 @@ jobs:
             -H "X-GitHub-Api-Version: 2026-03-10" --method POST \
             -f model=gpt-5.5 -F create_pull_request=false \
             -f base_ref="$BASE_REF" -f head_ref="$HEAD_REF" \
-            -f prompt="Reconcile the AI-reviewer threads on pull request #$PR in $REPO against the latest commit and any developer replies, following the repository instructions exactly. Post your agentic-check verdict comment using the add_issue_comment tool." \
+            -f prompt="Reconcile the AI-reviewer threads on pull request #$PR in $REPO against head $HEAD_SHA and any developer replies, following the repository instructions exactly. Immediately before posting, re-read the PR head: if it no longer equals $HEAD_SHA, post nothing — a newer round owns the verdict. Post your agentic-check verdict comment (head: $HEAD_SHA) using the add_issue_comment tool." \
             --jq '.id')
           echo "reconcile task: $TID (agentic-apply reacts to its agentic-check comment)"

@@ -104,6 +104,13 @@ jobs:
              printf '%s' "$BODY" | grep -qiE '<!--[[:space:]]*needs-human:[[:space:]]*yes[[:space:]]*-->'; then
             present=$(gh api "repos/$REPO/issues/$PR/labels" --jq '[.[].name] | index("needs-human")')
             if [ "$present" = "null" ] || [ -z "$present" ]; then
+              # Bootstrap the repo label idempotently: a fresh repo has no
+              # needs-human label and the add-to-issue call does not create it.
+              gh api "repos/$REPO/labels/needs-human" >/dev/null 2>&1 || \
+                gh api --method POST "repos/$REPO/labels" \
+                  -f name=needs-human -f color=b60205 \
+                  -f description="A human must sign off before merge (agentic escalation)" \
+                  >/dev/null 2>&1 || true
               gh api --method POST "repos/$REPO/issues/$PR/labels" -f "labels[]=needs-human"
               echo "needs-human label set"
             else

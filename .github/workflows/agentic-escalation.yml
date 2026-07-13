@@ -22,8 +22,14 @@
 ---
 name: Agentic Escalation
 
+# pull_request_target, not pull_request: this job holds id-token: write and
+# fetches the lfx-reviewer PAT, so its definition must come from the DEFAULT
+# branch — a pull_request trigger would run the PR's modified copy of this file
+# with those privileges, letting a same-repo PR exfiltrate the credential.
+# pull_request_target is safe here because the job never checks out or executes
+# PR code; it only reads the GitHub API and starts an agent task.
 "on":
-  pull_request:
+  pull_request_target:
     types: [opened, reopened, synchronize]
 
 # id-token is what lets the job assume the AWS role via OIDC; everything the job

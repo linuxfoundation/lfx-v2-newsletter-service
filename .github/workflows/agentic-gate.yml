@@ -31,9 +31,15 @@
 ---
 name: Agentic Gate
 
+# pull_request_target, not pull_request, for the label events: this job holds
+# id-token: write and fetches the lfx-reviewer PAT, so its definition must come
+# from the DEFAULT branch — a pull_request trigger would run the PR's modified
+# copy of this file with those privileges. Safe here because the job never
+# checks out or executes PR code. (status events always run the default-branch
+# definition already.)
 "on":
   status: {}
-  pull_request:
+  pull_request_target:
     types: [labeled, unlabeled]
 
 concurrency:
@@ -58,7 +64,7 @@ jobs:
     if: >-
       (github.event_name != 'status' ||
        github.event.context == 'agentic-review/clean') &&
-      (github.event_name != 'pull_request' ||
+      (github.event_name != 'pull_request_target' ||
        github.event.label.name == 'needs-human')
     runs-on: ubuntu-latest
     steps:
@@ -109,20 +115,38 @@ jobs:
                     2>/dev/null | head -1 || true)"
           NEEDS_HUMAN="$(gh pr view "$PR" --repo "$REPO" --json labels \
                           --jq 'any(.labels[].name; . == "needs-human")')"
-          # An escalation verdict must EXIST FOR THIS HEAD before approval: label
-          # absence only means "no" once the judge has actually posted about the
-          # commits being approved. The verdict carries a `head:` marker (see
-          # /agentic-comment-format), so a stale verdict from an earlier push can
-          # never vouch for newer commits, and a slow or dead escalation task
-          # fails closed. Paginate and count lines (--paginate applies --jq per page).
-          ESC_N="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"<!-- agentic:needs-human v1 -->\")) and (.body | contains(\"<!-- head: $HEAD -->\"))) | .id" \
-            2>/dev/null | grep -c . || true)"
-          echo "clean=$CLEAN needs-human=$NEEDS_HUMAN escalation-verdicts=$ESC_N (head $HEAD)" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${ESC_N:-0}" -eq 0 ]; then
-            echo "No escalation verdict posted yet; the needs-human question is unanswered." >> "$GITHUB_STEP_SUMMARY"
+          # The escalation verdict for THIS head must exist AND its content
+          # decides: label absence is not a completed "no", because the apply run
+          # that sets the label may not have fired yet when the clean status
+          # lands. A per-head "yes" verdict withholds until a HUMAN removes the
+          # needs-human label AFTER that verdict (the unlabeled event is the
+          # sanctioned override; lfx-reviewer never removes labels). The verdict
+          # carries a `head:` marker (see /agentic-comment-format), so a stale
+          # verdict from an earlier push never vouches for newer commits.
+          # Emit per-page lines (--paginate applies --jq per page) and reduce in
+          # the shell: latest verdict for this head = last line after sort.
+          V="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"<!-- agentic:needs-human v1 -->\")) and (.body | contains(\"<!-- head: $HEAD -->\"))) | [.created_at, (if (.body | contains(\"<!-- needs-human: yes -->\")) then \"yes\" else \"no\" end)] | @tsv" \
+            2>/dev/null | sort | tail -1 || true)"
+          ESC_OK=false
+          if [ -n "$V" ]; then
+            V_TS="${V%%	*}"; V_VAL="${V##*	}"
+            if [ "$V_VAL" = "no" ]; then
+              ESC_OK=true
+            else
+              LAST_UNLABEL="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
+                --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human" and .actor.login!="lfx-reviewer") | .created_at' \
+                2>/dev/null | sort | tail -1 || true)"
+              if [ -n "$LAST_UNLABEL" ] && [ "$LAST_UNLABEL" \> "$V_TS" ]; then
+                ESC_OK=true
+              fi
+            fi
           fi
-          if [ "$CLEAN" = "success" ] && [ "$NEEDS_HUMAN" != "true" ] && [ "${ESC_N:-0}" -gt 0 ]; then
+          echo "clean=$CLEAN needs-human=$NEEDS_HUMAN escalation=${V:-none} esc_ok=$ESC_OK (head $HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ESC_OK" != "true" ]; then
+            echo "Escalation verdict for this head is missing, or says yes without a later human override." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$CLEAN" = "success" ] && [ "$NEEDS_HUMAN" != "true" ] && [ "$ESC_OK" = "true" ]; then
             echo "approve=true" >> "$GITHUB_OUTPUT"
           else
             echo "approve=false" >> "$GITHUB_OUTPUT"
@@ -179,6 +203,19 @@ jobs:
             # keys, so a regression run may have dismissed while this run was
             # queued behind its evaluation. Any change since evaluation aborts
             # (fail closed) — the signal that changed things re-derives on its own.
+            esc_ok() {
+              # Same rule as Evaluate gate: latest per-head trusted verdict must
+              # say no, or say yes with a later human needs-human unlabel.
+              V="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"<!-- agentic:needs-human v1 -->\")) and (.body | contains(\"<!-- head: $HEAD -->\"))) | [.created_at, (if (.body | contains(\"<!-- needs-human: yes -->\")) then \"yes\" else \"no\" end)] | @tsv" \
+                2>/dev/null | sort | tail -1 || true)"
+              [ -n "$V" ] || return 1
+              [ "${V##*	}" = "no" ] && return 0
+              LAST_UNLABEL="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
+                --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human" and .actor.login!="lfx-reviewer") | .created_at' \
+                2>/dev/null | sort | tail -1 || true)"
+              [ -n "$LAST_UNLABEL" ] && [ "$LAST_UNLABEL" \> "${V%%	*}" ]
+            }
             recheck() {
               NOW_HEAD="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
               NOW_CLEAN="$(gh api "repos/$REPO/commits/$HEAD/status" \
@@ -186,10 +223,7 @@ jobs:
                 2>/dev/null | head -1 || true)"
               NOW_LABEL="$(gh pr view "$PR" --repo "$REPO" --json labels \
                 --jq 'any(.labels[].name; . == "needs-human")')"
-              NOW_ESC="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"<!-- agentic:needs-human v1 -->\")) and (.body | contains(\"<!-- head: $HEAD -->\"))) | .id" \
-                2>/dev/null | grep -c . || true)"
-              [ "$NOW_HEAD" = "$HEAD" ] && [ "$NOW_CLEAN" = "success" ] && [ "$NOW_LABEL" != "true" ] && [ "${NOW_ESC:-0}" -gt 0 ]
+              [ "$NOW_HEAD" = "$HEAD" ] && [ "$NOW_CLEAN" = "success" ] && [ "$NOW_LABEL" != "true" ] && esc_ok
             }
             if ! recheck; then
               echo "Gate inputs changed since evaluation (head=$NOW_HEAD clean=$NOW_CLEAN needs-human=$NOW_LABEL); not approving." >> "$GITHUB_STEP_SUMMARY"
