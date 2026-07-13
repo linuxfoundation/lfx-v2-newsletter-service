@@ -20,7 +20,7 @@ The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It ow
 - **Persistence** of project-scoped newsletter drafts and send history in PostgreSQL (CloudNativePG-backed).
 - **Recipient resolution** via NATS request/reply to committee-service (`lfx.committee-api.list_members`).
 - **Email dispatch**: the send orchestrator mints the email-service `group_id`, renders email chrome, and fans out per-recipient sends to `lfx-v2-email-service` over NATS (`lfx.email-service.send_email`).
-- **State transitions** for drafts (draft → sending → sent; the send is accepted asynchronously, a draft is marked sent only when at least one recipient was delivered to, and it reverts to draft if none could be).
+- **State transitions** for drafts (draft → sending → sent; the send is accepted asynchronously, settles to sent once at least one recipient was delivered to, and a fully failed fan-out reverts to draft; the zero-recipient edge case settles synchronously as sent).
 - **Unsubscribe**: per-recipient HMAC-signed, project-scoped opt-out links served at `GET /newsletters/unsubscribe`.
 
 > AI content generation does not live in this service; it does not proxy AI calls.

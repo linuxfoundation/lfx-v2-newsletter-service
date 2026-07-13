@@ -73,8 +73,9 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		return fmt.Errorf("schema apply: %w", err)
 	}
 
-	// Step 3: NATS — used by the email dispatcher, committee client, and
-	// project metadata client. No upstream HTTP service-to-service calls
+	// Step 3: NATS — used by the email dispatcher, committee client, project
+	// metadata client, and auth-service user-metadata client. No upstream
+	// HTTP service-to-service calls
 	// remain (the prior HTTP committee query client used to forward the user
 	// bearer token, but Heimdall mints a JWT the query-service can't validate,
 	// so that path returned empty results in practice).
