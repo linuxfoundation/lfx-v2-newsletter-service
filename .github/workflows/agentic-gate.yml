@@ -41,9 +41,14 @@ name: Agentic Gate
   status: {}
   pull_request_target:
     types: [labeled, unlabeled]
+  # Trusted needs-human verdict comments also gate: a "no" verdict produces no
+  # label and no status write, so without this trigger a PR whose clean status
+  # landed before the verdict would stay unapproved until some unrelated event.
+  issue_comment:
+    types: [created]
 
 concurrency:
-  group: gate-${{ github.event.pull_request.number || github.event.sha || github.run_id }}
+  group: gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.sha || github.run_id }}
   cancel-in-progress: true
 
 # Least privilege for GITHUB_TOKEN: this workflow only READS with it (PR, labels,
@@ -66,7 +71,11 @@ jobs:
       (github.event_name != 'status' ||
        github.event.context == 'agentic-review/clean') &&
       (github.event_name != 'pull_request_target' ||
-       github.event.label.name == 'needs-human')
+       github.event.label.name == 'needs-human') &&
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.pull_request != null &&
+        github.event.comment.user.login == 'lfx-reviewer' &&
+        contains(github.event.comment.body, 'agentic:needs-human')))
     runs-on: ubuntu-latest
     steps:
       - uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
@@ -79,7 +88,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          EVENT_PR: ${{ github.event.pull_request.number }}
+          EVENT_PR: ${{ github.event.pull_request.number || github.event.issue.number }}
           EVENT_SHA: ${{ github.event.sha }}
         run: |
           set -euo pipefail
@@ -111,8 +120,12 @@ jobs:
           HEAD: ${{ steps.pr.outputs.head }}
         run: |
           set -euo pipefail
+          # The status must be bound to THIS PR, not just this SHA: one head SHA
+          # can back multiple open PRs (same branch, two bases), and PR A's clean
+          # must never approve PR B. apply stamps the PR number into the status
+          # description; require it here.
           CLEAN="$(gh api "repos/$REPO/commits/$HEAD/status" \
-                    --jq '.statuses[] | select(.context=="agentic-review/clean") | .state' \
+                    --jq ".statuses[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | .state" \
                     2>/dev/null | head -1 || true)"
           NEEDS_HUMAN="$(gh pr view "$PR" --repo "$REPO" --json labels \
                           --jq 'any(.labels[].name; . == "needs-human")')"
@@ -126,15 +139,18 @@ jobs:
           # verdict from an earlier push never vouches for newer commits.
           # Emit per-page lines (--paginate applies --jq per page) and reduce in
           # the shell: latest verdict for this head = last line after sort.
+          # Exactly one valid yes/no marker, or the verdict is malformed and
+          # withholds: a truncated agent response with the format/head markers
+          # but no explicit "no" must never read as a completed "no".
           V="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"<!-- agentic:needs-human v1 -->\")) and (.body | contains(\"<!-- head: $HEAD -->\"))) | [.created_at, (if (.body | contains(\"<!-- needs-human: yes -->\")) then \"yes\" else \"no\" end)] | @tsv" \
+            --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"<!-- agentic:needs-human v1 -->\")) and (.body | contains(\"<!-- head: $HEAD -->\"))) | [.created_at, (if ((.body | contains(\"<!-- needs-human: yes -->\")) and (.body | contains(\"<!-- needs-human: no -->\"))) then \"malformed\" elif (.body | contains(\"<!-- needs-human: yes -->\")) then \"yes\" elif (.body | contains(\"<!-- needs-human: no -->\")) then \"no\" else \"malformed\" end)] | @tsv" \
             2>/dev/null | sort | tail -1 || true)"
           ESC_OK=false
           if [ -n "$V" ]; then
             V_TS="${V%%	*}"; V_VAL="${V##*	}"
             if [ "$V_VAL" = "no" ]; then
               ESC_OK=true
-            else
+            elif [ "$V_VAL" = "yes" ]; then
               LAST_UNLABEL="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
                 --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human" and .actor.login!="lfx-reviewer") | .created_at' \
                 2>/dev/null | sort | tail -1 || true)"
@@ -206,12 +222,15 @@ jobs:
             # (fail closed) — the signal that changed things re-derives on its own.
             esc_ok() {
               # Same rule as Evaluate gate: latest per-head trusted verdict must
-              # say no, or say yes with a later human needs-human unlabel.
+              # be an explicit "no", or an explicit "yes" with a later human
+              # needs-human unlabel. A malformed verdict (no single valid marker)
+              # withholds.
               V="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"<!-- agentic:needs-human v1 -->\")) and (.body | contains(\"<!-- head: $HEAD -->\"))) | [.created_at, (if (.body | contains(\"<!-- needs-human: yes -->\")) then \"yes\" else \"no\" end)] | @tsv" \
+                --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"<!-- agentic:needs-human v1 -->\")) and (.body | contains(\"<!-- head: $HEAD -->\"))) | [.created_at, (if ((.body | contains(\"<!-- needs-human: yes -->\")) and (.body | contains(\"<!-- needs-human: no -->\"))) then \"malformed\" elif (.body | contains(\"<!-- needs-human: yes -->\")) then \"yes\" elif (.body | contains(\"<!-- needs-human: no -->\")) then \"no\" else \"malformed\" end)] | @tsv" \
                 2>/dev/null | sort | tail -1 || true)"
               [ -n "$V" ] || return 1
               [ "${V##*	}" = "no" ] && return 0
+              [ "${V##*	}" = "yes" ] || return 1
               LAST_UNLABEL="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
                 --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human" and .actor.login!="lfx-reviewer") | .created_at' \
                 2>/dev/null | sort | tail -1 || true)"
@@ -220,7 +239,7 @@ jobs:
             recheck() {
               NOW_HEAD="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
               NOW_CLEAN="$(gh api "repos/$REPO/commits/$HEAD/status" \
-                --jq '.statuses[] | select(.context=="agentic-review/clean") | .state' \
+                --jq ".statuses[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | .state" \
                 2>/dev/null | head -1 || true)"
               NOW_LABEL="$(gh pr view "$PR" --repo "$REPO" --json labels \
                 --jq 'any(.labels[].name; . == "needs-human")')"

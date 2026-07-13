@@ -11,9 +11,17 @@
 # TRUST IDENTITY: the agents post via the writable GitHub MCP, which authenticates
 # with the COPILOT_MCP_GITHUB_PERSONAL_ACCESS_TOKEN, so their comments are authored
 # by that PAT's OWNER (not copilot-swe-agent). That PAT belongs to the dedicated
-# lfx-reviewer machine account, which no developer controls, so a verdict comment
-# carrying lfx-reviewer's identity is unforgeable: a developer cannot post as
-# lfx-reviewer, so cannot fake a needs-human verdict or an agentic-check.
+# lfx-reviewer machine account, which no developer controls, so a developer cannot
+# post a verdict comment directly.
+#
+# KNOWN TRUST BOUNDARY: the MCP credential is configured repo-wide for the Copilot
+# coding agent, so ANY agent session on this repo (including one a write-access
+# user starts by assigning @copilot) posts through the same identity. A write-access
+# insider could therefore have an agent emit verdict-shaped comments. GitHub offers
+# no per-task MCP credentials today, so this is documented rather than closed:
+# forging is an insider-level act, fully auditable in the comment trail, the gate
+# never merges (a human review is still expected on every PR), and branch
+# protection can require additional human approvals independently of this system.
 #
 # This runs on the agent's verdict comment. Because the agents post via the MCP
 # PAT, the comment — and therefore this run — is attributed to the PAT owner
@@ -168,13 +176,14 @@ jobs:
             # above and the action loop below and let clean=true publish success.
             INVALID_N=$(printf '%s\n' "$ROWS" | grep -vciE 'status:[[:space:]]*(fixed|obsolete|rebutted-valid|outstanding|rebutted-invalid)([[:space:],]|$)' || true)
             # Membership check: the agent's thread ids are untrusted too. Restrict
-            # mutations to threads of THIS PR, so a wrong id can never resolve or
-            # re-open a thread on another PR. Paginated, so a PR with more than one
-            # page of threads never misclassifies later-page ids as foreign.
+            # mutations to AI-AUTHORED threads of THIS PR (first comment author is
+            # one of the AI reviewers), so a wrong or injected id can never touch
+            # a human's thread or another PR's. Paginated, so a PR with more than
+            # one page of threads never misclassifies later-page ids as foreign.
             # shellcheck disable=SC2016  # $o/$r/$n/$endCursor are GraphQL variables, not shell expansions
-            PR_TIDS=$(gh api graphql --paginate -f query='query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor}nodes{id}}}}}' \
+            PR_TIDS=$(gh api graphql --paginate -f query='query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor}nodes{id comments(first:1){nodes{author{login}}}}}}}}' \
               -f o="${REPO%%/*}" -f r="${REPO##*/}" -F n="$PR" \
-              --jq '.data.repository.pullRequest.reviewThreads.nodes[].id')
+              --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select((.comments.nodes[0].author.login // "") | test("^(copilot(-pull-request-reviewer)?|github-actions)$"; "i")) | .id')
             for tid in $(printf '%s\n' "$ROWS" | sed -nE 's/.*id:[[:space:]]*([^[:space:],]+).*/\1/p'); do
               printf '%s\n' "$PR_TIDS" | grep -qxF "$tid" || { echo "::warning::thread $tid does not belong to PR #$PR"; UNKNOWN_N=$((UNKNOWN_N+1)); }
             done
@@ -219,7 +228,10 @@ jobs:
 
           STATE=failure
           [ "$CLEAN" = "true" ] && STATE=success
+          # The description carries the PR number: statuses are SHA-scoped, and
+          # one head SHA can back multiple open PRs, so the gate only honors a
+          # clean status stamped for the PR it is evaluating.
           gh api --method POST "repos/$REPO/statuses/$TARGET_SHA" \
             -f state="$STATE" -f context=agentic-review/clean \
-            -f description="conductor: clean=$CLEAN"
-          echo "agentic-review/clean = $STATE on $TARGET_SHA"
+            -f description="conductor pr=#$PR: clean=$CLEAN"
+          echo "agentic-review/clean = $STATE on $TARGET_SHA (pr=#$PR)"

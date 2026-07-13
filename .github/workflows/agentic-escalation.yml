@@ -43,6 +43,11 @@ concurrency:
 
 jobs:
   escalate:
+    # Same-repo PRs only: pull_request_target CAN mint an id-token for fork PRs
+    # (it runs in the base-repo context), and a fork's branch name is not a valid
+    # head_ref in this repository — so forks are skipped explicitly, not assumed
+    # to fail soft.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     env:
       REPO: ${{ github.repository }}
@@ -55,9 +60,9 @@ jobs:
           egress-policy: audit
           disable-sudo: true
 
-      # Fail soft: until the OIDC role trust covers this repo (and on fork PRs,
-      # which get no id-token), these steps error and the guard below skips the
-      # job green, so the setup can merge before the wiring exists.
+      # Fail soft: until the OIDC role trust covers this repo, these steps error
+      # and the guard below skips the job green, so the setup can merge before
+      # the wiring exists.
       - name: Configure AWS credentials
         continue-on-error: true
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
