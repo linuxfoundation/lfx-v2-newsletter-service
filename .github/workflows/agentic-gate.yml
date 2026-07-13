@@ -66,8 +66,13 @@ name: Agentic Gate
   schedule:
     - cron: "*/10 * * * *"
 
+# Status events carry no PR number, but the description apply/sweep stamp does
+# (pr=#N) — folding it into the key keeps evaluations for different PRs on the
+# SAME head SHA in different groups, so a sweep re-stamping several PRs cannot
+# cancel all but the last one. Schedule events collapse to a constant key,
+# which just serializes overlapping sweeps.
 concurrency:
-  group: gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.sha || github.run_id }}
+  group: gate-${{ github.event.pull_request.number || github.event.issue.number || format('{0}-{1}', github.event.sha, github.event.description) }}
   cancel-in-progress: true
 
 # Least privilege for GITHUB_TOKEN: this workflow only READS with it (PR, labels,
@@ -154,10 +159,14 @@ jobs:
           # The status must be bound to THIS PR, not just this SHA: one head SHA
           # can back multiple open PRs (same branch, two bases), and PR A's clean
           # must never approve PR B. apply stamps the PR number into the status
-          # description; require it here.
-          CLEAN="$(gh api "repos/$REPO/commits/$HEAD/status" \
-                    --jq ".statuses[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | .state" \
-                    2>/dev/null | head -1 || true)"
+          # description; require it here. Read the FULL status history (plural
+          # endpoint), not the combined status: the combined payload keeps only
+          # the newest status per context, so with a shared context another PR's
+          # later stamp on the same SHA would hide this PR's verdict entirely.
+          # Newest stamp for THIS PR wins.
+          CLEAN="$(gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
+                    --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [.created_at, .state] | @tsv" \
+                    2>/dev/null | sort | tail -1 | cut -f2 || true)"
           NEEDS_HUMAN="$(gh pr view "$PR" --repo "$REPO" --json labels \
                           --jq 'any(.labels[].name; . == "needs-human")')"
           # The escalation verdict for THIS head must exist AND its content
@@ -305,9 +314,10 @@ jobs:
             }
             recheck() {
               NOW_HEAD="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
-              NOW_CLEAN="$(gh api "repos/$REPO/commits/$HEAD/status" \
-                --jq ".statuses[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | .state" \
-                2>/dev/null | head -1 || true)"
+              # Full status history, newest stamp for THIS PR — see Evaluate gate.
+              NOW_CLEAN="$(gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
+                --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [.created_at, .state] | @tsv" \
+                2>/dev/null | sort | tail -1 | cut -f2 || true)"
               NOW_LABEL="$(gh pr view "$PR" --repo "$REPO" --json labels \
                 --jq 'any(.labels[].name; . == "needs-human")')"
               [ "$NOW_HEAD" = "$HEAD" ] && [ "$NOW_CLEAN" = "success" ] && [ "$NOW_LABEL" != "true" ] && esc_ok && threads_ok
@@ -406,14 +416,16 @@ jobs:
           fi
           for PR in $(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --jq '.[].number'); do
             HEAD="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')"
-            # Latest pr-bound conductor status on the current head, if any. The
-            # combined-status endpoint returns the newest status per context, so
-            # this re-stamps the live verdict, never a superseded one.
-            S="$(gh api "repos/$REPO/commits/$HEAD/status" \
-                  --jq ".statuses[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [.state, .description] | @tsv" \
-                  2>/dev/null | head -1 || true)"
+            # Latest pr-bound conductor status on the current head, if any. Read
+            # the FULL status history: the combined endpoint keeps only the
+            # newest status per context, so with a shared context a sibling PR's
+            # later stamp on the same SHA would hide this PR's verdict and the
+            # sweep would silently skip it. Newest stamp for THIS PR wins.
+            S="$(gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
+                  --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [.created_at, .state, .description] | @tsv" \
+                  2>/dev/null | sort | tail -1 || true)"
             [ -n "$S" ] || continue
-            STATE="${S%%	*}"; DESC="${S##*	}"
+            STATE="$(printf '%s' "$S" | cut -f2)"; DESC="$(printf '%s' "$S" | cut -f3)"
             gh api --method POST "repos/$REPO/statuses/$HEAD" \
               -f state="$STATE" -f context=agentic-review/clean -f description="$DESC" >/dev/null
             echo "re-stamped pr=#$PR head=$HEAD state=$STATE" >> "$GITHUB_STEP_SUMMARY"

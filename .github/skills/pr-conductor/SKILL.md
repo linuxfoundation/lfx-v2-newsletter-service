@@ -112,8 +112,10 @@ state, so no one clears the gate by resolving a thread.
 
 Your new block lists **every thread you adjudicated this round, one row each,
 whatever its status** — `fixed`, `obsolete`, `rebutted-valid`, `outstanding`, or
-`rebutted-invalid`. The deterministic step acts on all of them: it resolves the
-cleared rows and re-opens the blocking ones, so a cleared thread whose row you
+`rebutted-invalid` — with **exactly one exception: an unaddressed nit gets no row**
+(see the nit rule above; a row would make the deterministic step hold its thread
+open against the engineer). The deterministic step acts on all rows: it resolves
+the cleared ones and re-opens the blocking ones, so a cleared thread whose row you
 omit stays open forever. That means:
 
 - every carried-forward issue appears again with its newly judged status
@@ -157,11 +159,14 @@ correct change that can merge.
 - **Keep the human summary actionable:** list what is still blocking, why, and the
   concrete next step for each, and note what the change handled well. This summary is
   how the engineer knows what to do to reach clean.
-- **When the change is clean but unresolved nit threads remain, say so explicitly:**
-  the review is clean and the PR is approve-eligible, but the gate holds the
-  approving review until every thread is resolved — each remaining nit must be
-  either fixed or answered with a reply and the thread resolved. List those threads
-  so the engineer knows exactly what stands between them and the approval.
+- **When the change is clean but any thread fails the gate's tidiness rule, say so
+  explicitly.** The gate holds the approving review until **every** thread on the PR
+  — AI-authored or human — is resolved AND carries at least one reply beyond the
+  finding. So list every thread that is still unresolved (nits included) and every
+  thread that was resolved silently without a reply, and state the way out: fix it,
+  or answer it with a reply and resolve it (for a silently-resolved thread, add the
+  missing reply). This list is exactly what stands between the engineer and the
+  approval.
 
 ## How you post
 
@@ -171,8 +176,9 @@ format defined in `/agentic-comment-format` for the agentic-check verdict: a hum
 summary of the blocking issues (what remains, why, the next step, and what the change
 handled well) followed by the fenced `<!-- agentic:check v1 -->` block that carries
 `head:` (the full SHA of the commit you judged), `clean:`, and one `- id:` line per
-thread you adjudicated. Only a block in a comment authored by you (the lfx-reviewer
-machine account) is trusted.
+thread you adjudicated — except unaddressed nits, which get prose in the summary and
+no row. Only a block in a comment authored by you (the lfx-reviewer machine account)
+is trusted.
 
 Per-thread replies to the engineer are separate short comments on those threads (via
 `add_reply_to_pull_request_comment`); your **one** issue comment carries the block and

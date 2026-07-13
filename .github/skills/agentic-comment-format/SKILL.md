@@ -81,8 +81,10 @@ Posted after each review round. A human summary first, then one fenced machine b
 | --- | --- | --- |
 | high | <short finding> | <what a real fix needs> |
 
-**Remaining tidiness:** <only when clean with unresolved nit threads: name them and
-say the gate approves once each is fixed, or answered with a reply and resolved>
+**Remaining tidiness:** <only when clean but a thread fails the gate's tidiness
+rule: name every unresolved thread (nits and human threads included) and every
+thread resolved silently without a reply, and say the gate approves once each is
+fixed, or answered with a reply and resolved>
 
 **Handled well:** <one line on what the change got right, when there is something>
 
@@ -104,7 +106,8 @@ Rules the deterministic step depends on, so be exact:
 - One `- id:` line per thread you adjudicated, its four fields comma-separated —
   `id`, `status`, `severity`, then a one-sentence `reason` — in that order, all on
   the one line. The commas keep the fields scannable for both the engineer and the
-  parser.
+  parser. **Exception:** an unaddressed nit gets no row at all (see below); the
+  per-thread completeness rule applies to every other adjudicated thread.
 - The **Blocking** table lists only the blocking rows and mirrors the block. When
   `clean: true` there are no blocking rows: drop the table and say plainly that it is
   clean.
@@ -112,7 +115,10 @@ Rules the deterministic step depends on, so be exact:
   deterministic step re-opens threads with those statuses, and a nit must stay
   resolvable by the engineer (fix it, or reply and resolve). An unaddressed nit is
   prose only — the **Remaining tidiness** line — because the gate withholds its
-  approving review while any thread is unresolved, even on a clean change.
+  approving review while any thread is unresolved or resolved without a reply,
+  even on a clean change. This is the one exception to the one-row-per-adjudicated-
+  thread rule above; an addressed nit (`fixed`/`obsolete`/`rebutted-valid`) still
+  gets its row so its thread is resolved.
 
 ## What the deterministic step reads
 
