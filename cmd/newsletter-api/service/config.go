@@ -29,7 +29,8 @@ type AppConfig struct {
 	DatabaseURL string
 
 	// NATS (required) — single connection used by the email dispatcher,
-	// committee member client, and project metadata client.
+	// committee member client, project metadata client, and auth-service
+	// user-metadata client.
 	NATSURL           string
 	NATSTimeout       time.Duration
 	NATSMaxReconnect  int

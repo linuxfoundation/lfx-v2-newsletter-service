@@ -61,7 +61,8 @@ spec:
             - name: LOG_LEVEL
               value: {{ .Values.app.logLevel | quote }}
             # NATS — used by the email dispatcher, committee member client,
-            # and project metadata client. Newsletter-service makes no HTTP
+            # project metadata client, and auth-service user-metadata
+            # client. Newsletter-service makes no HTTP
             # upstream calls (the previous COMMITTEE_SERVICE_URL was retired
             # along with the HTTP committee_client because Heimdall-minted
             # JWTs failed OIDC validation at query-service).

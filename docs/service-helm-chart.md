@@ -31,7 +31,7 @@ Important templates:
 | --- | --- | --- |
 | `service.port` | `PORT` | HTTP listen port. |
 | `app.logLevel` | `LOG_LEVEL` | `debug`, `info`, `warn`, or `error`. |
-| `app.nats.url` | `NATS_URL` | Single NATS connection used by the email dispatcher, committee member client, and project metadata client. |
+| `app.nats.url` | `NATS_URL` | Single NATS connection used by the email dispatcher, committee member client, project metadata client, and auth-service user-metadata client. |
 | `app.nats.timeout` / `maxReconnect` / `reconnectWait` | `NATS_TIMEOUT` / `NATS_MAX_RECONNECT` / `NATS_RECONNECT_WAIT` | Empty falls back to app defaults (10s / unlimited / 2s). |
 | `app.send.fanoutEnabled` | `SEND_FANOUT_ENABLED` | Toggles real email dispatch; false validates and resolves recipients without sending. |
 | `app.send.concurrency` | `SEND_CONCURRENCY` | Caps in-flight email-service requests during fan-out (default 5). |

@@ -56,9 +56,10 @@ app:
   logLevel: info
 
   # nats is the NATS connection used by the email dispatcher, committee
-  # member client, and project metadata client. Newsletter-service makes no
-  # HTTP upstream calls — recipient resolution, project metadata lookup, and
-  # email send are all NATS request/reply.
+  # member client, project metadata client, and auth-service user-metadata
+  # client. Newsletter-service makes no HTTP upstream calls — recipient
+  # resolution, project metadata lookup, user-metadata lookup, and email
+  # send are all NATS request/reply.
   nats:
     url: "nats://lfx-platform-nats.lfx.svc.cluster.local:4222"
     # timeout / maxReconnect / reconnectWait fall back to the app defaults
