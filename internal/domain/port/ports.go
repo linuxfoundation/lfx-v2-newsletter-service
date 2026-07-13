@@ -17,11 +17,13 @@ import (
 
 // ListFilters narrows a newsletter listing query.
 //
-// Status is optional: if empty, both drafts and sent newsletters are returned.
+// Statuses is optional: if empty, newsletters in every state are returned.
+// Multiple values match any of them (the service layer maps the public
+// 'sent' filter to [sent, sending] so in-flight sends appear on the Sent tab).
 // PageToken is the opaque cursor returned in the previous page's response.
 type ListFilters struct {
 	ProjectUID string
-	Status     model.Status
+	Statuses   []model.Status
 	PageToken  string
 	Limit      int
 }
@@ -44,7 +46,33 @@ type NewsletterRepository interface {
 	ListAll(ctx context.Context, filters ListFilters) (*ListPage, error)
 	Update(ctx context.Context, n *model.Newsletter, expectedVersion int64) (*model.Newsletter, error)
 	Delete(ctx context.Context, id uuid.UUID) error
-	MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, totalRecipients int, groupID string, expectedVersion int64) (*model.Newsletter, error)
+
+	// MarkSending atomically transitions draft → sending, persisting the
+	// email-service group_id and the resolved audience size. The single
+	// optimistically-locked UPDATE (gated on id, expectedVersion, and
+	// status='draft') is the duplicate-send guard across replicas: a zero-row
+	// result is classified as domain.ErrNotFound, domain.ErrAlreadySent,
+	// domain.ErrSendInProgress, or domain.ErrVersionMismatch.
+	MarkSending(ctx context.Context, id uuid.UUID, groupID string, totalRecipients int, expectedVersion int64) (*model.Newsletter, error)
+	// MarkSent transitions sending → sent, gated on the version returned by
+	// MarkSending. group_id and total_recipients were already persisted at the
+	// sending transition.
+	MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, expectedVersion int64) (*model.Newsletter, error)
+	// RevertSending returns a sending newsletter to draft after a total
+	// fan-out failure (zero recipients delivered) so the operator can retry.
+	RevertSending(ctx context.Context, id uuid.UUID) error
+	// RecoverStuckSending marks sending rows older than the given age as sent.
+	// Crash recovery: a pod dying mid-fan-out leaves status='sending' forever;
+	// after the TTL an unknown number of emails may already have gone out, so
+	// re-arming Send would guarantee duplicates — marking sent at worst
+	// under-reports a remainder that analytics (via group_id) makes visible.
+	// Known sub-case where sent-over-draft over-reports instead: a total
+	// fan-out failure whose RevertSending write also failed (double fault)
+	// leaves a zero-delivery row that the sweep settles as sent; the sweep
+	// cannot distinguish it from a crash mid-fan-out, and analytics (zero
+	// delivered under the group_id) exposes it for manual repair.
+	// Returns the number of recovered rows.
+	RecoverStuckSending(ctx context.Context, olderThan time.Duration) (int64, error)
 
 	// Open tracking
 	RecordOpen(ctx context.Context, newsletterID uuid.UUID, recipientHash string) error

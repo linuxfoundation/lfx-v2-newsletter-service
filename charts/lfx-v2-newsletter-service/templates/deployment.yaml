@@ -28,6 +28,11 @@ spec:
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name | default .Chart.Name }}
       automountServiceAccountToken: false
+      # Must cover the sequential shutdown budget: HTTP drain (25s), then the
+      # background send-job drain (20s), then the deferred OTel flush (25s
+      # ceiling). The k8s default of 30s would SIGKILL mid-drain when a slow
+      # request eats into the first window.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 75 }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -78,6 +83,14 @@ spec:
               value: {{ .Values.app.send.fanoutEnabled | quote }}
             {{- with .Values.app.send.concurrency }}
             - name: SEND_CONCURRENCY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.jobTimeout }}
+            - name: SEND_JOB_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.stuckSendTTL }}
+            - name: STUCK_SEND_TTL
               value: {{ . | quote }}
             {{- end }}
             {{- with .Values.app.send.fromAddress }}
@@ -188,6 +201,11 @@ spec:
             - name: OTEL_SERVICE_NAME
               value: {{ $otelServiceName | quote }}
             {{- end }}
+            {{- $otelServiceVersion := .Values.app.otel.serviceVersion | toString | trim }}
+            {{- if ne $otelServiceVersion "" }}
+            - name: OTEL_SERVICE_VERSION
+              value: {{ $otelServiceVersion | quote }}
+            {{- end }}
             {{- $otelEndpoint := .Values.app.otel.endpoint | toString | trim }}
             {{- if ne $otelEndpoint "" }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -208,10 +226,10 @@ spec:
             - name: OTEL_TRACES_EXPORTER
               value: {{ $otelTracesExporter | quote }}
             {{- end }}
-            {{- $otelPropagators := .Values.app.otel.propagators | toString | trim }}
-            {{- if ne $otelPropagators "" }}
-            - name: OTEL_PROPAGATORS
-              value: {{ $otelPropagators | quote }}
+            {{- $otelTracesSampler := .Values.app.otel.tracesSampler | toString | trim }}
+            {{- if ne $otelTracesSampler "" }}
+            - name: OTEL_TRACES_SAMPLER
+              value: {{ $otelTracesSampler | quote }}
             {{- end }}
             {{- $otelTracesSamplerArg := .Values.app.otel.tracesSamplerArg | toString | trim }}
             {{- if ne $otelTracesSamplerArg "" }}
@@ -227,6 +245,11 @@ spec:
             {{- if ne $otelLogsExporter "" }}
             - name: OTEL_LOGS_EXPORTER
               value: {{ $otelLogsExporter | quote }}
+            {{- end }}
+            {{- $otelPropagators := .Values.app.otel.propagators | toString | trim }}
+            {{- if ne $otelPropagators "" }}
+            - name: OTEL_PROPAGATORS
+              value: {{ $otelPropagators | quote }}
             {{- end }}
           livenessProbe:
             httpGet:

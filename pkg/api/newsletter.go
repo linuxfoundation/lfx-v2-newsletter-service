@@ -12,9 +12,14 @@ import "time"
 type Status string
 
 // Status values persisted by the service.
+//
+// StatusSending means a send has been accepted and the per-recipient fan-out
+// is running asynchronously. The newsletter settles to StatusSent on
+// completion, or reverts to StatusDraft if no recipient could be delivered to.
 const (
-	StatusDraft Status = "draft"
-	StatusSent  Status = "sent"
+	StatusDraft   Status = "draft"
+	StatusSending Status = "sending"
+	StatusSent    Status = "sent"
 )
 
 // Newsletter is the response shape returned by single-resource endpoints.
@@ -102,9 +107,15 @@ type SendFailure struct {
 //
 // The newsletter-service owns the email dispatch: it mints group_id, resolves
 // recipients via NATS to committee-service, and fans out per-recipient sends
-// via NATS to email-service. Per-recipient failures are returned so the caller
-// can surface them; the newsletter is marked sent when at least one recipient
-// was delivered to.
+// via NATS to email-service.
+//
+// The send is asynchronous: the endpoint returns 202 Accepted as soon as the
+// newsletter transitions to status='sending' (with Sent=0 and no Failures),
+// and the fan-out completes in the background. Callers observe the outcome by
+// re-fetching the newsletter — status settles to 'sent', or reverts to
+// 'draft' when zero recipients could be delivered to. The zero-recipient edge
+// case settles synchronously and returns 200 with status='sent'. Clients
+// should branch on Newsletter.Status rather than the HTTP status code.
 type SendNewsletterResponse struct {
 	Newsletter      Newsletter    `json:"newsletter"`
 	GroupID         string        `json:"group_id"`

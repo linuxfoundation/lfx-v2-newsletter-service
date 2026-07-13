@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -26,14 +27,29 @@ import (
 
 // Package-level singletons populated by InitInfrastructure and torn down by Shutdown.
 var (
-	pgPool      *pgxpool.Pool
-	bunDB       *bun.DB
-	sqlDB       *sql.DB
-	httpHandler http.Handler
-	handlerImpl *handler.Handler
-	authImpl    *handler.AuthValidator
-	natsClient  *natsinfra.Client
+	pgPool       *pgxpool.Pool
+	bunDB        *bun.DB
+	sqlDB        *sql.DB
+	httpHandler  http.Handler
+	handlerImpl  *handler.Handler
+	authImpl     *handler.AuthValidator
+	natsClient   *natsinfra.Client
+	sendSvc      *service.SendOrchestrator
+	recoveryStop chan struct{}
 )
+
+// stuckSendSweepInterval is how often the recovery sweep re-checks for
+// newsletters stranded in 'sending' by a crashed pod.
+// stuckSendSweepTimeout bounds a single sweep iteration.
+const (
+	stuckSendSweepInterval = 5 * time.Minute
+	stuckSendSweepTimeout  = 30 * time.Second
+)
+
+// drainTimeout bounds how long Shutdown waits for in-flight background send
+// jobs. Kept under main's 25s graceful-shutdown window; anything that doesn't
+// finish is recovered by the stuck-sending sweep on the next pod.
+const drainTimeout = 20 * time.Second
 
 // InitInfrastructure wires every singleton in dependency order. Idempotent
 // in the sense that callers should not call it twice.
@@ -101,7 +117,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	repo := repository.NewPostgresNewsletterRepo(bunDB)
 	newsletterSvc := service.NewNewsletterService(repo)
 	unsubSvc := service.NewUnsubscribeService(repo, []byte(cfg.UnsubscribeSecret), cfg.PublicBaseURL)
-	sendSvc := service.NewSendOrchestrator(service.SendOrchestratorConfig{
+	sendSvc = service.NewSendOrchestrator(service.SendOrchestratorConfig{
 		Repo:                 repo,
 		Committee:            committeeClient,
 		Project:              projectClient,
@@ -112,8 +128,14 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		FanoutEnabled:        cfg.SendFanoutEnabled,
 		FromAddress:          cfg.EmailFromAddress,
 		FromAddressOverrides: cfg.EmailFromAddressOverrides,
+		SendJobTimeout:       cfg.SendJobTimeout,
 	})
 	analyticsSvc := service.NewAnalyticsService(repo, emailDispatcher)
+
+	// Step 6: recovery sweep for newsletters stranded in 'sending' by a pod
+	// crash mid-fan-out. Runs once at startup (catches strands from previous
+	// pods immediately) and then on a ticker.
+	startStuckSendRecovery(repo, cfg.StuckSendTTL)
 
 	handlerImpl = handler.New(handler.Config{
 		Newsletter:      newsletterSvc,
@@ -136,8 +158,66 @@ func HTTPHandler() http.Handler { return httpHandler }
 // SQLDB returns the runtime *sql.DB for use by health probes during startup.
 func SQLDB() *sql.DB { return sqlDB }
 
+// stuckSendRecoverer is the narrow repository slice the recovery sweep needs.
+type stuckSendRecoverer interface {
+	RecoverStuckSending(ctx context.Context, olderThan time.Duration) (int64, error)
+}
+
+// startStuckSendRecovery launches the background sweep that settles
+// newsletters stranded in 'sending'. Stopped via recoveryStop in Shutdown.
+func startStuckSendRecovery(repo stuckSendRecoverer, ttl time.Duration) {
+	recoveryStop = make(chan struct{})
+	go func() {
+		sweep := func() {
+			// Bound each iteration so a hung DB call can't wedge the sweep
+			// goroutine (Shutdown closes recoveryStop without awaiting it).
+			ctx, cancel := context.WithTimeout(context.Background(), stuckSendSweepTimeout)
+			defer cancel()
+			recovered, err := repo.RecoverStuckSending(ctx, ttl)
+			if err != nil {
+				slog.ErrorContext(ctx, "stuck-sending recovery sweep failed", "error", err)
+				return
+			}
+			if recovered > 0 {
+				slog.WarnContext(ctx, "stuck-sending recovery sweep settled stranded newsletters",
+					"recovered", recovered,
+					"ttl", ttl.String(),
+				)
+			}
+		}
+		sweep()
+		ticker := time.NewTicker(stuckSendSweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				sweep()
+			case <-recoveryStop:
+				return
+			}
+		}
+	}()
+}
+
 // Shutdown tears down singletons in reverse order. Safe to call from defer.
 func Shutdown() {
+	if recoveryStop != nil {
+		close(recoveryStop)
+		recoveryStop = nil
+	}
+	// Give in-flight background send jobs a bounded chance to settle before
+	// the NATS and DB connections go away. An undrained job is recovered by
+	// the stuck-sending sweep on the next pod. This drain is race-free only
+	// because main.go stops the HTTP server (the sole source of jobs.Add)
+	// before the deferred Shutdown runs; the pod's terminationGracePeriodSeconds
+	// must cover both windows sequentially (see chart values.yaml).
+	if sendSvc != nil {
+		drainCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+		defer cancel()
+		if !sendSvc.Drain(drainCtx) {
+			slog.WarnContext(drainCtx, "shutdown: background send jobs did not drain in time; stuck-sending sweep will recover them")
+		}
+	}
 	if natsClient != nil {
 		natsClient.Close()
 	}

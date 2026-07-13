@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS newsletters (
     body_html         TEXT         NOT NULL,
     ed_reply_email    TEXT         NOT NULL,
     committee_uids    TEXT[]       NOT NULL DEFAULT '{}',
-    status            TEXT         NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent')),
+    status            TEXT         NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sending','sent')),
     sent_at           TIMESTAMPTZ,
     total_recipients  INT          NOT NULL DEFAULT 0,
     created_by        TEXT         NOT NULL,
@@ -67,6 +67,27 @@ BEGIN
         ALTER TABLE newsletters
             ADD CONSTRAINT newsletters_sent_requires_group_id
             CHECK (status <> 'sent' OR group_id IS NOT NULL);
+    END IF;
+END$$;
+
+-- Widen the status CHECK on databases created before the 'sending' state was
+-- introduced. The inline column CHECK above auto-names itself
+-- newsletters_status_check; if the existing constraint definition doesn't
+-- mention 'sending', drop and re-add it with the widened value list. Purely
+-- additive for existing rows ('draft'/'sent' both still pass), and a no-op on
+-- fresh databases or on re-runs (the definition then contains 'sending').
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'newsletters_status_check'
+          AND conrelid = 'newsletters'::regclass
+          AND pg_get_constraintdef(oid) NOT LIKE '%sending%'
+    ) THEN
+        ALTER TABLE newsletters DROP CONSTRAINT newsletters_status_check;
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_status_check
+            CHECK (status IN ('draft','sending','sent'));
     END IF;
 END$$;
 

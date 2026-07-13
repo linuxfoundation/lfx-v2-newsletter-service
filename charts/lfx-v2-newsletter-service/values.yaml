@@ -28,6 +28,13 @@ podDisruptionBudget:
 # topologySpreadConstraints controls how pods are spread across nodes/zones.
 topologySpreadConstraints: []
 
+# terminationGracePeriodSeconds must cover the sequential (LIFO-deferred)
+# shutdown budget: HTTP drain (25s) + background send-job drain (20s) + OTel
+# flush (25s ceiling, normally sub-second). Send state is protected first —
+# only trailing telemetry is at risk near the limit, and undrained send jobs
+# are recovered by the stuck-sending sweep on the next pod.
+terminationGracePeriodSeconds: 75
+
 # resources is the container resource request and limit configuration.
 resources:
   limits:
@@ -70,6 +77,15 @@ app:
     # concurrency caps in-flight email-service requests during fan-out.
     # Empty string falls back to the app default (5).
     concurrency: ""
+    # jobTimeout bounds the detached background fan-out that runs after a send
+    # is accepted (Go duration string, e.g. "30m"). Empty string falls back to
+    # the app default (30m).
+    jobTimeout: ""
+    # stuckSendTTL is the age after which a newsletter stranded in 'sending'
+    # (pod crash mid-fan-out) is recovered to 'sent' by the periodic sweep
+    # (Go duration string). Empty string falls back to the app default (45m);
+    # the app enforces a minimum of jobTimeout + 5m.
+    stuckSendTTL: ""
     # fromAddress is the SMTP envelope From applied to every outbound
     # newsletter. Domain must be in the email-service allowlist. Empty falls
     # back to the app default (newsletter@lfx.linuxfoundation.org).
@@ -124,17 +140,42 @@ app:
   # OTEL_PROPAGATORS environment variables. The tracesSamplerArg value maps to
   # OTEL_TRACES_SAMPLER_ARG (read natively by the OTel SDK).
   otel:
+    # serviceName is the service name for OpenTelemetry resource identification
+    # (default: "lfx-v2-newsletter-service")
     serviceName: "lfx-v2-newsletter-service"
+    # serviceVersion is the service version for OpenTelemetry resource identification
+    # (default: build-time Version variable)
+    serviceVersion: ""
+    # protocol specifies the OTLP protocol: "grpc" or "http"
+    # (default: "grpc")
     protocol: "grpc"
+    # endpoint is the OTLP collector endpoint
+    # For gRPC: typically "host:4317", for HTTP: typically "host:4318"
     endpoint: ""
+    # insecure disables TLS for the OTLP connection
+    # Set to "true" for in-cluster communication without TLS
     insecure: "false"
+    # tracesExporter specifies the traces exporter: "otlp" or "none"
+    # (default: "none")
     tracesExporter: "none"
-    # tracesSamplerArg sets OTEL_TRACES_SAMPLER_ARG (sampling ratio, 0.0–1.0).
-    # Only meaningful when OTEL_TRACES_SAMPLER is "traceidratio" or
-    # "parentbased_traceidratio". Empty string omits the env var.
+    # tracesSampler specifies the OTEL_TRACES_SAMPLER type. Supported values:
+    # "always_on", "always_off", "traceidratio", "parentbased_always_on",
+    # "parentbased_always_off", "parentbased_traceidratio".
+    # When empty, the application defaults to parentbased_traceidratio.
+    tracesSampler: ""
+    # tracesSamplerArg specifies the OTEL_TRACES_SAMPLER_ARG (sampler ratio or parent_sampler_arg).
+    # Used by "traceidratio" and "parentbased_traceidratio" samplers (defaults to 1.0 if empty).
+    # (default: "1.0")
     tracesSamplerArg: "1.0"
+    # metricsExporter specifies the metrics exporter: "otlp" or "none"
+    # (default: "none")
     metricsExporter: "none"
+    # logsExporter specifies the logs exporter: "otlp" or "none"
+    # (default: "none")
     logsExporter: "none"
+    # propagators specifies the trace context propagators to use
+    # Comma-separated list of: "tracecontext", "baggage", "jaeger"
+    # (default: "tracecontext,baggage,jaeger")
     propagators: "tracecontext,baggage,jaeger"
 
 # database configures the PostgreSQL backend.

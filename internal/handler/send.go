@@ -6,16 +6,21 @@ package handler
 import (
 	"net/http"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
 
 // SendNewsletter handles POST /projects/{project_uid}/newsletters/{newsletter_uid}/send.
 //
-// Service mints group_id, resolves recipients, fans out emails to email-service
-// via NATS, and persists the status transition. Per-recipient failures are
-// returned in the response so the UI can surface them; the newsletter is still
-// marked sent if any recipients succeeded.
+// The service validates the draft, resolves recipients, transitions the row to
+// status=sending (the duplicate-send guard), and runs the per-recipient
+// fan-out in a background job detached from this request. The response is
+// therefore 202 Accepted with the sending-state newsletter (sent=0); clients
+// observe completion by re-fetching the newsletter, whose status settles to
+// 'sent' (or reverts to 'draft' when zero recipients could be delivered to).
+// The zero-recipient edge case settles synchronously and returns 200 with
+// status='sent', preserving the historical contract.
 func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
 	projectUID := r.PathValue("project_uid")
 	id, err := parseUUID(r.PathValue("newsletter_uid"))
@@ -40,8 +45,12 @@ func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	status := http.StatusOK
+	if result.Newsletter.Status == model.StatusSending {
+		status = http.StatusAccepted
+	}
 	w.Header().Set("ETag", formatETag(result.Newsletter.Version))
-	writeJSON(r.Context(), w, http.StatusOK, toAPISendResponse(result))
+	writeJSON(r.Context(), w, status, toAPISendResponse(result))
 }
 
 // RecipientCount handles POST /projects/{project_uid}/newsletters/recipient-count.

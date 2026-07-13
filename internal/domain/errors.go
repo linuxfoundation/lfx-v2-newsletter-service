@@ -22,4 +22,10 @@ var (
 	// ErrAlreadySent indicates a draft has already been sent and cannot be re-sent
 	// or modified.
 	ErrAlreadySent = errors.New("newsletter already sent")
+
+	// ErrSendInProgress indicates a send has been accepted for this newsletter
+	// and its fan-out is still running. The newsletter cannot be re-sent,
+	// edited, or deleted until the send settles (sent, or reverted to draft on
+	// total failure).
+	ErrSendInProgress = errors.New("newsletter send in progress")
 )
