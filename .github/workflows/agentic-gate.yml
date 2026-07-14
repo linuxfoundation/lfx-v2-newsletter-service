@@ -220,16 +220,21 @@ jobs:
           # re-labels on the next push. The allowlist lives in this
           # default-branch workflow file, so changing it takes a reviewed PR
           # through this very pipeline.
-          EVENTS="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
+          # The MOST RECENT unlabel overall must be authorized — the last
+          # removal is what produced the current label state, and an older
+          # authorized unlabel must never vouch for a state an unauthorized
+          # hand created later. Unauthorized (or unattributed) newest event →
+          # no authorized unlabel at all.
+          LAST_EVENT="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
             --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [.created_at, (.actor.login // "")] | @tsv' \
-            2>/dev/null | sort -r || true)"
+            2>/dev/null | sort | tail -1 || true)"
           AUTH_UNLABEL=""
-          while IFS="$(printf '\t')" read -r ts actor; do
-            [ -n "$ts" ] && [ -n "$actor" ] || continue
+          if [ -n "$LAST_EVENT" ]; then
+            LAST_TS="${LAST_EVENT%%	*}"; LAST_ACTOR="${LAST_EVENT##*	}"
             case " $NEEDS_HUMAN_UNLABELERS " in
-              *" $actor "*) AUTH_UNLABEL="$ts"; break ;;
+              *" $LAST_ACTOR "*) [ -n "$LAST_ACTOR" ] && AUTH_UNLABEL="$LAST_TS" ;;
             esac
-          done <<< "$EVENTS"
+          fi
           # Lookup success is tracked separately from lookup emptiness: a failed
           # comments call must never be read as "no verdict exists" — that would
           # fail OPEN into the unlabel-fallback branch. Only a successful,
@@ -363,17 +368,19 @@ jobs:
               # while the label was set, which therefore has no verdict — an
               # authorized unlabel newer than the head's round start. Malformed
               # verdicts withhold. The allowlist is the job-level
-              # NEEDS_HUMAN_UNLABELERS, shared with Evaluate gate.
-              EVENTS="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
+              # NEEDS_HUMAN_UNLABELERS, shared with Evaluate gate, and — same
+              # rule — the MOST RECENT unlabel overall must be the authorized
+              # one.
+              LAST_EVENT="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
                 --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [.created_at, (.actor.login // "")] | @tsv' \
-                2>/dev/null | sort -r || true)"
+                2>/dev/null | sort | tail -1 || true)"
               AUTH_UNLABEL=""
-              while IFS="$(printf '\t')" read -r ts actor; do
-                [ -n "$ts" ] && [ -n "$actor" ] || continue
+              if [ -n "$LAST_EVENT" ]; then
+                LAST_TS="${LAST_EVENT%%	*}"; LAST_ACTOR="${LAST_EVENT##*	}"
                 case " $NEEDS_HUMAN_UNLABELERS " in
-                  *" $actor "*) AUTH_UNLABEL="$ts"; break ;;
+                  *" $LAST_ACTOR "*) [ -n "$LAST_ACTOR" ] && AUTH_UNLABEL="$LAST_TS" ;;
                 esac
-              done <<< "$EVENTS"
+              fi
               # A failed verdict lookup withholds outright — never read an API
               # error as "no verdict exists" (that would fail open into the
               # unlabel-fallback branch).
