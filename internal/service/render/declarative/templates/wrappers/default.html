@@ -7,28 +7,34 @@
     "preheader":                {"type": "text", "label": "Preheader"},
     "view_online_link":         {"type": "text", "label": "View Online URL"},
     "unsubscribe_url":          {"type": "text", "label": "Unsubscribe URL"},
-    "manage_subscriptions_url": {"type": "text", "label": "Manage subscriptions URL"}
+    "manage_subscriptions_url": {"type": "text", "label": "Manage subscriptions URL"},
+    "sender_name":              {"type": "text", "label": "Sender name"},
+    "project_name":             {"type": "text", "label": "Project name"},
+    "reply_email":              {"type": "text", "label": "Reply-to email"}
   }
 } -->
 
 <!--
-  AAIF User Community newsletter wrapper.
+  Default newsletter wrapper.
 
-  Header / footer chrome for every edition of the MLOps Community newsletter,
-  authored as a declarative template the platform parses into a
-  templates_wrappers row. EditionEmail renders the edition body inside the
-  <slot name="body" /> below.
+  Project-neutral header / footer chrome. EditionEmail renders the edition
+  body inside the <slot name="body" /> below. This wrapper deliberately
+  carries NO project- or brand-specific URLs or copy: any project can render
+  through it, so per-brand chrome belongs in a brand-specific wrapper.
 
-  Per-brand URLs (Shop, Subscribe, Slack, YouTube, podcast, X, LinkedIn,
-  partner email) are baked into the markup directly — no separate config
-  layer. To change them, edit this file and re-apply the source.
-
-  Only runtime fields use {{mustache}}:
-    {{edition.date}}             — formatted edition date
-    {{edition.view_online_link}} — "View Online" URL (substituted per
-                                   recipient at send time via the
-                                   {{web_version}} token; empty for the
-                                   already-online publish page).
+  Runtime fields use {{mustache}} and are bound by renderLayout:
+    {{edition.date}}                     - formatted edition date (empty today)
+    {{edition.view_online_link}}         - hosted web version (empty today)
+    {{edition.unsubscribe_url}}          - per-recipient signed unsubscribe link
+                                           (send-time sentinel; empty when the
+                                           unsubscribe service is not configured,
+                                           which drops the row)
+    {{edition.manage_subscriptions_url}} - preferences page (empty until a real
+                                           preferences surface exists)
+    {{edition.sender_name}}              - resolved at send time (sentinel)
+    {{edition.project_name}}             - resolved at send time (sentinel)
+    {{edition.reply_email}}              - the draft's reply-to address
+  Rows guarded with if= disappear when their field is empty.
 -->
 
 <Section>
@@ -41,12 +47,6 @@
     <Text if="edition.date" style="margin: 8px 0 0; text-align: center; font-size: 14px; color: #4086c6">
       {{edition.date}}
     </Text>
-    <Text style="margin: 8px 0 0; text-align: center; font-size: 12px; color: #4086c6">
-      Forwarded this email?
-      <Link href="https://aaif.live/newsletters/usercommunity/" style="color: #4086c6; text-decoration: underline">
-        Subscribe here
-      </Link>
-    </Text>
   </div>
 </Section>
 
@@ -54,12 +54,22 @@
 
 <Section>
   <div style="padding: 15px 0">
-    <Text if="edition.unsubscribe_url" style="margin: 0; text-align: center; font-size: 12px; color: #999">
-      <Link href="{{edition.unsubscribe_url}}" style="color: #999; text-decoration: underline">Unsubscribe</Link>
-      &middot;
-      <Link href="{{edition.manage_subscriptions_url}}" style="color: #999; text-decoration: underline">Manage your email preferences</Link>
+    <Text if="edition.sender_name" style="margin: 0 0 6px; text-align: center; font-size: 12px; color: #999">
+      Sent by {{edition.sender_name}}<span if="edition.project_name"> on behalf of {{edition.project_name}}</span>.
+    </Text>
+    <Text if="edition.reply_email" style="margin: 0 0 6px; text-align: center; font-size: 12px; color: #999">
+      To reply, email <Link href="mailto:{{edition.reply_email}}" style="color: #999; text-decoration: underline">{{edition.reply_email}}</Link>
+    </Text>
+    <Text style="margin: 0; text-align: center; font-size: 12px; color: #999">
+      <span if="edition.unsubscribe_url">
+        <Link href="{{edition.unsubscribe_url}}" style="color: #999; text-decoration: underline">Unsubscribe</Link>
+        <span if="edition.manage_subscriptions_url">
+          &middot;
+          <Link href="{{edition.manage_subscriptions_url}}" style="color: #999; text-decoration: underline">Manage your email preferences</Link>
+        </span>
+        &middot;
+      </span>
+      Delivered by LFX.
     </Text>
   </div>
 </Section>
-
-

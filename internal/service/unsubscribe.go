@@ -34,6 +34,16 @@ const (
 	ManageSubscriptionsURLPlaceholder = "%%MANAGE_SUBSCRIPTIONS_URL%%"
 )
 
+// SenderNamePlaceholder and ProjectNamePlaceholder are send-scoped sentinels
+// for the wrapper's compliance footer ("Sent by X on behalf of Y"). They are
+// bound at render-on-write and substituted ONCE per send (not per recipient)
+// because the sender display name is only resolved from the sending
+// principal's profile at send time.
+const (
+	SenderNamePlaceholder  = "%%SENDER_NAME%%"
+	ProjectNamePlaceholder = "%%PROJECT_NAME%%"
+)
+
 // unsubscribePath is the public route the handler registers for the
 // one-click unsubscribe link.
 const unsubscribePath = "/newsletters/unsubscribe"

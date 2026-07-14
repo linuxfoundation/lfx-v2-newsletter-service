@@ -30,7 +30,7 @@ func introLayout(text string) *declarative.Layout {
 
 func TestCreateDraft_WithLayout_PersistsLayoutAndDerivedHTML(t *testing.T) {
 	repo := newFakeRepo()
-	svc := NewNewsletterService(repo)
+	svc := NewNewsletterService(repo, true)
 
 	const marker = "Welcome to the June edition"
 	draft, err := svc.CreateDraft(context.Background(), CreateDraftInput{
@@ -72,7 +72,7 @@ func TestCreateDraft_WithLayout_PersistsLayoutAndDerivedHTML(t *testing.T) {
 
 func TestCreateDraft_WithBodyHTMLOnly_Unchanged(t *testing.T) {
 	repo := newFakeRepo()
-	svc := NewNewsletterService(repo)
+	svc := NewNewsletterService(repo, true)
 
 	const html = "<p>Hand-written body</p>"
 	draft, err := svc.CreateDraft(context.Background(), CreateDraftInput{
@@ -96,7 +96,7 @@ func TestCreateDraft_WithBodyHTMLOnly_Unchanged(t *testing.T) {
 
 func TestCreateDraft_UnrenderableLayout_ErrorsAndPersistsNothing(t *testing.T) {
 	repo := newFakeRepo()
-	svc := NewNewsletterService(repo)
+	svc := NewNewsletterService(repo, true)
 
 	bad := &declarative.Layout{
 		Blocks: []declarative.Block{{BlockType: "no_such_block_type"}},
@@ -125,7 +125,7 @@ func TestCreateDraft_UnrenderableLayout_ErrorsAndPersistsNothing(t *testing.T) {
 
 func TestUpdateDraft_WithLayout_PersistsLayoutAndDerivedHTML(t *testing.T) {
 	repo := newFakeRepo()
-	svc := NewNewsletterService(repo)
+	svc := NewNewsletterService(repo, true)
 
 	existing := &model.Newsletter{
 		ID:            uuid.New(),
@@ -164,7 +164,7 @@ func TestUpdateDraft_WithLayout_PersistsLayoutAndDerivedHTML(t *testing.T) {
 
 func TestUpdateDraft_OmittingLayout_KeepsExistingLayout(t *testing.T) {
 	repo := newFakeRepo()
-	svc := NewNewsletterService(repo)
+	svc := NewNewsletterService(repo, true)
 
 	// A saved LAYOUT newsletter: body_layout present, body_html is the derived
 	// emitter document (wrapper + blocks + %%…%% sentinels).
@@ -209,7 +209,7 @@ func TestUpdateDraft_OmittingLayout_KeepsExistingLayout(t *testing.T) {
 
 func TestUpdateDraft_UnrenderableLayout_ErrorsAndPersistsNothing(t *testing.T) {
 	repo := newFakeRepo()
-	svc := NewNewsletterService(repo)
+	svc := NewNewsletterService(repo, true)
 
 	existing := &model.Newsletter{
 		ID:            uuid.New(),
@@ -241,5 +241,70 @@ func TestUpdateDraft_UnrenderableLayout_ErrorsAndPersistsNothing(t *testing.T) {
 	// successful render, so a render failure leaves the loaded row unmodified.
 	if existing.BodyHTML != "<p>original body</p>" || existing.Subject != "Old" {
 		t.Errorf("existing draft mutated despite render failure: %+v", existing)
+	}
+}
+
+// TestRenderLayout_WrapperRuntimeFields pins the wrapper's runtime-field
+// contract after the review fixes: the compliance footer sentinels and the
+// bound reply email are present, the manage-preferences link is dropped (no
+// preferences surface exists, and aliasing it to the one-click unsubscribe
+// would opt recipients out on GET), and no tenant-specific URL leaks from the
+// default wrapper.
+func TestRenderLayout_WrapperRuntimeFields(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, true)
+
+	draft, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "June news",
+		BodyLayout:    introLayout("hello"),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+
+	for _, want := range []string{SenderNamePlaceholder, ProjectNamePlaceholder, "mailto:ed@example.com", "Delivered by LFX"} {
+		if !strings.Contains(draft.BodyHTML, want) {
+			t.Errorf("derived body_html missing %q", want)
+		}
+	}
+	for _, reject := range []string{"Manage your email preferences", ManageSubscriptionsURLPlaceholder, "aaif.live"} {
+		if strings.Contains(draft.BodyHTML, reject) {
+			t.Errorf("derived body_html must not contain %q", reject)
+		}
+	}
+}
+
+// TestRenderLayout_UnsubscribeDisabled_DropsOptOutRow proves the blocking
+// review finding is fixed: with the unsubscribe service unconfigured, the
+// wrapper's opt-out row is dropped at render time instead of shipping a link
+// whose href would substitute to an empty string.
+func TestRenderLayout_UnsubscribeDisabled_DropsOptOutRow(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, false)
+
+	draft, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "June news",
+		BodyLayout:    introLayout("hello"),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+
+	for _, reject := range []string{UnsubscribeURLPlaceholder, ">Unsubscribe<"} {
+		if strings.Contains(draft.BodyHTML, reject) {
+			t.Errorf("unsubscribe disabled: derived body_html must not contain %q; got:\n%s", reject, draft.BodyHTML)
+		}
+	}
+	// The rest of the footer still renders.
+	if !strings.Contains(draft.BodyHTML, "Delivered by LFX") {
+		t.Error("unsubscribe disabled: footer should still carry the Delivered by LFX line")
 	}
 }

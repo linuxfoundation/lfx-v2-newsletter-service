@@ -1172,7 +1172,7 @@ func TestSendNewsletterZeroRecipientsSettlesSynchronously(t *testing.T) {
 func TestDraftGuardsWhileSending(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
-	svc := NewNewsletterService(repo)
+	svc := NewNewsletterService(repo, true)
 
 	draft := repo.addDraft("p1", []string{"c1"})
 	if _, err := repo.MarkSending(ctx, draft.ID, uuid.NewString(), 1, draft.Version); err != nil {
@@ -1215,6 +1215,7 @@ func (r *fakeNewsletterRepo) addLayoutDraft(projectUID string, committeeUIDs []s
 			`<a href="` + ViewOnlineURLPlaceholder + `">View Online</a>` +
 			`<a href="` + UnsubscribeURLPlaceholder + `">Unsubscribe</a>` +
 			`<a href="` + ManageSubscriptionsURLPlaceholder + `">Manage your email preferences</a>` +
+			`<p>From ` + SenderNamePlaceholder + ` for ` + ProjectNamePlaceholder + `</p>` +
 			`</body></html>`,
 		BodyLayout:    json.RawMessage(`{"wrapper_key":"default","blocks":[{"block_type":"intro_paragraph"}]}`),
 		EDReplyEmail:  "ed@example.com",
@@ -1231,8 +1232,7 @@ func (r *fakeNewsletterRepo) addLayoutDraft(projectUID string, committeeUIDs []s
 // layout path did NOT re-wrap the body in chrome.
 var chromeEnvelopeMarkers = []string{
 	"&middot; Newsletter", // chrome header eyebrow
-	"Sent by",             // compliance footer attribution
-	"Delivered by",        // compliance footer LFX line
+	`class="lfx-pad"`,     // chrome table cell class
 }
 
 // TestSendNewsletterLayoutNotDoubleWrapped asserts a layout-based newsletter is
@@ -1276,8 +1276,22 @@ func TestSendNewsletterLayoutNotDoubleWrapped(t *testing.T) {
 		}
 		// Unsubscribe + manage both resolve to the recipient's signed link.
 		wantURL := unsub.BuildURL("p1", s.To)
-		if got := strings.Count(s.HTML, wantURL); got != 2 {
-			t.Errorf("send to %s: expected unsubscribe+manage to both use %q (2 occurrences), got %d in %s", s.To, wantURL, got, s.HTML)
+		if got := strings.Count(s.HTML, wantURL); got != 1 {
+			t.Errorf("send to %s: expected the unsubscribe link only to use %q (1 occurrence), got %d in %s", s.To, wantURL, got, s.HTML)
+		}
+		// Manage-preferences must NOT alias the destructive one-click
+		// unsubscribe URL: its sentinel resolves to empty.
+		if strings.Contains(s.HTML, `<a href="`+wantURL+`">Manage`) {
+			t.Errorf("send to %s: manage-preferences link aliases the unsubscribe URL", s.To)
+		}
+		// Send-scoped sentinels substituted with the resolved names.
+		if !strings.Contains(s.HTML, "From Test Sender for") && !strings.Contains(s.HTML, "From ") {
+			t.Errorf("send to %s: sender/project sentinels not substituted: %s", s.To, s.HTML)
+		}
+		for _, ph := range []string{SenderNamePlaceholder, ProjectNamePlaceholder} {
+			if strings.Contains(s.HTML, ph) {
+				t.Errorf("send to %s: send-scoped sentinel %q not substituted", s.To, ph)
+			}
 		}
 		// View Online resolved to empty (no hosted web version yet) — the href
 		// collapses to an empty string rather than leaving the sentinel.
@@ -1377,7 +1391,7 @@ func TestTestSendLayoutNotDoubleWrapped(t *testing.T) {
 		}
 	}
 	wantURL := unsub.BuildURL("p1", "tester@example.com")
-	if got := strings.Count(s.HTML, wantURL); got != 2 {
+	if got := strings.Count(s.HTML, wantURL); got != 1 {
 		t.Errorf("test-send: expected unsubscribe+manage to use %q (2x), got %d: %s", wantURL, got, s.HTML)
 	}
 	if strings.Contains(s.HTML, ViewOnlineURLPlaceholder) {

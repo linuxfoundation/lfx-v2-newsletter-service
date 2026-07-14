@@ -60,11 +60,18 @@ func loadEmbeddedTemplates() (declarative.Templates, error) {
 // NewsletterService implements business logic for draft management.
 type NewsletterService struct {
 	repo port.NewsletterRepository
+	// unsubEnabled mirrors UnsubscribeService.Enabled(). When false the
+	// render-on-write step binds an empty unsubscribe URL so the wrapper's
+	// `if=` guard drops the opt-out row entirely, instead of rendering a row
+	// whose href would substitute to an empty string at send time.
+	unsubEnabled bool
 }
 
 // NewNewsletterService wires a NewsletterService over the given repository.
-func NewNewsletterService(repo port.NewsletterRepository) *NewsletterService {
-	return &NewsletterService{repo: repo}
+// unsubEnabled must reflect whether the unsubscribe service is configured
+// (UnsubscribeService.Enabled()).
+func NewNewsletterService(repo port.NewsletterRepository, unsubEnabled bool) *NewsletterService {
+	return &NewsletterService{repo: repo, unsubEnabled: unsubEnabled}
 }
 
 // CreateDraftInput is the typed input for CreateDraft.
@@ -119,7 +126,7 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	bodyHTML := in.BodyHTML
 	var bodyLayout json.RawMessage
 	if in.BodyLayout != nil {
-		html, raw, err := renderLayout(ctx, in.BodyLayout)
+		html, raw, err := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, s.unsubEnabled)
 		if err != nil {
 			return nil, err
 		}
@@ -306,7 +313,7 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	case in.BodyLayout != nil:
 		// New / updated layout: the emitter owns the whole email; body_html is
 		// DERIVED and the request's body_html is ignored.
-		html, raw, renderErr := renderLayout(ctx, in.BodyLayout)
+		html, raw, renderErr := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, s.unsubEnabled)
 		if renderErr != nil {
 			return nil, renderErr
 		}
@@ -439,20 +446,24 @@ func normalizeCommitteeUIDs(in []string) []string {
 
 // renderLayout derives the email-safe body_html from a structured layout and
 // returns it alongside the raw layout JSON to persist. The emitter owns the
-// whole email (wrapper chrome + blocks), so the wrapper's per-recipient runtime
-// fields are bound to PLACEHOLDER sentinels here; the send path substitutes the
-// real per-recipient values later (increment 2b).
+// whole email (wrapper chrome + blocks), so the wrapper's runtime fields are
+// bound here: write-time-known values (the reply email) bind directly,
+// send-time-known values bind to PLACEHOLDER sentinels that the send path
+// substitutes later.
 //
-// edition.date and edition.view_online_link are left EMPTY: there is no
-// newsletter-date field and no hosted "view online" surface yet, so the
-// wrapper's `if=` guards drop both rows at render time (rather than emitting a
-// row whose href would substitute to empty at send). The %%VIEW_ONLINE_URL%%
-// send-time substitution is then a harmless no-op. Both get a real source in a
-// later increment.
+// Fields bound EMPTY are dropped by the wrapper's `if=` guards at render time
+// (rather than emitting a row whose href would substitute to empty at send):
+//   - edition.date and edition.view_online_link: no newsletter-date field and
+//     no hosted "view online" surface yet.
+//   - edition.manage_subscriptions_url: no preferences surface exists yet, and
+//     aliasing it to the one-click unsubscribe URL would silently opt out a
+//     recipient who only wanted to manage preferences.
+//   - edition.unsubscribe_url when the unsubscribe service is not configured:
+//     the row is dropped instead of shipping a broken link.
 //
 // A render failure is surfaced as ErrUnprocessable (422), matching render-preview
 // for the same unrenderable layout — the request itself is well-formed.
-func renderLayout(ctx context.Context, layout *declarative.Layout) (bodyHTML string, raw json.RawMessage, err error) {
+func renderLayout(ctx context.Context, layout *declarative.Layout, replyEmail string, unsubEnabled bool) (bodyHTML string, raw json.RawMessage, err error) {
 	templates, err := loadEmbeddedTemplates()
 	if err != nil {
 		// Template parse failure is a deployment defect (templates ship with the
@@ -460,12 +471,19 @@ func renderLayout(ctx context.Context, layout *declarative.Layout) (bodyHTML str
 		return "", nil, fmt.Errorf("load render templates: %w", err)
 	}
 
+	unsubURL := ""
+	if unsubEnabled {
+		unsubURL = UnsubscribeURLPlaceholder
+	}
 	wrapperContent := map[string]any{
 		"edition": map[string]any{
 			"date":                     "",
 			"view_online_link":         "",
-			"unsubscribe_url":          UnsubscribeURLPlaceholder,
-			"manage_subscriptions_url": ManageSubscriptionsURLPlaceholder,
+			"unsubscribe_url":          unsubURL,
+			"manage_subscriptions_url": "",
+			"sender_name":              SenderNamePlaceholder,
+			"project_name":             ProjectNamePlaceholder,
+			"reply_email":              strings.TrimSpace(replyEmail),
 		},
 	}
 

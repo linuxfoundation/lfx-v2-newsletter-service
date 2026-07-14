@@ -234,6 +234,8 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		edReplyEmail: draft.EDReplyEmail,
 		compliance:   true,
 	})
+	htmlBody = substituteSendScope(htmlBody, senderName, projectName)
+	textBody = substituteSendScope(textBody, senderName, projectName)
 
 	groupID := uuid.NewString()
 
@@ -458,6 +460,8 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		displayName: projectName,
 		compliance:  false,
 	})
+	htmlBody = substituteSendScope(htmlBody, senderName, projectName)
+	textBody = substituteSendScope(textBody, senderName, projectName)
 
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "test-send: fanout disabled, accepted without dispatch",
@@ -835,10 +839,27 @@ func (o *SendOrchestrator) substitutePlaceholders(body, projectUID, email string
 	}
 	replacer := strings.NewReplacer(
 		UnsubscribeURLPlaceholder, unsubURL,
-		ManageSubscriptionsURLPlaceholder, unsubURL,
+		// The manage-preferences sentinel resolves to EMPTY, never to the
+		// unsubscribe URL: that URL opts the recipient out on GET, so aliasing
+		// it under a "Manage your email preferences" label would silently
+		// unsubscribe people. Render-on-write also binds the field empty (the
+		// wrapper drops the link), so this is a defensive no-op for bodies
+		// rendered before that change. A real preferences surface replaces it.
+		ManageSubscriptionsURLPlaceholder, "",
 		ViewOnlineURLPlaceholder, "",
 	)
 	return replacer.Replace(body)
+}
+
+// substituteSendScope binds the send-scoped (not per-recipient) sentinels: the
+// resolved sender display name and project name for the wrapper's compliance
+// footer ("Sent by X on behalf of Y"). Runs once per send, before the
+// per-recipient fan-out.
+func substituteSendScope(body, senderName, projectName string) string {
+	return strings.NewReplacer(
+		SenderNamePlaceholder, fallbackString(senderName, "Executive Director"),
+		ProjectNamePlaceholder, projectName,
+	).Replace(body)
 }
 
 func fallbackString(value, fallback string) string {
