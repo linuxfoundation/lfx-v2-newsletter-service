@@ -245,12 +245,12 @@ jobs:
               else "should-fix" end)})
             | map(. + {excerpt: (.body
                 | gsub("<!--"; "") | gsub("-->"; "") | gsub("\\|"; "/")
-                | split("\n")[0]
+                | split("\n") | (first // "")
                 | sub("^\\s*\\[(critical|high|should-fix|nit)\\]\\s*"; ""; "i")
                 | .[0:120])})
             | map(. + {spath: (.path
                 | gsub("<!--"; "") | gsub("-->"; "") | gsub("\\|"; "/") | gsub("`"; "")
-                | split("\n")[0] | .[0:120])})
+                | split("\n") | (first // "") | .[0:120])})
             | (map(select(.ai and .sev != "nit"))) as $blocking
             | (map(select(.ai))) as $aithreads
             # The gate withholds for any thread with no reply beyond the
@@ -267,7 +267,8 @@ jobs:
                 ($blocking | map("| " + .sev + " | `" + .spath + "` — " + .excerpt + " | Fix it, or reply with a substantive rebuttal — both are adjudicated at the next push |") | join("\n"))
                else empty end),
               (if ($blocking | length) == 0 and ($untidy | length) > 0 then
-                "\n**Remaining tidiness:** " + ($untidy | length | tostring) + " thread(s) (" + ($untidy | map(if .spath == "" then "discussion" else "`" + .spath + "`" end) | unique | join(", ")) + ") have no reply yet — the gate approves once each is answered (fix it and say so, or reply with the reason it stands as is)."
+                "\n**Remaining tidiness:** " + ($untidy | length | tostring) + " thread(s) have no reply yet — the gate approves once each is answered (fix it and say so, or reply with the reason it stands as is):\n" +
+                ($untidy | map("- " + (if .spath == "" then "discussion" else "`" + .spath + "`" end) + " (thread " + .id + ")") | join("\n"))
                else empty end),
               "",
               "<!-- agentic:check v1 -->",
