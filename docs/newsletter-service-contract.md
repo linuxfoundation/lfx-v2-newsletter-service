@@ -69,7 +69,9 @@ Core state:
 
 ### Declarative Layout
 
-`CreateNewsletterRequest` and `UpdateNewsletterRequest` accept an optional `body_layout` (`NewsletterLayout`) alongside `subject`, `body_html`, `ed_reply_email`, and `committee_uids`. When `body_layout` is supplied the service renders it to `body_html` via the declarative emitter and persists both; any `body_html` in the request is ignored. When `body_layout` is omitted, `body_html` is taken from the request as-is (legacy path).
+`CreateNewsletterRequest` and `UpdateNewsletterRequest` accept an optional `body_layout` (`NewsletterLayout`) alongside `subject`, `body_html`, `ed_reply_email`, and `committee_uids`. When `body_layout` is supplied the service renders it to `body_html` via the declarative emitter and persists both; any `body_html` in the request is ignored.
+
+On update, `body_layout` is tri-state: **absent** preserves a layout newsletter's stored layout and derived `body_html` (the request's `body_html` is ignored for layout rows; html-only rows take `body_html` from the request as before); an **explicit `"body_layout": null`** clears the stored layout and converts the newsletter to html-only, taking `body_html` from the request; an **object** replaces the layout and re-derives `body_html`. On create, absent and `null` are equivalent (html-only).
 
 `NewsletterLayout` is the structured newsletter body:
 

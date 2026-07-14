@@ -144,6 +144,7 @@ func TestUpdateDraft_WithLayout_PersistsLayoutAndDerivedHTML(t *testing.T) {
 		ID:              existing.ID,
 		ExpectedVersion: 1,
 		Subject:         "New",
+		BodyLayoutSet:   true,
 		BodyLayout:      introLayout(marker),
 		EDReplyEmail:    "ed@example.com",
 		CommitteeUIDs:   []string{"c1"},
@@ -227,6 +228,7 @@ func TestUpdateDraft_UnrenderableLayout_ErrorsAndPersistsNothing(t *testing.T) {
 		ID:              existing.ID,
 		ExpectedVersion: 1,
 		Subject:         "New",
+		BodyLayoutSet:   true,
 		BodyLayout:      &declarative.Layout{Blocks: []declarative.Block{{BlockType: "nope"}}},
 		EDReplyEmail:    "ed@example.com",
 		CommitteeUIDs:   []string{"c1"},
@@ -306,5 +308,46 @@ func TestRenderLayout_UnsubscribeDisabled_DropsOptOutRow(t *testing.T) {
 	// The rest of the footer still renders.
 	if !strings.Contains(draft.BodyHTML, "Delivered by LFX") {
 		t.Error("unsubscribe disabled: footer should still carry the Delivered by LFX line")
+	}
+}
+
+// TestUpdateDraft_ExplicitNullLayout_ClearsToHTMLOnly pins the tri-state
+// contract's escape hatch: an update with an explicit "body_layout": null
+// (BodyLayoutSet true, BodyLayout nil) clears the stored layout and the
+// newsletter becomes html-only, taking body_html from the request.
+func TestUpdateDraft_ExplicitNullLayout_ClearsToHTMLOnly(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, true)
+
+	created, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "June news",
+		BodyLayout:    introLayout("layout content"),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+
+	updated, err := svc.UpdateDraft(context.Background(), "p1", UpdateDraftInput{
+		ID:              created.ID,
+		ExpectedVersion: created.Version,
+		Subject:         "June news",
+		BodyHTML:        "<p>plain html now</p>",
+		BodyLayoutSet:   true,
+		BodyLayout:      nil,
+		EDReplyEmail:    "ed@example.com",
+		CommitteeUIDs:   []string{"c1"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateDraft: %v", err)
+	}
+	if len(updated.BodyLayout) != 0 {
+		t.Errorf("expected BodyLayout cleared, got %s", updated.BodyLayout)
+	}
+	if updated.BodyHTML != "<p>plain html now</p>" {
+		t.Errorf("expected request body_html to be taken as-is, got %q", updated.BodyHTML)
 	}
 }

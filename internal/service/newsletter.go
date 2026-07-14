@@ -91,12 +91,17 @@ type CreateDraftInput struct {
 
 // UpdateDraftInput is the typed input for UpdateDraft.
 //
-// BodyLayout has the same optional semantics as CreateDraftInput.BodyLayout.
+// BodyLayout is tri-state, carried by BodyLayoutSet: when BodyLayoutSet is
+// false the request omitted body_layout (a layout newsletter keeps its stored
+// layout); when true with a nil BodyLayout the request sent an explicit null
+// (the layout is cleared and the newsletter becomes html-only); when true with
+// a non-nil BodyLayout the layout is replaced and body_html re-derived.
 type UpdateDraftInput struct {
 	ID              uuid.UUID
 	ExpectedVersion int64
 	Subject         string
 	BodyHTML        string
+	BodyLayoutSet   bool
 	BodyLayout      *declarative.Layout
 	EDReplyEmail    string
 	CommitteeUIDs   []string
@@ -310,7 +315,7 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	bodyHTML := in.BodyHTML
 	var bodyLayout json.RawMessage
 	switch {
-	case in.BodyLayout != nil:
+	case in.BodyLayoutSet && in.BodyLayout != nil:
 		// New / updated layout: the emitter owns the whole email; body_html is
 		// DERIVED and the request's body_html is ignored.
 		html, raw, renderErr := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, s.unsubEnabled)
@@ -322,11 +327,21 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 			return nil, validateErr
 		}
 		bodyHTML, bodyLayout = html, raw
+	case in.BodyLayoutSet:
+		// EXPLICIT NULL: clear the stored layout and convert to an html-only
+		// newsletter, taking body_html from the request. This is the documented
+		// escape hatch back from the layout path (bodyLayout stays nil, which
+		// the repository persists as SQL NULL).
+		if validateErr := validateBodyHTML(in.BodyHTML); validateErr != nil {
+			return nil, validateErr
+		}
 	case len(existing.BodyLayout) > 0:
 		// The saved newsletter IS a layout newsletter and this update omits
 		// body_layout — KEEP the stored layout + its derived body_html rather than
 		// silently downgrading to plain body_html (which would make the next send
 		// re-wrap the full emitter document in email_chrome → a broken email).
+		// The request's body_html is ignored on this branch; sending an explicit
+		// "body_layout": null is the way to convert back to html-only.
 		bodyHTML, bodyLayout = existing.BodyHTML, existing.BodyLayout
 	default:
 		// Legacy html-only newsletter: body_html must be valid as authored.

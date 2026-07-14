@@ -97,7 +97,8 @@ func (h *Handler) UpdateNewsletter(w http.ResponseWriter, r *http.Request) {
 		ExpectedVersion: expectedVersion,
 		Subject:         body.Subject,
 		BodyHTML:        body.BodyHTML,
-		BodyLayout:      toEmitterLayoutPtr(body.BodyLayout),
+		BodyLayoutSet:   body.BodyLayout.Present,
+		BodyLayout:      toEmitterLayoutPtr(body.BodyLayout.Layout),
 		EDReplyEmail:    body.EDReplyEmail,
 		CommitteeUIDs:   body.CommitteeUIDs,
 	})

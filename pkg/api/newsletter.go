@@ -6,7 +6,11 @@
 // the rest of the V2 services (committee, project, meeting).
 package api
 
-import "time"
+import (
+	"bytes"
+	"encoding/json"
+	"time"
+)
 
 // Status enumerates newsletter lifecycle states.
 type Status string
@@ -61,13 +65,49 @@ type CreateNewsletterRequest struct {
 
 // UpdateNewsletterRequest is the body of PUT /projects/{project_uid}/newsletters/{newsletter_uid}.
 //
-// BodyLayout is optional with the same semantics as CreateNewsletterRequest.
+// BodyLayout is tri-state:
+//   - ABSENT (key omitted): a layout newsletter keeps its stored layout and
+//     derived body_html (the request's body_html is ignored); an html-only
+//     newsletter takes body_html from the request as before.
+//   - EXPLICIT NULL ("body_layout": null): the stored layout is cleared and
+//     the newsletter becomes html-only, taking body_html from the request.
+//   - OBJECT: the layout replaces the stored one; body_html is re-derived
+//     from it and the request's body_html is ignored.
 type UpdateNewsletterRequest struct {
-	Subject       string            `json:"subject"`
-	BodyHTML      string            `json:"body_html"`
-	BodyLayout    *NewsletterLayout `json:"body_layout,omitempty"`
-	EDReplyEmail  string            `json:"ed_reply_email"`
-	CommitteeUIDs []string          `json:"committee_uids"`
+	Subject       string         `json:"subject"`
+	BodyHTML      string         `json:"body_html"`
+	BodyLayout    OptionalLayout `json:"body_layout"`
+	EDReplyEmail  string         `json:"ed_reply_email"`
+	CommitteeUIDs []string       `json:"committee_uids"`
+}
+
+// OptionalLayout distinguishes the three JSON states of an optional
+// body_layout field: key absent (Present false), explicit null (Present true,
+// Layout nil), and an object (Present true, Layout non-nil). encoding/json
+// only calls UnmarshalJSON when the key exists, which is what makes the
+// absent/null distinction observable.
+type OptionalLayout struct {
+	Present bool
+	Layout  *NewsletterLayout
+}
+
+// UnmarshalJSON implements the tri-state decode described on the type.
+func (o *OptionalLayout) UnmarshalJSON(b []byte) error {
+	o.Present = true
+	if string(bytes.TrimSpace(b)) == "null" {
+		o.Layout = nil
+		return nil
+	}
+	return json.Unmarshal(b, &o.Layout)
+}
+
+// MarshalJSON round-trips the tri-state: absent and explicit-null both encode
+// as null (requests are decode-oriented; the distinction only matters inbound).
+func (o OptionalLayout) MarshalJSON() ([]byte, error) {
+	if !o.Present || o.Layout == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(o.Layout)
 }
 
 // RecipientCountRequest is the body of POST /projects/{project_uid}/newsletters/recipient-count.
