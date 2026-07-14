@@ -4,11 +4,21 @@
 # On PR open AND on every new head: fire the needs-human escalation as an Agent
 # Tasks API task pinned to gpt-5.5. It runs the escalation and posts its
 # needs-human verdict comment via the writable GitHub MCP (add_issue_comment).
-# Re-running per head is safe and necessary: the label is sticky and add-only, so
-# a later "yes" can only add it, and a PR whose scope grows mid-review (auth,
-# schema, send-path) gets re-judged instead of riding the opening verdict. The
-# native review is requested by agentic-conductor, which also waits for it before
-# firing its own per-round reconcile task.
+# Re-running per head is what keeps a human override honest: an unlabel vouches
+# only for the code that existed when the human looked, and a PR whose scope
+# grows mid-review (auth, schema, send-path) gets re-judged instead of riding
+# the opening verdict. EXCEPT while the needs-human label is already set: the
+# label is sticky and add-only, so a re-run could only re-add what is already
+# there — the task is skipped and the model run saved. Every skip is recorded
+# as a per-head marker status (agentic-review/escalation), and the gate covers
+# the verdict gap this creates (heads pushed while labeled have none) by
+# honoring an authorized unlabel that postdates the current head's round start
+# — but only for marker-carrying heads, because a missing verdict without the
+# marker just means the judge is still in flight. Once a human removes the
+# label, the next push resumes these runs, so new code after an override is
+# re-judged. The native review is requested by
+# agentic-conductor, which also waits for it before firing its own per-round
+# reconcile task.
 #
 # We do NOT poll or wait here. The agent posts its verdict via the MCP PAT, so the
 # comment is attributed to lfx-reviewer (not a Copilot actor) and triggers
@@ -92,8 +102,76 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Fire escalation task (gpt-5.5) — posts the needs-human verdict
+      - name: Skip when the needs-human label is already set
+        id: label
         if: steps.cfg.outputs.present == 'true'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # The label is sticky and add-only: while it is set, a re-run could
+          # only conclude "yes" again and re-add what is already there. Skip the
+          # task; the gate handles heads without a verdict via the authorized
+          # unlabel timing rule, and runs resume on the first push after a
+          # human removes the label. A failed label read fails this run (loud)
+          # rather than guessing.
+          #
+          # ORDERING GUARANTEE: before deciding to skip, wait for the
+          # conductor's pending stamp on this head — the gate's round marker
+          # for the unlabel-timing rule. This makes the marker precede every
+          # skip: an unlabel BEFORE this check means the label is already
+          # absent, so no skip happens and the task produces a normal per-head
+          # verdict; an unlabel AFTER a skip necessarily postdates the marker
+          # and is honored by the gate. Without the wait, an unlabel landing
+          # between a skip and a late stamp would be rejected with no verdict
+          # ever coming. The gate additionally requires the skip marker to be
+          # NEWER (by numeric status id) than the round's pending stamp — the
+          # marker-after-stamp order this wait guarantees for fresh heads. On
+          # a reused SHA an OLD stamp can satisfy this wait before the current
+          # round's stamp lands; the resulting too-early marker simply fails
+          # closed at the gate (withhold, recover via label toggle or next
+          # push). If the stamp never appears (conductor failed early),
+          # fire the task rather than skip — fail open toward running the
+          # judge, never toward silence.
+          MARKED=false
+          for _ in $(seq 1 12); do   # ~60s at 5s
+            S="$(gh api "repos/$REPO/commits/$HEAD_SHA/statuses" --paginate \
+                  --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | .id" \
+                  2>/dev/null | head -1 || true)"
+            if [ -n "$S" ]; then MARKED=true; break; fi
+            sleep 5
+          done
+          if [ "$MARKED" != "true" ]; then
+            echo "::notice::no conductor stamp for this head yet; not skipping (the judge runs)"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Paginate: the label could sit past the first page on a label-heavy
+          # PR. Capture first so a SIGPIPE from an early-exiting grep can never
+          # skew the pipeline status under pipefail; grep -qx matches the whole
+          # line only.
+          LABELS="$(gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name')"
+          if printf '%s\n' "$LABELS" | grep -qx "needs-human"; then
+            # Record the skip as a per-head marker status. The gate's
+            # verdict-less fallback honors an authorized unlabel ONLY for
+            # heads that carry this marker: a missing verdict alone is
+            # ambiguous — the judge could be running right now, and an unlabel
+            # must never approve ahead of its inbound "yes". SHA-bound like
+            # every other trusted artifact here; written once per skipped
+            # push, far below the per-SHA/context status cap. A failed write
+            # fails this step loud — no marker and no verdict simply withholds
+            # the gate until a label toggle or the next push.
+            gh api "repos/$REPO/statuses/$HEAD_SHA" \
+              -f state=success -f context=agentic-review/escalation \
+              -f description="skipped pr=#$PR: needs-human label set" > /dev/null
+            echo "needs-human already set; escalation task skipped (sticky label, nothing to add); skip marker status recorded on $HEAD_SHA." >> "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fire escalation task (gpt-5.5) — posts the needs-human verdict
+        if: steps.cfg.outputs.present == 'true' && steps.label.outputs.skip != 'true'
         run: |
           TID=$(gh api "/agents/repos/$REPO/tasks" \
             -H "X-GitHub-Api-Version: 2026-03-10" --method POST \
