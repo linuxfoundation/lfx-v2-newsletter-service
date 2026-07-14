@@ -241,11 +241,15 @@ jobs:
           # partial list whose maximum can be an older authorized event while
           # the true newest (possibly unauthorized) one is missing — fail
           # open. A failed read therefore leaves AUTH_UNLABEL empty, which
-          # withholds every branch that needs an unlabel.
-          AUTH_UNLABEL=""
+          # withholds every branch that needs an unlabel — and TL_OK false,
+          # which withholds the "no"-verdict branch too: with no complete
+          # timeline, "no unlabel ever happened" cannot be distinguished from
+          # "the read failed", and only the former may stand on its own.
+          AUTH_UNLABEL=""; LAST_TS=""; TL_OK=false
           if EVENTS="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
             --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [((.id // 0) | tostring), .created_at, (.actor.login // "")] | @tsv' \
             2>/dev/null)"; then
+            TL_OK=true
             LAST_EVENT="$(printf '%s\n' "$EVENTS" | grep -v '^$' | sort -n | tail -1 || true)"
             if [ -n "$LAST_EVENT" ]; then
               LAST_TS="$(printf '%s' "$LAST_EVENT" | cut -f2)"
@@ -270,7 +274,20 @@ jobs:
           if [ -n "$V" ]; then
             V_TS="${V%%	*}"; V_VAL="${V##*	}"
             if [ "$V_VAL" = "no" ]; then
-              ESC_OK=true
+              # A "no" verdict does not stand on its own: the needs-human
+              # label is also a MANUAL override surface (anyone with triage
+              # can raise it), and the allowlist invariant — the most recent
+              # unlabel overall must be authorized — applies to that flag no
+              # matter what the per-head judge said. The verdict prevails
+              # only over unlabels OLDER than itself (the judge's later "no"
+              # is fresher evidence, and that round already adjudicated the
+              # earlier removal); an unlabel AFTER the verdict must be
+              # authorized. Requires a complete timeline read (TL_OK).
+              if [ "$TL_OK" = "true" ]; then
+                if [ -z "$LAST_TS" ] || [ -n "$AUTH_UNLABEL" ] || [ "$V_TS" \> "$LAST_TS" ]; then
+                  ESC_OK=true
+                fi
+              fi
             elif [ "$V_VAL" = "yes" ]; then
               if [ -n "$AUTH_UNLABEL" ] && [ "$AUTH_UNLABEL" \> "$V_TS" ]; then
                 ESC_OK=true
@@ -401,7 +418,11 @@ jobs:
             # queued behind its evaluation. Any change since evaluation aborts
             # (fail closed) — the signal that changed things re-derives on its own.
             esc_ok() {
-              # Same rule as Evaluate gate: an explicit per-head "no"; or a
+              # Same rule as Evaluate gate: an explicit per-head "no" (which
+              # stands only if the latest needs-human unlabel is authorized,
+              # absent, or older than the verdict — the label is also a
+              # manual override surface and the allowlist invariant applies
+              # regardless of the judge's answer); or a
               # "yes" with a later AUTHORIZED unlabel; or — for a head pushed
               # while the label was set, proven by escalation's per-head skip
               # marker status — an authorized unlabel newer than the head's
@@ -414,21 +435,21 @@ jobs:
               # second precision and must never fall through to actor login).
               # Same completeness rule as Evaluate gate: a partial paginated
               # timeline must never authorize (its maximum can be an older
-              # authorized event while the true newest is missing), so a
-              # failed read leaves AUTH_UNLABEL empty and the unlabel
-              # branches withhold.
-              AUTH_UNLABEL=""
-              if EVENTS="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
+              # authorized event while the true newest is missing), and a
+              # complete read is a precondition of EVERY branch here — the
+              # "no" branch must distinguish "no unlabel ever" from "read
+              # failed" — so a failed read withholds outright.
+              AUTH_UNLABEL=""; LAST_TS=""
+              EVENTS="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
                 --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [((.id // 0) | tostring), .created_at, (.actor.login // "")] | @tsv' \
-                2>/dev/null)"; then
-                LAST_EVENT="$(printf '%s\n' "$EVENTS" | grep -v '^$' | sort -n | tail -1 || true)"
-                if [ -n "$LAST_EVENT" ]; then
-                  LAST_TS="$(printf '%s' "$LAST_EVENT" | cut -f2)"
-                  LAST_ACTOR="$(printf '%s' "$LAST_EVENT" | cut -f3)"
-                  case " $NEEDS_HUMAN_UNLABELERS " in
-                    *" $LAST_ACTOR "*) [ -n "$LAST_ACTOR" ] && AUTH_UNLABEL="$LAST_TS" ;;
-                  esac
-                fi
+                2>/dev/null)" || return 1
+              LAST_EVENT="$(printf '%s\n' "$EVENTS" | grep -v '^$' | sort -n | tail -1 || true)"
+              if [ -n "$LAST_EVENT" ]; then
+                LAST_TS="$(printf '%s' "$LAST_EVENT" | cut -f2)"
+                LAST_ACTOR="$(printf '%s' "$LAST_EVENT" | cut -f3)"
+                case " $NEEDS_HUMAN_UNLABELERS " in
+                  *" $LAST_ACTOR "*) [ -n "$LAST_ACTOR" ] && AUTH_UNLABEL="$LAST_TS" ;;
+                esac
               fi
               # A failed verdict lookup withholds outright — never read an API
               # error as "no verdict exists" (that would fail open into the
@@ -457,7 +478,13 @@ jobs:
                 [ -n "$SKIP_ID" ] && [ -n "$ROUND_ID" ] && [ "$SKIP_ID" -gt "$ROUND_ID" ] && [ -n "$AUTH_UNLABEL" ] && [ "$AUTH_UNLABEL" \> "$ROUND_TS" ]
                 return
               fi
-              [ "${V##*	}" = "no" ] && return 0
+              if [ "${V##*	}" = "no" ]; then
+                # The "no" stands only over an unlabel history it can vouch
+                # for: latest unlabel absent, authorized, or older than the
+                # verdict (same rule as Evaluate gate).
+                [ -z "$LAST_TS" ] || [ -n "$AUTH_UNLABEL" ] || [ "${V%%	*}" \> "$LAST_TS" ]
+                return
+              fi
               [ "${V##*	}" = "yes" ] || return 1
               [ -n "$AUTH_UNLABEL" ] && [ "$AUTH_UNLABEL" \> "${V%%	*}" ]
             }
