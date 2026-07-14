@@ -28,8 +28,8 @@ func TestListTemplates(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v. body=%s", err, w.Body.String())
 	}
-	if len(resp.Templates) != 2 {
-		t.Fatalf("expected 2 templates, got %d", len(resp.Templates))
+	if len(resp.Templates) != 3 {
+		t.Fatalf("expected 3 templates, got %d", len(resp.Templates))
 	}
 	byKey := map[string]string{}
 	for _, tpl := range resp.Templates {
@@ -40,6 +40,9 @@ func TestListTemplates(t *testing.T) {
 	}
 	if byKey["aaif-user-community"] == "" {
 		t.Errorf("expected a label for aaif-user-community")
+	}
+	if byKey["executive-director-weekly"] != "Executive Director Weekly" {
+		t.Errorf("executive-director-weekly label = %q, want Executive Director Weekly", byKey["executive-director-weekly"])
 	}
 }
 
@@ -63,8 +66,8 @@ func TestGetTemplateManifest(t *testing.T) {
 	if manifest.WrapperKey != "default" {
 		t.Errorf("wrapper_key = %q, want default", manifest.WrapperKey)
 	}
-	if len(manifest.Blocks) != 18 {
-		t.Errorf("expected 18 palette entries, got %d", len(manifest.Blocks))
+	if len(manifest.Blocks) != 23 {
+		t.Errorf("expected 23 palette entries, got %d", len(manifest.Blocks))
 	}
 	if manifest.Wrapper == "" {
 		t.Errorf("expected a non-empty wrapper body")

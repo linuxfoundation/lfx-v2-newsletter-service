@@ -15,7 +15,7 @@ func TestEmbeddedTemplateKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedTemplateKeys: %v", err)
 	}
-	want := []string{"aaif-user-community", "default"}
+	want := []string{"aaif-user-community", "default", "executive-director-weekly"}
 	if len(keys) != len(want) {
 		t.Fatalf("expected %d template keys, got %d (%v)", len(want), len(keys), keys)
 	}
@@ -56,8 +56,8 @@ func TestBuildEmbeddedManifest_AAIF(t *testing.T) {
 	}
 
 	// The full palette: 14 blocks + 4 bricks in one namespace.
-	if len(m.Blocks) != 18 {
-		t.Errorf("expected 18 palette entries, got %d", len(m.Blocks))
+	if len(m.Blocks) != 23 {
+		t.Errorf("expected 23 palette entries, got %d", len(m.Blocks))
 	}
 
 	// Deterministic ordering by block_type.
