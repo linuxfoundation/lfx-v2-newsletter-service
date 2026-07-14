@@ -238,26 +238,29 @@ const preheaderMaxLen = 140
 // blockBoundaryRe matches closing block-level tags and self-standing breaks.
 // The editor can serialize adjacent blocks without whitespace, so these must
 // become separators before the tag strip or "<p>Hello</p><p>members</p>"
-// reads "Hellomembers".
-var blockBoundaryRe = regexp.MustCompile(`(?i)</(?:p|div|li|ul|ol|h[1-6]|blockquote|pre|tr|table)>|<(?:br|hr)(\s[^>]*)?/?>`)
+// reads "Hellomembers". Table cells count: authored bodies can carry tables,
+// and "<td>Name</td><td>Status</td>" must not read "NameStatus".
+var blockBoundaryRe = regexp.MustCompile(`(?i)</(?:p|div|li|ul|ol|h[1-6]|blockquote|pre|td|th|tr|table)>|<(?:br|hr)(\s[^>]*)?/?>`)
 
 // previewText derives the inbox-preview snippet from the authored body: block
-// boundaries turned into spaces, tags stripped, character references decoded,
-// whitespace collapsed to single spaces, truncated at a word boundary. Empty
-// when the body has no text content.
+// boundaries turned into spaces, tags stripped, character references decoded
+// exactly once, whitespace collapsed to single spaces, truncated at a word
+// boundary. Empty when the body has no text content.
 func previewText(bodyHTML string) string {
-	text := stripHTML(blockBoundaryRe.ReplaceAllString(bodyHTML, " "))
-	// stripHTML only decodes the entity set the chrome emits; authored bodies
-	// can carry any named or numeric reference (&mdash;, &#8217;, …), which
-	// must become characters here or the final escaping pass turns them into
-	// visible entity syntax.
+	// Strip tags without stripHTML: its entity pass would decode "&amp;mdash;"
+	// to "&mdash;" and the UnescapeString below would decode again to "—",
+	// so an author who wrote the literal text "&mdash;" would see a preview
+	// that differs from the visible body. One UnescapeString performs the
+	// single decode for every named or numeric reference.
+	text := tagRe.ReplaceAllString(blockBoundaryRe.ReplaceAllString(bodyHTML, " "), "")
 	text = html.UnescapeString(text)
 	text = strings.Join(strings.Fields(text), " ")
 	runes := []rune(text)
 	if len(runes) <= preheaderMaxLen {
 		return text
 	}
-	cut := string(runes[:preheaderMaxLen])
+	// Reserve one rune for the ellipsis so the result never exceeds the cap.
+	cut := string(runes[:preheaderMaxLen-1])
 	if idx := strings.LastIndex(cut, " "); idx > 0 {
 		cut = cut[:idx]
 	}
@@ -268,14 +271,16 @@ func previewText(bodyHTML string) string {
 // preview line. Without it, clients fall back to the first rendered text —
 // the header chrome, which just repeats the subject. The trailing
 // zero-width-joiner padding stops that chrome from bleeding into the preview
-// after a short snippet.
+// after a short snippet: clients show up to ~preheaderMaxLen characters, so
+// the padding provides at least that many non-collapsible spaces and a short
+// preview still fills the whole window.
 func renderPreheaderHTML(bodyHTML string) string {
 	preview := previewText(bodyHTML)
 	if preview == "" {
 		return ""
 	}
 	return `<div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">` +
-		escapeHTML(preview) + strings.Repeat("&nbsp;&zwnj;", 30) + `</div>
+		escapeHTML(preview) + strings.Repeat("&nbsp;&zwnj;", preheaderMaxLen) + `</div>
 `
 }
 

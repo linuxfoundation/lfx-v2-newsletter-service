@@ -51,6 +51,16 @@ func TestPreviewText(t *testing.T) {
 			bodyHTML: "<p>May update &mdash; what&#8217;s new &amp; next</p>",
 			want:     "May update — what’s new & next",
 		},
+		{
+			name:     "table cells get separators",
+			bodyHTML: "<table><tr><td>Name</td><td>Status</td></tr><tr><th>Total</th><td>4</td></tr></table>",
+			want:     "Name Status Total 4",
+		},
+		{
+			name:     "entities decode exactly once",
+			bodyHTML: "<p>escape it as &amp;mdash; in HTML</p>",
+			want:     "escape it as &mdash; in HTML",
+		},
 	}
 
 	for _, tt := range tests {
@@ -66,12 +76,22 @@ func TestPreviewText(t *testing.T) {
 		if !strings.HasSuffix(got, "…") {
 			t.Fatalf("previewText() = %q, want ellipsis suffix", got)
 		}
-		trimmed := strings.TrimSuffix(got, "…")
-		if len([]rune(trimmed)) > preheaderMaxLen {
-			t.Errorf("previewText() length = %d runes, want <= %d", len([]rune(trimmed)), preheaderMaxLen)
+		if len([]rune(got)) > preheaderMaxLen {
+			t.Errorf("previewText() length = %d runes including ellipsis, want <= %d", len([]rune(got)), preheaderMaxLen)
 		}
+		trimmed := strings.TrimSuffix(got, "…")
 		if strings.HasSuffix(trimmed, " ") || !strings.HasSuffix(trimmed, "lorem") && !strings.HasSuffix(trimmed, "ipsum") {
 			t.Errorf("previewText() = %q, want cut on a whole word", got)
+		}
+	})
+
+	t.Run("unbroken long word stays within the cap including ellipsis", func(t *testing.T) {
+		got := previewText("<p>" + strings.Repeat("a", 3*preheaderMaxLen) + "</p>")
+		if !strings.HasSuffix(got, "…") {
+			t.Fatalf("previewText() = %q, want ellipsis suffix", got)
+		}
+		if len([]rune(got)) > preheaderMaxLen {
+			t.Errorf("previewText() length = %d runes including ellipsis, want <= %d", len([]rune(got)), preheaderMaxLen)
 		}
 	})
 }
@@ -94,8 +114,8 @@ func TestEmailHTMLPreheader(t *testing.T) {
 		if !strings.Contains(html[:headerIdx], "display:none") {
 			t.Error("preheader container must be hidden")
 		}
-		if !strings.Contains(html, "&nbsp;&zwnj;") {
-			t.Error("preheader must pad with zero-width joiners so chrome does not bleed into the preview")
+		if got := strings.Count(html, "&nbsp;&zwnj;"); got < preheaderMaxLen {
+			t.Errorf("preheader padding = %d &nbsp;&zwnj; pairs, want >= %d so a short preview fills the whole client window and chrome does not bleed in", got, preheaderMaxLen)
 		}
 	})
 
