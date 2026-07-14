@@ -205,7 +205,7 @@ jobs:
             # shellcheck disable=SC2016  # $o/$r/$n/$endCursor are GraphQL variables, not shell expansions
             PR_TIDS=$(gh api graphql --paginate -f query='query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor}nodes{id comments(first:1){nodes{author{login}}}}}}}}' \
               -f o="${REPO%%/*}" -f r="${REPO##*/}" -F n="$PR" \
-              --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select((.comments.nodes[0].author.login // "") | test("^(copilot(-pull-request-reviewer)?|github-actions)$"; "i")) | .id')
+              --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select((.comments.nodes[0].author.login // "") | test("^(copilot(-pull-request-reviewer)?|github-actions)(\\[bot\\])?$"; "i")) | .id')
             for tid in $(printf '%s\n' "$ROWS" | sed -nE 's/.*id:[[:space:]]*([^[:space:],]+).*/\1/p'); do
               printf '%s\n' "$PR_TIDS" | grep -qxF "$tid" || { echo "::warning::thread $tid does not belong to PR #$PR"; UNKNOWN_N=$((UNKNOWN_N+1)); }
             done

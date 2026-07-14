@@ -190,7 +190,7 @@ jobs:
           REPLIED="$(gh api graphql --paginate \
             -f query='query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor}nodes{comments(first:1){totalCount nodes{author{login}}}}}}}}' \
             -f o="${REPO%%/*}" -f r="${REPO##*/}" -F n="$PR" \
-            --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(((.comments.nodes[0].author.login // "") | test("^(copilot(-pull-request-reviewer)?|github-actions)$"; "i")) and .comments.totalCount > 1) | 1')"
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(((.comments.nodes[0].author.login // "") | test("^(copilot(-pull-request-reviewer)?|github-actions)(\\[bot\\])?$"; "i")) and .comments.totalCount > 1) | 1')"
           REPLIED_N="$(printf '%s\n' "$REPLIED" | grep -c . || true)"
           if [ "${PRIOR_N:-0}" -eq 0 ] && [ "${EARLIER_N:-0}" -eq 0 ] && [ "${REPLIED_N:-0}" -eq 0 ]; then
             echo "first=true" >> "$GITHUB_OUTPUT"
@@ -225,7 +225,7 @@ jobs:
           TH="$(gh api graphql --paginate \
             -f query='query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor}nodes{id comments(first:1){totalCount nodes{author{login} path body}}}}}}}' \
             -f o="${REPO%%/*}" -f r="${REPO##*/}" -F n="$PR" \
-            --jq '.data.repository.pullRequest.reviewThreads.nodes[] | {id: .id, count: .comments.totalCount, ai: ((.comments.nodes[0].author.login // "") | test("^(copilot(-pull-request-reviewer)?|github-actions)$"; "i")), path: (.comments.nodes[0].path // ""), body: (.comments.nodes[0].body // "")}')"
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[] | {id: .id, count: .comments.totalCount, ai: ((.comments.nodes[0].author.login // "") | test("^(copilot(-pull-request-reviewer)?|github-actions)(\\[bot\\])?$"; "i")), path: (.comments.nodes[0].path // ""), body: (.comments.nodes[0].body // "")}')"
           BODY_FILE="$RUNNER_TEMP/agentic-check.md"
           # The whole comment is assembled in jq: finding text is untrusted, so it
           # is reduced to a sanitized one-line excerpt (HTML-comment delimiters
