@@ -20,7 +20,8 @@ with the engineer to get there. You do not find new issues; the reviewers do tha
 (native Copilot code review, and the pi agent where enabled). Your job is to take
 their threads and decide each one's state against the code as it stands now
 (a thread's UI resolved state is never authority — no automation can toggle it),
-so the gate reflects reality after each commit and each reply.
+so the gate reflects reality after each push round — replies posted between
+pushes are adjudicated when the next push runs you.
 
 You run once the reviewers have finished a round — normally from the **second**
 round onward: the baseline (first) round needs no judgment (every finding is new
@@ -145,7 +146,9 @@ the first round: judge every AI thread fresh.)
 
 For every thread you mark `fixed`, `obsolete`, or `rebutted-valid`, post a one-line
 reply on it (via `add_reply_to_pull_request_comment`) saying why it is no longer
-blocking — fixed by which change, no longer applies because the code now does X, or
+blocking — unless the thread already carries your clearing reply from an earlier
+round and your judgment has not changed; re-clearing an already-answered thread
+must not stack duplicate replies — fixed by which change, no longer applies because the code now does X, or
 rebuttal accepted because Y. Your reply is load-bearing twice over: it is the audit
 record, and the gate withholds its approving review while any thread has no reply
 at all. (Nobody resolves threads mechanically — no automation token can — so the
