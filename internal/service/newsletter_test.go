@@ -183,15 +183,18 @@ func TestUpdateDraft_OmittingLayout_KeepsExistingLayout(t *testing.T) {
 	}
 	repo.drafts[existing.ID] = existing
 
-	// Update WITHOUT body_layout — e.g. an autosave that round-trips only body_html.
-	// The stored layout must be KEPT, not silently cleared (which would route the
-	// next send down the legacy path and re-wrap the full emitter document).
+	// Update WITHOUT body_layout — e.g. an autosave that round-trips only
+	// body_html — while also changing the reply address. The stored layout must
+	// be KEPT, not silently cleared (which would route the next send down the
+	// legacy path and re-wrap the full emitter document), and body_html must be
+	// RE-DERIVED from that layout so the wrapper footer carries the CURRENT
+	// reply address rather than the one baked in at the previous save.
 	updated, err := svc.UpdateDraft(context.Background(), "p1", UpdateDraftInput{
 		ID:              existing.ID,
 		ExpectedVersion: 1,
 		Subject:         "New subject",
 		BodyHTML:        "<p>just html</p>",
-		EDReplyEmail:    "ed@example.com",
+		EDReplyEmail:    "new-ed@example.com",
 		CommitteeUIDs:   []string{"c1"},
 	})
 	if err != nil {
@@ -200,8 +203,20 @@ func TestUpdateDraft_OmittingLayout_KeepsExistingLayout(t *testing.T) {
 	if len(updated.BodyLayout) == 0 {
 		t.Fatal("expected the existing body_layout to be kept when the update omits it")
 	}
-	if updated.BodyHTML != derivedHTML {
-		t.Errorf("expected the derived body_html kept, not overwritten; got %q", updated.BodyHTML)
+	if updated.BodyHTML == derivedHTML {
+		t.Error("expected body_html re-derived from the stored layout, not the stale copy")
+	}
+	if !strings.Contains(updated.BodyHTML, "hi") {
+		t.Errorf("re-derived body_html must contain the stored layout's block content; got %q", updated.BodyHTML)
+	}
+	if !strings.Contains(updated.BodyHTML, "mailto:new-ed@example.com") {
+		t.Error("re-derived body_html must carry the update's reply address in the footer")
+	}
+	if strings.Contains(updated.BodyHTML, "mailto:ed@example.com") {
+		t.Error("re-derived body_html must not keep the previous reply address")
+	}
+	if strings.Contains(updated.BodyHTML, "just html") {
+		t.Error("the request's body_html must still be ignored on the preserve branch")
 	}
 	if updated.Subject != "New subject" {
 		t.Errorf("expected other fields to still update; subject = %q", updated.Subject)

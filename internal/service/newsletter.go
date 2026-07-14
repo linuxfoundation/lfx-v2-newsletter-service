@@ -338,12 +338,29 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 		}
 	case len(existing.BodyLayout) > 0:
 		// The saved newsletter IS a layout newsletter and this update omits
-		// body_layout — KEEP the stored layout + its derived body_html rather than
-		// silently downgrading to plain body_html (which would make the next send
-		// re-wrap the full emitter document in email_chrome → a broken email).
-		// The request's body_html is ignored on this branch; sending an explicit
+		// body_layout — KEEP the stored layout rather than silently downgrading
+		// to plain body_html (which would make the next send re-wrap the full
+		// emitter document in email_chrome → a broken email). The request's
+		// body_html is ignored on this branch; sending an explicit
 		// "body_layout": null is the way to convert back to html-only.
-		bodyHTML, bodyLayout = existing.BodyHTML, existing.BodyLayout
+		//
+		// body_html is RE-DERIVED from the stored layout instead of copied:
+		// render-on-write bakes request-scoped values (the reply-to mailto in
+		// the wrapper footer) into the derived HTML, so an update that changes
+		// ed_reply_email while omitting body_layout must not preserve a footer
+		// pointing at the previous address.
+		var stored declarative.Layout
+		if err := json.Unmarshal(existing.BodyLayout, &stored); err != nil {
+			return nil, fmt.Errorf("unmarshal stored body_layout: %w", err)
+		}
+		html, raw, renderErr := renderLayout(ctx, &stored, in.EDReplyEmail, s.unsubEnabled)
+		if renderErr != nil {
+			return nil, renderErr
+		}
+		if validateErr := validateDerivedBodyHTML(html); validateErr != nil {
+			return nil, validateErr
+		}
+		bodyHTML, bodyLayout = html, raw
 	default:
 		// Legacy html-only newsletter: body_html must be valid as authored.
 		if validateErr := validateBodyHTML(in.BodyHTML); validateErr != nil {

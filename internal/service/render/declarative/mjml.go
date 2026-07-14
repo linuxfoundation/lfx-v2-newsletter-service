@@ -117,6 +117,19 @@ func writeSection(b *strings.Builder, n *node) {
 		if len(seg.inline) == 0 {
 			continue
 		}
+		// The common authoring pattern <Section><div style="padding:…">…</div>
+		// wraps ALL of a section's content in one padded layout div. That div
+		// dissolves during translation (it cannot become an MJML element), so
+		// without hoisting, its padding/background would be silently dropped —
+		// promote its container-mappable declarations onto the mj-column that
+		// replaces it.
+		if len(seg.inline) == 1 && seg.inline[0] != nil && inertTags[seg.inline[0].Tag] && hasBlockDescendant(seg.inline[0]) {
+			wrapper := seg.inline[0]
+			b.WriteString("<mj-section" + style + "><mj-column" + styleAttr(wrapper, styleColumn) + ">")
+			writeChildren(b, wrapper.Children)
+			b.WriteString("</mj-column></mj-section>")
+			continue
+		}
 		b.WriteString("<mj-section" + style + "><mj-column>")
 		writeChildren(b, seg.inline)
 		b.WriteString("</mj-column></mj-section>")
@@ -284,7 +297,10 @@ func writeChildren(b *strings.Builder, children []*node) {
 			// An inert container (e.g. a layout div) that wraps block-level
 			// MJML content (a poll's buttons). It cannot be inlined into an
 			// mj-text run, so dissolve it and recurse: block descendants are
-			// hoisted to their own MJML elements, inline ones re-grouped.
+			// hoisted to their own MJML elements, inline ones re-grouped. The
+			// container's own styling is dropped HERE; the common one-wrapper-
+			// per-section pattern is instead hoisted onto the mj-column in
+			// writeSection, which preserves its padding/background.
 			flush()
 			writeChildren(b, c.Children)
 		default:
@@ -510,6 +526,82 @@ func buttonStyleMappings(style string) []styleMapping {
 		}
 	}
 	return out
+}
+
+// classStyleDefs are the canonical inline-style definitions for the template
+// authoring classes (card, eyebrow, title, body, ...). The declarative
+// templates ship no stylesheet — these classes were authored as semantic
+// markers — so without this mapping they had no effect on the compiled email.
+// applyClassStyles merges each definition UNDER the element's inline style
+// (inline declarations win per property), after which the existing
+// styleAttr / textInnerStyle pipeline carries them into the output.
+var classStyleDefs = map[string]string{
+	"card":        "background-color:#ffffff;border-radius:8px;padding:5px 0",
+	"eyebrow":     "font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#6b7c93;padding:14px 0 2px",
+	"title":       "font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;font-size:22px;line-height:1.3;font-weight:bold;color:#222222;padding:4px 0 8px",
+	"brick-title": "font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;font-size:18px;line-height:1.3;font-weight:bold;color:#222222;padding:4px 0 6px",
+	"body":        "font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#555555",
+	"divider":     "border-color:#e2e8f0;border-width:1px;padding:8px 0",
+	"link":        "color:#4086c6;text-decoration:underline",
+}
+
+// mergeStyleDecls layers override's declarations on top of base's, keeping
+// first-seen property order and letting the override win per property.
+func mergeStyleDecls(base, override string) string {
+	var order []string
+	vals := map[string]string{}
+	for _, css := range []string{base, override} {
+		for _, decl := range strings.Split(css, ";") {
+			parts := strings.SplitN(decl, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			prop := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+			if prop == "" || val == "" {
+				continue
+			}
+			if _, seen := vals[prop]; !seen {
+				order = append(order, prop)
+			}
+			vals[prop] = val
+		}
+	}
+	var b strings.Builder
+	for i, prop := range order {
+		if i > 0 {
+			b.WriteString(";")
+		}
+		b.WriteString(prop + ":" + vals[prop])
+	}
+	return b.String()
+}
+
+// applyClassStyles walks a bound tree merging each node's class-derived
+// declarations under its inline style, so the semantic authoring classes
+// take visual effect. Unknown classes are ignored. Runs once per render,
+// before translation.
+func applyClassStyles(nodes []*node) {
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		if cls := n.Attrs["class"]; cls != "" {
+			var classCSS string
+			for _, token := range strings.Fields(cls) {
+				if def, ok := classStyleDefs[token]; ok {
+					if classCSS != "" {
+						classCSS += ";"
+					}
+					classCSS += def
+				}
+			}
+			if classCSS != "" {
+				n.Attrs["style"] = mergeStyleDecls(classCSS, n.Attrs["style"])
+			}
+		}
+		applyClassStyles(n.Children)
+	}
 }
 
 // styleKind selects which MJML element's legal-attribute set styleAttr

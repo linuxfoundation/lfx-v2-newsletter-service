@@ -72,6 +72,10 @@ func RenderMJML(layout Layout, templates Templates, wrapperContent map[string]an
 		return "", err
 	}
 
+	// Give the semantic authoring classes their canonical styles before
+	// translation (inline styles win per property).
+	applyClassStyles(assembled)
+
 	return translate(assembled), nil
 }
 

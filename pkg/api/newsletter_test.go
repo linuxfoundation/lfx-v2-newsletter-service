@@ -5,6 +5,7 @@ package api
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -34,5 +35,18 @@ func TestOptionalLayout_TriState(t *testing.T) {
 	}
 	if !obj.BodyLayout.Present || obj.BodyLayout.Layout == nil || obj.BodyLayout.Layout.WrapperKey != "default" {
 		t.Errorf("object must decode Present=true with the layout; got %+v", obj.BodyLayout)
+	}
+}
+func TestOptionalLayout_ZeroValueOmitted(t *testing.T) {
+	b, err := json.Marshal(UpdateNewsletterRequest{Subject: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "body_layout") {
+		t.Errorf("zero-value OptionalLayout must be omitted, got %s", b)
+	}
+	b2, _ := json.Marshal(UpdateNewsletterRequest{Subject: "s", BodyLayout: OptionalLayout{Present: true}})
+	if !strings.Contains(string(b2), `"body_layout":null`) {
+		t.Errorf("explicit null must marshal as null, got %s", b2)
 	}
 }

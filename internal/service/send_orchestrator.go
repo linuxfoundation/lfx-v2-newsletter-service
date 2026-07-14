@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/mail"
 	"strings"
@@ -818,10 +819,14 @@ func (o *SendOrchestrator) renderBody(isLayout bool, in bodyRenderInput) (htmlBo
 // legacy paths: legacy chrome bodies only ever contain the unsubscribe
 // sentinel, so the layout-only substitutions are no-ops there.
 //
-//   - %%UNSUBSCRIBE_URL%%          → the recipient's signed unsubscribe link.
-//   - %%MANAGE_SUBSCRIPTIONS_URL%% → the manage/preferences link. There is no
-//     distinct preferences endpoint today, so it reuses the unsubscribe URL —
-//     the same single opt-out surface the legacy chrome footer points at.
+//   - %%UNSUBSCRIBE_URL%%          → the recipient's signed unsubscribe link
+//     (HTML-escaped; it lands in an href attribute).
+//   - %%MANAGE_SUBSCRIPTIONS_URL%% → EMPTY, never the unsubscribe URL: that
+//     URL performs a destructive one-click opt-out on GET, so aliasing it
+//     under a preferences label would silently unsubscribe recipients.
+//     Render-on-write also binds the field empty (the wrapper drops the
+//     link); this replacement is defensive for bodies rendered before that
+//     change. A real preferences surface replaces it.
 //   - %%VIEW_ONLINE_URL%%          → the hosted "view online" link. No hosted
 //     web-version exists yet, so render-on-write leaves edition.view_online_link
 //     empty and the wrapper's `if=` guard drops the View Online row at RENDER
@@ -829,22 +834,17 @@ func (o *SendOrchestrator) renderBody(isLayout bool, in bodyRenderInput) (htmlBo
 //     substitution below is a harmless no-op kept for when the surface ships.
 //
 // When the unsubscribe service is not configured (Enabled() false) the
-// unsubscribe/manage sentinels are replaced with empty strings rather than left
-// as raw %%…%% text, so a misconfigured environment never ships visible
-// sentinels to recipients.
+// render-on-write step already omits the opt-out row; replacing any leftover
+// sentinels with empty strings here is a defensive backstop so a misconfigured
+// environment never ships visible sentinels to recipients.
 func (o *SendOrchestrator) substitutePlaceholders(body, projectUID, email string) string {
 	unsubURL := ""
 	if o.unsub.Enabled() {
 		unsubURL = o.unsub.BuildURL(projectUID, email)
 	}
 	replacer := strings.NewReplacer(
-		UnsubscribeURLPlaceholder, unsubURL,
-		// The manage-preferences sentinel resolves to EMPTY, never to the
-		// unsubscribe URL: that URL opts the recipient out on GET, so aliasing
-		// it under a "Manage your email preferences" label would silently
-		// unsubscribe people. Render-on-write also binds the field empty (the
-		// wrapper drops the link), so this is a defensive no-op for bodies
-		// rendered before that change. A real preferences surface replaces it.
+		UnsubscribeURLPlaceholder, html.EscapeString(unsubURL),
+		// Empty, never the unsubscribe URL — see the function comment.
 		ManageSubscriptionsURLPlaceholder, "",
 		ViewOnlineURLPlaceholder, "",
 	)
@@ -854,11 +854,14 @@ func (o *SendOrchestrator) substitutePlaceholders(body, projectUID, email string
 // substituteSendScope binds the send-scoped (not per-recipient) sentinels: the
 // resolved sender display name and project name for the wrapper's compliance
 // footer ("Sent by X on behalf of Y"). Runs once per send, before the
-// per-recipient fan-out.
+// per-recipient fan-out. Values are HTML-escaped: they land in already-compiled
+// HTML, and the sender name (auth-service profile) and project name
+// (project-service) are external data — the legacy chrome path escapes the
+// same values.
 func substituteSendScope(body, senderName, projectName string) string {
 	return strings.NewReplacer(
-		SenderNamePlaceholder, fallbackString(senderName, "Executive Director"),
-		ProjectNamePlaceholder, projectName,
+		SenderNamePlaceholder, html.EscapeString(fallbackString(senderName, "Executive Director")),
+		ProjectNamePlaceholder, html.EscapeString(projectName),
 	).Replace(body)
 }
 

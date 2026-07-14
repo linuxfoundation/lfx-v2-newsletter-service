@@ -26,9 +26,12 @@ import (
 const UnsubscribeURLPlaceholder = "%%UNSUBSCRIBE_URL%%"
 
 // ViewOnlineURLPlaceholder and ManageSubscriptionsURLPlaceholder are the
-// sibling sentinels for the wrapper's other per-recipient runtime URLs. The
-// render-on-write step binds them so the wrapper's guarded chrome rows render;
-// the send path substitutes the real per-recipient values (increment 2b).
+// sibling sentinels for the wrapper's other runtime URLs. Render-on-write
+// currently binds BOTH fields empty (no hosted web version and no preferences
+// surface exist yet), so the wrapper's guarded rows are omitted; the send
+// path's substitutions for these two are defensive backstops for bodies
+// rendered before that change, resolving them to empty rather than shipping
+// raw %%…%% text.
 const (
 	ViewOnlineURLPlaceholder          = "%%VIEW_ONLINE_URL%%"
 	ManageSubscriptionsURLPlaceholder = "%%MANAGE_SUBSCRIPTIONS_URL%%"

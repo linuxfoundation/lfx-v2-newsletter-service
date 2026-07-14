@@ -55,3 +55,57 @@ func TestRender_SectionStylingReachesCompiledHTML(t *testing.T) {
 		t.Error("compiled HTML missing the section's authored padding:0 15px")
 	}
 }
+
+// TestRender_ClassStylesReachCompiledHTML pins the class mapping: the
+// semantic authoring classes (card, eyebrow, body) now carry canonical
+// styles into the compiled email. hidden_gems authors card on its Section,
+// an eyebrow Text, and body richtext.
+func TestRender_ClassStylesReachCompiledHTML(t *testing.T) {
+	templates, err := LoadEmbedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout := Layout{WrapperKey: "default", Blocks: []Block{{
+		BlockType: "hidden_gems",
+		Content: map[string]any{"title": "Gems", "gems": []any{map[string]any{
+			"link_text": "Gem one", "link_url": "https://example.com/g", "description": "<p>desc</p>",
+		}}},
+	}}}
+	html, err := Render(context.Background(), layout, templates, map[string]any{"edition": map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"background-color:#ffffff", // card on the section
+		"text-transform:uppercase", // eyebrow inner div
+		"letter-spacing:1px",       // eyebrow inner div
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("compiled HTML missing class-derived declaration %q", want)
+		}
+	}
+}
+
+// TestRender_DissolvedWrapperPaddingHoisted pins the wrapper hoist: the
+// <Section><div style="padding:…">…</div> authoring pattern promotes the
+// dissolved div's padding onto the mj-column instead of dropping it.
+// hidden_gems wraps its content in <div style="padding:15px 15px 5px">.
+func TestRender_DissolvedWrapperPaddingHoisted(t *testing.T) {
+	templates, err := LoadEmbedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout := Layout{WrapperKey: "default", Blocks: []Block{{
+		BlockType: "hidden_gems",
+		Content: map[string]any{"title": "Gems", "gems": []any{map[string]any{
+			"link_text": "Gem one", "link_url": "https://example.com/g", "description": "<p>desc</p>",
+		}}},
+	}}}
+	html, err := Render(context.Background(), layout, templates, map[string]any{"edition": map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, "padding:15px 15px 5px") {
+		t.Error("dissolved wrapper div's padding did not reach the compiled email")
+	}
+}

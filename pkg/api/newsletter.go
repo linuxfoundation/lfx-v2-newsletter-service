@@ -76,7 +76,7 @@ type CreateNewsletterRequest struct {
 type UpdateNewsletterRequest struct {
 	Subject       string         `json:"subject"`
 	BodyHTML      string         `json:"body_html"`
-	BodyLayout    OptionalLayout `json:"body_layout"`
+	BodyLayout    OptionalLayout `json:"body_layout,omitzero"`
 	EDReplyEmail  string         `json:"ed_reply_email"`
 	CommitteeUIDs []string       `json:"committee_uids"`
 }
@@ -101,13 +101,22 @@ func (o *OptionalLayout) UnmarshalJSON(b []byte) error {
 	return json.Unmarshal(b, &o.Layout)
 }
 
-// MarshalJSON round-trips the tri-state: absent and explicit-null both encode
-// as null (requests are decode-oriented; the distinction only matters inbound).
+// MarshalJSON round-trips the tri-state. The field carries the omitzero tag
+// and IsZero reports true for the not-Present zero value, so a Go client that
+// zero-initializes UpdateNewsletterRequest OMITS body_layout (preserve) rather
+// than accidentally sending an explicit null (clear). Explicit null therefore
+// requires Present true with a nil Layout — an intentional act.
 func (o OptionalLayout) MarshalJSON() ([]byte, error) {
-	if !o.Present || o.Layout == nil {
+	if o.Layout == nil {
 		return []byte("null"), nil
 	}
 	return json.Marshal(o.Layout)
+}
+
+// IsZero implements the encoding/json omitzero contract: the zero value
+// (Present false) is omitted from marshaled requests.
+func (o OptionalLayout) IsZero() bool {
+	return !o.Present
 }
 
 // RecipientCountRequest is the body of POST /projects/{project_uid}/newsletters/recipient-count.
@@ -222,6 +231,9 @@ type RenderPreviewResponse struct {
 
 // NewsletterListItem is one row in the unified list response. Inherits the
 // Newsletter shape and adds engagement fields populated only when status='sent'.
+// body_layout is always omitted on list rows: a layout can approach the 1 MiB
+// request cap and list pages return up to 100 rows, so carrying it would bloat
+// one list response by up to ~100 MiB. Fetch the single newsletter to get it.
 type NewsletterListItem struct {
 	Newsletter
 	UniqueOpens *int     `json:"unique_opens,omitempty"`

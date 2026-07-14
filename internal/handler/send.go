@@ -4,6 +4,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
@@ -50,7 +51,7 @@ func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusAccepted
 	}
 	w.Header().Set("ETag", formatETag(result.Newsletter.Version))
-	writeJSON(r.Context(), w, status, toAPISendResponse(result))
+	writeJSON(r.Context(), w, status, toAPISendResponse(r.Context(), result))
 }
 
 // RecipientCount handles POST /projects/{project_uid}/newsletters/recipient-count.
@@ -116,13 +117,13 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 }
 
 // toAPISendResponse converts a service SendResult into the public API DTO.
-func toAPISendResponse(result *service.SendResult) publicapi.SendNewsletterResponse {
+func toAPISendResponse(ctx context.Context, result *service.SendResult) publicapi.SendNewsletterResponse {
 	failures := make([]publicapi.SendFailure, 0, len(result.Failures))
 	for _, f := range result.Failures {
 		failures = append(failures, publicapi.SendFailure{Email: f.Email, Error: f.Error})
 	}
 	return publicapi.SendNewsletterResponse{
-		Newsletter:      *toAPINewsletter(result.Newsletter),
+		Newsletter:      *toAPINewsletter(ctx, result.Newsletter),
 		GroupID:         result.GroupID,
 		TotalRecipients: result.TotalRecipients,
 		Sent:            result.Sent,

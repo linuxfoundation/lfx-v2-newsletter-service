@@ -1274,7 +1274,8 @@ func TestSendNewsletterLayoutNotDoubleWrapped(t *testing.T) {
 				t.Errorf("send to %s: placeholder %q not substituted", s.To, ph)
 			}
 		}
-		// Unsubscribe + manage both resolve to the recipient's signed link.
+		// Only the unsubscribe link resolves to the recipient's signed URL;
+		// manage-preferences resolves empty (asserted below).
 		wantURL := unsub.BuildURL("p1", s.To)
 		if got := strings.Count(s.HTML, wantURL); got != 1 {
 			t.Errorf("send to %s: expected the unsubscribe link only to use %q (1 occurrence), got %d in %s", s.To, wantURL, got, s.HTML)

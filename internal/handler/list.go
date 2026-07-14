@@ -4,6 +4,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
@@ -36,7 +37,7 @@ func (h *Handler) ListNewsletters(w http.ResponseWriter, r *http.Request) {
 		NextPageToken: page.NextPageToken,
 	}
 	for _, n := range page.Newsletters {
-		out.Newsletters = append(out.Newsletters, toAPIListItem(n))
+		out.Newsletters = append(out.Newsletters, toAPIListItem(r.Context(), n))
 	}
 	writeJSON(r.Context(), w, http.StatusOK, out)
 }
@@ -45,6 +46,10 @@ func (h *Handler) ListNewsletters(w http.ResponseWriter, r *http.Request) {
 // totals are derived from the persisted row (total_recipients is set at send
 // time); per-newsletter analytics (open rate, unique opens) require a separate
 // call to /analytics so the list query stays a single DB round-trip.
-func toAPIListItem(n *model.Newsletter) publicapi.NewsletterListItem {
-	return publicapi.NewsletterListItem{Newsletter: *toAPINewsletter(n)}
+func toAPIListItem(ctx context.Context, n *model.Newsletter) publicapi.NewsletterListItem {
+	row := *toAPINewsletter(ctx, n)
+	// List rows never carry body_layout (see the NewsletterListItem doc):
+	// layouts can be ~1 MiB each and pages return up to 100 rows.
+	row.BodyLayout = nil
+	return publicapi.NewsletterListItem{Newsletter: row}
 }
