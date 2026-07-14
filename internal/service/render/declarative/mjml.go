@@ -559,7 +559,7 @@ func styleAttr(n *node, kind styleKind) string {
 		if val == "" || !allow[prop] {
 			continue
 		}
-		b.WriteString(fmt.Sprintf(" %s=%q", prop, html.EscapeString(val)))
+		fmt.Fprintf(&b, " %s=%q", prop, html.EscapeString(val))
 	}
 	return b.String()
 }

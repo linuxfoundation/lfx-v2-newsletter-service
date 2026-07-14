@@ -15,7 +15,7 @@ import (
 // intro_paragraph authors font-size:20px, line-height:1.5, color:#555, and
 // padding:20px 15px on its Text element.
 func TestRender_TextStylingReachesCompiledHTML(t *testing.T) {
-	templates, err := LoadEmbedded()
+	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestRender_TextStylingReachesCompiledHTML(t *testing.T) {
 // Section style="padding:0 15px") are promoted to MJML attributes rather
 // than dropped.
 func TestRender_SectionStylingReachesCompiledHTML(t *testing.T) {
-	templates, err := LoadEmbedded()
+	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
