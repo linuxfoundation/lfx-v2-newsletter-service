@@ -85,7 +85,15 @@ If none of those hold, it **blocks**:
 
 Reconcile **all** the reviewers' threads together in one pass (native Copilot review,
 pi): a blocking finding from any reviewer blocks the change. **Nits never block** and
-are never reopened.
+are never reopened — but they are not invisible either. Adjudicate every open nit
+thread with the same three questions: a nit that was genuinely addressed gets a
+`fixed` / `obsolete` / `rebutted-valid` row (so the deterministic step resolves its
+thread), and a nit that was not addressed gets **no row at all** — never `outstanding`
+or `rebutted-invalid`, because the deterministic step would hold its thread open and
+fight an engineer who chooses to resolve it with a comment instead of fixing it.
+Unaddressed nits belong in the human summary (see below): the gate withholds its
+approving review while any thread is unresolved, so the engineer must either fix
+each nit or reply on the thread and resolve it.
 
 `clean` is `true` if and only if there are **zero blocking AI threads** —
 `outstanding` and `rebutted-invalid` block; `fixed`, `obsolete`, `rebutted-valid`,
@@ -104,8 +112,10 @@ state, so no one clears the gate by resolving a thread.
 
 Your new block lists **every thread you adjudicated this round, one row each,
 whatever its status** — `fixed`, `obsolete`, `rebutted-valid`, `outstanding`, or
-`rebutted-invalid`. The deterministic step acts on all of them: it resolves the
-cleared rows and re-opens the blocking ones, so a cleared thread whose row you
+`rebutted-invalid` — with **exactly one exception: an unaddressed nit gets no row**
+(see the nit rule above; a row would make the deterministic step hold its thread
+open against the engineer). The deterministic step acts on all rows: it resolves
+the cleared ones and re-opens the blocking ones, so a cleared thread whose row you
 omit stays open forever. That means:
 
 - every carried-forward issue appears again with its newly judged status
@@ -149,6 +159,14 @@ correct change that can merge.
 - **Keep the human summary actionable:** list what is still blocking, why, and the
   concrete next step for each, and note what the change handled well. This summary is
   how the engineer knows what to do to reach clean.
+- **When the change is clean but any thread fails the gate's tidiness rule, say so
+  explicitly.** The gate holds the approving review until **every** thread on the PR
+  — AI-authored or human — is resolved AND carries at least one reply beyond the
+  finding. So list every thread that is still unresolved (nits included) and every
+  thread that was resolved silently without a reply, and state the way out: fix it,
+  or answer it with a reply and resolve it (for a silently-resolved thread, add the
+  missing reply). This list is exactly what stands between the engineer and the
+  approval.
 
 ## How you post
 
@@ -158,8 +176,9 @@ format defined in `/agentic-comment-format` for the agentic-check verdict: a hum
 summary of the blocking issues (what remains, why, the next step, and what the change
 handled well) followed by the fenced `<!-- agentic:check v1 -->` block that carries
 `head:` (the full SHA of the commit you judged), `clean:`, and one `- id:` line per
-thread you adjudicated. Only a block in a comment authored by you (the lfx-reviewer
-machine account) is trusted.
+thread you adjudicated — except unaddressed nits, which get prose in the summary and
+no row. Only a block in a comment authored by you (the lfx-reviewer machine account)
+is trusted.
 
 Per-thread replies to the engineer are separate short comments on those threads (via
 `add_reply_to_pull_request_comment`); your **one** issue comment carries the block and
