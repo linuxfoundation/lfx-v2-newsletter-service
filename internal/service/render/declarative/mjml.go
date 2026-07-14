@@ -65,7 +65,7 @@ func writeBlock(b *strings.Builder, n *node) {
 		writeSection(b, n)
 	case "column":
 		// A stray column at block level: wrap in a section.
-		b.WriteString("<mj-section" + styleAttr(n, false) + ">")
+		b.WriteString("<mj-section" + styleAttr(n, styleSection) + ">")
 		writeColumn(b, n)
 		b.WriteString("</mj-section>")
 	default:
@@ -91,7 +91,7 @@ func writeSection(b *strings.Builder, n *node) {
 	cols, others := partitionColumns(n.Children)
 	if len(cols) > 0 {
 		// Section is itself a row of columns: emit side-by-side directly.
-		b.WriteString("<mj-section" + styleAttr(n, false) + ">")
+		b.WriteString("<mj-section" + styleAttr(n, styleSection) + ">")
 		for _, c := range cols {
 			writeColumn(b, c)
 		}
@@ -107,7 +107,7 @@ func writeSection(b *strings.Builder, n *node) {
 	}
 
 	// Column-less run: split it around any multi-column breakouts.
-	style := styleAttr(n, false)
+	style := styleAttr(n, styleSection)
 	segments := splitBreakouts(n.Children)
 	for _, seg := range segments {
 		if seg.breakout != nil {
@@ -207,7 +207,7 @@ func containsBreakout(n *node) bool {
 // is not dropped.
 func writeBreakoutSection(b *strings.Builder, n *node) {
 	cols, others := partitionColumns(n.Children)
-	b.WriteString("<mj-section" + styleAttr(n, false) + ">")
+	b.WriteString("<mj-section" + styleAttr(n, styleSection) + ">")
 	for _, c := range cols {
 		writeColumn(b, c)
 	}
@@ -233,7 +233,7 @@ func partitionColumns(children []*node) (cols, others []*node) {
 
 // writeColumn emits an mj-column and its content.
 func writeColumn(b *strings.Builder, n *node) {
-	b.WriteString("<mj-column" + styleAttr(n, false) + ">")
+	b.WriteString("<mj-column" + styleAttr(n, styleColumn) + ">")
 	writeChildren(b, n.Children)
 	b.WriteString("</mj-column>")
 }
@@ -275,7 +275,7 @@ func writeChildren(b *strings.Builder, children []*node) {
 			writeButton(b, c)
 		case c.Tag == "hr":
 			flush()
-			b.WriteString("<mj-divider" + styleAttr(c, false) + " />")
+			b.WriteString("<mj-divider" + styleAttr(c, styleDivider) + " />")
 		case c.Tag == "text" || c.Tag == "heading":
 			// A Text/Heading is its own mj-text block.
 			flush()
@@ -334,9 +334,17 @@ func writeNestedLayout(b *strings.Builder, n *node) {
 	writeChildren(b, n.Children)
 }
 
-// writeTextBlock emits a single Text/Heading node as an mj-text element.
+// writeTextBlock emits a single Text/Heading node as an mj-text element. The
+// authored style is preserved: padding and color are promoted onto mj-text
+// (styleAttr), and the remaining declarations ride an inner div that MJML
+// passes through verbatim — without it, font-size, line-height, and the rest
+// of the authored text presentation silently fell back to MJML defaults.
 func writeTextBlock(b *strings.Builder, n *node) {
-	b.WriteString("<mj-text" + styleAttr(n, true) + ">")
+	b.WriteString("<mj-text" + styleAttr(n, styleText) + ">")
+	inner := textInnerStyle(n)
+	if inner != "" {
+		b.WriteString(`<div style="` + html.EscapeString(inner) + `">`)
+	}
 	if n.Tag == "heading" {
 		b.WriteString("<h2 style=\"margin:0\">")
 		writeInline(b, n.Children)
@@ -344,12 +352,35 @@ func writeTextBlock(b *strings.Builder, n *node) {
 	} else {
 		writeInline(b, n.Children)
 	}
+	if inner != "" {
+		b.WriteString("</div>")
+	}
 	b.WriteString("</mj-text>")
 }
 
 // writeInlineAsText wraps a run of inline nodes in one mj-text element. A
 // richtext node carries its own raw HTML.
+//
+// A run that is exactly one styled richtext element keeps its authored
+// presentation: padding and color are promoted onto mj-text, and the
+// remaining declarations (font-size, line-height, font-family, …) ride an
+// inner div wrapping the raw HTML — richtext previously emitted verbatim and
+// its style attribute was silently dropped, so blocks like intro_paragraph
+// rendered at MJML defaults.
 func writeInlineAsText(b *strings.Builder, nodes []*node) {
+	if len(nodes) == 1 && nodes[0] != nil && nodes[0].Tag == "richtext" && strings.TrimSpace(nodes[0].Attrs["style"]) != "" {
+		n := nodes[0]
+		b.WriteString("<mj-text" + styleAttr(n, styleText) + ">")
+		if inner := textInnerStyle(n); inner != "" {
+			b.WriteString(`<div style="` + html.EscapeString(inner) + `">`)
+			b.WriteString(n.Raw)
+			b.WriteString("</div>")
+		} else {
+			b.WriteString(n.Raw)
+		}
+		b.WriteString("</mj-text>")
+		return
+	}
 	b.WriteString("<mj-text>")
 	writeInline(b, nodes)
 	b.WriteString("</mj-text>")
@@ -481,28 +512,77 @@ func buttonStyleMappings(style string) []styleMapping {
 	return out
 }
 
-// styleAttr returns MJML styling attributes for a node. MJML strict mode
-// rejects an arbitrary inline `style` attribute on mj-section / mj-column /
-// mj-text, so layout styling is dropped here. The asText flag forwards a
-// recognized text color onto mj-text's `color` attribute when present; all
-// other text styling is left to the inner inert HTML, which keeps its style.
-func styleAttr(n *node, asText bool) string {
-	if n == nil || !asText {
+// styleKind selects which MJML element's legal-attribute set styleAttr
+// promotes onto. MJML strict mode rejects an arbitrary `style` attribute on
+// mj-section / mj-column / mj-text, and each element accepts a DIFFERENT set
+// of styling attributes (e.g. text-align is legal on mj-section and mj-text
+// but illegal on mj-column), so the allowlist is per element.
+type styleKind int
+
+const (
+	styleText styleKind = iota
+	styleSection
+	styleColumn
+	styleDivider
+)
+
+// styleAllow maps each style kind to the CSS declarations that MJML accepts
+// as native attributes on that element. Everything else is dropped for
+// containers; for text the remainder rides the inner styled div (see
+// writeTextBlock / writeInlineAsText). Classes cannot be mapped at all: the
+// declarative templates ship no stylesheet, so inline styles are the only
+// presentation carrier.
+var styleAllow = map[styleKind]map[string]bool{
+	styleText:    {"color": true, "padding": true},
+	styleSection: {"background-color": true, "padding": true, "border-radius": true, "text-align": true},
+	styleColumn:  {"background-color": true, "padding": true, "border-radius": true, "vertical-align": true},
+	styleDivider: {"padding": true, "border-color": true, "border-width": true, "width": true},
+}
+
+// styleAttr promotes a node's allowlisted inline CSS declarations onto the
+// MJML element as native attributes, so authored presentation (padding,
+// background, radius, text color) reaches the compiled email instead of
+// silently falling back to MJML defaults.
+func styleAttr(n *node, kind styleKind) string {
+	if n == nil {
 		return ""
 	}
+	allow := styleAllow[kind]
+	var b strings.Builder
 	for _, decl := range strings.Split(n.Attrs["style"], ";") {
 		parts := strings.SplitN(decl, ":", 2)
 		if len(parts) != 2 {
 			continue
 		}
-		if strings.TrimSpace(parts[0]) == "color" {
-			val := strings.TrimSpace(parts[1])
-			if val != "" {
-				return fmt.Sprintf(" color=%q", html.EscapeString(val))
-			}
+		prop := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		if val == "" || !allow[prop] {
+			continue
 		}
+		b.WriteString(fmt.Sprintf(" %s=%q", prop, html.EscapeString(val)))
 	}
-	return ""
+	return b.String()
+}
+
+// textInnerStyle returns the declarations writeTextBlock and styled richtext
+// runs carry on the inner div: everything except padding, which styleAttr
+// already promoted onto mj-text itself (keeping it on both would apply it
+// twice).
+func textInnerStyle(n *node) string {
+	var kept []string
+	for _, decl := range strings.Split(n.Attrs["style"], ";") {
+		parts := strings.SplitN(decl, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		prop := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		if val == "" || prop == "padding" {
+			continue
+		}
+		kept = append(kept, prop+":"+val)
+	}
+	return strings.Join(kept, ";")
 }
 
 // htmlAttrs renders forwarded attributes for an inline HTML element in a
