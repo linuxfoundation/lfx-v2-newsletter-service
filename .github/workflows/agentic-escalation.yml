@@ -110,8 +110,12 @@ jobs:
           # unlabel timing rule, and runs resume on the first push after a
           # human removes the label. A failed label read fails this run (loud)
           # rather than guessing.
-          PRESENT="$(gh api "repos/$REPO/issues/$PR/labels" --jq '[.[].name] | index("needs-human") != null')"
-          if [ "$PRESENT" = "true" ]; then
+          # Paginate: the label could sit past the first page on a label-heavy
+          # PR. Capture first so a SIGPIPE from an early-exiting grep can never
+          # skew the pipeline status under pipefail; grep -qx matches the whole
+          # line only.
+          LABELS="$(gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name')"
+          if printf '%s\n' "$LABELS" | grep -qx "needs-human"; then
             echo "needs-human already set; escalation task skipped (sticky label, nothing to add)." >> "$GITHUB_STEP_SUMMARY"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else

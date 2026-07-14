@@ -121,6 +121,11 @@ jobs:
         github.event.comment.user.login == 'lfx-reviewer' &&
         contains(github.event.comment.body, 'agentic:needs-human')))
     runs-on: ubuntu-latest
+    env:
+      # Humans whose needs-human unlabel this gate honors — the single source
+      # for both the Evaluate step and the pre-approval recheck. Space-
+      # separated logins; extending it takes a reviewed PR to this file.
+      NEEDS_HUMAN_UNLABELERS: "josep-reyero"
     steps:
       - uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
         with:
@@ -208,12 +213,13 @@ jobs:
           # malformed and withholds.
           #
           # Who may unlabel: GitHub has no per-label permissions, so the gate is
-          # the enforcement point. Only unlabels by the allowlisted logins below
-          # count; an unauthorized removal leaves the label gone but the gate
-          # withheld, and escalation re-labels on the next push. The allowlist
-          # lives in this default-branch workflow file, so changing it takes a
-          # reviewed PR through this very pipeline.
-          NEEDS_HUMAN_UNLABELERS="josep-reyero"
+          # the enforcement point. Only unlabels by the allowlisted logins
+          # (NEEDS_HUMAN_UNLABELERS, defined once at the job level so this step
+          # and the pre-approval recheck can never drift) count; an unauthorized
+          # removal leaves the label gone but the gate withheld, and escalation
+          # re-labels on the next push. The allowlist lives in this
+          # default-branch workflow file, so changing it takes a reviewed PR
+          # through this very pipeline.
           EVENTS="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
             --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [.created_at, (.actor.login // "")] | @tsv' \
             2>/dev/null | sort -r || true)"
@@ -341,8 +347,8 @@ jobs:
               # "yes" with a later AUTHORIZED unlabel; or — for a head pushed
               # while the label was set, which therefore has no verdict — an
               # authorized unlabel newer than the head's round start. Malformed
-              # verdicts withhold. The allowlist must match Evaluate gate.
-              NEEDS_HUMAN_UNLABELERS="josep-reyero"
+              # verdicts withhold. The allowlist is the job-level
+              # NEEDS_HUMAN_UNLABELERS, shared with Evaluate gate.
               EVENTS="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
                 --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [.created_at, (.actor.login // "")] | @tsv' \
                 2>/dev/null | sort -r || true)"
