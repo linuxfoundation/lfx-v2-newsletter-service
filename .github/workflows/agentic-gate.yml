@@ -41,11 +41,18 @@
 # It approves or dismisses only; it never merges. A human review is still expected.
 #
 # The needs-human label is the HUMAN override surface, by design: the escalation
-# judge can only raise the flag (the label is sticky and add-only), and a human
-# with triage permission removing the label is the sanctioned way to say "I have
-# looked, this may proceed". The gate honoring label absence after a human removed
-# it is therefore intended behavior, not a bypass — the escalation verdict for the
-# current head must still exist, and the clean status must still be green.
+# judge can only raise the flag (the label is sticky and add-only), and an
+# AUTHORIZED human removing the label is the sanctioned way to say "I have
+# looked, this may proceed". GitHub has no per-label permissions, so authority
+# is enforced HERE, not on the label: only unlabels by the allowlisted logins in
+# the Evaluate step count, an unauthorized removal leaves the gate withheld (and
+# escalation re-labels on the next push), and the allowlist lives in this
+# default-branch workflow file so changing it takes a reviewed PR. While the
+# label is set, escalation skips its per-head runs (the sticky label cannot be
+# added twice); the override timing rule covers the verdict gap — an authorized
+# unlabel counts for the current head only if it postdates that head's round
+# start, so a sign-off never extends to code pushed after the human looked. The
+# clean status and tidiness must still be green either way.
 ---
 name: Agentic Gate
 
@@ -185,19 +192,38 @@ jobs:
                     2>/dev/null | sort -n | tail -1 | cut -f2 || true)"
           NEEDS_HUMAN="$(gh pr view "$PR" --repo "$REPO" --json labels \
                           --jq 'any(.labels[].name; . == "needs-human")')"
-          # The escalation verdict for THIS head must exist AND its content
-          # decides: label absence is not a completed "no", because the apply run
+          # The escalation condition. A verdict for THIS head decides when one
+          # exists: label absence is not a completed "no", because the apply run
           # that sets the label may not have fired yet when the clean status
-          # lands. A per-head "yes" verdict withholds until a HUMAN removes the
-          # needs-human label AFTER that verdict (the unlabeled event is the
-          # sanctioned override; lfx-reviewer never removes labels). The verdict
-          # carries a `head:` marker (see /agentic-comment-format), so a stale
-          # verdict from an earlier push never vouches for newer commits.
-          # Emit per-page lines (--paginate applies --jq per page) and reduce in
-          # the shell: latest verdict for this head = last line after sort.
-          # Exactly one valid yes/no marker, or the verdict is malformed and
-          # withholds: a truncated agent response with the format/head markers
-          # but no explicit "no" must never read as a completed "no".
+          # lands. A per-head "yes" verdict withholds until an AUTHORIZED human
+          # removes the needs-human label AFTER that verdict. Heads pushed while
+          # the label was set have NO verdict (escalation skips labeled PRs —
+          # the sticky label cannot be added twice); for those, an authorized
+          # unlabel newer than the head's ROUND START (its earliest conductor
+          # stamp) is the sanctioned override — it vouches only for code that
+          # existed when the human looked, and the next push resumes escalation.
+          # The verdict carries a `head:` marker (see /agentic-comment-format),
+          # so a stale verdict from an earlier push never vouches for newer
+          # commits. Exactly one valid yes/no marker, or the verdict is
+          # malformed and withholds.
+          #
+          # Who may unlabel: GitHub has no per-label permissions, so the gate is
+          # the enforcement point. Only unlabels by the allowlisted logins below
+          # count; an unauthorized removal leaves the label gone but the gate
+          # withheld, and escalation re-labels on the next push. The allowlist
+          # lives in this default-branch workflow file, so changing it takes a
+          # reviewed PR through this very pipeline.
+          NEEDS_HUMAN_UNLABELERS="josep-reyero"
+          EVENTS="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
+            --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [.created_at, (.actor.login // "")] | @tsv' \
+            2>/dev/null | sort -r || true)"
+          AUTH_UNLABEL=""
+          while IFS="$(printf '\t')" read -r ts actor; do
+            [ -n "$ts" ] && [ -n "$actor" ] || continue
+            case " $NEEDS_HUMAN_UNLABELERS " in
+              *" $actor "*) AUTH_UNLABEL="$ts"; break ;;
+            esac
+          done <<< "$EVENTS"
           V="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
             --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"<!-- agentic:needs-human v1 -->\")) and (.body | contains(\"<!-- head: $HEAD -->\"))) | [.created_at, (if ((.body | contains(\"<!-- needs-human: yes -->\")) and (.body | contains(\"<!-- needs-human: no -->\"))) then \"malformed\" elif (.body | contains(\"<!-- needs-human: yes -->\")) then \"yes\" elif (.body | contains(\"<!-- needs-human: no -->\")) then \"no\" else \"malformed\" end)] | @tsv" \
             2>/dev/null | sort | tail -1 || true)"
@@ -207,12 +233,19 @@ jobs:
             if [ "$V_VAL" = "no" ]; then
               ESC_OK=true
             elif [ "$V_VAL" = "yes" ]; then
-              LAST_UNLABEL="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
-                --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human" and .actor.login!="lfx-reviewer") | .created_at' \
-                2>/dev/null | sort | tail -1 || true)"
-              if [ -n "$LAST_UNLABEL" ] && [ "$LAST_UNLABEL" \> "$V_TS" ]; then
+              if [ -n "$AUTH_UNLABEL" ] && [ "$AUTH_UNLABEL" \> "$V_TS" ]; then
                 ESC_OK=true
               fi
+            fi
+          else
+            # No verdict for this head: legitimate only when the head arrived
+            # while the label was set. Earliest conductor stamp for this head+PR
+            # marks the round start (min status id — append-only and monotonic).
+            ROUND_TS="$(gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
+              --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .created_at] | @tsv" \
+              2>/dev/null | sort -n | head -1 | cut -f2 || true)"
+            if [ -n "$ROUND_TS" ] && [ -n "$AUTH_UNLABEL" ] && [ "$AUTH_UNLABEL" \> "$ROUND_TS" ]; then
+              ESC_OK=true
             fi
           fi
           # Tidiness: every review thread (AI or human) must carry at least one
@@ -241,7 +274,7 @@ jobs:
           fi
           echo "clean=$CLEAN needs-human=$NEEDS_HUMAN escalation=${V:-none} esc_ok=$ESC_OK threads-without-reply=$NOREPLY (head $HEAD)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$ESC_OK" != "true" ]; then
-            echo "Escalation verdict for this head is missing, or says yes without a later human override." >> "$GITHUB_STEP_SUMMARY"
+            echo "Escalation not satisfied: no per-head 'no' verdict, and no authorized needs-human unlabel newer than the verdict (or, for a verdict-less head, newer than the head's round start)." >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ "$THREADS_OK" != "true" ]; then
             echo "Review threads are not tidy: every thread needs at least one reply before the gate approves." >> "$GITHUB_STEP_SUMMARY"
@@ -304,20 +337,35 @@ jobs:
             # queued behind its evaluation. Any change since evaluation aborts
             # (fail closed) — the signal that changed things re-derives on its own.
             esc_ok() {
-              # Same rule as Evaluate gate: latest per-head trusted verdict must
-              # be an explicit "no", or an explicit "yes" with a later human
-              # needs-human unlabel. A malformed verdict (no single valid marker)
-              # withholds.
+              # Same rule as Evaluate gate: an explicit per-head "no"; or a
+              # "yes" with a later AUTHORIZED unlabel; or — for a head pushed
+              # while the label was set, which therefore has no verdict — an
+              # authorized unlabel newer than the head's round start. Malformed
+              # verdicts withhold. The allowlist must match Evaluate gate.
+              NEEDS_HUMAN_UNLABELERS="josep-reyero"
+              EVENTS="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
+                --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [.created_at, (.actor.login // "")] | @tsv' \
+                2>/dev/null | sort -r || true)"
+              AUTH_UNLABEL=""
+              while IFS="$(printf '\t')" read -r ts actor; do
+                [ -n "$ts" ] && [ -n "$actor" ] || continue
+                case " $NEEDS_HUMAN_UNLABELERS " in
+                  *" $actor "*) AUTH_UNLABEL="$ts"; break ;;
+                esac
+              done <<< "$EVENTS"
               V="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
                 --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"<!-- agentic:needs-human v1 -->\")) and (.body | contains(\"<!-- head: $HEAD -->\"))) | [.created_at, (if ((.body | contains(\"<!-- needs-human: yes -->\")) and (.body | contains(\"<!-- needs-human: no -->\"))) then \"malformed\" elif (.body | contains(\"<!-- needs-human: yes -->\")) then \"yes\" elif (.body | contains(\"<!-- needs-human: no -->\")) then \"no\" else \"malformed\" end)] | @tsv" \
                 2>/dev/null | sort | tail -1 || true)"
-              [ -n "$V" ] || return 1
+              if [ -z "$V" ]; then
+                ROUND_TS="$(gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
+                  --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .created_at] | @tsv" \
+                  2>/dev/null | sort -n | head -1 | cut -f2 || true)"
+                [ -n "$ROUND_TS" ] && [ -n "$AUTH_UNLABEL" ] && [ "$AUTH_UNLABEL" \> "$ROUND_TS" ]
+                return
+              fi
               [ "${V##*	}" = "no" ] && return 0
               [ "${V##*	}" = "yes" ] || return 1
-              LAST_UNLABEL="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
-                --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human" and .actor.login!="lfx-reviewer") | .created_at' \
-                2>/dev/null | sort | tail -1 || true)"
-              [ -n "$LAST_UNLABEL" ] && [ "$LAST_UNLABEL" \> "${V%%	*}" ]
+              [ -n "$AUTH_UNLABEL" ] && [ "$AUTH_UNLABEL" \> "${V%%	*}" ]
             }
             threads_ok() {
               # Same rule as Evaluate gate: every thread has at least one reply

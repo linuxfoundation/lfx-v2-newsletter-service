@@ -4,11 +4,18 @@
 # On PR open AND on every new head: fire the needs-human escalation as an Agent
 # Tasks API task pinned to gpt-5.5. It runs the escalation and posts its
 # needs-human verdict comment via the writable GitHub MCP (add_issue_comment).
-# Re-running per head is safe and necessary: the label is sticky and add-only, so
-# a later "yes" can only add it, and a PR whose scope grows mid-review (auth,
-# schema, send-path) gets re-judged instead of riding the opening verdict. The
-# native review is requested by agentic-conductor, which also waits for it before
-# firing its own per-round reconcile task.
+# Re-running per head is what keeps a human override honest: an unlabel vouches
+# only for the code that existed when the human looked, and a PR whose scope
+# grows mid-review (auth, schema, send-path) gets re-judged instead of riding
+# the opening verdict. EXCEPT while the needs-human label is already set: the
+# label is sticky and add-only, so a re-run could only re-add what is already
+# there — the task is skipped and the model run saved. The gate covers the
+# verdict gap this creates (heads pushed while labeled have none) by honoring
+# an authorized unlabel that postdates the current head's round start; and once
+# a human removes the label, the next push resumes these runs, so new code
+# after an override is re-judged. The native review is requested by
+# agentic-conductor, which also waits for it before firing its own per-round
+# reconcile task.
 #
 # We do NOT poll or wait here. The agent posts its verdict via the MCP PAT, so the
 # comment is attributed to lfx-reviewer (not a Copilot actor) and triggers
@@ -92,8 +99,27 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Fire escalation task (gpt-5.5) — posts the needs-human verdict
+      - name: Skip when the needs-human label is already set
+        id: label
         if: steps.cfg.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          # The label is sticky and add-only: while it is set, a re-run could
+          # only conclude "yes" again and re-add what is already there. Skip the
+          # task; the gate handles heads without a verdict via the authorized
+          # unlabel timing rule, and runs resume on the first push after a
+          # human removes the label. A failed label read fails this run (loud)
+          # rather than guessing.
+          PRESENT="$(gh api "repos/$REPO/issues/$PR/labels" --jq '[.[].name] | index("needs-human") != null')"
+          if [ "$PRESENT" = "true" ]; then
+            echo "needs-human already set; escalation task skipped (sticky label, nothing to add)." >> "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fire escalation task (gpt-5.5) — posts the needs-human verdict
+        if: steps.cfg.outputs.present == 'true' && steps.label.outputs.skip != 'true'
         run: |
           TID=$(gh api "/agents/repos/$REPO/tasks" \
             -H "X-GitHub-Api-Version: 2026-03-10" --method POST \
