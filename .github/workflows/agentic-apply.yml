@@ -37,6 +37,16 @@
 # pattern lfx-v2-argocd uses for the lfx-one PAT — so no GitHub secret is
 # provisioned per repo. The comment body is passed via env, never interpolated
 # into the run script, to avoid script injection.
+#
+# EXCEPTION — thread resolves/unresolves run on the WORKFLOW token, not the PAT:
+# the fine-grained PAT consistently fails the resolveReviewThread /
+# unresolveReviewThread GraphQL mutations (observed live on PR #35 while every
+# REST write and GraphQL read succeeded). Resolution is not a trust signal (the
+# gate reads the verdict block, never thread state as authority) and needs to
+# trigger nothing (thread changes emit no workflow events; the gate's scheduled
+# sweep covers liveness), so the github-actions identity is fine. The label and
+# status writes MUST stay on the PAT: GITHUB_TOKEN-created events do not start
+# workflows, and the gate is triggered by exactly those events.
 ---
 name: Agentic Apply
 
@@ -44,10 +54,13 @@ name: Agentic Apply
   issue_comment:
     types: [created]
 
-# id-token is what lets the job assume the AWS role via OIDC; everything the job
-# writes on GitHub goes through the fetched PAT, not the workflow token.
+# id-token is what lets the job assume the AWS role via OIDC. Labels and commit
+# statuses go through the fetched PAT (their events must trigger the gate);
+# pull-requests: write is for the workflow-token thread resolves/unresolves —
+# see the header exception.
 permissions:
   id-token: write
+  pull-requests: write
 
 # Deliberately NO concurrency group: GitHub keeps at most ONE pending run per
 # group and a newer queued run replaces it, so a burst of trusted comments
@@ -68,6 +81,8 @@ jobs:
       REPO: ${{ github.repository }}
       PR: ${{ github.event.issue.number }}
       BODY: ${{ github.event.comment.body }}
+      # Workflow token for the thread mutations only — see the header exception.
+      GH_BOT_TOKEN: ${{ github.token }}
     steps:
       - uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
         with:
@@ -216,17 +231,19 @@ jobs:
             st=$(printf '%s' "$meta" | sed -nE 's/.*status:[[:space:]]*([^[:space:],]+).*/\1/p')
             # Only mutate threads that belong to this PR (validated above).
             printf '%s\n' "$PR_TIDS" | grep -qxF "$tid" || { echo "skipping foreign thread $tid"; continue; }
+            # The mutations run on the workflow token (GH_TOKEN override), not the
+            # PAT — the fine-grained PAT cannot run them; see the header exception.
             case "$st" in
               fixed|obsolete|rebutted-valid)
                 # shellcheck disable=SC2016  # $id is a GraphQL variable, not a shell expansion
-                if OUT="$(gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id="$tid" 2>&1)"; then
+                if OUT="$(GH_TOKEN="$GH_BOT_TOKEN" gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id="$tid" 2>&1)"; then
                   echo "resolved $tid ($st)"
                 else
                   echo "::warning::could not resolve thread $tid: $(printf '%s' "$OUT" | tr '\n' ' ')"
                 fi ;;
               outstanding|rebutted-invalid)
                 # shellcheck disable=SC2016  # $id is a GraphQL variable, not a shell expansion
-                if OUT="$(gh api graphql -f query='mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id="$tid" 2>&1)"; then
+                if OUT="$(GH_TOKEN="$GH_BOT_TOKEN" gh api graphql -f query='mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id="$tid" 2>&1)"; then
                   echo "kept open $tid ($st)"
                 else
                   echo "::warning::could not unresolve thread $tid: $(printf '%s' "$OUT" | tr '\n' ' ')"
