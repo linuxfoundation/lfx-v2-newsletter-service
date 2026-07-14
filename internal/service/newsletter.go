@@ -138,7 +138,7 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 		// Bound the DERIVED body_html to the same ceiling the legacy path enforces
 		// — the layout input is only 1 MiB-capped, and MJML compilation expands it,
 		// so an unbounded derived body could otherwise be persisted + emailed.
-		if err := validateBodyHTML(html); err != nil {
+		if err := validateDerivedBodyHTML(html); err != nil {
 			return nil, err
 		}
 		bodyHTML, bodyLayout = html, raw
@@ -322,8 +322,9 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 		if renderErr != nil {
 			return nil, renderErr
 		}
-		// Bound the DERIVED body_html to the same ceiling the legacy path enforces.
-		if validateErr := validateBodyHTML(html); validateErr != nil {
+		// Bound the DERIVED body_html to the same ceiling the legacy path
+		// enforces, but as 422 (matching render-preview for the same output).
+		if validateErr := validateDerivedBodyHTML(html); validateErr != nil {
 			return nil, validateErr
 		}
 		bodyHTML, bodyLayout = html, raw
@@ -395,6 +396,18 @@ func validateSubject(subject string) error {
 	}
 	if len(trimmed) > maxSubjectLength {
 		return fmt.Errorf("%w: subject exceeds %d characters", domain.ErrInvalidRequest, maxSubjectLength)
+	}
+	return nil
+}
+
+// validateDerivedBodyHTML bounds the DERIVED (layout-rendered) body_html.
+// Unlike validateBodyHTML this classifies an oversized document as
+// ErrUnprocessable (422) with the same message render-preview uses: the
+// request itself was well-formed and the request's body_html is ignored on
+// the layout path, so a 400 blaming body_html would be misleading.
+func validateDerivedBodyHTML(html string) error {
+	if len(html) > maxBodyHTMLLength {
+		return fmt.Errorf("%w: rendered HTML exceeds %d bytes", domain.ErrUnprocessable, maxBodyHTMLLength)
 	}
 	return nil
 }

@@ -351,3 +351,30 @@ func TestUpdateDraft_ExplicitNullLayout_ClearsToHTMLOnly(t *testing.T) {
 		t.Errorf("expected request body_html to be taken as-is, got %q", updated.BodyHTML)
 	}
 }
+
+// TestCreateDraft_OversizedDerivedHTML_Is422 pins the status-code contract:
+// an oversized DERIVED (layout-rendered) document is 422 unprocessable, the
+// same classification render-preview gives the identical output — not a 400
+// blaming a body_html field the request never supplied.
+func TestCreateDraft_OversizedDerivedHTML_Is422(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, true)
+
+	_, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "big",
+		BodyLayout:    introLayout(strings.Repeat("x", 100_001)),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if err == nil {
+		t.Fatal("expected an error for oversized derived HTML")
+	}
+	if !IsUnprocessableError(err) {
+		t.Errorf("expected 422 unprocessable classification, got: %v", err)
+	}
+	if IsValidationError(err) {
+		t.Errorf("must not classify as 400 invalid_request: %v", err)
+	}
+}

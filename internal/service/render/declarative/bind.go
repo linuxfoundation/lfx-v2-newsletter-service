@@ -164,9 +164,13 @@ func bindNode(n *parsedNode, ctx bindCtx) ([]*node, error) {
 }
 
 // bindAttrs forwards allowlisted attributes, substituting {{mustache}} in
-// their values (escaped). URL attributes (href/src) are additionally gated
-// through safeURL — a bound value with a non-allowlisted scheme (javascript:,
-// data:, …) or an empty/relative value is dropped rather than emitted.
+// their values. Values are kept RAW here: serialization escapes every
+// attribute exactly once (writeAttr), so escaping at bind time would
+// double-escape — a URL like ?a=1&b=2 would ship as &amp;amp; and the link
+// would resolve with a broken amp;b parameter. URL attributes (href/src) are
+// additionally gated through safeURL — a bound value with a non-allowlisted
+// scheme (javascript:, data:, …) or an empty/relative value is dropped rather
+// than emitted.
 func bindAttrs(attrs map[string]string, content map[string]any) map[string]string {
 	out := map[string]string{}
 	for k, v := range attrs {
@@ -174,7 +178,7 @@ func bindAttrs(attrs map[string]string, content map[string]any) map[string]strin
 			continue
 		}
 		bound := mustachePattern.ReplaceAllStringFunc(v, func(m string) string {
-			return html.EscapeString(lookupString(content, mustacheField(m)))
+			return lookupString(content, mustacheField(m))
 		})
 		// A whole-value deferred send-time sentinel (e.g. %%UNSUBSCRIBE_URL%%)
 		// resolves to a server-generated URL at send time, so pass it through.

@@ -361,3 +361,25 @@ func TestRender_WrapperEditionFields(t *testing.T) {
 		t.Errorf("unsubscribe row should be absent without wrapperContent")
 	}
 }
+
+// TestBindAttrs_SingleEscape pins the fix for double-escaped attribute values:
+// bindAttrs keeps bound values RAW and serialization (writeAttr) escapes
+// exactly once, so a URL with query parameters ships as &amp; in the HTML, not
+// &amp;amp; (which delivered links with a broken amp;-prefixed parameter).
+func TestBindAttrs_SingleEscape(t *testing.T) {
+	url := "https://example.com/?a=1&b=2"
+	got := bindAttrs(map[string]string{"href": "{{link}}"}, map[string]any{"link": url})
+	if got["href"] != url {
+		t.Fatalf("bindAttrs must keep the value raw; got %q", got["href"])
+	}
+
+	var b strings.Builder
+	writeAttr(&b, "href", got["href"])
+	out := b.String()
+	if !strings.Contains(out, "a=1&amp;b=2") {
+		t.Errorf("serialized attr must escape once: %q", out)
+	}
+	if strings.Contains(out, "&amp;amp;") {
+		t.Errorf("serialized attr is double-escaped: %q", out)
+	}
+}
