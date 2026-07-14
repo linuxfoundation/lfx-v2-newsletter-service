@@ -204,9 +204,11 @@ jobs:
           # removes the needs-human label AFTER that verdict. Heads pushed while
           # the label was set have NO verdict (escalation skips labeled PRs —
           # the sticky label cannot be added twice); for those, an authorized
-          # unlabel newer than the head's ROUND START (its earliest conductor
-          # stamp) is the sanctioned override — it vouches only for code that
-          # existed when the human looked, and the next push resumes escalation.
+          # unlabel newer than the head's round marker (the NEWEST pending
+          # conductor stamp for this head+PR, which on a reoccurring SHA
+          # belongs to the current occurrence) is the sanctioned override — it
+          # vouches only for code that existed when the human looked, and the
+          # next push resumes escalation.
           # The verdict carries a `head:` marker (see /agentic-comment-format),
           # so a stale verdict from an earlier push never vouches for newer
           # commits. Exactly one valid yes/no marker, or the verdict is
@@ -224,13 +226,16 @@ jobs:
           # removal is what produced the current label state, and an older
           # authorized unlabel must never vouch for a state an unauthorized
           # hand created later. Unauthorized (or unattributed) newest event →
-          # no authorized unlabel at all.
+          # no authorized unlabel at all. Ordered by the numeric timeline
+          # event id: created_at has second precision, and a same-second tie
+          # must never fall through to the actor login.
           LAST_EVENT="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
-            --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [.created_at, (.actor.login // "")] | @tsv' \
-            2>/dev/null | sort | tail -1 || true)"
+            --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [((.id // 0) | tostring), .created_at, (.actor.login // "")] | @tsv' \
+            2>/dev/null | sort -n | tail -1 || true)"
           AUTH_UNLABEL=""
           if [ -n "$LAST_EVENT" ]; then
-            LAST_TS="${LAST_EVENT%%	*}"; LAST_ACTOR="${LAST_EVENT##*	}"
+            LAST_TS="$(printf '%s' "$LAST_EVENT" | cut -f2)"
+            LAST_ACTOR="$(printf '%s' "$LAST_EVENT" | cut -f3)"
             case " $NEEDS_HUMAN_UNLABELERS " in
               *" $LAST_ACTOR "*) [ -n "$LAST_ACTOR" ] && AUTH_UNLABEL="$LAST_TS" ;;
             esac
@@ -370,13 +375,15 @@ jobs:
               # verdicts withhold. The allowlist is the job-level
               # NEEDS_HUMAN_UNLABELERS, shared with Evaluate gate, and — same
               # rule — the MOST RECENT unlabel overall must be the authorized
-              # one.
+              # one, ordered by numeric timeline event id (created_at ties at
+              # second precision and must never fall through to actor login).
               LAST_EVENT="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
-                --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [.created_at, (.actor.login // "")] | @tsv' \
-                2>/dev/null | sort | tail -1 || true)"
+                --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [((.id // 0) | tostring), .created_at, (.actor.login // "")] | @tsv' \
+                2>/dev/null | sort -n | tail -1 || true)"
               AUTH_UNLABEL=""
               if [ -n "$LAST_EVENT" ]; then
-                LAST_TS="${LAST_EVENT%%	*}"; LAST_ACTOR="${LAST_EVENT##*	}"
+                LAST_TS="$(printf '%s' "$LAST_EVENT" | cut -f2)"
+                LAST_ACTOR="$(printf '%s' "$LAST_EVENT" | cut -f3)"
                 case " $NEEDS_HUMAN_UNLABELERS " in
                   *" $LAST_ACTOR "*) [ -n "$LAST_ACTOR" ] && AUTH_UNLABEL="$LAST_TS" ;;
                 esac
