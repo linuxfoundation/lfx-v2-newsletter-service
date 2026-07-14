@@ -321,7 +321,8 @@ jobs:
             # marker id is always NEWER than the round stamp's. Compare
             # numeric status ids — both live on the same SHA's append-only
             # status list. A stale marker therefore fails closed here and
-            # recovers via a label toggle or the next push.
+            # recovers via a push or reopen (only those re-run escalation and
+            # mint a fresh marker; a label toggle merely re-runs this gate).
             SKIP_ID="$(gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
               --jq ".[] | select(.context==\"agentic-review/escalation\" and .state==\"success\" and ((.description // \"\") | contains(\"skipped pr=#$PR:\"))) | .id" \
               2>/dev/null | sort -n | tail -1 || true)"

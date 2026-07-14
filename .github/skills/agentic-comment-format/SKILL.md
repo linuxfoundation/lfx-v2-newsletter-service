@@ -91,16 +91,28 @@ the reason it stands>
 
 **Handled well:** <one line on what the change got right, when there is something>
 
+<details>
+<summary>Machine ledger (conductor state)</summary>
+
 <!-- agentic:check v1 -->
 head: <full 40-char commit SHA of the head you judged>
 clean: true|false
 threads:
 - id: <thread_node_id>, status: fixed|obsolete|outstanding|rebutted-valid|rebutted-invalid, severity: critical|high|should-fix|nit, reason: <one short sentence>
+
+</details>
 ```
 
 Rules the deterministic step depends on, so be exact:
 
-- The block begins with the literal `<!-- agentic:check v1 -->` line.
+- The machine block lives inside the collapsed `<details>` element exactly as
+  shown, so the engineer reads the prose and the ledger stays out of the way —
+  it is bookkeeping for the deterministic step and for later rounds, not part
+  of the human message. Keep the summary line verbatim and put nothing after
+  `</details>`.
+- The block begins with the literal `<!-- agentic:check v1 -->` line (the
+  parser reads from that line to the end of the comment, so the wrapper does
+  not affect it).
 - `head:` is the full commit SHA of the PR head you actually judged. The deterministic
   step sets the clean status on **that** commit, so a commit that lands after you post
   cannot inherit this verdict (it re-derives as not-yet-clean and the gate stays shut).

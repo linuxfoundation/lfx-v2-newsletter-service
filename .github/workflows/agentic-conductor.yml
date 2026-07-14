@@ -271,11 +271,16 @@ jobs:
                 ($untidy | map("- " + (if .spath == "" then "discussion" else "`" + .spath + "`" end) + " (thread " + .id + ")") | join("\n"))
                else empty end),
               "",
+              "<details>",
+              "<summary>Machine ledger (conductor state)</summary>",
+              "",
               "<!-- agentic:check v1 -->",
               "head: " + $head,
               "clean: " + (if ($blocking | length) == 0 then "true" else "false" end),
               "threads:",
-              ($blocking | map("- id: " + .id + ", status: outstanding, severity: " + .sev + ", reason: New finding from the initial review round; blocks until fixed or adjudicated.") | join("\n"))
+              ($blocking | map("- id: " + .id + ", status: outstanding, severity: " + .sev + ", reason: New finding from the initial review round; blocks until fixed or adjudicated.") | join("\n")),
+              "",
+              "</details>"
             ] | map(select(. != null)) | join("\n")
           ' > "$BODY_FILE"
           gh api "repos/$REPO/issues/$PR/comments" -F "body=@$BODY_FILE" --jq '.html_url'

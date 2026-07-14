@@ -129,8 +129,9 @@ jobs:
           # marker-after-stamp order this wait guarantees for fresh heads. On
           # a reused SHA an OLD stamp can satisfy this wait before the current
           # round's stamp lands; the resulting too-early marker simply fails
-          # closed at the gate (withhold, recover via label toggle or next
-          # push). If the stamp never appears (conductor failed early),
+          # closed at the gate (withhold; recovery needs a push or reopen —
+          # only those re-run this workflow and mint a fresh marker, a label
+          # toggle merely re-runs the gate). If the stamp never appears (conductor failed early),
           # fire the task rather than skip — fail open toward running the
           # judge, never toward silence.
           MARKED=false
@@ -160,7 +161,7 @@ jobs:
             # every other trusted artifact here; written once per skipped
             # push, far below the per-SHA/context status cap. A failed write
             # fails this step loud — no marker and no verdict simply withholds
-            # the gate until a label toggle or the next push.
+            # the gate until a push or reopen re-runs this workflow.
             gh api "repos/$REPO/statuses/$HEAD_SHA" \
               -f state=success -f context=agentic-review/escalation \
               -f description="skipped pr=#$PR: needs-human label set" > /dev/null
