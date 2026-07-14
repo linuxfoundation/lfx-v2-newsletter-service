@@ -16,7 +16,7 @@ description: >-
 Both agentic roles publish exactly one verdict comment on the pull request, via the
 `add_issue_comment` tool. Each comment is two things at once: a clear, useful message
 for the engineer, and a machine-readable marker that a deterministic workflow step
-(`agentic-apply.yml`) parses to set labels, the commit status, and thread state.
+(`agentic-apply.yml`) parses to set labels and the commit status.
 
 The markers are **load-bearing** — keep them exactly as written here or the
 deterministic step stops working. The prose around them is yours to make genuinely
@@ -68,7 +68,10 @@ approve, so a stale verdict from an earlier push can never vouch for newer commi
 
 ## Agentic-check verdict (conductor)
 
-Posted after each review round. A human summary first, then one fenced machine block:
+Posted after each review round. The baseline (first-round) check is authored
+deterministically by the conductor workflow itself in this exact same format —
+every non-nit finding as an `outstanding` row; later rounds come from the
+reconcile agent. A human summary first, then one fenced machine block:
 
 ```
 ### Agentic review check — <✅ clean | ❌ N blocking>
@@ -82,9 +85,9 @@ Posted after each review round. A human summary first, then one fenced machine b
 | high | <short finding> | <what a real fix needs> |
 
 **Remaining tidiness:** <only when clean but a thread fails the gate's tidiness
-rule: name every unresolved thread (nits and human threads included) and every
-thread resolved silently without a reply, and say the gate approves once each is
-fixed, or answered with a reply and resolved>
+rule: name every thread with no reply yet (nits and human threads included), and
+say the gate approves once each is answered — fixed and said so, or replied with
+the reason it stands>
 
 **Handled well:** <one line on what the change got right, when there is something>
 
@@ -111,14 +114,13 @@ Rules the deterministic step depends on, so be exact:
 - The **Blocking** table lists only the blocking rows and mirrors the block. When
   `clean: true` there are no blocking rows: drop the table and say plainly that it is
   clean.
-- **Never** emit an `outstanding` or `rebutted-invalid` row for a nit: the
-  deterministic step re-opens threads with those statuses, and a nit must stay
-  resolvable by the engineer (fix it, or reply and resolve). An unaddressed nit is
+- **Never** emit an `outstanding` or `rebutted-invalid` row for a nit: blocking
+  rows flip `clean` to false, and a nit must not block. An unaddressed nit is
   prose only — the **Remaining tidiness** line — because the gate withholds its
-  approving review while any thread is unresolved or resolved without a reply,
-  even on a clean change. This is the one exception to the one-row-per-adjudicated-
-  thread rule above; an addressed nit (`fixed`/`obsolete`/`rebutted-valid`) still
-  gets its row so its thread is resolved.
+  approving review while any thread has no reply, even on a clean change. This is
+  the one exception to the one-row-per-adjudicated-thread rule above; an addressed
+  nit (`fixed`/`obsolete`/`rebutted-valid`) still gets its row (and its reply) so
+  the record shows why it cleared.
 
 ## What the deterministic step reads
 
@@ -126,8 +128,10 @@ Rules the deterministic step depends on, so be exact:
 account (so a developer cannot forge a verdict). From that comment it:
 
 - sets the sticky `needs-human` label when it sees `<!-- needs-human: yes -->`;
-- from the `<!-- agentic:check v1 -->` block: resolves each thread marked `fixed`,
-  `obsolete`, or `rebutted-valid`; re-opens each still-blocking thread that was resolved
-  prematurely; and sets the `agentic-review/clean` commit status from `clean:`.
+- from the `<!-- agentic:check v1 -->` block: validates the rows (shape, PR
+  membership, consistency with `clean:`) and sets the `agentic-review/clean`
+  commit status from `clean:`. It does not touch thread state — no automation
+  token can — which is why your per-thread replies matter: they are the record,
+  and the gate requires every thread to have one.
 
 Nothing else you write is parsed, so the surrounding prose is entirely for the engineer.
