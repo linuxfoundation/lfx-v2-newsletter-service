@@ -68,7 +68,10 @@ approve, so a stale verdict from an earlier push can never vouch for newer commi
 
 ## Agentic-check verdict (conductor)
 
-Posted after each review round. A human summary first, then one fenced machine block:
+Posted after each review round. The baseline (first-round) check is authored
+deterministically by the conductor workflow itself in this exact same format —
+every non-nit finding as an `outstanding` row; later rounds come from the
+reconcile agent. A human summary first, then one fenced machine block:
 
 ```
 ### Agentic review check — <✅ clean | ❌ N blocking>
