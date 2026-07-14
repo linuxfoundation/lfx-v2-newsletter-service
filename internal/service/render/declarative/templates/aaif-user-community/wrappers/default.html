@@ -7,7 +7,10 @@
     "preheader":                {"type": "text", "label": "Preheader"},
     "view_online_link":         {"type": "text", "label": "View Online URL"},
     "unsubscribe_url":          {"type": "text", "label": "Unsubscribe URL"},
-    "manage_subscriptions_url": {"type": "text", "label": "Manage subscriptions URL"}
+    "manage_subscriptions_url": {"type": "text", "label": "Manage subscriptions URL"},
+    "sender_name":              {"type": "text", "label": "Sender name"},
+    "project_name":             {"type": "text", "label": "Project name"},
+    "reply_email":              {"type": "text", "label": "Reply-to email"}
   }
 } -->
 
@@ -54,10 +57,22 @@
 
 <Section>
   <div style="padding: 15px 0">
-    <Text if="edition.unsubscribe_url" style="margin: 0; text-align: center; font-size: 12px; color: #999">
-      <Link href="{{edition.unsubscribe_url}}" style="color: #999; text-decoration: underline">Unsubscribe</Link>
-      &middot;
-      <Link href="{{edition.manage_subscriptions_url}}" style="color: #999; text-decoration: underline">Manage your email preferences</Link>
+    <Text if="edition.sender_name" style="margin: 0 0 6px; text-align: center; font-size: 12px; color: #999">
+      Sent by {{edition.sender_name}}<span if="edition.project_name"> on behalf of {{edition.project_name}}</span>.
+    </Text>
+    <Text if="edition.reply_email" style="margin: 0 0 6px; text-align: center; font-size: 12px; color: #999">
+      To reply, email <Link href="mailto:{{edition.reply_email}}" style="color: #999; text-decoration: underline">{{edition.reply_email}}</Link>
+    </Text>
+    <Text style="margin: 0; text-align: center; font-size: 12px; color: #999">
+      <span if="edition.unsubscribe_url">
+        <Link href="{{edition.unsubscribe_url}}" style="color: #999; text-decoration: underline">Unsubscribe</Link>
+        <span if="edition.manage_subscriptions_url">
+          &middot;
+          <Link href="{{edition.manage_subscriptions_url}}" style="color: #999; text-decoration: underline">Manage your email preferences</Link>
+        </span>
+        &middot;
+      </span>
+      Delivered by LFX.
     </Text>
   </div>
 </Section>

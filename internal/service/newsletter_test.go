@@ -288,7 +288,11 @@ func TestRenderLayout_WrapperRuntimeFields(t *testing.T) {
 			t.Errorf("derived body_html missing %q", want)
 		}
 	}
-	for _, reject := range []string{"Manage your email preferences", ManageSubscriptionsURLPlaceholder, "aaif.live"} {
+	// The render key on this branch is the aaif-user-community set, whose
+	// brand-keyed wrapper legitimately carries its own subscribe URL - the
+	// no-tenant-leak invariant for the NEUTRAL wrapper is pinned per key in
+	// TestDefaultKeyWrapperIsProjectNeutral instead.
+	for _, reject := range []string{"Manage your email preferences", ManageSubscriptionsURLPlaceholder} {
 		if strings.Contains(draft.BodyHTML, reject) {
 			t.Errorf("derived body_html must not contain %q", reject)
 		}

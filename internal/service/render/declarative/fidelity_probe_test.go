@@ -15,7 +15,7 @@ import (
 // intro_paragraph authors font-size:20px, line-height:1.5, color:#555, and
 // padding:20px 15px on its Text element.
 func TestRender_TextStylingReachesCompiledHTML(t *testing.T) {
-	templates, err := LoadEmbedded()
+	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestRender_TextStylingReachesCompiledHTML(t *testing.T) {
 // Section style="padding:0 15px") are promoted to MJML attributes rather
 // than dropped.
 func TestRender_SectionStylingReachesCompiledHTML(t *testing.T) {
-	templates, err := LoadEmbedded()
+	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,13 @@ func TestRender_SectionStylingReachesCompiledHTML(t *testing.T) {
 // styles into the compiled email. hidden_gems authors card on its Section,
 // an eyebrow Text, and body richtext.
 func TestRender_ClassStylesReachCompiledHTML(t *testing.T) {
-	templates, err := LoadEmbedded()
+	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
+// TestDefaultKeyWrapperIsProjectNeutral pins the tenant-leak fix for the
+// NEUTRAL template set: the default key's wrapper must not carry any
+// brand-specific URL (the aaif-user-community key keeps its own brand chrome
+// by design, scoped to that key).
+func TestDefaultKeyWrapperIsProjectNeutral(t *testing.T) {
+	templates, err := LoadEmbeddedTemplate("default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +76,8 @@ func TestRender_ClassStylesReachCompiledHTML(t *testing.T) {
 		Content: map[string]any{"title": "Gems", "gems": []any{map[string]any{
 			"link_text": "Gem one", "link_url": "https://example.com/g", "description": "<p>desc</p>",
 		}}},
+		BlockType: "intro_paragraph",
+		Content:   map[string]any{"text": "hello"},
 	}}}
 	html, err := Render(context.Background(), layout, templates, map[string]any{"edition": map[string]any{}})
 	if err != nil {
@@ -91,7 +99,7 @@ func TestRender_ClassStylesReachCompiledHTML(t *testing.T) {
 // dissolved div's padding onto the mj-column instead of dropping it.
 // hidden_gems wraps its content in <div style="padding:15px 15px 5px">.
 func TestRender_DissolvedWrapperPaddingHoisted(t *testing.T) {
-	templates, err := LoadEmbedded()
+	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,5 +115,10 @@ func TestRender_DissolvedWrapperPaddingHoisted(t *testing.T) {
 	}
 	if !strings.Contains(html, "padding:15px 15px 5px") {
 		t.Error("dissolved wrapper div's padding did not reach the compiled email")
+	if strings.Contains(html, "aaif.live") {
+		t.Error("default-key wrapper must not carry a brand URL")
+	}
+	if !strings.Contains(html, "Delivered by LFX") {
+		t.Error("default-key wrapper missing the compliance footer")
 	}
 }
