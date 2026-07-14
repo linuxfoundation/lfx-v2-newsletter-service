@@ -209,21 +209,20 @@ jobs:
             echo "::notice::head moved ($HEAD_SHA -> $NOW_HEAD) after the poll; aborting this round"
             exit 0
           fi
-          # EVERY thread, AI and human, with its resolution state and comment
-          # count: machine rows are built from the AI threads only, but the
-          # Remaining tidiness prose must mirror the gate's actual predicate —
-          # any thread (human included) that is unresolved OR resolved without a
-          # reply withholds the approval, and only those threads. An AI finding
-          # silently resolved seconds after review still blocks the baseline —
-          # apply re-opens it. Severity comes from the [severity] prefix the
-          # review skills mandate on every finding; an unprefixed finding
-          # defaults to should-fix (blocking, fail closed) and gets adjudicated
-          # by the agent in the next round.
+          # EVERY thread, AI and human, with its comment count: machine rows are
+          # built from the AI threads only, but the Remaining tidiness prose must
+          # mirror the gate's actual predicate — any thread (human included) with
+          # no reply beyond the finding withholds the approval, and only those
+          # threads. Resolution state is irrelevant to the gate (no automation
+          # token can toggle it — see agentic-gate.yml). Severity comes from the
+          # [severity] prefix the review skills mandate on every finding; an
+          # unprefixed finding defaults to should-fix (blocking, fail closed)
+          # and gets adjudicated by the agent in the next round.
           # shellcheck disable=SC2016  # $o/$r/$n/$endCursor are GraphQL variables, not shell expansions
           TH="$(gh api graphql --paginate \
-            -f query='query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor}nodes{id isResolved comments(first:1){totalCount nodes{author{login} path body}}}}}}}' \
+            -f query='query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor}nodes{id comments(first:1){totalCount nodes{author{login} path body}}}}}}}' \
             -f o="${REPO%%/*}" -f r="${REPO##*/}" -F n="$PR" \
-            --jq '.data.repository.pullRequest.reviewThreads.nodes[] | {id: .id, resolved: .isResolved, count: .comments.totalCount, ai: ((.comments.nodes[0].author.login // "") | test("^(copilot(-pull-request-reviewer)?|github-actions)$"; "i")), path: (.comments.nodes[0].path // ""), body: (.comments.nodes[0].body // "")}')"
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[] | {id: .id, count: .comments.totalCount, ai: ((.comments.nodes[0].author.login // "") | test("^(copilot(-pull-request-reviewer)?|github-actions)$"; "i")), path: (.comments.nodes[0].path // ""), body: (.comments.nodes[0].body // "")}')"
           BODY_FILE="$RUNNER_TEMP/agentic-check.md"
           # The whole comment is assembled in jq: finding text is untrusted, so it
           # is reduced to a sanitized one-line excerpt (HTML-comment delimiters
@@ -244,9 +243,9 @@ jobs:
                 | .[0:120])})
             | (map(select(.ai and .sev != "nit"))) as $blocking
             | (map(select(.ai))) as $aithreads
-            # The gate withholds for any thread that is unresolved or resolved
-            # without a reply; this prose mirrors exactly that predicate.
-            | (map(select((.resolved | not) or (.count < 2)))) as $untidy
+            # The gate withholds for any thread with no reply beyond the
+            # finding; this prose mirrors exactly that predicate.
+            | (map(select(.count < 2))) as $untidy
             | [
               "### Agentic review check — " + (if ($blocking | length) == 0 then "✅ clean" else "❌ \($blocking | length) blocking" end),
               "",
@@ -258,7 +257,7 @@ jobs:
                 ($blocking | map("| " + .sev + " | `" + .path + "` — " + .excerpt + " | Fix it, or reply on the thread with a substantive rebuttal |") | join("\n"))
                else empty end),
               (if ($blocking | length) == 0 and ($untidy | length) > 0 then
-                "\n**Remaining tidiness:** " + ($untidy | length | tostring) + " thread(s) (" + ($untidy | map(if .path == "" then "discussion" else "`" + .path + "`" end) | unique | join(", ")) + ") are unresolved or were resolved without a reply — the gate approves once each is fixed, or answered with a reply and resolved."
+                "\n**Remaining tidiness:** " + ($untidy | length | tostring) + " thread(s) (" + ($untidy | map(if .path == "" then "discussion" else "`" + .path + "`" end) | unique | join(", ")) + ") have no reply yet — the gate approves once each is answered (fix it and say so, or reply with the reason it stands as is)."
                else empty end),
               "",
               "<!-- agentic:check v1 -->",

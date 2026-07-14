@@ -3,29 +3,33 @@
 #
 # The gate: the only workflow that reaches a merge verdict. No model runs here. It
 # re-derives from the PR's CURRENT head and, when agentic-review/clean is success,
-# the needs-human label is absent, and every review thread is resolved with at
-# least one reply, records an "approve" verdict.
+# the needs-human label is absent, and every review thread carries at least one
+# reply, records an "approve" verdict.
 #
 # The thread condition is the tidiness rule: non-blocking findings (nits) do not
-# hold the clean status, but the approving review waits until the engineer either
-# fixes each one or replies and resolves the thread. Silent resolution does not
-# count — a resolved thread with no reply beyond the finding still withholds, so
-# no finding is ever dismissed without a recorded reason. Human-authored threads
-# are held to the same rule: an unfinished human conversation is not a mergeable
-# state for an automated approval.
+# hold the clean status, but the approving review waits until every thread — AI or
+# human — has at least one reply beyond the finding itself, so nothing is ever
+# dismissed without a recorded reason. A fixed finding satisfies it automatically
+# (the reconcile replies "fixed in <sha>" when it clears a thread); an unaddressed
+# nit needs the engineer's answer. Thread RESOLUTION is deliberately NOT required:
+# it is optional human hygiene. No automation token available to this pipeline can
+# resolve threads — the resolveReviewThread/unresolveReviewThread mutations return
+# FORBIDDEN for both the fine-grained PAT ("Resource not accessible by personal
+# access token") and GITHUB_TOKEN with pull-requests:write, with or without
+# contents:read ("Resource not accessible by integration"; probed empirically) —
+# only classic-scoped user tokens can run them.
 #
 # It triggers on the signals the deterministic apply layer produces with a PAT
 # (the agentic-review/clean status and the needs-human label). PAT-generated events
 # DO start workflows, unlike GITHUB_TOKEN ones, so triggering on status / labeled
-# fires reliably. Thread resolution is a gate input but emits NO workflow event
-# (pull_request_review_thread is webhook-only, not an Actions trigger), so a
-# scheduled sweep job dispatches this workflow per open PR (workflow_dispatch is
-# one of the two events GITHUB_TOKEN is allowed to trigger, and it appends
-# nothing — re-stamping statuses instead would hit GitHub's 1,000-statuses-per-
-# SHA/context cap within days). That is what releases the approval after the
-# engineer resolves the last thread, and what dismisses it if a thread is
-# un-resolved after approval. The gate re-derives from the current head, so a PR
-# that advanced past the reviewed SHA fails closed.
+# fires reliably. A developer's thread reply is a gate input but its event
+# (pull_request_review_comment) is not among our triggers, so a scheduled sweep
+# job dispatches this workflow per open PR (workflow_dispatch is one of the two
+# events GITHUB_TOKEN is allowed to trigger, and it appends nothing — re-stamping
+# statuses instead would hit GitHub's 1,000-statuses-per-SHA/context cap within
+# days). That is what releases the approval after the engineer answers the last
+# thread. The gate re-derives from the current head, so a PR that advanced past
+# the reviewed SHA fails closed.
 #
 # The gate is always live: it posts and revokes real approvals. The fail-soft PAT
 # fetch is the only thing between it and acting — an unwired repo skips cleanly.
@@ -60,10 +64,10 @@ name: Agentic Gate
   # landed before the verdict would stay unapproved until some unrelated event.
   issue_comment:
     types: [created]
-  # Thread tidiness is a gate input, but resolving/un-resolving a thread emits no
-  # workflow event, so the sweep job below re-fires the evaluation on a timer via
-  # per-PR workflow_dispatch (dispatch runs use the default-branch definition, so
-  # this stays safe for a PAT-holding job).
+  # Thread tidiness is a gate input, but the events that change it (developer
+  # replies) are not among our triggers, so the sweep job below re-fires the
+  # evaluation on a timer via per-PR workflow_dispatch (dispatch runs use the
+  # default-branch definition, so this stays safe for a PAT-holding job).
   schedule:
     - cron: "*/10 * * * *"
   workflow_dispatch:
@@ -211,37 +215,36 @@ jobs:
               fi
             fi
           fi
-          # Tidiness: every review thread (AI or human) must be resolved, and
-          # each must carry at least one reply beyond the finding itself, so a
-          # nit is either fixed or resolved with a recorded reason — never
-          # dismissed silently. A failed listing must NOT fail this step: the
-          # approve/dismiss decision below has to be written to the outputs so
-          # the dismissal backstop still runs — a listing error therefore
-          # degrades to "untidy" (withhold + dismiss), which is the fail-closed
-          # direction for a PR that already carries an approval.
+          # Tidiness: every review thread (AI or human) must carry at least one
+          # reply beyond the finding itself, so nothing is dismissed without a
+          # recorded reason. Resolution state is deliberately ignored — see the
+          # header. A failed listing must NOT fail this step: the approve/dismiss
+          # decision below has to be written to the outputs so the dismissal
+          # backstop still runs — a listing error therefore degrades to "untidy"
+          # (withhold + dismiss), which is the fail-closed direction for a PR
+          # that already carries an approval.
           THREADS_OK=false
-          UNRESOLVED="?"; SILENT="?"
+          NOREPLY="?"
           # shellcheck disable=SC2016  # $owner/$name/$pr/$endCursor are GraphQL variables, not shell expansions
           if THREADS="$(gh api graphql --paginate \
             -f query='query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
               repository(owner:$owner,name:$name){pullRequest(number:$pr){
                 reviewThreads(first:100,after:$endCursor){
-                  nodes{isResolved comments(first:1){totalCount}}
+                  nodes{comments(first:1){totalCount}}
                   pageInfo{hasNextPage endCursor}}}}}' \
             -f owner="${REPO%/*}" -f name="${REPO#*/}" -F pr="$PR" \
-            --jq '.data.repository.pullRequest.reviewThreads.nodes[] | [(.isResolved|tostring), (.comments.totalCount|tostring)] | @tsv')"; then
-            UNRESOLVED="$(printf '%s\n' "$THREADS" | awk -F'\t' '$1=="false"' | grep -c . || true)"
-            SILENT="$(printf '%s\n' "$THREADS" | awk -F'\t' '$1=="true" && ($2+0)<2' | grep -c . || true)"
-            [ "${UNRESOLVED:-0}" -eq 0 ] && [ "${SILENT:-0}" -eq 0 ] && THREADS_OK=true
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[] | (.comments.totalCount|tostring)')"; then
+            NOREPLY="$(printf '%s\n' "$THREADS" | awk '($1+0)<2 && NF' | grep -c . || true)"
+            [ "${NOREPLY:-0}" -eq 0 ] && THREADS_OK=true
           else
             echo "::warning::review-thread listing failed; treating the PR as untidy so the verdict stays withheld and stale approvals are dismissed."
           fi
-          echo "clean=$CLEAN needs-human=$NEEDS_HUMAN escalation=${V:-none} esc_ok=$ESC_OK threads: unresolved=$UNRESOLVED resolved-without-reply=$SILENT (head $HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          echo "clean=$CLEAN needs-human=$NEEDS_HUMAN escalation=${V:-none} esc_ok=$ESC_OK threads-without-reply=$NOREPLY (head $HEAD)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$ESC_OK" != "true" ]; then
             echo "Escalation verdict for this head is missing, or says yes without a later human override." >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ "$THREADS_OK" != "true" ]; then
-            echo "Review threads are not tidy: every thread must be fixed or resolved with a reply before the gate approves." >> "$GITHUB_STEP_SUMMARY"
+            echo "Review threads are not tidy: every thread needs at least one reply before the gate approves." >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ "$CLEAN" = "success" ] && [ "$NEEDS_HUMAN" != "true" ] && [ "$ESC_OK" = "true" ] && [ "$THREADS_OK" = "true" ]; then
             echo "approve=true" >> "$GITHUB_OUTPUT"
@@ -317,18 +320,18 @@ jobs:
               [ -n "$LAST_UNLABEL" ] && [ "$LAST_UNLABEL" \> "${V%%	*}" ]
             }
             threads_ok() {
-              # Same rule as Evaluate gate: all threads resolved, each with at
-              # least one reply. A failed listing withholds (fail closed).
+              # Same rule as Evaluate gate: every thread has at least one reply
+              # (resolution ignored). A failed listing withholds (fail closed).
               # shellcheck disable=SC2016  # $owner/$name/$pr/$endCursor are GraphQL variables, not shell expansions
               T="$(gh api graphql --paginate \
                 -f query='query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
                   repository(owner:$owner,name:$name){pullRequest(number:$pr){
                     reviewThreads(first:100,after:$endCursor){
-                      nodes{isResolved comments(first:1){totalCount}}
+                      nodes{comments(first:1){totalCount}}
                       pageInfo{hasNextPage endCursor}}}}}' \
                 -f owner="${REPO%/*}" -f name="${REPO#*/}" -F pr="$PR" \
-                --jq '.data.repository.pullRequest.reviewThreads.nodes[] | [(.isResolved|tostring), (.comments.totalCount|tostring)] | @tsv')" || return 1
-              BAD="$(printf '%s\n' "$T" | awk -F'\t' '$1=="false" || ($1=="true" && ($2+0)<2)' | grep -c . || true)"
+                --jq '.data.repository.pullRequest.reviewThreads.nodes[] | (.comments.totalCount|tostring)')" || return 1
+              BAD="$(printf '%s\n' "$T" | awk '($1+0)<2 && NF' | grep -c . || true)"
               [ "${BAD:-0}" -eq 0 ]
             }
             recheck() {
@@ -348,7 +351,7 @@ jobs:
             fi
             RID="$(gh api --method POST "repos/$REPO/pulls/$PR/reviews" \
               -f commit_id="$HEAD" -f event=APPROVE \
-              -f body="Agentic gate: no blocking AI-review findings remain, every review thread is resolved with a reply, and no needs-human label is set. Approving on behalf of the automated review; a human review is still expected." \
+              -f body="Agentic gate: no blocking AI-review findings remain, every review thread has a reply, and no needs-human label is set. Approving on behalf of the automated review; a human review is still expected." \
               --jq '.id')"
             echo "Gate: APPROVED PR #$PR as lfx-reviewer (head $HEAD, review $RID)." >> "$GITHUB_STEP_SUMMARY"
             # Compensating check: if an input regressed in the instant between the
@@ -388,14 +391,15 @@ jobs:
           else
             for id in $ids; do
               gh api --method PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \
-                -f message="Agentic gate: PR is no longer clean, has open or silently-resolved review threads, or now needs a human; dismissing the automated approval." \
+                -f message="Agentic gate: PR is no longer clean, has review threads without a reply, or now needs a human; dismissing the automated approval." \
                 -f event=DISMISS >/dev/null
               echo "dismissed review $id" >> "$GITHUB_STEP_SUMMARY"
             done
           fi
 
-  # Thread resolves/unresolves emit no workflow event, so this job is the gate's
-  # liveness backstop: on a timer it dispatches the gate job above once per open
+  # Thread replies change tidiness without any of our trigger events firing, so
+  # this job is the gate's liveness backstop: on a timer it dispatches the gate
+  # job above once per open
   # PR that the pipeline has already stamped. workflow_dispatch is one of the two
   # event types GITHUB_TOKEN is permitted to trigger (the documented exception to
   # the no-recursive-workflows rule), so this needs no PAT and — unlike
