@@ -236,16 +236,24 @@ jobs:
           # no authorized unlabel at all. Ordered by the numeric timeline
           # event id: created_at has second precision, and a same-second tie
           # must never fall through to the actor login.
-          LAST_EVENT="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
-            --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [((.id // 0) | tostring), .created_at, (.actor.login // "")] | @tsv' \
-            2>/dev/null | sort -n | tail -1 || true)"
+          # The timeline read must COMPLETE before any event is trusted:
+          # --paginate streams page by page, so a later-page failure leaves a
+          # partial list whose maximum can be an older authorized event while
+          # the true newest (possibly unauthorized) one is missing — fail
+          # open. A failed read therefore leaves AUTH_UNLABEL empty, which
+          # withholds every branch that needs an unlabel.
           AUTH_UNLABEL=""
-          if [ -n "$LAST_EVENT" ]; then
-            LAST_TS="$(printf '%s' "$LAST_EVENT" | cut -f2)"
-            LAST_ACTOR="$(printf '%s' "$LAST_EVENT" | cut -f3)"
-            case " $NEEDS_HUMAN_UNLABELERS " in
-              *" $LAST_ACTOR "*) [ -n "$LAST_ACTOR" ] && AUTH_UNLABEL="$LAST_TS" ;;
-            esac
+          if EVENTS="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
+            --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [((.id // 0) | tostring), .created_at, (.actor.login // "")] | @tsv' \
+            2>/dev/null)"; then
+            LAST_EVENT="$(printf '%s\n' "$EVENTS" | grep -v '^$' | sort -n | tail -1 || true)"
+            if [ -n "$LAST_EVENT" ]; then
+              LAST_TS="$(printf '%s' "$LAST_EVENT" | cut -f2)"
+              LAST_ACTOR="$(printf '%s' "$LAST_EVENT" | cut -f3)"
+              case " $NEEDS_HUMAN_UNLABELERS " in
+                *" $LAST_ACTOR "*) [ -n "$LAST_ACTOR" ] && AUTH_UNLABEL="$LAST_TS" ;;
+              esac
+            fi
           fi
           # Lookup success is tracked separately from lookup emptiness: a failed
           # comments call must never be read as "no verdict exists" — that would
@@ -394,16 +402,23 @@ jobs:
               # rule — the MOST RECENT unlabel overall must be the authorized
               # one, ordered by numeric timeline event id (created_at ties at
               # second precision and must never fall through to actor login).
-              LAST_EVENT="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
-                --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [((.id // 0) | tostring), .created_at, (.actor.login // "")] | @tsv' \
-                2>/dev/null | sort -n | tail -1 || true)"
+              # Same completeness rule as Evaluate gate: a partial paginated
+              # timeline must never authorize (its maximum can be an older
+              # authorized event while the true newest is missing), so a
+              # failed read leaves AUTH_UNLABEL empty and the unlabel
+              # branches withhold.
               AUTH_UNLABEL=""
-              if [ -n "$LAST_EVENT" ]; then
-                LAST_TS="$(printf '%s' "$LAST_EVENT" | cut -f2)"
-                LAST_ACTOR="$(printf '%s' "$LAST_EVENT" | cut -f3)"
-                case " $NEEDS_HUMAN_UNLABELERS " in
-                  *" $LAST_ACTOR "*) [ -n "$LAST_ACTOR" ] && AUTH_UNLABEL="$LAST_TS" ;;
-                esac
+              if EVENTS="$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
+                --jq '.[] | select(.event=="unlabeled" and .label.name=="needs-human") | [((.id // 0) | tostring), .created_at, (.actor.login // "")] | @tsv' \
+                2>/dev/null)"; then
+                LAST_EVENT="$(printf '%s\n' "$EVENTS" | grep -v '^$' | sort -n | tail -1 || true)"
+                if [ -n "$LAST_EVENT" ]; then
+                  LAST_TS="$(printf '%s' "$LAST_EVENT" | cut -f2)"
+                  LAST_ACTOR="$(printf '%s' "$LAST_EVENT" | cut -f3)"
+                  case " $NEEDS_HUMAN_UNLABELERS " in
+                    *" $LAST_ACTOR "*) [ -n "$LAST_ACTOR" ] && AUTH_UNLABEL="$LAST_TS" ;;
+                  esac
+                fi
               fi
               # A failed verdict lookup withholds outright — never read an API
               # error as "no verdict exists" (that would fail open into the
