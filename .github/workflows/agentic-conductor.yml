@@ -43,6 +43,15 @@ name: Agentic Conductor (reconcile)
 "on":
   pull_request_target:
     types: [opened, reopened, synchronize]
+  # A developer's reply to a blocking finding is a rebuttal that needs
+  # adjudication, and nothing else re-fires a round until the next push. This
+  # event runs the default-branch definition (safe for the PAT) and its payload
+  # carries the full pull_request object, so the env below works unchanged. The
+  # job filter keeps it to HUMAN replies: lfx-reviewer's own clearing replies
+  # (posted via the PAT, whose events DO trigger workflows) would loop, and the
+  # AI reviewers' finding comments are workflow-gated anyway.
+  pull_request_review_comment:
+    types: [created]
 
 # id-token is what lets the job assume the AWS role via OIDC; everything the job
 # writes on GitHub goes through the fetched PAT, not the workflow token.
@@ -60,8 +69,15 @@ jobs:
     # Same-repo PRs only: pull_request_target CAN mint an id-token for fork PRs
     # (it runs in the base-repo context), and a fork's branch name is not a valid
     # head_ref in this repository — so forks are skipped explicitly, not assumed
-    # to fail soft.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # to fail soft. Reply events additionally require a human author (see the
+    # trigger comment) on an open PR.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event_name != 'pull_request_review_comment' ||
+       (github.event.pull_request.state == 'open' &&
+        github.event.comment.user.login != 'lfx-reviewer' &&
+        !contains(github.event.comment.user.login, 'copilot') &&
+        github.event.comment.user.type != 'Bot'))
     runs-on: ubuntu-latest
     env:
       REPO: ${{ github.repository }}
@@ -107,8 +123,35 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Mark the head not-yet-clean (block the gate until the conductor judges)
+      - name: Reply-round debounce and relevance check
+        id: reply
         if: steps.cfg.outputs.present == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request_review_comment" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Debounce a burst of replies: a newer reply-run cancels this one via
+          # the concurrency group, so after the sleep only the newest proceeds.
+          sleep 90
+          # A reply on an already-clean PR has nothing to adjudicate — it is
+          # tidiness or discussion, which the gate's sweep evaluates on its own
+          # timer. Only a not-yet-clean PR has blocking findings a rebuttal
+          # could clear, which is what needs the reconcile agent.
+          CLEAN="$(gh api "repos/$REPO/commits/$HEAD_SHA/statuses" --paginate \
+            --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .state] | @tsv" \
+            2>/dev/null | sort -n | tail -1 | cut -f2 || true)"
+          if [ "$CLEAN" = "success" ]; then
+            echo "reply on a clean PR; nothing to adjudicate (the gate sweep owns tidiness)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mark the head not-yet-clean (block the gate until the conductor judges)
+        if: steps.cfg.outputs.present == 'true' && steps.reply.outputs.skip != 'true'
         run: |
           # Every new head starts blocked, from the first seconds of this run, so there
           # is never a window where the PR looks mergeable before the baseline lands.
@@ -120,7 +163,10 @@ jobs:
           echo "agentic-review/clean = pending (awaiting conductor)"
 
       - name: Request the native review for the current head
-        if: steps.cfg.outputs.present == 'true'
+        # Not on reply rounds: the diff is unchanged, so a re-request would only
+        # produce a redundant review pass; the poll below just verifies the
+        # existing review for this head.
+        if: steps.cfg.outputs.present == 'true' && steps.reply.outputs.skip != 'true' && github.event_name != 'pull_request_review_comment'
         run: |
           # On a new commit the diff changed, so this triggers a fresh pass; on open it
           # is the first request. Best-effort: it may already be requested.
@@ -130,7 +176,7 @@ jobs:
             || echo "::notice::native review not (re-)requested (already pending, or unchanged diff)"
 
       - name: Wait for all AI reviewers to finish for the current head
-        if: steps.cfg.outputs.present == 'true'
+        if: steps.cfg.outputs.present == 'true' && steps.reply.outputs.skip != 'true'
         run: |
           # AI reviewers to wait for, as login regexes. Add 'github-actions' when pi is
           # enabled on the repo. We wait only for AI reviewers; humans review on their
@@ -164,7 +210,7 @@ jobs:
 
       - name: Detect first round
         id: round
-        if: steps.cfg.outputs.present == 'true'
+        if: steps.cfg.outputs.present == 'true' && steps.reply.outputs.skip != 'true'
         run: |
           set -euo pipefail
           # The baseline (first) round is deterministic; later rounds need the
@@ -198,7 +244,7 @@ jobs:
           fi
 
       - name: Post the baseline agentic-check deterministically (first round)
-        if: steps.cfg.outputs.present == 'true' && steps.round.outputs.first == 'true'
+        if: steps.cfg.outputs.present == 'true' && steps.reply.outputs.skip != 'true' && steps.round.outputs.first == 'true'
         run: |
           set -euo pipefail
           # The branch may have moved between the poll and this step; a baseline
@@ -251,7 +297,7 @@ jobs:
               "",
               (if ($aithreads | length) == 0
                then "Baseline for the initial review round on `\($head[0:7])`: the AI reviewers reported no findings."
-               else "Baseline for the initial review round on `\($head[0:7])`: \($aithreads | length) AI-reviewer finding(s) — \($blocking | length) blocking, \(($aithreads | length) - ($blocking | length)) nit(s). Every new finding blocks until fixed or adjudicated; this baseline is derived directly from the review threads." end),
+               else "Baseline for the initial review round on `\($head[0:7])`: \($aithreads | length) AI-reviewer finding(s) — \($blocking | length) blocking, \(($aithreads | length) - ($blocking | length)) nit(s). Non-nit findings block until fixed or adjudicated; nits never block and only need an answer on their thread. This baseline is derived directly from the review threads." end),
               (if ($blocking | length) > 0 then
                 "\n**Blocking**\n\n| Severity | Finding | Next step |\n| --- | --- | --- |\n" +
                 ($blocking | map("| " + .sev + " | `" + .path + "` — " + .excerpt + " | Fix it, or reply on the thread with a substantive rebuttal |") | join("\n"))
@@ -271,7 +317,7 @@ jobs:
           echo "baseline agentic-check posted deterministically (agentic-apply reacts to it)"
 
       - name: Announce the round and fire the reconcile task (gpt-5.5)
-        if: steps.cfg.outputs.present == 'true' && steps.round.outputs.first != 'true'
+        if: steps.cfg.outputs.present == 'true' && steps.reply.outputs.skip != 'true' && steps.round.outputs.first != 'true'
         run: |
           # The branch may have moved between the poll and this step, and a task
           # fired now would judge a head whose reviews were never awaited (the
