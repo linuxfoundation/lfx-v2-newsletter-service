@@ -16,7 +16,7 @@ description: >-
 Both agentic roles publish exactly one verdict comment on the pull request, via the
 `add_issue_comment` tool. Each comment is two things at once: a clear, useful message
 for the engineer, and a machine-readable marker that a deterministic workflow step
-(`agentic-apply.yml`) parses to set labels, the commit status, and thread state.
+(`agentic-apply.yml`) parses to set labels and the commit status.
 
 The markers are **load-bearing** — keep them exactly as written here or the
 deterministic step stops working. The prose around them is yours to make genuinely

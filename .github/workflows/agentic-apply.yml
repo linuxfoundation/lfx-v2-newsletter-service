@@ -144,7 +144,7 @@ jobs:
               echo "needs-human already present (sticky) — no-op"
             fi
           fi
-      - name: Apply agentic-check (resolve threads + set status)
+      - name: Apply agentic-check (validate rows + set status)
         if: steps.cfg.outputs.present == 'true'
         run: |
           printf '%s' "$BODY" | grep -q '<!-- agentic:check v1 -->' || { echo "no agentic-check block; skip"; exit 0; }
@@ -152,7 +152,7 @@ jobs:
           # Parse ONLY the machine block (from its marker to the end of the
           # comment, where /agentic-comment-format puts it), so prose in the
           # human summary that happens to start a line with "head:", "clean:",
-          # or "- id:" can never steer the verdict or the thread actions.
+          # or "- id:" can never steer the verdict or the status write.
           BLOCK=$(printf '%s\n' "$BODY" | sed -n '/<!-- agentic:check v1 -->/,$p')
 
           # Set the status on the SHA the verdict was produced for (carried in the
