@@ -36,9 +36,13 @@ func (f *fakeCommitteeClient) ListMembers(_ context.Context, committeeUID string
 type fakeProjectClient struct {
 	slug    string
 	slugErr error
+	name    string
 }
 
 func (f *fakeProjectClient) Name(_ context.Context, _ string) (string, error) {
+	if f.name != "" {
+		return f.name, nil
+	}
 	return "Test Project", nil
 }
 func (f *fakeProjectClient) Slug(_ context.Context, _ string) (string, error) {
@@ -1433,5 +1437,41 @@ func TestTestSendLegacyStillUsesChrome(t *testing.T) {
 	}
 	if !strings.Contains(s.HTML, "Body") {
 		t.Errorf("legacy test-send missing authored body: %s", s.HTML)
+	}
+}
+
+// TestSubstitution_TextBodyNotHTMLEscaped pins the HTML-vs-text escaping
+// split: send-scoped and per-recipient substitutions escape values for the
+// HTML part but leave the plain-text part raw, so a name like "R&D" does not
+// become "R&amp;D" in text/plain.
+func TestSubstitution_TextBodyNotHTMLEscaped(t *testing.T) {
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+	orch.project = &fakeProjectClient{name: "R&D <Team>"}
+
+	draft := repo.addLayoutDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(context.Background(), SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(context.Background())
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	// HTML part: escaped.
+	if !strings.Contains(s.HTML, "R&amp;D") {
+		t.Errorf("HTML body should HTML-escape the project name; got %s", s.HTML)
+	}
+	// Text part: raw, no entities.
+	if strings.Contains(s.Text, "&amp;") || strings.Contains(s.Text, "&lt;") {
+		t.Errorf("text body must not contain HTML entities; got %s", s.Text)
+	}
+	if !strings.Contains(s.Text, "R&D <Team>") {
+		t.Errorf("text body should carry the raw project name; got %s", s.Text)
 	}
 }

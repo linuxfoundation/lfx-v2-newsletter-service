@@ -235,8 +235,8 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		edReplyEmail: draft.EDReplyEmail,
 		compliance:   true,
 	})
-	htmlBody = substituteSendScope(htmlBody, senderName, projectName)
-	textBody = substituteSendScope(textBody, senderName, projectName)
+	htmlBody = substituteSendScope(htmlBody, senderName, projectName, true)
+	textBody = substituteSendScope(textBody, senderName, projectName, false)
 
 	groupID := uuid.NewString()
 
@@ -461,8 +461,8 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		displayName: projectName,
 		compliance:  false,
 	})
-	htmlBody = substituteSendScope(htmlBody, senderName, projectName)
-	textBody = substituteSendScope(textBody, senderName, projectName)
+	htmlBody = substituteSendScope(htmlBody, senderName, projectName, true)
+	textBody = substituteSendScope(textBody, senderName, projectName, false)
 
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "test-send: fanout disabled, accepted without dispatch",
@@ -471,15 +471,14 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		)
 		return nil
 	}
-	// Bind the per-recipient runtime placeholders for this single test
-	// recipient so a layout-based test send renders working links rather than
-	// raw %%…%% sentinels. No-op on the legacy path (no sentinels present).
-	toEmail := strings.TrimSpace(in.ToEmail)
+	// Resolve the runtime sentinels for this test recipient. A test send never
+	// mints a real unsubscribe token (see substituteTestPlaceholders); the
+	// wrapper's opt-out rows drop out.
 	if _, dispatchErr := o.email.SendEmail(ctx, port.SendEmailInput{
-		To:              toEmail,
+		To:              strings.TrimSpace(in.ToEmail),
 		Subject:         in.Subject,
-		HTML:            o.substitutePlaceholders(htmlBody, in.ProjectUID, toEmail),
-		Text:            o.substitutePlaceholders(textBody, in.ProjectUID, toEmail),
+		HTML:            o.substituteTestPlaceholders(htmlBody),
+		Text:            o.substituteTestPlaceholders(textBody),
 		From:            o.resolveFromAddress(ctx, in.ProjectUID),
 		FromDisplayName: fromDisplayName,
 		ReplyTo:         strings.TrimSpace(in.EDReplyEmail),
@@ -654,8 +653,8 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 			// (and only when unsub is enabled); the VIEW_ONLINE / MANAGE
 			// sentinels are layout-only, so the extra ReplaceAlls are no-ops on
 			// the legacy path.
-			recipientHTML := o.substitutePlaceholders(env.HTML, projectUID, recipient.Email)
-			recipientText := o.substitutePlaceholders(env.Text, projectUID, recipient.Email)
+			recipientHTML := o.substitutePlaceholders(env.HTML, projectUID, recipient.Email, true)
+			recipientText := o.substitutePlaceholders(env.Text, projectUID, recipient.Email, false)
 			// Honour the nil-dispatcher contract documented above. Production
 			// wiring always provides one, but tests and misconfigured local
 			// envs should never panic on an unauthenticated send path.
@@ -837,18 +836,38 @@ func (o *SendOrchestrator) renderBody(isLayout bool, in bodyRenderInput) (htmlBo
 // render-on-write step already omits the opt-out row; replacing any leftover
 // sentinels with empty strings here is a defensive backstop so a misconfigured
 // environment never ships visible sentinels to recipients.
-func (o *SendOrchestrator) substitutePlaceholders(body, projectUID, email string) string {
+func (o *SendOrchestrator) substitutePlaceholders(body, projectUID, email string, escapeHTML bool) string {
 	unsubURL := ""
 	if o.unsub.Enabled() {
 		unsubURL = o.unsub.BuildURL(projectUID, email)
 	}
+	// The unsubscribe URL lands in an href in the HTML part, so escape it
+	// there; the plain-text part carries the raw URL (HTML entities would be
+	// wrong in text/plain — see the textBody call sites).
+	if escapeHTML {
+		unsubURL = html.EscapeString(unsubURL)
+	}
 	replacer := strings.NewReplacer(
-		UnsubscribeURLPlaceholder, html.EscapeString(unsubURL),
+		UnsubscribeURLPlaceholder, unsubURL,
 		// Empty, never the unsubscribe URL — see the function comment.
 		ManageSubscriptionsURLPlaceholder, "",
 		ViewOnlineURLPlaceholder, "",
 	)
 	return replacer.Replace(body)
+}
+
+// substituteTestPlaceholders binds the per-recipient sentinels for a TEST
+// send. A test send must not mint a real signed unsubscribe token: BodyHTML
+// and ToEmail are both caller-supplied, so producing a valid opt-out link for
+// an arbitrary address would let a writer harvest tokens. The unsubscribe and
+// manage rows resolve to empty (the layout wrapper drops them), and view-online
+// is empty as in the real path.
+func (o *SendOrchestrator) substituteTestPlaceholders(body string) string {
+	return strings.NewReplacer(
+		UnsubscribeURLPlaceholder, "",
+		ManageSubscriptionsURLPlaceholder, "",
+		ViewOnlineURLPlaceholder, "",
+	).Replace(body)
 }
 
 // substituteSendScope binds the send-scoped (not per-recipient) sentinels: the
@@ -858,10 +877,19 @@ func (o *SendOrchestrator) substitutePlaceholders(body, projectUID, email string
 // HTML, and the sender name (auth-service profile) and project name
 // (project-service) are external data — the legacy chrome path escapes the
 // same values.
-func substituteSendScope(body, senderName, projectName string) string {
+func substituteSendScope(body, senderName, projectName string, escapeHTML bool) string {
+	sender := fallbackString(senderName, "Executive Director")
+	project := projectName
+	// Escape for the HTML part (values land in already-compiled HTML); the
+	// plain-text part keeps them raw so a name like "R&D <Team>" is not turned
+	// into HTML entities in text/plain.
+	if escapeHTML {
+		sender = html.EscapeString(sender)
+		project = html.EscapeString(project)
+	}
 	return strings.NewReplacer(
-		SenderNamePlaceholder, html.EscapeString(fallbackString(senderName, "Executive Director")),
-		ProjectNamePlaceholder, html.EscapeString(projectName),
+		SenderNamePlaceholder, sender,
+		ProjectNamePlaceholder, project,
 	).Replace(body)
 }
 

@@ -47,9 +47,10 @@ func (h *Handler) ListNewsletters(w http.ResponseWriter, r *http.Request) {
 // time); per-newsletter analytics (open rate, unique opens) require a separate
 // call to /analytics so the list query stays a single DB round-trip.
 func toAPIListItem(ctx context.Context, n *model.Newsletter) publicapi.NewsletterListItem {
-	row := *toAPINewsletter(ctx, n)
 	// List rows never carry body_layout (see the NewsletterListItem doc):
-	// layouts can be ~1 MiB each and pages return up to 100 rows.
-	row.BodyLayout = nil
-	return publicapi.NewsletterListItem{Newsletter: row}
+	// layouts can be ~1 MiB each and pages return up to 100 rows. Build the row
+	// WITHOUT decoding the stored layout at all — toAPINewsletter would unmarshal
+	// every layout only for it to be discarded.
+	n.BodyLayout = nil
+	return publicapi.NewsletterListItem{Newsletter: *toAPINewsletter(ctx, n)}
 }

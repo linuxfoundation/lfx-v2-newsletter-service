@@ -296,12 +296,14 @@ func writeChildren(b *strings.Builder, children []*node) {
 		case hasBlockDescendant(c):
 			// An inert container (e.g. a layout div) that wraps block-level
 			// MJML content (a poll's buttons). It cannot be inlined into an
-			// mj-text run, so dissolve it and recurse: block descendants are
-			// hoisted to their own MJML elements, inline ones re-grouped. The
-			// container's own styling is dropped HERE; the common one-wrapper-
-			// per-section pattern is instead hoisted onto the mj-column in
-			// writeSection, which preserves its padding/background.
+			// mj-text run, so dissolve it and recurse. Before dissolving, push
+			// the container's own mappable styling down onto its block-level
+			// children (which become sections/columns that CAN carry it), so a
+			// padded wrapper div's padding is not silently dropped. The common
+			// one-wrapper-per-section case is additionally hoisted onto the
+			// mj-column in writeSection.
 			flush()
+			pushContainerStyleToBlockChildren(c)
 			writeChildren(b, c.Children)
 		default:
 			// richtext, links, inert HTML, raw text: accumulate.
@@ -309,6 +311,31 @@ func writeChildren(b *strings.Builder, children []*node) {
 		}
 	}
 	flush()
+}
+
+// pushContainerStyleToBlockChildren merges a dissolving inert container's
+// container-mappable style declarations (padding, background, radius) DOWN onto
+// each of its block-level children before the container is discarded. The
+// children become mj-section / mj-column / nested Section elements that carry
+// these attributes, so a wrapper div's padding survives dissolution. The
+// child's own declarations win per property (they are the more specific
+// author intent). Inline children are untouched — they ride the text pipeline.
+func pushContainerStyleToBlockChildren(container *node) {
+	wrapperStyle := container.Attrs["style"]
+	if strings.TrimSpace(wrapperStyle) == "" {
+		return
+	}
+	for _, child := range container.Children {
+		if child == nil {
+			continue
+		}
+		// Only section/row children carry container padding onto their own
+		// mj-section; other block children (buttons, images) have no
+		// padding-bearing wrapper here, so pushing would be dropped anyway.
+		if child.Tag == "section" || child.Tag == "row" {
+			child.Attrs["style"] = mergeStyleDecls(wrapperStyle, child.Attrs["style"])
+		}
+	}
 }
 
 // blockLevelTags are nodes that must become their own MJML element (never
