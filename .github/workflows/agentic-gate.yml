@@ -49,10 +49,13 @@
 # escalation re-labels on the next push), and the allowlist lives in this
 # default-branch workflow file so changing it takes a reviewed PR. While the
 # label is set, escalation skips its per-head runs (the sticky label cannot be
-# added twice); the override timing rule covers the verdict gap — an authorized
-# unlabel counts for the current head only if it postdates that head's round
-# start, so a sign-off never extends to code pushed after the human looked. The
-# clean status and tidiness must still be green either way.
+# added twice) and records the skip as a per-head marker status; the override
+# timing rule covers the verdict gap — an authorized unlabel counts for the
+# current head only if that head carries the skip marker (a missing verdict
+# alone also means "still in flight", which must never be overridden) and the
+# unlabel postdates the head's round start, so a sign-off never extends to code
+# pushed after the human looked. The clean status and tidiness must still be
+# green either way.
 ---
 name: Agentic Gate
 
@@ -203,12 +206,16 @@ jobs:
           # lands. A per-head "yes" verdict withholds until an AUTHORIZED human
           # removes the needs-human label AFTER that verdict. Heads pushed while
           # the label was set have NO verdict (escalation skips labeled PRs —
-          # the sticky label cannot be added twice); for those, an authorized
+          # the sticky label cannot be added twice) and carry the skip marker
+          # status escalation records when it skips; for those, an authorized
           # unlabel newer than the head's round marker (the NEWEST pending
           # conductor stamp for this head+PR, which on a reoccurring SHA
           # belongs to the current occurrence) is the sanctioned override — it
           # vouches only for code that existed when the human looked, and the
-          # next push resumes escalation.
+          # next push resumes escalation. The marker is what distinguishes a
+          # skipped head from one whose verdict is merely still in flight: an
+          # empty verdict lookup also happens while the judge is running, and
+          # an unlabel must never approve ahead of an inbound "yes".
           # The verdict carries a `head:` marker (see /agentic-comment-format),
           # so a stale verdict from an earlier push never vouches for newer
           # commits. Exactly one valid yes/no marker, or the verdict is
@@ -263,7 +270,15 @@ jobs:
             fi
           elif [ "$V_OK" = "true" ]; then
             # No verdict for this head (confirmed by a successful lookup):
-            # legitimate only when the head arrived while the label was set.
+            # legitimate only when the head arrived while the label was set —
+            # which escalation PROVES by recording a skip marker status on the
+            # head. No marker means the judge actually ran and its verdict is
+            # still in flight (or was lost): withhold, and let the verdict
+            # comment (or the next push) re-trigger this gate. A failed marker
+            # lookup reads as "no marker" — the fail-closed direction.
+            SKIPPED="$(gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
+              --jq ".[] | select(.context==\"agentic-review/escalation\" and .state==\"success\" and ((.description // \"\") | contains(\"skipped pr=#$PR:\"))) | .id" \
+              2>/dev/null | head -1 || true)"
             # The round reference is the NEWEST pending stamp for this head+PR
             # (max status id): the conductor stamps pending at every round
             # start, so on a SHA that re-occurs (force-push back, reopen) the
@@ -275,7 +290,7 @@ jobs:
             ROUND_TS="$(gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
               --jq ".[] | select(.state==\"pending\" and .context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .created_at] | @tsv" \
               2>/dev/null | sort -n | tail -1 | cut -f2 || true)"
-            if [ -n "$ROUND_TS" ] && [ -n "$AUTH_UNLABEL" ] && [ "$AUTH_UNLABEL" \> "$ROUND_TS" ]; then
+            if [ -n "$SKIPPED" ] && [ -n "$ROUND_TS" ] && [ -n "$AUTH_UNLABEL" ] && [ "$AUTH_UNLABEL" \> "$ROUND_TS" ]; then
               ESC_OK=true
             fi
           fi
@@ -305,7 +320,7 @@ jobs:
           fi
           echo "clean=$CLEAN needs-human=$NEEDS_HUMAN escalation=${V:-none} esc_ok=$ESC_OK threads-without-reply=$NOREPLY (head $HEAD)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$ESC_OK" != "true" ]; then
-            echo "Escalation not satisfied: no per-head 'no' verdict, and no authorized needs-human unlabel newer than the verdict (or, for a verdict-less head, newer than the head's round start)." >> "$GITHUB_STEP_SUMMARY"
+            echo "Escalation not satisfied: no per-head 'no' verdict, and no authorized needs-human unlabel newer than the verdict (or, for a head escalation skipped — proven by its skip marker status — newer than the head's round start; a verdict-less head WITHOUT the marker means the judge is still in flight and always withholds)." >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ "$THREADS_OK" != "true" ]; then
             echo "Review threads are not tidy: every thread needs at least one reply before the gate approves." >> "$GITHUB_STEP_SUMMARY"
@@ -370,8 +385,10 @@ jobs:
             esc_ok() {
               # Same rule as Evaluate gate: an explicit per-head "no"; or a
               # "yes" with a later AUTHORIZED unlabel; or — for a head pushed
-              # while the label was set, which therefore has no verdict — an
-              # authorized unlabel newer than the head's round start. Malformed
+              # while the label was set, proven by escalation's per-head skip
+              # marker status — an authorized unlabel newer than the head's
+              # round start. A verdict-less head WITHOUT the marker means the
+              # judge is still in flight and always withholds. Malformed
               # verdicts withhold. The allowlist is the job-level
               # NEEDS_HUMAN_UNLABELERS, shared with Evaluate gate, and — same
               # rule — the MOST RECENT unlabel overall must be the authorized
@@ -396,12 +413,19 @@ jobs:
                 2>/dev/null)" || return 1
               V="$(printf '%s\n' "$VRAW" | grep -v '^$' | sort | tail -1 || true)"
               if [ -z "$V" ]; then
-                # Newest pending stamp = current occurrence's round start;
-                # same reasoning as Evaluate gate.
+                # No verdict: only a head escalation SKIPPED — proven by its
+                # skip marker status — may take the unlabel fallback; an empty
+                # lookup also happens while the judge's verdict is in flight,
+                # and a failed marker lookup reads as "no marker" (fail
+                # closed). Newest pending stamp = current occurrence's round
+                # start; same reasoning as Evaluate gate.
+                SKIPPED="$(gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
+                  --jq ".[] | select(.context==\"agentic-review/escalation\" and .state==\"success\" and ((.description // \"\") | contains(\"skipped pr=#$PR:\"))) | .id" \
+                  2>/dev/null | head -1 || true)"
                 ROUND_TS="$(gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
                   --jq ".[] | select(.state==\"pending\" and .context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .created_at] | @tsv" \
                   2>/dev/null | sort -n | tail -1 | cut -f2 || true)"
-                [ -n "$ROUND_TS" ] && [ -n "$AUTH_UNLABEL" ] && [ "$AUTH_UNLABEL" \> "$ROUND_TS" ]
+                [ -n "$SKIPPED" ] && [ -n "$ROUND_TS" ] && [ -n "$AUTH_UNLABEL" ] && [ "$AUTH_UNLABEL" \> "$ROUND_TS" ]
                 return
               fi
               [ "${V##*	}" = "no" ] && return 0

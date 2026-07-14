@@ -9,11 +9,14 @@
 # grows mid-review (auth, schema, send-path) gets re-judged instead of riding
 # the opening verdict. EXCEPT while the needs-human label is already set: the
 # label is sticky and add-only, so a re-run could only re-add what is already
-# there — the task is skipped and the model run saved. The gate covers the
-# verdict gap this creates (heads pushed while labeled have none) by honoring
-# an authorized unlabel that postdates the current head's round start; and once
-# a human removes the label, the next push resumes these runs, so new code
-# after an override is re-judged. The native review is requested by
+# there — the task is skipped and the model run saved. Every skip is recorded
+# as a per-head marker status (agentic-review/escalation), and the gate covers
+# the verdict gap this creates (heads pushed while labeled have none) by
+# honoring an authorized unlabel that postdates the current head's round start
+# — but only for marker-carrying heads, because a missing verdict without the
+# marker just means the judge is still in flight. Once a human removes the
+# label, the next push resumes these runs, so new code after an override is
+# re-judged. The native review is requested by
 # agentic-conductor, which also waits for it before firing its own per-round
 # reconcile task.
 #
@@ -143,7 +146,19 @@ jobs:
           # line only.
           LABELS="$(gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name')"
           if printf '%s\n' "$LABELS" | grep -qx "needs-human"; then
-            echo "needs-human already set; escalation task skipped (sticky label, nothing to add)." >> "$GITHUB_STEP_SUMMARY"
+            # Record the skip as a per-head marker status. The gate's
+            # verdict-less fallback honors an authorized unlabel ONLY for
+            # heads that carry this marker: a missing verdict alone is
+            # ambiguous — the judge could be running right now, and an unlabel
+            # must never approve ahead of its inbound "yes". SHA-bound like
+            # every other trusted artifact here; written once per skipped
+            # push, far below the per-SHA/context status cap. A failed write
+            # fails this step loud — no marker and no verdict simply withholds
+            # the gate until a label toggle or the next push.
+            gh api "repos/$REPO/statuses/$HEAD_SHA" \
+              -f state=success -f context=agentic-review/escalation \
+              -f description="skipped pr=#$PR: needs-human label set" > /dev/null
+            echo "needs-human already set; escalation task skipped (sticky label, nothing to add); skip marker status recorded on $HEAD_SHA." >> "$GITHUB_STEP_SUMMARY"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
