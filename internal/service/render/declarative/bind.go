@@ -323,10 +323,25 @@ func prefixCustomTags(src string) string {
 	return customTagPattern.ReplaceAllString(src, `<${1}x-${2}${3}`)
 }
 
+// selfClosedCustomTag matches a self-closing prefixed custom tag, e.g.
+// <x-richtext field="body" /> or <x-hr style="…"/>.
+var selfClosedCustomTag = regexp.MustCompile(`(?i)<(x-[a-z]+)((?:[^<>"]|"[^"]*")*?)/>`)
+
+// expandSelfClosedCustomTags rewrites <x-foo … /> into <x-foo …></x-foo>.
+// HTML5 parsing IGNORES the self-closing slash on unknown (non-void)
+// elements, so a self-closed custom tag would otherwise stay open and
+// swallow every following sibling as a child — a template author writing
+// <richtext … /> followed by a <Text> would silently lose the Text. The
+// shipped templates all place self-closed elements last, so nothing
+// rendered wrong today; this removes the footgun for the next template.
+func expandSelfClosedCustomTags(src string) string {
+	return selfClosedCustomTag.ReplaceAllString(src, `<${1}${2}></${1}>`)
+}
+
 // parseTemplate strips the SCHEMA comment, prefixes custom tags, parses the
 // markup with golang.org/x/net/html, and converts it into a parsedNode tree.
 func parseTemplate(src string) ([]*parsedNode, error) {
-	body := prefixCustomTags(stripSchema(src))
+	body := expandSelfClosedCustomTags(prefixCustomTags(stripSchema(src)))
 	// Parse as a fragment so we don't get an implicit html/head/body wrapper.
 	frag, err := nethtml.ParseFragment(strings.NewReader(body), &nethtml.Node{
 		Type:     nethtml.ElementNode,

@@ -383,3 +383,25 @@ func TestBindAttrs_SingleEscape(t *testing.T) {
 		t.Errorf("serialized attr is double-escaped: %q", out)
 	}
 }
+
+// TestParse_SelfClosedCustomTagKeepsSiblings pins the parser fix for
+// self-closed custom tags: HTML5 parsing ignores the self-closing slash on
+// unknown elements, so <richtext … /> previously stayed open and swallowed
+// every following sibling. Both the richtext content and the Text sibling
+// after it must render.
+func TestParse_SelfClosedCustomTagKeepsSiblings(t *testing.T) {
+	tpl := `<Section><richtext field="body" /><Text>after-sibling</Text></Section>`
+	nodes, err := parseTemplate(tpl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 || len(nodes[0].children) != 2 {
+		t.Fatalf("expected Section with 2 children (richtext + Text), got %+v", nodes)
+	}
+	if nodes[0].children[0].richtextField != "body" {
+		t.Errorf("first child should be the richtext, got %+v", nodes[0].children[0])
+	}
+	if nodes[0].children[1].Tag != "text" {
+		t.Errorf("the Text sibling was swallowed: %+v", nodes[0].children[1])
+	}
+}
