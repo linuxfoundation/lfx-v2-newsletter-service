@@ -61,6 +61,16 @@ func TestPreviewText(t *testing.T) {
 			bodyHTML: "<p>escape it as &amp;mdash; in HTML</p>",
 			want:     "escape it as &mdash; in HTML",
 		},
+		{
+			name:     "attribute values with angle brackets do not leak",
+			bodyHTML: `<p>See <a title="1 > 0" href="https://example.org">Hello</a> world</p>`,
+			want:     "See Hello world",
+		},
+		{
+			name:     "style and script payloads never surface",
+			bodyHTML: "<style>p{color:red}</style><script>alert(1)</script><p>Hi members</p>",
+			want:     "Hi members",
+		},
 	}
 
 	for _, tt := range tests {

@@ -12,9 +12,10 @@
 package render
 
 import (
-	"html"
 	"regexp"
 	"strings"
+
+	xhtml "golang.org/x/net/html"
 )
 
 // Chrome carries everything the renderer needs to wrap a body in the outer
@@ -235,26 +236,69 @@ func stripHTML(html string) string {
 // the snippet useful without shipping the whole body twice.
 const preheaderMaxLen = 140
 
-// blockBoundaryRe matches closing block-level tags and self-standing breaks.
-// The editor can serialize adjacent blocks without whitespace, so these must
-// become separators before the tag strip or "<p>Hello</p><p>members</p>"
-// reads "Hellomembers". Table cells count: authored bodies can carry tables,
-// and "<td>Name</td><td>Status</td>" must not read "NameStatus".
-var blockBoundaryRe = regexp.MustCompile(`(?i)</(?:p|div|li|ul|ol|h[1-6]|blockquote|pre|td|th|tr|table)>|<(?:br|hr)(\s[^>]*)?/?>`)
+// previewBoundaryTags are elements whose start or end marks a word boundary
+// in the extracted preview: block-level structure (the editor can serialize
+// adjacent blocks without whitespace, so "<p>Hello</p><p>members</p>" must
+// not read "Hellomembers", and "<td>Name</td><td>Status</td>" must not read
+// "NameStatus") plus explicit breaks. A space is emitted for each; the
+// whitespace collapse folds duplicates.
+var previewBoundaryTags = map[string]bool{
+	"p": true, "div": true, "li": true, "ul": true, "ol": true,
+	"h1": true, "h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
+	"blockquote": true, "pre": true, "td": true, "th": true, "tr": true,
+	"table": true, "br": true, "hr": true,
+}
+
+// previewSkipTags are elements whose text content is not authored copy and
+// must never surface in the inbox preview.
+var previewSkipTags = map[string]bool{
+	"script": true, "style": true, "template": true, "noscript": true,
+	"title": true, "head": true, "iframe": true,
+}
 
 // previewText derives the inbox-preview snippet from the authored body: block
-// boundaries turned into spaces, tags stripped, character references decoded
-// exactly once, whitespace collapsed to single spaces, truncated at a word
-// boundary. Empty when the body has no text content.
+// boundaries turned into spaces, tags dropped, non-content nodes skipped,
+// character references decoded exactly once, whitespace collapsed to single
+// spaces, truncated at a word boundary. Empty when the body has no text
+// content.
 func previewText(bodyHTML string) string {
-	// Strip tags without stripHTML: its entity pass would decode "&amp;mdash;"
-	// to "&mdash;" and the UnescapeString below would decode again to "—",
-	// so an author who wrote the literal text "&mdash;" would see a preview
-	// that differs from the visible body. One UnescapeString performs the
-	// single decode for every named or numeric reference.
-	text := tagRe.ReplaceAllString(blockBoundaryRe.ReplaceAllString(bodyHTML, " "), "")
-	text = html.UnescapeString(text)
-	text = strings.Join(strings.Fields(text), " ")
+	// Tokenize instead of regexing tags away: a regex cannot tell an
+	// attribute's ">" from a tag close (`<a title="1 > 0">Hello</a>` would
+	// leak `0">Hello`) and would surface style/script payloads as preview
+	// text. The tokenizer also decodes character references in text nodes
+	// exactly once, so an authored literal "&amp;mdash;" previews as
+	// "&mdash;", same as the visible body.
+	z := xhtml.NewTokenizer(strings.NewReader(bodyHTML))
+	var b strings.Builder
+	skip := 0
+tokens:
+	for {
+		tt := z.Next()
+		switch tt {
+		case xhtml.ErrorToken:
+			// io.EOF, or unparseable input: either way, what accumulated so
+			// far is the best available preview.
+			break tokens
+		case xhtml.TextToken:
+			if skip == 0 {
+				b.Write(z.Text())
+			}
+		case xhtml.StartTagToken, xhtml.EndTagToken, xhtml.SelfClosingTagToken:
+			name, _ := z.TagName()
+			tag := string(name) // TagName is already lowercased
+			switch {
+			case previewSkipTags[tag]:
+				if tt == xhtml.StartTagToken {
+					skip++
+				} else if tt == xhtml.EndTagToken && skip > 0 {
+					skip--
+				}
+			case previewBoundaryTags[tag]:
+				b.WriteByte(' ')
+			}
+		}
+	}
+	text := strings.Join(strings.Fields(b.String()), " ")
 	runes := []rune(text)
 	if len(runes) <= preheaderMaxLen {
 		return text
@@ -269,11 +313,11 @@ func previewText(bodyHTML string) string {
 
 // renderPreheaderHTML emits the hidden div email clients read for the inbox
 // preview line. Without it, clients fall back to the first rendered text —
-// the header chrome, which just repeats the subject. The trailing
-// zero-width-joiner padding stops that chrome from bleeding into the preview
-// after a short snippet: clients show up to ~preheaderMaxLen characters, so
-// the padding provides at least that many non-collapsible spaces and a short
-// preview still fills the whole window.
+// the header chrome, which just repeats the subject. The trailing padding of
+// non-breaking-space + zero-width-non-joiner pairs stops that chrome from
+// bleeding into the preview after a short snippet: clients show up to
+// ~preheaderMaxLen characters, so the padding provides at least that many
+// non-collapsible spaces and a short preview still fills the whole window.
 func renderPreheaderHTML(bodyHTML string) string {
 	preview := previewText(bodyHTML)
 	if preview == "" {
