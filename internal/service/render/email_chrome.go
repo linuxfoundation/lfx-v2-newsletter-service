@@ -236,17 +236,22 @@ func stripHTML(html string) string {
 // the snippet useful without shipping the whole body twice.
 const preheaderMaxLen = 140
 
-// previewBoundaryTags are elements whose start or end marks a word boundary
-// in the extracted preview: block-level structure (the editor can serialize
-// adjacent blocks without whitespace, so "<p>Hello</p><p>members</p>" must
-// not read "Hellomembers", and "<td>Name</td><td>Status</td>" must not read
-// "NameStatus") plus explicit breaks. A space is emitted for each; the
-// whitespace collapse folds duplicates.
-var previewBoundaryTags = map[string]bool{
-	"p": true, "div": true, "li": true, "ul": true, "ol": true,
-	"h1": true, "h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
-	"blockquote": true, "pre": true, "td": true, "th": true, "tr": true,
-	"table": true, "br": true, "hr": true,
+// previewInlineTags are phrasing-level elements that do not interrupt text
+// flow: "<strong>bo</strong>ld" must preview as "bold". Every element NOT in
+// this set is treated as a word boundary by default — the editor can
+// serialize adjacent blocks without whitespace ("<p>Hello</p><p>members</p>"
+// must not read "Hellomembers", "<td>Name</td><td>Status</td>" must not read
+// "NameStatus"), and authored bodies can carry any semantic container
+// (section, article, dl, figure, …), so enumerating block tags would chase an
+// open-ended list. Defaulting unknown elements to boundaries only risks an
+// extra space, which the whitespace collapse folds away.
+var previewInlineTags = map[string]bool{
+	"a": true, "abbr": true, "b": true, "bdi": true, "bdo": true,
+	"cite": true, "code": true, "data": true, "del": true, "dfn": true,
+	"em": true, "i": true, "ins": true, "kbd": true, "mark": true,
+	"q": true, "s": true, "samp": true, "small": true, "span": true,
+	"strong": true, "sub": true, "sup": true, "time": true, "u": true,
+	"var": true, "wbr": true, "img": true,
 }
 
 // previewSkipTags are elements whose text content is not authored copy and
@@ -293,7 +298,7 @@ tokens:
 				} else if tt == xhtml.EndTagToken && skip > 0 {
 					skip--
 				}
-			case previewBoundaryTags[tag]:
+			case !previewInlineTags[tag]:
 				b.WriteByte(' ')
 			}
 		}

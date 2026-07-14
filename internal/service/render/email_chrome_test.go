@@ -71,6 +71,11 @@ func TestPreviewText(t *testing.T) {
 			bodyHTML: "<style>p{color:red}</style><script>alert(1)</script><p>Hi members</p>",
 			want:     "Hi members",
 		},
+		{
+			name:     "semantic containers get separators by default",
+			bodyHTML: "<section>Hello</section><section>members</section><dl><dt>Term</dt><dd>Def</dd></dl><figure><figcaption>Cap</figcaption></figure>",
+			want:     "Hello members Term Def Cap",
+		},
 	}
 
 	for _, tt := range tests {
