@@ -124,7 +124,13 @@ jobs:
           # verdict; an unlabel AFTER a skip necessarily postdates the marker
           # and is honored by the gate. Without the wait, an unlabel landing
           # between a skip and a late stamp would be rejected with no verdict
-          # ever coming. If the stamp never appears (conductor failed early),
+          # ever coming. The gate additionally requires the skip marker to be
+          # NEWER (by numeric status id) than the round's pending stamp — the
+          # marker-after-stamp order this wait guarantees for fresh heads. On
+          # a reused SHA an OLD stamp can satisfy this wait before the current
+          # round's stamp lands; the resulting too-early marker simply fails
+          # closed at the gate (withhold, recover via label toggle or next
+          # push). If the stamp never appears (conductor failed early),
           # fire the task rather than skip — fail open toward running the
           # judge, never toward silence.
           MARKED=false
