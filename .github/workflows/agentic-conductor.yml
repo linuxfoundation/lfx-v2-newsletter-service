@@ -257,7 +257,7 @@ jobs:
                else "Baseline for the initial review round on `\($head[0:7])`: \($aithreads | length) AI-reviewer finding(s) — \($blocking | length) blocking, \(($aithreads | length) - ($blocking | length)) nit(s). Non-nit findings block until fixed or adjudicated; nits never block and only need an answer on their thread. This baseline is derived directly from the review threads." end),
               (if ($blocking | length) > 0 then
                 "\n**Blocking**\n\n| Severity | Finding | Next step |\n| --- | --- | --- |\n" +
-                ($blocking | map("| " + .sev + " | `" + .path + "` — " + .excerpt + " | Fix it, or reply on the thread with a substantive rebuttal |") | join("\n"))
+                ($blocking | map("| " + .sev + " | `" + .path + "` — " + .excerpt + " | Fix it, or reply with a substantive rebuttal — both are adjudicated at the next push |") | join("\n"))
                else empty end),
               (if ($blocking | length) == 0 and ($untidy | length) > 0 then
                 "\n**Remaining tidiness:** " + ($untidy | length | tostring) + " thread(s) (" + ($untidy | map(if .path == "" then "discussion" else "`" + .path + "`" end) | unique | join(", ")) + ") have no reply yet — the gate approves once each is answered (fix it and say so, or reply with the reason it stands as is)."
