@@ -1395,12 +1395,16 @@ func TestTestSendLayoutNotDoubleWrapped(t *testing.T) {
 			t.Errorf("test-send layout double-wrapped: chrome marker %q present: %s", marker, s.HTML)
 		}
 	}
-	wantURL := unsub.BuildURL("p1", "tester@example.com")
-	if got := strings.Count(s.HTML, wantURL); got != 1 {
-		t.Errorf("test-send: expected unsubscribe+manage to use %q (2x), got %d: %s", wantURL, got, s.HTML)
+	// A test send never mints a real signed unsubscribe token (BodyHTML and
+	// ToEmail are caller-supplied): all runtime sentinels resolve empty.
+	notWanted := unsub.BuildURL("p1", "tester@example.com")
+	if strings.Contains(s.HTML, notWanted) {
+		t.Errorf("test-send must not embed a real unsubscribe token: %s", s.HTML)
 	}
-	if strings.Contains(s.HTML, ViewOnlineURLPlaceholder) {
-		t.Errorf("test-send: view-online placeholder not substituted: %s", s.HTML)
+	for _, ph := range []string{UnsubscribeURLPlaceholder, ManageSubscriptionsURLPlaceholder, ViewOnlineURLPlaceholder} {
+		if strings.Contains(s.HTML, ph) {
+			t.Errorf("test-send: sentinel %q not substituted: %s", ph, s.HTML)
+		}
 	}
 }
 
