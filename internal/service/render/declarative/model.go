@@ -12,8 +12,11 @@
 // Trust boundary: Content values originate from authenticated writers via the
 // authoring UI. {{mustache}} substitutions are HTML-escaped; richtext fields
 // are emitted verbatim (the authoring WYSIWYG whitelist is not a security
-// sanitizer). The produced body_html later feeds render.Chrome.BodyHTML; if
-// content ever comes from a less privileged source, sanitize upstream.
+// sanitizer). The produced body_html is the COMPLETE outbound email document:
+// the layout send path dispatches it directly, without wrapping it in the
+// render.Chrome envelope, so verbatim richtext reaches recipients as-is. If
+// content ever comes from a less privileged source, sanitize upstream — and
+// any web "view online" surface must sanitize before serving it.
 package declarative
 
 // Layout is the structured newsletter: a wrapper plus the ordered top-level
