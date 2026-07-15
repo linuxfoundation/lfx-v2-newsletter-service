@@ -10,7 +10,7 @@
 > - `newsletter-service-dev`: auto-attaches on Go, chart, and service-owned doc paths. It owns this repo's Go conventions, HTTP handler shape, Postgres/Bun persistence, embedded schema, recipient resolution, public `pkg/api` DTO contract, tests, formatting, linting, and license headers. See `.claude/skills/newsletter-service-dev/SKILL.md`.
 > - `newsletter-service-pr-readiness`: pre-PR shape check only: branch/JIRA/conventional commits/rebase/DCO + GPG/diff size/protected files. See `.claude/skills/newsletter-service-pr-readiness/SKILL.md`.
 > - `newsletter-service-preflight`: Go mechanical before-PR pipeline: working tree, license, formatting, lint/vet, build, tests, protected files, commit verification, and PR change summary. See `.claude/skills/newsletter-service-preflight/SKILL.md`.
-> - `newsletter-service-agentic-pr`: how to drive an OPEN PR through the agentic review flow — read the lfx-reviewer check comment, fix or rebut blocking findings, answer every thread, push one round at a time, and loop until green; includes offering to babysit the loop in a background agent. See `.claude/skills/newsletter-service-agentic-pr/SKILL.md`.
+> - `newsletter-service-agentic-pr`: the PR driver's operating manual for driving an OPEN PR through the agentic review flow — read the lfx-reviewer check comment, fix or rebut blocking findings, answer every thread, push one round at a time, and loop until green. On PR open, the main session launches the PR driver (worktree-isolated background agent) with a minimal prompt pointing at this skill. See `.claude/skills/newsletter-service-agentic-pr/SKILL.md`.
 >
 > If the plugin is missing, install with `/plugin marketplace add linuxfoundation/lfx-skills` then `/plugin install lfx-skills@lfx-skills`.
 
@@ -168,7 +168,7 @@ When the work is done and no more code commits are planned:
    Address any new findings, then re-run the sweep until clean.
 4. **Run `/newsletter-service-pr-readiness`** for branch name, JIRA reference, conventional commits, rebase status, DCO + GPG signing, diff size, and protected files.
 5. **Run `/newsletter-service-preflight`** for working tree status, license headers, formatting, lint/vet, build, tests, protected files, commit verification, and PR change summary.
-6. **Only then push and open the PR.**
+6. **Only then push and open the PR** — and immediately launch the PR driver (see Post-PR iteration below).
 
 ### Post-PR iteration (responding to bot feedback on an open PR)
 
@@ -180,8 +180,21 @@ the round into at most one push — a `fix(review): ...` commit for code
 changes, a signed empty commit for a rebuttal-only round, and no push at all
 for a replies-only round on a clean head (the scheduled sweep releases the
 approval) — wait for the conductor's verdict on the new head, and repeat
-until the check is green and the gate approves. Offer to babysit this loop in
-a background agent so the user can keep working.
+until the check is green and the gate approves.
+
+**Immediately after opening any PR — without waiting to be asked — launch the
+PR driver**: a worktree-isolated background general-purpose agent whose
+prompt is, in essence, "read
+`.claude/skills/newsletter-service-agentic-pr/SKILL.md` (by absolute path in
+the main checkout) and drive PR #N by it until the check is green and the
+gate approves", plus the PR number, head SHA, and current status anchor per
+the skill's "Launching the PR driver" section. The skill is the driver's
+operating manual — do not restate its loop, conventions, liveness protocol,
+or authority bounds in the prompt. The main session stays free for other
+work; relay the driver's round notes to the user. The driver has no merge
+authority under any circumstances — a green, gate-approved PR is merged from
+the main session only, and only on explicit human instruction. Only skip the
+launch if the user asked to work the loop in this session.
 
 ## Conventions
 

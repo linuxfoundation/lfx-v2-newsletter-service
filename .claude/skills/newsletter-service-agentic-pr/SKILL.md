@@ -9,14 +9,24 @@ description: >
   this repo and the work involves review iteration — responding to Copilot or
   conductor findings, checking why `agentic-review/clean` is failing or why
   the gate has not approved, handling the `needs-human` label, or pushing
-  fixes to an open PR. Also use it right after opening any PR here, and offer
-  to babysit the loop in a background agent so the user can keep working.
+  fixes to an open PR. This document is the PR driver's operating manual:
+  the loop is executed by the PR driver, a worktree-isolated background
+  agent that works the PR autonomously (fixes, rebuttals, replies, pushes).
+  The main session's job is only to launch the driver right after opening
+  any PR here — with a minimal prompt pointing at this skill — and relay
+  its round notes.
 ---
 
 <!-- Copyright The Linux Foundation and each contributor to LFX. -->
 <!-- SPDX-License-Identifier: MIT -->
 
 # Working a PR through the agentic review flow
+
+> **Who runs this.** This document is the **PR driver's** operating manual —
+> unless a section says otherwise, "you" is the driver: a worktree-isolated
+> background agent that owns the loop end to end. The main session reads only
+> "Launching the PR driver" below; everything else is addressed to the
+> driver.
 
 Every push to an open PR on this repo starts a review round with no human in
 the loop: Copilot reviews the diff, an escalation judge decides whether a
@@ -246,51 +256,89 @@ approval machinery, security-sensitive surface, or something the judge could
 not bound; a human decides, and after their unlabel the next push resumes
 per-head judging.
 
-## Babysitting the loop in the background
+## Launching the PR driver (main session)
 
-The loop is mostly waiting, and the checkout is the only contended resource —
-so when a PR enters the flow, tell the user they do not have to sit through
-it, and lay out both arrangements:
+This section — and only this section — is addressed to the main session.
 
-- **Background agent works the PR, this session moves on**: a worktree-
-  isolated background agent runs this loop on the PR branch while the user
-  starts the next feature right here in the main checkout. For example:
-  "Want me to babysit this PR in the background? I'll fix or rebut each
-  round and report back when it's green, or when something needs you — and
-  we can start the next feature here meanwhile."
-- **This session works the PR, the next feature starts in a worktree**: keep
-  the loop here and point the user at a worktree for the new work — either
-  spawned from this session or opened as a fresh Claude session in that
-  directory (`git worktree add ../lfx-v2-newsletter-service-<feature> main`).
-  The PR branch checkout stays undisturbed either way.
+The loop is mostly waiting, so the moment a PR enters the flow (right after
+`gh pr create`, or on finding an open PR that needs iteration), **launch the
+PR driver without waiting to be asked**: spawn a general-purpose agent in
+the background with worktree isolation and hand it this skill. Tell the user
+the driver is on it; the main session stays free for the next piece of work.
+Only skip the launch if the user asked to work the loop in this session, and
+even then point out the next feature can start in a separate worktree
+(`git worktree add ../lfx-v2-newsletter-service-<feature> main`).
 
-Offer whichever fits how the user is working; the point to get across is
-that PR resolution and the next feature never need to queue behind each
-other.
+Keep the launch prompt minimal — this document is the driver's operating
+manual, so do not restate its rules in the prompt. The prompt needs only:
 
-If accepted, spawn a general-purpose agent in the background with worktree
-isolation and hand it this loop with clear authority bounds. Mind the
-double-checkout rule first: git refuses to check out a branch that another
-worktree already has, and right after opening a PR the main checkout is
-normally still on the PR branch. Either switch the main checkout off it
-before the agent claims it (natural when the next feature starts here
-anyway), or have the agent work detached — `git checkout --detach
-origin/<pr-branch>` in its worktree, committing as usual and pushing with
-`git push origin HEAD:<pr-branch>`:
+- The instruction to first read this SKILL.md **by absolute path in the main
+  checkout** (its worktree snapshot may be stale) and drive the PR by it
+  until the check is green and the gate approves.
+- The PR number and current head SHA.
+- The newest `pr=#<PR>:`-bound `agentic-review/clean` status id as the
+  pending anchor if one exists, plus any hazard the main session knows about
+  (e.g. the head SHA was previously pushed on another PR).
+
+Example prompt: "You are the PR driver for PR #57 on this repo. Read
+`<main-checkout>/.claude/skills/newsletter-service-agentic-pr/SKILL.md` and
+drive the PR by it until the check is green and the gate approves. Head:
+`<sha>`. Pending anchor: status id `<id>`. Do not merge."
+
+Main-session follow-up: each time the driver stops, a task notification
+arrives. A result that says it is polling means it will self-resume — do not
+duplicate its work. If no further notification arrives within ~50 minutes of
+one that promised a poll, nudge the driver with SendMessage (its agent id
+stays addressable after it stops). If it reports blocked (`needs-human`,
+design decision, non-convergence), relay that to the user and do not restart
+it blindly. **Merging is never the driver's job**: a green, gate-approved PR
+is merged from the main session only, and only on explicit human
+instruction.
+
+## Driver operations
+
+You are the driver from here on.
+
+**Worktree discipline.** Git refuses to check out a branch that another
+worktree already has, and the main checkout may still be on the PR branch —
+so work detached: `git fetch origin && git checkout --detach
+origin/<pr-branch>`, commit as usual, and push with
+`git push origin HEAD:<pr-branch>`.
+
+**Fix-commit conventions.** `git commit -s -S` (DCO + GPG), conventional
+subject (`fix(review): ...`). New `.go` files start with the repo's two-line
+license header. Before any push: `export PATH="$HOME/go/bin:$PATH"`, then
+`make lint`, `go vet ./...`, and `make test` — all must pass.
+
+**Liveness — waiting without dying.** A round takes 10–20 minutes and you
+must survive that wait unattended. Never end a turn "waiting" unless a
+background Bash poll of your own is live and will wake you: every poll must
+**exit** when the watched condition changes — a terminal `pr=#<PR>:`-bound
+stamp newer than your recorded anchor — or after a ~45-minute bound, because
+a background task re-invokes its launcher when it exits. On each wake-up:
+handle the new state, record the new anchor, start the next bounded poll,
+and send a one-line round-transition note to the main session (SendMessage
+to `main`, e.g. "round 2: 3 blocking; fixing") so liveness stays visible. No
+unbounded polls; no turns ending with neither a result nor a live poll.
+
+**Authority bounds.**
 
 - **May**: read PR state, commit and push fixes for findings whose resolution
-  is clear and mechanical (following this repo's conventions and commit
-  signing: `git commit -s -S`), post thread replies and substantive
-  rebuttals, resolve the threads it has answered, poll for verdicts.
+  is clear and mechanical, post thread replies and substantive rebuttals,
+  resolve the threads you have answered, poll for verdicts.
 - **Must stop and report instead of acting** when: the `needs-human` label
   appears; a finding requires a design decision or its fix is not obviously
-  safe; the same finding family survives two of its fix attempts; or roughly
-  five rounds pass without convergence.
-- **Must never**: force-push, merge, approve, edit other accounts' comments,
-  or add/remove labels.
+  safe; the same finding family survives two of your fix attempts; roughly
+  five rounds pass without convergence; or a round appears dead per the
+  bounded-wait diagnostics (report the workflow-run evidence, do not push
+  again).
+- **Must never**: merge — you have no merge authority under any
+  circumstances, even fully green and gate-approved — force-push, approve,
+  edit other accounts' comments, add or remove labels, or @mention the bots.
 
-Have it report the final state either way: green and gate-approved, or what
-it is blocked on and the round-by-round history in one paragraph.
+**Final report.** State the end state — green and gate-approved, or what you
+are blocked on — plus a one-paragraph round-by-round history: what each
+round's blocking findings were and whether each was fixed or rebutted.
 
 ## Hard rules
 
