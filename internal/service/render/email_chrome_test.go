@@ -51,6 +51,18 @@ func TestInlineBodyStylesEmbeddedMedia(t *testing.T) {
 			wantSame: true,
 		},
 		{
+			name:     "author img style wins when a quoted attribute contains '>'",
+			body:     `<img alt="a > b" style="width:120px;">`,
+			wantSame: true,
+		},
+		{
+			name: "img with '>' in a quoted attribute still gets the full style",
+			body: `<img alt="a > b" src="https://example.org/x.png">`,
+			want: []string{
+				`<img style="` + bodyTagStyles["img"] + `" alt="a > b" src="https://example.org/x.png">`,
+			},
+		},
+		{
 			name:     "author-supplied code style wins",
 			body:     `<p><code style="color:red;">x</code></p>`,
 			want:     []string{`<code style="color:red;">x</code>`},
@@ -103,12 +115,19 @@ func TestBodyTagStylesEmbeddedMediaRules(t *testing.T) {
 }
 
 func TestInlineBodyStylesTagOrderCoversMap(t *testing.T) {
-	if len(inlineBodyStylesTagOrder) != len(bodyTagStyles) {
-		t.Fatalf("tag order has %d entries, style map has %d", len(inlineBodyStylesTagOrder), len(bodyTagStyles))
-	}
+	seen := make(map[string]bool, len(inlineBodyStylesTagOrder))
 	for _, tag := range inlineBodyStylesTagOrder {
+		if seen[tag] {
+			t.Errorf("tag order entry %q is duplicated", tag)
+		}
+		seen[tag] = true
 		if _, ok := bodyTagStyles[tag]; !ok {
 			t.Errorf("tag order entry %q has no style map entry", tag)
+		}
+	}
+	for tag := range bodyTagStyles {
+		if !seen[tag] {
+			t.Errorf("style map entry %q missing from tag order", tag)
 		}
 	}
 }

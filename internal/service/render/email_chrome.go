@@ -125,7 +125,10 @@ func inlineBodyStyles(html string) string {
 	for _, tag := range inlineBodyStylesTagOrder {
 		style := bodyTagStyles[tag]
 		// (?i) case-insensitive. Optional trailing `/` so `<hr/>` is also styled.
-		re := regexp.MustCompile(`(?i)<` + tag + `(\s[^>]*)?/?>`)
+		// The attribute run treats quoted values as opaque units so a `>` inside
+		// a quoted attribute (e.g. alt="a > b") cannot truncate the match before
+		// an author-supplied style= attribute.
+		re := regexp.MustCompile(`(?i)<` + tag + `(\s(?:[^>"']|"[^"]*"|'[^']*')*)?/?>`)
 		result = re.ReplaceAllStringFunc(result, func(match string) string {
 			attrs := extractAttrs(match, tag)
 			if hasStyleAttr(attrs) {
