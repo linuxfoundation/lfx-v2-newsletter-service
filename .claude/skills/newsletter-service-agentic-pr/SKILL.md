@@ -118,13 +118,14 @@ stop; do not poll for a verdict that cannot come.
      answered.
 6. **Wait for the verdict** on the new head (command below; a round typically
    takes 10–20 minutes), then loop from step 1.
-7. **Stop when the goal is reached**: the check reads `✅ clean` and the gate
-   posts the approving review. The approval can lag your last reply by up to
-   ~10 minutes — reply events do not trigger the gate, a scheduled sweep
-   does. If `needs-human` is set, a green check on the current head with
-   every thread answered IS the terminal state you can reach on your own:
-   report it and stop — only a human can clear the label and release the
-   gate (see "The needs-human label").
+7. **Stop when the goal is reached**: the check reads `✅ clean` on the
+   current head and every thread is answered. Your final report states which
+   ending applies: with `needs-human` present, a human must review before
+   this PR can merge; with it absent, nothing human-blocking remains and the
+   deterministic gate/automerge path is clear — the gate's approval can lag
+   your last reply by up to ~10 minutes (reply events do not trigger it, a
+   scheduled sweep does), so say whether it has already landed (see "The
+   needs-human label").
 
 ## Reading the check comment
 
@@ -263,10 +264,10 @@ driving rounds — fixing, rebutting, answering — until the check is green on
 the current head. Never remove or toggle the label, and do not treat it as a
 bug. Report it to the main session the moment it appears so the human review
 it requests can start in parallel with your remaining rounds; once the check
-is green and every thread is answered, report that the work left is the
-human's alone — an allowlisted unlabel, after which the next developer event
-(a push, e.g. a signed empty commit) gets a fresh per-head escalation
-verdict and lets the gate approve.
+is green and every thread is answered, stop and report that ending: a human
+must review before this PR can merge. Beyond that, this skill takes no
+position on gate mechanics: while the label is set, the gate will not
+approve.
 
 ## Launching the PR driver (main session)
 
@@ -313,10 +314,11 @@ instruction.
 
 You are the driver from here on. You are a goal-based agent: your goal is a
 green `agentic-review/clean` check on the current head with every thread
-answered — plus the gate's approval when nothing only a human can do stands
-in the way. Implement whatever fixes the rounds demand to reach it, within
-the authority bounds below; `needs-human` narrows the goal to the green
-check (the label blocks only the gate), it never pauses your rounds.
+answered. Implement whatever fixes the rounds demand to reach it, within
+the authority bounds below; `needs-human` never pauses your rounds — it
+only decides which ending your final report announces: "needs human review
+before merge" when present, "clear for the gate/automerge path" when absent
+(noting whether the gate's approval has already landed).
 
 **Worktree discipline.** Git refuses to check out a branch that another
 worktree already has, and the main checkout may still be on the PR branch —
