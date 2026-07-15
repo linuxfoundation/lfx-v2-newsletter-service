@@ -121,6 +121,11 @@ func TestPreviewText(t *testing.T) {
 			body: "<p>\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645</p>",
 			want: "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645",
 		},
+		{
+			name: "center blocks separate words",
+			body: "<center>One</center><center>Two</center>",
+			want: "One Two",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -164,6 +169,27 @@ func TestPreviewTextTruncation(t *testing.T) {
 		}
 		if n := utf8.RuneCountInString(got); n != previewMaxRunes+1 {
 			t.Fatalf("unbroken text should hard-cut at %d runes plus ellipsis, got %d", previewMaxRunes, n)
+		}
+	})
+
+	t.Run("zwj emoji sequences are not split at the cut", func(t *testing.T) {
+		const engineer = "\U0001F469\u200D\U0001F4BB"     // 3 runes per cluster
+		body := strings.Repeat(engineer, previewMaxRunes) // no spaces to back up to
+		got := previewText(body)
+		if !strings.HasSuffix(got, "…") {
+			t.Fatalf("expected ellipsis, got %q", got)
+		}
+		text := strings.TrimSuffix(got, "…")
+		// The cut must land on a grapheme boundary: the kept text is a whole
+		// number of complete emoji sequences, never a dangling ZWJ fragment.
+		if n := utf8.RuneCountInString(text); n%3 != 0 {
+			t.Fatalf("preview keeps %d runes, not a multiple of the 3-rune cluster", n)
+		}
+		if text != strings.Repeat(engineer, utf8.RuneCountInString(text)/3) {
+			t.Fatalf("preview is not whole emoji clusters: %q", text)
+		}
+		if n := utf8.RuneCountInString(text); n > previewMaxRunes {
+			t.Fatalf("preview is %d runes, want at most %d", n, previewMaxRunes)
 		}
 	})
 

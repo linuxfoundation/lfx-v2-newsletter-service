@@ -13,6 +13,7 @@ require (
 	github.com/linuxfoundation/lfx-v2-email-service v0.1.5
 	github.com/nats-io/nats.go v1.52.0
 	github.com/remychantenay/slog-otel v1.3.4
+	github.com/rivo/uniseg v0.4.7
 	github.com/stretchr/testify v1.11.1
 	github.com/uptrace/bun v1.2.7
 	github.com/uptrace/bun/dialect/pgdialect v1.2.7

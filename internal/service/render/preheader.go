@@ -5,7 +5,9 @@ package render
 
 import (
 	"strings"
+	"unicode/utf8"
 
+	"github.com/rivo/uniseg"
 	"golang.org/x/net/html"
 )
 
@@ -48,7 +50,8 @@ var previewBlockTags = map[string]bool{
 	"section": true, "article": true, "aside": true, "header": true,
 	"footer": true, "figure": true, "figcaption": true, "dl": true,
 	"dt": true, "dd": true, "form": true, "fieldset": true, "address": true,
-	"nav": true, "main": true,
+	"nav": true, "main": true, "center": true, "caption": true,
+	"legend": true, "details": true, "summary": true,
 }
 
 // previewZeroWidthCutset are zero-width characters trimmed from the EDGES of
@@ -119,13 +122,24 @@ func previewText(bodyHTML string) string {
 
 // truncatePreview cuts text to at most maxRunes runes, backing up to the last
 // word boundary inside the cut and appending an ellipsis when truncation
-// happened.
+// happened. The cut lands on an extended-grapheme-cluster boundary, never
+// inside one, so a ZWJ emoji sequence or a combining-mark stack at the limit
+// is kept or dropped whole rather than split into a broken final glyph.
 func truncatePreview(text string, maxRunes int) string {
-	runes := []rune(text)
-	if len(runes) <= maxRunes {
+	if utf8.RuneCountInString(text) <= maxRunes {
 		return text
 	}
-	cut := string(runes[:maxRunes])
+	// Keep whole grapheme clusters while their combined rune count fits.
+	kept, end := 0, 0
+	for g := uniseg.NewGraphemes(text); g.Next(); {
+		runes := g.Runes()
+		if kept+len(runes) > maxRunes {
+			break
+		}
+		kept += len(runes)
+		_, end = g.Positions()
+	}
+	cut := text[:end]
 	if idx := strings.LastIndexByte(cut, ' '); idx > 0 {
 		cut = cut[:idx]
 	}
