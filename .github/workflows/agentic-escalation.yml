@@ -129,9 +129,12 @@ jobs:
           # marker-after-stamp order this wait guarantees for fresh heads. On
           # a reused SHA an OLD stamp can satisfy this wait before the current
           # round's stamp lands; the resulting too-early marker simply fails
-          # closed at the gate (withhold; recovery needs a push or reopen —
-          # only those re-run this workflow and mint a fresh marker, a label
-          # toggle merely re-runs the gate). If the stamp never appears (conductor failed early),
+          # closed at the gate (withhold). Deterministic recovery is a push
+          # of a NEW SHA (a fresh head has no old stamps to race) or a
+          # manual rerun of this workflow after the current pending stamp
+          # exists; a reopen is only a best-effort retry — it re-runs this
+          # workflow but the same old-stamp race can recur — and a label
+          # toggle merely re-runs the gate. If the stamp never appears (conductor failed early),
           # fire the task rather than skip — fail open toward running the
           # judge, never toward silence.
           MARKED=false

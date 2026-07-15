@@ -69,6 +69,10 @@ stop; do not poll for a verdict that cannot come.
    stale, and the current head's round is already running or queued (every
    push starts one) — poll for its verdict and wait. Never push just to
    refresh a stale check: that cancels the running round and burns another.
+   On a reused SHA (reopen, force-push back) a matching `head:` alone is not
+   proof the check is current — an old occurrence's check carries the same
+   SHA; anchor on the current round's own pending stamp per the reused-SHA
+   note in the waiting section.
 2. **Triage every blocking row.** `[critical]`, `[high]`, and `[should-fix]`
    findings block; `[nit]` never blocks. For each blocking finding decide: fix
    it, or reply on its thread with a substantive technical rebuttal. Both
@@ -117,8 +121,17 @@ rendered page.
 ```bash
 CID="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
   --jq '.[] | select(.user.login=="lfx-reviewer" and (.body | contains("<!-- agentic:check v1 -->"))) | .id' | tail -1)"
-gh api "repos/$REPO/issues/comments/$CID" --jq .body
+if [ -n "$CID" ]; then
+  gh api "repos/$REPO/issues/comments/$CID" --jq .body
+else
+  echo "no agentic check posted yet"
+fi
 ```
+
+On a fresh PR, or in the minutes right after a push, no check exists yet and
+`CID` is empty — never call the comments endpoint with an empty id (the URL
+would be malformed). An absent check is not an error state: the round is
+running, so switch to the status poll below until it completes.
 
 In the body: the headline gives the blocking count, the **Blocking** table
 names what stands between you and clean, and the ledger's `- id:` rows record
@@ -141,6 +154,15 @@ gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
   --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .state] | @tsv" \
   | sort -n | tail -1 | cut -f2
 ```
+
+One more reused-SHA hazard: right after a push or reopen that lands an
+already-seen SHA, even the newest status can still be a PAST occurrence's
+terminal `success`/`failure`, because the current round has not stamped yet —
+and the matching `head:` on an old check comment is equally misleading (the
+SHA is the same). So anchor each round on its own stamp: note the newest
+status id before you push, and treat nothing as this round's verdict until a
+strictly newer `pending` has appeared and then flipped. (On a brand-new SHA
+this is automatic — it has no history to masquerade as.)
 
 `pending` or empty output means the round is still running — poll every
 minute or so rather than pushing again. But bound the wait: the pending stamp
