@@ -69,9 +69,10 @@ func TestClassifySendRequestError(t *testing.T) {
 }
 
 // TestClassifyErrorReply pins the retry-safety boundary for explicit
-// email-service error replies: only error strings the email-service contract
-// documents as pre-acceptance rejections are tagged retry-safe. The
-// post-acceptance "email delivery failed" (SMTP failure after the service
+// email-service error replies: every error string the email-service contract
+// documents as a pre-acceptance rejection is tagged retry-safe — the literal
+// rows double as a typo guard on the sendRejectedBeforeAcceptance allowlist.
+// The post-acceptance "email delivery failed" (SMTP failure after the service
 // accepted the request — the remote MTA may already hold the message) and any
 // unrecognized string stay ambiguous and untagged.
 func TestClassifyErrorReply(t *testing.T) {
@@ -80,10 +81,32 @@ func TestClassifyErrorReply(t *testing.T) {
 		reply     string
 		wantRetry bool
 	}{
-		{"pre-acceptance validation rejection", "to, subject, html, and text are required", true},
+		// All six contract-documented pre-acceptance rejections
+		// (lfx-v2-email-service/docs/email-service-contract.md § send_email
+		// error reply), spelled as literals so an allowlist typo fails here.
+		{"pre-acceptance malformed payload rejection", "invalid request payload", true},
+		{"pre-acceptance required-fields rejection", "to, subject, html, and text are required", true},
+		{"pre-acceptance from-address rejection", "invalid from address", true},
 		{"pre-acceptance from-domain rejection", "from address domain not allowed", true},
+		{"pre-acceptance reply_to-address rejection", "invalid reply_to address", true},
+		{"pre-acceptance reply_to-domain rejection", "reply_to address domain not allowed", true},
 		{"post-acceptance delivery failure stays ambiguous", "email delivery failed", false},
 		{"unrecognized error string stays ambiguous", "smtp connection lost", false},
+	}
+	// Completeness guard: every allowlist entry must have a positive row
+	// above, so growing sendRejectedBeforeAcceptance without pinning the new
+	// string here fails the test.
+	positive := 0
+	for _, tc := range cases {
+		if tc.wantRetry {
+			positive++
+			if _, ok := sendRejectedBeforeAcceptance[tc.reply]; !ok {
+				t.Fatalf("positive case %q is not in sendRejectedBeforeAcceptance — allowlist typo?", tc.reply)
+			}
+		}
+	}
+	if positive != len(sendRejectedBeforeAcceptance) {
+		t.Fatalf("test covers %d pre-acceptance strings, allowlist has %d — add a row for every allowlist entry", positive, len(sendRejectedBeforeAcceptance))
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
