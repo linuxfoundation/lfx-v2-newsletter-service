@@ -695,13 +695,14 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 
 // dispatchWithRetry sends one recipient's email, retrying up to
 // dispatchMaxAttempts total attempts with a doubling backoff — but only for
-// failures tagged domain.ErrEmailNotDispatched (an explicit error reply from
-// email-service, or NATS no-responders), where the email definitively never
-// went out. Ambiguous transport failures (request timeout, cancelled context)
-// are terminal on first occurrence: email-service may already have accepted
-// the message and it has no idempotency key today, so retrying would risk
-// sending the recipient the same newsletter twice — a worse outcome than the
-// miss, which the caller's failure accounting already surfaces.
+// failures tagged domain.ErrEmailNotDispatched (a documented pre-acceptance
+// rejection reply from email-service, or NATS no-responders), where the email
+// definitively never went out. Ambiguous failures — request timeout, cancelled
+// context, email-service's post-acceptance "email delivery failed" reply — are
+// terminal on first occurrence: email-service may already have accepted the
+// message and it has no idempotency key today, so retrying would risk sending
+// the recipient the same newsletter twice — a worse outcome than the miss,
+// which the caller's failure accounting already surfaces.
 //
 // Running inside the per-recipient worker keeps the fan-out concurrency cap
 // as the bound on total in-flight requests. The backoff wait respects ctx

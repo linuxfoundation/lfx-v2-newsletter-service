@@ -67,3 +67,36 @@ func TestClassifySendRequestError(t *testing.T) {
 		})
 	}
 }
+
+// TestClassifyErrorReply pins the retry-safety boundary for explicit
+// email-service error replies: only error strings the email-service contract
+// documents as pre-acceptance rejections are tagged retry-safe. The
+// post-acceptance "email delivery failed" (SMTP failure after the service
+// accepted the request — the remote MTA may already hold the message) and any
+// unrecognized string stay ambiguous and untagged.
+func TestClassifyErrorReply(t *testing.T) {
+	cases := []struct {
+		name      string
+		reply     string
+		wantRetry bool
+	}{
+		{"pre-acceptance validation rejection", "to, subject, html, and text are required", true},
+		{"pre-acceptance from-domain rejection", "from address domain not allowed", true},
+		{"post-acceptance delivery failure stays ambiguous", "email delivery failed", false},
+		{"unrecognized error string stays ambiguous", "smtp connection lost", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyErrorReply(tc.reply)
+			if errors.Is(got, domain.ErrEmailNotDispatched) != tc.wantRetry {
+				t.Fatalf("classifyErrorReply(%q) retry-safe=%v, want %v", tc.reply, !tc.wantRetry, tc.wantRetry)
+			}
+			// Every reply keeps the typed ServiceUnavailable so the HTTP
+			// mapper (test-send path) still resolves 503.
+			var su pkgerrors.ServiceUnavailable
+			if !errors.As(got, &su) {
+				t.Fatalf("classifyErrorReply(%q) lost the typed ServiceUnavailable: %v", tc.reply, got)
+			}
+		})
+	}
+}

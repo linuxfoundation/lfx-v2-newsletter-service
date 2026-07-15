@@ -147,14 +147,41 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 		return "", pkgerrors.NewUnexpected("malformed email-service reply", jsonErr)
 	}
 	if errResp.Error != "" {
-		// An explicit error reply proves email-service saw the request and
-		// rejected it — the email definitively did not go out, so tag the
-		// failure retry-safe for the orchestrator.
-		return "", fmt.Errorf("%w: %w",
-			pkgerrors.NewServiceUnavailable("email-service returned error", errors.New(errResp.Error)),
-			domain.ErrEmailNotDispatched)
+		return "", classifyErrorReply(errResp.Error)
 	}
 	return "", nil
+}
+
+// sendRejectedBeforeAcceptance lists the send_email error replies that the
+// email-service contract documents as pre-acceptance rejections: the request
+// was validated and refused before any SMTP work, so the email definitively
+// did not go out and a retry is safe. Deliberately absent is
+// "email delivery failed", which the contract documents as SMTP failure
+// *after* the service accepted the request — the same post-acceptance
+// ambiguity as a transport timeout (the remote MTA may already have accepted
+// the message), so it must not be tagged retry-safe. Unrecognized error
+// strings default to ambiguous for the same reason.
+// Source: lfx-v2-email-service/docs/email-service-contract.md § send_email
+// error reply.
+var sendRejectedBeforeAcceptance = map[string]struct{}{
+	"invalid request payload":                  {},
+	"to, subject, html, and text are required": {},
+	"invalid from address":                     {},
+	"from address domain not allowed":          {},
+	"invalid reply_to address":                 {},
+	"reply_to address domain not allowed":      {},
+}
+
+// classifyErrorReply wraps an explicit send_email error reply, tagging it
+// domain.ErrEmailNotDispatched (retry-safe) only when the error string is a
+// documented pre-acceptance rejection. See sendRejectedBeforeAcceptance for
+// why post-acceptance and unrecognized errors stay untagged.
+func classifyErrorReply(errMsg string) error {
+	svcErr := pkgerrors.NewServiceUnavailable("email-service returned error", errors.New(errMsg))
+	if _, preAcceptance := sendRejectedBeforeAcceptance[errMsg]; preAcceptance {
+		return fmt.Errorf("%w: %w", svcErr, domain.ErrEmailNotDispatched)
+	}
+	return svcErr
 }
 
 // classifySendRequestError tags send_email transport failures that prove the

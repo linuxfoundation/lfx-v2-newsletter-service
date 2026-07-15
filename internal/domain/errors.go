@@ -30,8 +30,9 @@ var (
 	ErrSendInProgress = errors.New("newsletter send in progress")
 
 	// ErrEmailNotDispatched marks a per-recipient email dispatch failure where
-	// the email is known NOT to have been handed to email-service: an explicit
-	// error reply, or a NATS no-responders condition. Only failures carrying
+	// the email is known NOT to have gone out: a documented pre-acceptance
+	// rejection reply from email-service, or a NATS no-responders condition
+	// (the request was dropped before any service saw it). Only failures carrying
 	// this sentinel are safe to retry — ambiguous transport failures (request
 	// timeout, cancelled context) may have been accepted upstream, and
 	// email-service has no idempotency key, so retrying them risks sending a
