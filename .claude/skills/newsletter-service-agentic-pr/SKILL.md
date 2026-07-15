@@ -21,7 +21,9 @@ description: >
 Every push to an open PR on this repo starts a review round with no human in
 the loop: Copilot reviews the diff, an escalation judge decides whether a
 human must look (`needs-human` label), and the conductor adjudicates every
-review thread and posts an **Agentic review check** comment as `lfx-reviewer`,
+AI-reviewer thread — human-authored threads are never adjudicated, they only
+count for the tidiness rule below — and posts an **Agentic review check**
+comment as `lfx-reviewer`,
 stamping the `agentic-review/clean` commit status on the head it judged. A
 deterministic gate approves the PR as `lfx-reviewer` once four things hold:
 the current head's clean status is `success`, the `needs-human` label is
@@ -64,11 +66,19 @@ to code changes and keeps humans from being able to talk the gate open.
    comments included. The gate withholds its approval while any thread is
    unanswered, even on a clean change — nothing gets dismissed without a
    recorded reason.
-5. **Batch the whole round into one commit and one push.** Each push burns a
-   Copilot review plus a reconcile model run, and a mid-round push strands the
-   running round (its eventual comment is head-bound and inert, but it is
-   noise). Write all fixes, post all replies, resolve the answered threads,
-   then push once.
+5. **Batch the whole round into one push.** Each push burns a Copilot review
+   plus a reconcile model run, and a mid-round push strands the running round
+   (its eventual comment is head-bound and inert, but it is noise). Write all
+   fixes, post all replies, resolve the answered threads, then push once.
+   What that push is depends on the round:
+   - Code changes: one commit carrying every fix.
+   - Rebuttal-only (nothing to change in the tree): rebuttals are only
+     adjudicated at a push, so push a signed empty commit —
+     `git commit --allow-empty -s -S -m "chore(review): submit rebuttals for adjudication"`.
+   - Replies-only on an already-clean head (answering nits or human threads
+     when nothing blocks): no push at all — the scheduled sweep re-runs the
+     gate within ~10 minutes and releases the approval once every thread is
+     answered.
 6. **Wait for the verdict** on the new head (command below; a round typically
    takes 10–20 minutes), then loop from step 1.
 7. **Stop when green**: the check reads `✅ clean` and the gate posts the
@@ -111,7 +121,17 @@ gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
 ```
 
 `pending` or empty output means the round is still running — poll every
-minute or so rather than pushing again.
+minute or so rather than pushing again. But bound the wait: the pending stamp
+lands within a couple of minutes of the push, and a round normally finishes
+in 10–20. If no PR-bound stamp has appeared after ~15 minutes, or `pending`
+outlives ~40, the round is likely dead (failed workflow run, missing PAT
+wiring, cancelled mid-poll) and no amount of polling revives it — inspect
+the runs instead and report what you find rather than pushing again:
+
+```bash
+gh run list --repo "$REPO" --workflow=agentic-conductor.yml --limit 5
+gh run list --repo "$REPO" --workflow=agentic-escalation.yml --limit 5
+```
 
 ## Threads: fixing, rebutting, answering, resolving
 
@@ -197,7 +217,8 @@ it is blocked on and the round-by-round history in one paragraph.
 
 - Rounds fire on developer events only — push, open, reopen. Comments and
   replies never start one; do not wait for a reaction to a comment.
-- One push per round; batch fixes and rebuttals.
+- At most one push per round; batch fixes and rebuttals (signed empty commit
+  for rebuttal-only rounds, no push for replies-only on a clean head).
 - Fix or rebut every blocking finding; answer every thread; say how you fixed
   it or why it stands, then resolve what you answered.
 - Never mention the bots; never touch the `needs-human` label.
