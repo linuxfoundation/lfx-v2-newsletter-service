@@ -172,41 +172,30 @@ When the work is done and no more code commits are planned:
 
 ### Post-PR iteration (responding to bot feedback on an open PR)
 
-Once the PR is open, the agentic review flow owns iteration: follow
-`/newsletter-service-agentic-pr` (`.claude/skills/newsletter-service-agentic-pr/SKILL.md`).
-In short: read the lfx-reviewer **Agentic review check** comment after each
-round, fix or rebut every blocking finding, answer every review thread, batch
-the round into at most one push — a `fix(review): ...` commit for code
-changes, a signed empty commit for a rebuttal-only round, and no push at all
-for a replies-only round on a clean head (the scheduled sweep releases the
-approval) — wait for the conductor's verdict on the new head, and repeat
-until the check is green on the current head with every thread answered.
-The final report then says which ending applies: "needs human review before
-merge" when the `needs-human` label is set, or "clear for the gate/automerge
-path" — the latter only once the gate's approval or the current head's
-`needs-human: no` verdict actually exists; label absence alone means
-escalation is still pending, not clear.
-
-**Immediately after opening any PR — without waiting to be asked — launch the
-PR driver**: a worktree-isolated background general-purpose agent whose
-prompt is, in essence, "read
-`<main-checkout>/.claude/skills/newsletter-service-agentic-pr/SKILL.md` —
-the skill by absolute path in the main checkout, since the driver's worktree
-snapshot may be stale — and drive PR #N by it to a green check on the
-current head with every thread answered, then report which ending
-applies", plus the PR number, head SHA, and current status anchor per
-the skill's "Launching the PR driver" section. The skill is the driver's
-operating manual — do not restate its loop, conventions, liveness protocol,
-or authority bounds in the prompt. The main session stays free for other
-work; relay the driver's round notes to the user. The driver is goal-based:
-it drives the check to green even when the `needs-human` label is set, and
-its final report says which ending applies — "needs human review before
-merge", or "clear for the gate/automerge path" once the gate's approval or
-a current-head `needs-human: no` verdict exists (never on label absence
-alone); relay that ending to the user. The driver has no merge authority under any circumstances — a
-green, gate-approved PR is merged from the main session only, and only on
-explicit human instruction. Only skip the launch if the user asked to work
-the loop in this session.
+Once the PR is open, the agentic review flow owns iteration, and the main
+session's only job is to hand it off: **immediately after opening any PR —
+without waiting to be asked — launch the PR driver**, a worktree-isolated
+background general-purpose agent whose prompt is, in essence, "load the
+`newsletter-service-agentic-pr` skill — or, if it is unavailable, read
+`<main-checkout>/.claude/skills/newsletter-service-agentic-pr/SKILL.md`, the
+absolute path in the main checkout, since the driver's worktree snapshot may
+be stale — and drive PR #N by it to a green check on the
+current head with every thread answered, then report which ending applies",
+plus the PR number, head SHA, and current status anchor per the skill's
+"Launching the PR driver" section. The skill is the driver's operating
+manual — do not restate its loop, conventions, liveness protocol, or
+authority bounds in the prompt. The main session stays free for other work;
+relay the driver's round notes to the user, including the final ending: the
+driver drives the check to green even when the `needs-human` label is set,
+and reports either "needs human review before merge" (label set) or "clear
+for the gate/automerge path" — the latter only once the gate's approval
+exists, or a current-head `needs-human: no` verdict does with no later
+`needs-human` unlabel (the gate rejects a verdict superseded by an
+unlabel it cannot attribute to an allowlisted human; label absence alone
+means escalation is still pending, not clear). The driver has no merge
+authority under any circumstances — a green, gate-approved PR is merged
+from the main session only, and only on explicit human instruction. Only
+skip the launch if the user asked to work the loop in this session.
 
 ## Conventions
 
