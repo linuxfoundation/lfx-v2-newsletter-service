@@ -320,14 +320,22 @@ check (the label blocks only the gate), it never pauses your rounds.
 
 **Worktree discipline.** Git refuses to check out a branch that another
 worktree already has, and the main checkout may still be on the PR branch —
-so work detached: `git fetch origin && git checkout --detach
-origin/<pr-branch>`, commit as usual, and push with
-`git push origin HEAD:<pr-branch>`.
+so work detached. Derive the branch name from the PR itself (HEAD is
+detached, so never from the local checkout), then check out and push by it:
+
+```bash
+BRANCH="$(gh pr view "$PR" --repo "$REPO" --json headRefName --jq .headRefName)"
+git fetch origin && git checkout --detach "origin/$BRANCH"
+# ...commit as usual...
+git push origin "HEAD:$BRANCH"
+```
 
 **Fix-commit conventions.** `git commit -s -S` (DCO + GPG), conventional
 subject (`fix(review): ...`). New `.go` files start with the repo's two-line
-license header. Before any push: `export PATH="$HOME/go/bin:$PATH"`, then
-`make lint`, `go vet ./...`, and `make test` — all must pass.
+license header. Before any push: `export PATH="$(go env GOPATH)/bin:$PATH"`
+(the Makefile installs `golangci-lint` into GOPATH/bin, which is not always
+`$HOME/go/bin`), then `make lint`, `go vet ./...`, and `make test` — all
+must pass.
 
 **Liveness — waiting without dying.** A round takes 10–20 minutes and you
 must survive that wait unattended. Never end a turn "waiting" unless a

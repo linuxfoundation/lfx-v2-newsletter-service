@@ -180,14 +180,18 @@ the round into at most one push — a `fix(review): ...` commit for code
 changes, a signed empty commit for a rebuttal-only round, and no push at all
 for a replies-only round on a clean head (the scheduled sweep releases the
 approval) — wait for the conductor's verdict on the new head, and repeat
-until the check is green and the gate approves.
+until the check is green and the gate approves. With `needs-human` set the
+gate cannot approve on its own: a green check with every thread answered is
+the terminal state the loop can reach, and the gate approval then waits on
+an allowlisted human's review and unlabel.
 
 **Immediately after opening any PR — without waiting to be asked — launch the
 PR driver**: a worktree-isolated background general-purpose agent whose
 prompt is, in essence, "read
-`.claude/skills/newsletter-service-agentic-pr/SKILL.md` (by absolute path in
-the main checkout) and drive PR #N by it until the check is green and the
-gate approves", plus the PR number, head SHA, and current status anchor per
+`<main-checkout>/.claude/skills/newsletter-service-agentic-pr/SKILL.md` —
+the skill by absolute path in the main checkout, since the driver's worktree
+snapshot may be stale — and drive PR #N by it until the check is green and
+the gate approves", plus the PR number, head SHA, and current status anchor per
 the skill's "Launching the PR driver" section. The skill is the driver's
 operating manual — do not restate its loop, conventions, liveness protocol,
 or authority bounds in the prompt. The main session stays free for other
