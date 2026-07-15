@@ -76,6 +76,16 @@ func TestPreviewText(t *testing.T) {
 			bodyHTML: "<section>Hello</section><section>members</section><dl><dt>Term</dt><dd>Def</dd></dl><figure><figcaption>Cap</figcaption></figure>",
 			want:     "Hello members Term Def Cap",
 		},
+		{
+			name:     "phrasing and unknown elements stay inline mid-word",
+			bodyHTML: "<p>mem<label>ber</label>s and cus<x-chip>to</x-chip>m</p>",
+			want:     "members and custom",
+		},
+		{
+			name:     "self-closed script syntax still hides the payload",
+			bodyHTML: "<script/>alert(1)</script><p>Hi members</p>",
+			want:     "Hi members",
+		},
 	}
 
 	for _, tt := range tests {

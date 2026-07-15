@@ -236,22 +236,27 @@ func stripHTML(html string) string {
 // the snippet useful without shipping the whole body twice.
 const preheaderMaxLen = 140
 
-// previewInlineTags are phrasing-level elements that do not interrupt text
-// flow: "<strong>bo</strong>ld" must preview as "bold". Every element NOT in
-// this set is treated as a word boundary by default — the editor can
-// serialize adjacent blocks without whitespace ("<p>Hello</p><p>members</p>"
-// must not read "Hellomembers", "<td>Name</td><td>Status</td>" must not read
-// "NameStatus"), and authored bodies can carry any semantic container
-// (section, article, dl, figure, …), so enumerating block tags would chase an
-// open-ended list. Defaulting unknown elements to boundaries only risks an
-// extra space, which the whitespace collapse folds away.
-var previewInlineTags = map[string]bool{
-	"a": true, "abbr": true, "b": true, "bdi": true, "bdo": true,
-	"cite": true, "code": true, "data": true, "del": true, "dfn": true,
-	"em": true, "i": true, "ins": true, "kbd": true, "mark": true,
-	"q": true, "s": true, "samp": true, "small": true, "span": true,
-	"strong": true, "sub": true, "sup": true, "time": true, "u": true,
-	"var": true, "wbr": true, "img": true,
+// previewBoundaryTags are the elements that interrupt text flow in rendered
+// HTML — the full standard set of block-level, sectioning, table, and break
+// elements — whose start or end marks a word boundary in the preview. The
+// editor can serialize adjacent blocks without whitespace, so
+// "<p>Hello</p><p>members</p>" must not read "Hellomembers" and
+// "<td>Name</td><td>Status</td>" must not read "NameStatus". Everything else
+// — phrasing elements and unknown/custom elements — stays inline:
+// "<strong>bo</strong>ld" and "<p>mem<label>ber</label>s</p>" must not split
+// mid-word, and splitting a word is a worse preview corruption than joining
+// two blocks that only nonstandard markup would leave unseparated.
+var previewBoundaryTags = map[string]bool{
+	"address": true, "article": true, "aside": true, "blockquote": true,
+	"br": true, "caption": true, "col": true, "colgroup": true, "dd": true,
+	"details": true, "dialog": true, "div": true, "dl": true, "dt": true,
+	"fieldset": true, "figcaption": true, "figure": true, "footer": true,
+	"form": true, "h1": true, "h2": true, "h3": true, "h4": true, "h5": true,
+	"h6": true, "header": true, "hgroup": true, "hr": true, "legend": true,
+	"li": true, "main": true, "menu": true, "nav": true, "ol": true,
+	"p": true, "pre": true, "section": true, "summary": true, "table": true,
+	"tbody": true, "td": true, "tfoot": true, "th": true, "thead": true,
+	"tr": true, "ul": true,
 }
 
 // previewSkipTags are elements whose text content is not authored copy and
@@ -293,12 +298,16 @@ tokens:
 			tag := string(name) // TagName is already lowercased
 			switch {
 			case previewSkipTags[tag]:
-				if tt == xhtml.StartTagToken {
+				// Self-closing syntax counts as opening the skipped region:
+				// none of these are void elements, so browsers treat
+				// "<script/>" as an opening tag and everything up to the
+				// real closing tag is payload, not authored copy.
+				if tt == xhtml.StartTagToken || tt == xhtml.SelfClosingTagToken {
 					skip++
-				} else if tt == xhtml.EndTagToken && skip > 0 {
+				} else if skip > 0 {
 					skip--
 				}
-			case !previewInlineTags[tag]:
+			case previewBoundaryTags[tag]:
 				b.WriteByte(' ')
 			}
 		}
