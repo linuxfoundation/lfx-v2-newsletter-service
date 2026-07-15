@@ -97,7 +97,8 @@ stop; do not poll for a verdict that cannot come.
    (its eventual comment is head-bound and inert, but it is noise). Write all
    fixes, post all replies, resolve the answered threads, then push once.
    What that push is depends on the round:
-   - Code changes: one commit carrying every fix.
+   - Code changes: one signed and signed-off commit carrying every fix
+     (`git commit -s -S`, this repo's DCO + GPG convention).
    - Rebuttal-only (nothing to change in the tree): rebuttals are only
      adjudicated at a push, so push a signed empty commit —
      `git commit --allow-empty -s -S -m "chore(review): submit rebuttals for adjudication"`.
@@ -152,17 +153,30 @@ from a past occurrence while the current round's newer `pending` is the truth:
 HEAD="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
 gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
   --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .state] | @tsv" \
-  | sort -n | tail -1 | cut -f2
+  | sort -n | tail -1
 ```
+
+The output is `<status id>\t<state>` — keep both, the id is the anchor for
+the reused-SHA rule below.
 
 One more reused-SHA hazard: right after a push or reopen that lands an
 already-seen SHA, even the newest status can still be a PAST occurrence's
 terminal `success`/`failure`, because the current round has not stamped yet —
 and the matching `head:` on an old check comment is equally misleading (the
-SHA is the same). So anchor each round on its own stamp: note the newest
-status id before you push, and treat nothing as this round's verdict until a
-strictly newer `pending` has appeared and then flipped. (On a brand-new SHA
-this is automatic — it has no history to masquerade as.)
+SHA is the same). Anchor each round on its own stamp, by status id:
+
+- **You are about to push**: record the newest id first; this round's verdict
+  is the first terminal state whose id is strictly newer than a `pending`
+  that is itself newer than what you recorded.
+- **You arrived after the event** (reopen or push you did not observe): if
+  the newest state is `pending`, that is the current round — record its id
+  and wait for a newer terminal stamp. If it is terminal, wait ~5 minutes
+  for a newer `pending` to appear (the conductor stamps within a couple of
+  minutes of any developer event): if one appears, that round owns the
+  verdict; if none does, either the terminal stamp is the standing verdict
+  (no newer event happened) or the round is dead — apply the bounded-wait
+  diagnostics below.
+- On a brand-new SHA this is automatic — it has no history to masquerade as.
 
 `pending` or empty output means the round is still running — poll every
 minute or so rather than pushing again. But bound the wait: the pending stamp
@@ -255,8 +269,14 @@ that PR resolution and the next feature never need to queue behind each
 other.
 
 If accepted, spawn a general-purpose agent in the background with worktree
-isolation, have it check out the PR branch, and hand it this loop with clear
-authority bounds:
+isolation and hand it this loop with clear authority bounds. Mind the
+double-checkout rule first: git refuses to check out a branch that another
+worktree already has, and right after opening a PR the main checkout is
+normally still on the PR branch. Either switch the main checkout off it
+before the agent claims it (natural when the next feature starts here
+anyway), or have the agent work detached — `git checkout --detach
+origin/<pr-branch>` in its worktree, committing as usual and pushing with
+`git push origin HEAD:<pr-branch>`:
 
 - **May**: read PR state, commit and push fixes for findings whose resolution
   is clear and mechanical (following this repo's conventions and commit

@@ -71,7 +71,9 @@ approve, so a stale verdict from an earlier push can never vouch for newer commi
 Posted after each review round. The baseline (first-round) check is authored
 deterministically by the conductor workflow itself in this exact same format —
 every non-nit finding as an `outstanding` row; later rounds come from the
-reconcile agent. A human summary first, then one fenced machine block:
+reconcile agent. A human summary first, then one raw collapsed `<details>`
+ledger — never wrap it in backticks or a code fence, which would render the
+`<details>` element as literal text instead of collapsing it:
 
 ```
 ### Agentic review check — <✅ clean | ❌ N blocking>
