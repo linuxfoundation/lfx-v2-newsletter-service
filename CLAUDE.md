@@ -10,6 +10,7 @@
 > - `newsletter-service-dev`: auto-attaches on Go, chart, and service-owned doc paths. It owns this repo's Go conventions, HTTP handler shape, Postgres/Bun persistence, embedded schema, recipient resolution, public `pkg/api` DTO contract, tests, formatting, linting, and license headers. See `.claude/skills/newsletter-service-dev/SKILL.md`.
 > - `newsletter-service-pr-readiness`: pre-PR shape check only: branch/JIRA/conventional commits/rebase/DCO + GPG/diff size/protected files. See `.claude/skills/newsletter-service-pr-readiness/SKILL.md`.
 > - `newsletter-service-preflight`: Go mechanical before-PR pipeline: working tree, license, formatting, lint/vet, build, tests, protected files, commit verification, and PR change summary. See `.claude/skills/newsletter-service-preflight/SKILL.md`.
+> - `newsletter-service-agentic-pr`: how to drive an OPEN PR through the agentic review flow — read the lfx-reviewer check comment, fix or rebut blocking findings, answer every thread, push one round at a time, and loop until green; includes offering to babysit the loop in a background agent. See `.claude/skills/newsletter-service-agentic-pr/SKILL.md`.
 >
 > If the plugin is missing, install with `/plugin marketplace add linuxfoundation/lfx-skills` then `/plugin install lfx-skills@lfx-skills`.
 
@@ -171,10 +172,16 @@ When the work is done and no more code commits are planned:
 
 ### Post-PR iteration (responding to bot feedback on an open PR)
 
-1. Wait for Copilot to comment after each push.
-2. Triage every Critical and reasonable Important finding against current code.
-3. Roll fixes into a `fix(review): ...` commit.
-4. Push. Repeat until clean.
+Once the PR is open, the agentic review flow owns iteration: follow
+`/newsletter-service-agentic-pr` (`.claude/skills/newsletter-service-agentic-pr/SKILL.md`).
+In short: read the lfx-reviewer **Agentic review check** comment after each
+round, fix or rebut every blocking finding, answer every review thread, batch
+the round into at most one push — a `fix(review): ...` commit for code
+changes, a signed empty commit for a rebuttal-only round, and no push at all
+for a replies-only round on a clean head (the scheduled sweep releases the
+approval) — wait for the conductor's verdict on the new head, and repeat
+until the check is green and the gate approves. Offer to babysit this loop in
+a background agent so the user can keep working.
 
 ## Conventions
 

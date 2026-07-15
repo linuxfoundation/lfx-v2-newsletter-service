@@ -192,7 +192,9 @@ Post **one** issue comment using the **`add_issue_comment`** tool (not the `gh` 
 or the session's copilot tokens, which cannot write the GitHub API), in the exact
 format defined in `/agentic-comment-format` for the agentic-check verdict: a human
 summary of the blocking issues (what remains, why, the next step, and what the change
-handled well) followed by the fenced `<!-- agentic:check v1 -->` block that carries
+handled well) followed by the raw collapsed `<details>` ledger — never wrapped
+in backticks or a code fence, which would render the `<details>` element as
+literal text — whose `<!-- agentic:check v1 -->` block carries
 `head:` (the full SHA of the commit you judged), `clean:`, and one `- id:` line per
 thread you adjudicated — except unaddressed nits, which get prose in the summary and
 no row. Only a block in a comment authored by you (the lfx-reviewer machine account)

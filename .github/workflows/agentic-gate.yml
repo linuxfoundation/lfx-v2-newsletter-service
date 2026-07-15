@@ -307,8 +307,12 @@ jobs:
             # newest pending stamp belongs to the CURRENT occurrence — an
             # unlabel from a past occurrence of the same SHA never vouches.
             # The stamp lands seconds after the push; an unlabel inside that
-            # tiny window is rejected (fail closed) and recovers via a label
-            # toggle or the next push.
+            # tiny window is rejected (fail closed). What recovers it is a
+            # FRESH authorized unlabel that lands after the stamp exists —
+            # re-adding the label and removing it again mints one — or the
+            # next push. (That is unlike the stale-marker case below, where
+            # relabeling cannot help because the missing evidence is
+            # escalation's, not the human's.)
             ROUND="$(gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
               --jq ".[] | select(.state==\"pending\" and .context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .created_at] | @tsv" \
               2>/dev/null | sort -n | tail -1 || true)"
@@ -320,8 +324,13 @@ jobs:
             # pending stamp exists (its pre-skip wait), so a genuine skip's
             # marker id is always NEWER than the round stamp's. Compare
             # numeric status ids — both live on the same SHA's append-only
-            # status list. A stale marker therefore fails closed here and
-            # recovers via a label toggle or the next push.
+            # status list. A stale marker therefore fails closed here.
+            # Deterministic recovery is a push of a NEW SHA (no old stamps to
+            # race) or a manual escalation rerun after the current pending
+            # stamp exists; a reopen is only a best-effort retry (escalation
+            # re-runs, but on a reused SHA its pre-skip wait can be satisfied
+            # by the old stamp again); a label toggle merely re-runs this
+            # gate.
             SKIP_ID="$(gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
               --jq ".[] | select(.context==\"agentic-review/escalation\" and .state==\"success\" and ((.description // \"\") | contains(\"skipped pr=#$PR:\"))) | .id" \
               2>/dev/null | sort -n | tail -1 || true)"
