@@ -190,8 +190,9 @@ PR driver**: a worktree-isolated background general-purpose agent whose
 prompt is, in essence, "read
 `<main-checkout>/.claude/skills/newsletter-service-agentic-pr/SKILL.md` —
 the skill by absolute path in the main checkout, since the driver's worktree
-snapshot may be stale — and drive PR #N by it until the check is green and
-the gate approves", plus the PR number, head SHA, and current status anchor per
+snapshot may be stale — and drive PR #N by it to a green check on the
+current head with every thread answered, then report which ending
+applies", plus the PR number, head SHA, and current status anchor per
 the skill's "Launching the PR driver" section. The skill is the driver's
 operating manual — do not restate its loop, conventions, liveness protocol,
 or authority bounds in the prompt. The main session stays free for other

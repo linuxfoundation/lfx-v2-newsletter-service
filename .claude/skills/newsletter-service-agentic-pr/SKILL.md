@@ -120,12 +120,17 @@ stop; do not poll for a verdict that cannot come.
    takes 10–20 minutes), then loop from step 1.
 7. **Stop when the goal is reached**: the check reads `✅ clean` on the
    current head and every thread is answered. Your final report states which
-   ending applies: with `needs-human` present, a human must review before
-   this PR can merge; with it absent, nothing human-blocking remains and the
-   deterministic gate/automerge path is clear — the gate's approval can lag
-   your last reply by up to ~10 minutes (reply events do not trigger it, a
-   scheduled sweep does), so say whether it has already landed (see "The
-   needs-human label").
+   ending applies. With `needs-human` present, green-plus-answered is the
+   ending itself: a human must review before this PR can merge (see "The
+   needs-human label"). With the label absent, absence alone is NOT the
+   ending — escalation may still be in flight and a late `yes` verdict can
+   add the label after clean. Report "clear for the gate/automerge path"
+   only once an authoritative current-head signal exists: the gate's
+   approving review, or the head's `needs-human: no` verdict comment. Until
+   one appears, keep waiting (the approval can lag your last reply by up to
+   ~10 minutes — reply events do not trigger the gate, a scheduled sweep
+   does) and, if you must report first, say escalation is pending rather
+   than clear.
 
 ## Reading the check comment
 
@@ -286,8 +291,9 @@ Keep the launch prompt minimal — this document is the driver's operating
 manual, so do not restate its rules in the prompt. The prompt needs only:
 
 - The instruction to first read this SKILL.md **by absolute path in the main
-  checkout** (its worktree snapshot may be stale) and drive the PR by it
-  until the check is green and the gate approves.
+  checkout** (its worktree snapshot may be stale) and drive the PR by it to
+  its terminal state: a green `agentic-review/clean` check on the current
+  head with every thread answered, then report which ending applies.
 - The PR number and current head SHA.
 - The newest `pr=#<PR>:`-bound `agentic-review/clean` status id as the
   pending anchor if one exists, plus any hazard the main session knows about
@@ -295,20 +301,25 @@ manual, so do not restate its rules in the prompt. The prompt needs only:
 
 Example prompt: "You are the PR driver for PR #57 on this repo. Read
 `<main-checkout>/.claude/skills/newsletter-service-agentic-pr/SKILL.md` and
-drive the PR by it until the check is green and the gate approves. Head:
-`<sha>`. Pending anchor: status id `<id>`. Do not merge."
+drive the PR by it to a green check on the current head with every thread
+answered, then report which ending applies. Head: `<sha>`. Pending anchor:
+status id `<id>`. Do not merge."
 
 Main-session follow-up: each time the driver stops, a task notification
 arrives. A result that says it is polling means it will self-resume — do not
 duplicate its work. If no further notification arrives within ~50 minutes of
 one that promised a poll, nudge the driver with SendMessage (its agent id
-stays addressable after it stops). If it reports `needs-human`, that is not
-the loop ending: the driver keeps driving the check to green — relay the
-label to the user, since only an allowlisted human's review and unlabel can
-release the gate. If it reports blocked (a design decision, non-convergence),
-relay that to the user and do not restart it blindly. **Merging is never the driver's job**: a green, gate-approved PR
-is merged from the main session only, and only on explicit human
-instruction.
+stays addressable after it stops). The driver sends two different
+`needs-human` messages — treat them differently. An **interim** note that
+the label appeared mid-drive is not the loop ending: the driver keeps
+driving to the green check; relay the label to the user so their review can
+start in parallel. The **final report** with the needs-human ending (green
+check on the current head, every thread answered, label still set) IS the
+loop ending: do not nudge or restart the driver — relay that only a human
+review can move the PR forward. If it reports blocked (a design decision,
+non-convergence), relay that to the user and do not restart it blindly.
+**Merging is never the driver's job**: a green, gate-approved PR is merged
+from the main session only, and only on explicit human instruction.
 
 ## Driver operations
 
@@ -344,30 +355,45 @@ minutes and you must survive every wait unattended. Never rely on one-shot
 background polls — they die silently, and silence is never success. As your
 **first act**, arm ONE persistent Monitor (`persistent: true`, 2-minute
 interval) as your standing wake source and leave it running for the whole
-drive; every stamp change it emits is an event that re-invokes you:
+drive. It fingerprints everything that can change the drive's state — the
+head, the newest PR-bound stamp, the `needs-human` label, the gate's
+approval, and the unresolved-thread count — and emits an event on any
+change, so it stays a wake source after the clean stamp goes quiet; each
+event re-invokes you:
 
 ```bash
-REPO="lfx-v2-newsletter-service-owner/repo"; PR=<pr>   # adjust
-prev=""
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"; PR=<pr>   # adjust PR
+prev=""; fails=0
 while true; do
-  head=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)
-  line=$(gh api "repos/$REPO/commits/$head/statuses" --paginate --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .state] | @tsv" 2>/dev/null | sort -n | tail -1 || true)
-  [ -n "$line" ] && [ "$line" != "$prev" ] && { echo "$head $line"; prev="$line"; }
+  fp=$(
+    head=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid) &&
+    stamp=$(gh api "repos/$REPO/commits/$head/statuses" --paginate --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .state] | @tsv" | sort -n | tail -1) &&
+    gate=$(gh pr view "$PR" --repo "$REPO" --json labels,latestReviews --jq "{label: ([.labels[].name] | contains([\"needs-human\"])), approved: ([.latestReviews[] | select(.author.login==\"lfx-reviewer\" and .state==\"APPROVED\")] | length > 0)}") &&
+    unresolved=$(gh api graphql -f query='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){reviewThreads(first:100){nodes{isResolved}}}}}' -f o="${REPO%/*}" -f n="${REPO#*/}" -F p="$PR" --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved|not)] | length') &&
+    echo "head=$head stamp=$stamp gate=$gate unresolved=$unresolved"
+  ) 2>/dev/null
+  if [ -z "$fp" ]; then
+    fails=$((fails+1)); [ "$fails" -ge 5 ] && { echo "poll-error: state queries failing repeatedly"; fails=0; }
+  else
+    fails=0; [ "$fp" != "$prev" ] && { echo "$fp"; prev="$fp"; }
+  fi
   sleep 120
 done
 ```
 
-It follows the PR's current head across your own pushes and emits one event
-per stamp change — record `pending` stamps as the round's anchor, work
-terminal ones as verdicts. Once the check is green, stamp changes go quiet:
-gate approval, thread state, and the `needs-human` label do not stamp, so
-check that surface directly on each wake-up instead of waiting for another
-stamp. On each wake-up: handle the new state and send a one-line
-round-transition note to the main session (SendMessage to `main`, e.g.
-"round 2: 3 blocking; fixing") so liveness stays visible. End a turn only
-with a final report, a must-stop report, or the armed monitor standing
-watch — never with neither. Call TaskStop on the monitor before your final
-report.
+It follows the PR's current head across your own pushes. Record `pending`
+stamps as the round's anchor and work terminal ones as verdicts; treat
+post-clean fingerprint changes — the gate's approval landing, the
+`needs-human` label appearing, an unresolved-thread count change — as the
+cue to re-check that surface directly (the fingerprint is a wake trigger,
+not the authoritative read: threads still come from the paginated listing,
+and the label/approval from the PR itself). Repeated query failures emit
+`poll-error` events instead of leaving you in permanent silence. On each
+wake-up: handle the new state and send a one-line round-transition note to
+the main session (SendMessage to `main`, e.g. "round 2: 3 blocking;
+fixing") so liveness stays visible. End a turn only with a final report, a
+must-stop report, or the armed monitor standing watch — never with neither.
+Call TaskStop on the monitor before your final report.
 
 **Authority bounds.**
 
@@ -385,9 +411,15 @@ report.
   circumstances, even fully green and gate-approved — force-push, approve,
   edit other accounts' comments, add or remove labels, or @mention the bots.
 
-**Final report.** State the end state — green and gate-approved, or what you
-are blocked on — plus a one-paragraph round-by-round history: what each
-round's blocking findings were and whether each was fixed or rebutted.
+**Final report.** State the terminal state — a green check on the current
+head with every thread answered — and which ending applies: "needs human
+review before merge" when the label is present, or "clear for the
+gate/automerge path" only once the gate's approval or the current head's
+`needs-human: no` verdict has actually appeared (with neither yet, report
+escalation pending rather than clear). If you stopped on a must-stop
+condition instead, state what you are blocked on. Either way include a
+one-paragraph round-by-round history: what each round's blocking findings
+were and whether each was fixed or rebutted.
 
 ## Hard rules
 
