@@ -191,10 +191,14 @@ gate approves", plus the PR number, head SHA, and current status anchor per
 the skill's "Launching the PR driver" section. The skill is the driver's
 operating manual — do not restate its loop, conventions, liveness protocol,
 or authority bounds in the prompt. The main session stays free for other
-work; relay the driver's round notes to the user. The driver has no merge
-authority under any circumstances — a green, gate-approved PR is merged from
-the main session only, and only on explicit human instruction. Only skip the
-launch if the user asked to work the loop in this session.
+work; relay the driver's round notes to the user. The driver is goal-based:
+it drives the check to green even when the `needs-human` label is set (the
+label blocks only the gate approval, which then waits on an allowlisted
+human's review and unlabel — relay that to the user, it is never the loop
+ending). The driver has no merge authority under any circumstances — a
+green, gate-approved PR is merged from the main session only, and only on
+explicit human instruction. Only skip the launch if the user asked to work
+the loop in this session.
 
 ## Conventions
 

@@ -118,9 +118,13 @@ stop; do not poll for a verdict that cannot come.
      answered.
 6. **Wait for the verdict** on the new head (command below; a round typically
    takes 10–20 minutes), then loop from step 1.
-7. **Stop when green**: the check reads `✅ clean` and the gate posts the
-   approving review. The approval can lag your last reply by up to ~10
-   minutes — reply events do not trigger the gate, a scheduled sweep does.
+7. **Stop when the goal is reached**: the check reads `✅ clean` and the gate
+   posts the approving review. The approval can lag your last reply by up to
+   ~10 minutes — reply events do not trigger the gate, a scheduled sweep
+   does. If `needs-human` is set, a green check on the current head with
+   every thread answered IS the terminal state you can reach on your own:
+   report it and stop — only a human can clear the label and release the
+   gate (see "The needs-human label").
 
 ## Reading the check comment
 
@@ -249,12 +253,20 @@ a mention can summon them outside the flow's control.
 `needs-human` is the human override surface. It is sticky and add-only: the
 escalation judge can set it, and only an allowlisted human removing it counts
 (the gate enforces the allowlist; an unauthorized removal leaves the gate
-withheld). If it is set on your PR, the gate will not approve no matter how
-green the check is. **Stop and tell the user** — do not remove the label, do
-not toggle it, and do not treat it as a bug. It usually means the PR touches
-approval machinery, security-sensitive surface, or something the judge could
-not bound; a human decides, and after their unlabel the next push resumes
-per-head judging.
+withheld). It usually means the PR touches approval machinery,
+security-sensitive surface, or something the judge could not bound.
+
+The label blocks the **gate approval only — not review rounds**. The
+conductor keeps adjudicating every push and stamping `agentic-review/clean`
+regardless of the label, so the label does not change your goal: keep
+driving rounds — fixing, rebutting, answering — until the check is green on
+the current head. Never remove or toggle the label, and do not treat it as a
+bug. Report it to the main session the moment it appears so the human review
+it requests can start in parallel with your remaining rounds; once the check
+is green and every thread is answered, report that the work left is the
+human's alone — an allowlisted unlabel, after which the next developer event
+(a push, e.g. a signed empty commit) gets a fresh per-head escalation
+verdict and lets the gate approve.
 
 ## Launching the PR driver (main session)
 
@@ -289,15 +301,22 @@ Main-session follow-up: each time the driver stops, a task notification
 arrives. A result that says it is polling means it will self-resume — do not
 duplicate its work. If no further notification arrives within ~50 minutes of
 one that promised a poll, nudge the driver with SendMessage (its agent id
-stays addressable after it stops). If it reports blocked (`needs-human`,
-design decision, non-convergence), relay that to the user and do not restart
-it blindly. **Merging is never the driver's job**: a green, gate-approved PR
+stays addressable after it stops). If it reports `needs-human`, that is not
+the loop ending: the driver keeps driving the check to green — relay the
+label to the user, since only an allowlisted human's review and unlabel can
+release the gate. If it reports blocked (a design decision, non-convergence),
+relay that to the user and do not restart it blindly. **Merging is never the driver's job**: a green, gate-approved PR
 is merged from the main session only, and only on explicit human
 instruction.
 
 ## Driver operations
 
-You are the driver from here on.
+You are the driver from here on. You are a goal-based agent: your goal is a
+green `agentic-review/clean` check on the current head with every thread
+answered — plus the gate's approval when nothing only a human can do stands
+in the way. Implement whatever fixes the rounds demand to reach it, within
+the authority bounds below; `needs-human` narrows the goal to the green
+check (the label blocks only the gate), it never pauses your rounds.
 
 **Worktree discipline.** Git refuses to check out a branch that another
 worktree already has, and the main checkout may still be on the PR branch —
@@ -326,12 +345,13 @@ unbounded polls; no turns ending with neither a result nor a live poll.
 - **May**: read PR state, commit and push fixes for findings whose resolution
   is clear and mechanical, post thread replies and substantive rebuttals,
   resolve the threads you have answered, poll for verdicts.
-- **Must stop and report instead of acting** when: the `needs-human` label
-  appears; a finding requires a design decision or its fix is not obviously
-  safe; the same finding family survives two of your fix attempts; roughly
-  five rounds pass without convergence; or a round appears dead per the
-  bounded-wait diagnostics (report the workflow-run evidence, do not push
-  again).
+- **Must stop and report instead of acting** when: a finding requires a
+  design decision or its fix is not obviously safe; the same finding family
+  survives two of your fix attempts; roughly five rounds pass without
+  convergence; or a round appears dead per the bounded-wait diagnostics
+  (report the workflow-run evidence, do not push again). The `needs-human`
+  label is NOT a stop condition — report it and keep driving to the green
+  check per "The needs-human label".
 - **Must never**: merge — you have no merge authority under any
   circumstances, even fully green and gate-approved — force-push, approve,
   edit other accounts' comments, add or remove labels, or @mention the bots.
