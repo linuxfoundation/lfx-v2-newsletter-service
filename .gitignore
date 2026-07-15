@@ -67,3 +67,6 @@ debug.test
 # Editor backups
 *.backup
 *.bak
+
+# Claude Code agent worktrees
+.claude/worktrees/
