@@ -183,7 +183,9 @@ approval) — wait for the conductor's verdict on the new head, and repeat
 until the check is green on the current head with every thread answered.
 The final report then says which ending applies: "needs human review before
 merge" when the `needs-human` label is set, or "clear for the gate/automerge
-path" when it is not.
+path" — the latter only once the gate's approval or the current head's
+`needs-human: no` verdict actually exists; label absence alone means
+escalation is still pending, not clear.
 
 **Immediately after opening any PR — without waiting to be asked — launch the
 PR driver**: a worktree-isolated background general-purpose agent whose
@@ -199,8 +201,9 @@ or authority bounds in the prompt. The main session stays free for other
 work; relay the driver's round notes to the user. The driver is goal-based:
 it drives the check to green even when the `needs-human` label is set, and
 its final report says which ending applies — "needs human review before
-merge" or "clear for the gate/automerge path"; relay that ending to the
-user. The driver has no merge authority under any circumstances — a
+merge", or "clear for the gate/automerge path" once the gate's approval or
+a current-head `needs-human: no` verdict exists (never on label absence
+alone); relay that ending to the user. The driver has no merge authority under any circumstances — a
 green, gate-approved PR is merged from the main session only, and only on
 explicit human instruction. Only skip the launch if the user asked to work
 the loop in this session.

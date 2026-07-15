@@ -5,7 +5,9 @@ description: >
   agentic review flow: read the lfx-reviewer "Agentic review check" comment,
   fix or rebut every blocking finding, answer every review thread, push one
   batched round at a time, wait for the conductor's verdict, and loop until
-  the check is green and the gate approves. Use this whenever a PR is open on
+  the check is green on the current head with every thread answered — then
+  report the ending: needs-human review before merge, or clear for the
+  gate/automerge path. Use this whenever a PR is open on
   this repo and the work involves review iteration — responding to Copilot or
   conductor findings, checking why `agentic-review/clean` is failing or why
   the gate has not approved, handling the `needs-human` label, or pushing
@@ -328,8 +330,10 @@ green `agentic-review/clean` check on the current head with every thread
 answered. Implement whatever fixes the rounds demand to reach it, within
 the authority bounds below; `needs-human` never pauses your rounds — it
 only decides which ending your final report announces: "needs human review
-before merge" when present, "clear for the gate/automerge path" when absent
-(noting whether the gate's approval has already landed).
+before merge" when present; when absent, "clear for the gate/automerge
+path" only once the gate's approval or the current head's `needs-human: no`
+verdict has appeared — label absence alone is escalation pending, not
+clear (see step 7).
 
 **Worktree discipline.** Git refuses to check out a branch that another
 worktree already has, and the main checkout may still be on the PR branch —
@@ -357,8 +361,10 @@ background polls — they die silently, and silence is never success. As your
 interval) as your standing wake source and leave it running for the whole
 drive. It fingerprints everything that can change the drive's state — the
 head, the newest PR-bound stamp, the `needs-human` label, the gate's
-approval, and the unresolved-thread count — and emits an event on any
-change, so it stays a wake source after the clean stamp goes quiet; each
+approval, the current head's escalation verdict, and the unresolved-thread
+count across ALL pages — and emits an event on any change, so it stays a
+wake source after the clean stamp goes quiet (including when the
+authoritative `needs-human: no` verdict lands without an approval); each
 event re-invokes you:
 
 ```bash
@@ -369,8 +375,9 @@ while true; do
     head=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid) &&
     stamp=$(gh api "repos/$REPO/commits/$head/statuses" --paginate --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .state] | @tsv" | sort -n | tail -1) &&
     gate=$(gh pr view "$PR" --repo "$REPO" --json labels,latestReviews --jq "{label: ([.labels[].name] | contains([\"needs-human\"])), approved: ([.latestReviews[] | select(.author.login==\"lfx-reviewer\" and .state==\"APPROVED\")] | length > 0)}") &&
-    unresolved=$(gh api graphql -f query='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){reviewThreads(first:100){nodes{isResolved}}}}}' -f o="${REPO%/*}" -f n="${REPO#*/}" -F p="$PR" --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved|not)] | length') &&
-    echo "head=$head stamp=$stamp gate=$gate unresolved=$unresolved"
+    verdict=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"agentic:needs-human\")) and (.body | contains(\"head: $head\"))) | .body" | grep -o "needs-human: [a-z]*" | tail -1) &&
+    unresolved=$(gh api graphql --paginate -f query='query($o:String!,$n:String!,$p:Int!,$endCursor:String){repository(owner:$o,name:$n){pullRequest(number:$p){reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' -f o="${REPO%/*}" -f n="${REPO#*/}" -F p="$PR" --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved|not)] | length' | awk "{s+=\$1} END{print s+0}") &&
+    echo "head=$head stamp=$stamp gate=$gate verdict=${verdict:-none} unresolved=$unresolved"
   ) 2>/dev/null
   if [ -z "$fp" ]; then
     fails=$((fails+1)); [ "$fails" -ge 5 ] && { echo "poll-error: state queries failing repeatedly"; fails=0; }
@@ -383,8 +390,9 @@ done
 
 It follows the PR's current head across your own pushes. Record `pending`
 stamps as the round's anchor and work terminal ones as verdicts; treat
-post-clean fingerprint changes — the gate's approval landing, the
-`needs-human` label appearing, an unresolved-thread count change — as the
+post-clean fingerprint changes — the gate's approval landing, the current
+head's escalation verdict arriving, the `needs-human` label appearing, an
+unresolved-thread count change — as the
 cue to re-check that surface directly (the fingerprint is a wake trigger,
 not the authoritative read: threads still come from the paginated listing,
 and the label/approval from the PR itself). Repeated query failures emit
