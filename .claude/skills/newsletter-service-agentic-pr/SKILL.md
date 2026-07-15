@@ -43,18 +43,28 @@ to code changes and keeps humans from being able to talk the gate open.
    it, or reply on its thread with a substantive technical rebuttal. Both
    paths are legitimate and both are adjudicated at the next push — a rebuttal
    the reconcile accepts clears the thread as `rebutted-valid`.
-3. **Answer every thread that has no reply yet**, nits and human comments
-   included. The gate withholds its approval while any thread is unanswered,
-   even on a clean change — nothing gets dismissed without a recorded reason.
-   For findings you fix, the conductor replies when it clears them, so a reply
-   from you is optional; for everything else the answer must come from you.
-4. **Batch the whole round into one commit and one push.** Each push burns a
+3. **Reply on every thread you act on, then resolve it.** For a finding you
+   fixed, say what you changed and how it addresses the finding; for one that
+   does not need fixing, say why it stands as is. Then resolve the thread
+   (mutation below — your own login can, the pipeline's tokens cannot). The
+   reply is the audit record on the thread itself and satisfies tidiness
+   immediately; the resolution keeps the conversation view clean for the
+   human reviewers who come after the gate. The pipeline ignores resolution
+   state, so resolving never hides anything from adjudication — an
+   insufficient fix or rejected rebuttal is carried forward and re-opened in
+   the ledger regardless.
+4. **Answer every remaining thread that has no reply yet**, nits and human
+   comments included. The gate withholds its approval while any thread is
+   unanswered, even on a clean change — nothing gets dismissed without a
+   recorded reason.
+5. **Batch the whole round into one commit and one push.** Each push burns a
    Copilot review plus a reconcile model run, and a mid-round push strands the
    running round (its eventual comment is head-bound and inert, but it is
-   noise). Write all fixes, post all rebuttal replies, then push once.
-5. **Wait for the verdict** on the new head (command below; a round typically
+   noise). Write all fixes, post all replies, resolve the answered threads,
+   then push once.
+6. **Wait for the verdict** on the new head (command below; a round typically
    takes 10–20 minutes), then loop from step 1.
-6. **Stop when green**: the check reads `✅ clean` and the gate posts the
+7. **Stop when green**: the check reads `✅ clean` and the gate posts the
    approving review. The approval can lag your last reply by up to ~10
    minutes — reply events do not trigger the gate, a scheduled sweep does.
 
@@ -118,9 +128,12 @@ what invariant already covers it, what the accepted trade-off is — and says
 so on the thread where the reconcile will adjudicate it. "Won't fix" with no
 reasoning is adjudicated too, as `rebutted-invalid`, and keeps blocking.
 
-Resolving threads is optional human hygiene on top of the required reply: the
-pipeline's tokens cannot resolve threads, but your own `gh` login can. Resolve
-what you consider settled if you like the tidiness:
+After answering a thread, resolve it. The pipeline's tokens cannot resolve
+threads, but your own `gh` login can, and replies still land on resolved
+threads (resolution is a collapse flag, not a lock), so nothing you resolve
+is closed to the reconcile's later replies. Adjudication never reads
+resolution state — the ledger, not the flag, decides what still blocks — so
+this is purely for the humans reading the PR:
 
 ```bash
 gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -f t="$THREAD_ID"
@@ -155,7 +168,7 @@ authority bounds:
 - **May**: read PR state, commit and push fixes for findings whose resolution
   is clear and mechanical (following this repo's conventions and commit
   signing: `git commit -s -S`), post thread replies and substantive
-  rebuttals, poll for verdicts.
+  rebuttals, resolve the threads it has answered, poll for verdicts.
 - **Must stop and report instead of acting** when: the `needs-human` label
   appears; a finding requires a design decision or its fix is not obviously
   safe; the same finding family survives two of its fix attempts; or roughly
@@ -170,7 +183,8 @@ it is blocked on and the round-by-round history in one paragraph.
 
 - Rounds fire on pushes only. Do not wait for a reaction to a comment.
 - One push per round; batch fixes and rebuttals.
-- Fix or rebut every blocking finding; answer every thread.
+- Fix or rebut every blocking finding; answer every thread; say how you fixed
+  it or why it stands, then resolve what you answered.
 - Never mention the bots; never touch the `needs-human` label.
 - Never edit or imitate `lfx-reviewer` comments — the pipeline trusts that
   account's authorship, and the apply step validates everything anyway.
