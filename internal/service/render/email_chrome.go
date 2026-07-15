@@ -14,6 +14,8 @@ package render
 import (
 	"regexp"
 	"strings"
+
+	xhtml "golang.org/x/net/html"
 )
 
 // Chrome carries everything the renderer needs to wrap a body in the outer
@@ -229,6 +231,116 @@ func stripHTML(html string) string {
 	return strings.TrimSpace(out)
 }
 
+// previewTextMaxLen caps the hidden inbox-preview snippet, ellipsis included.
+// Gmail shows roughly 90–110 characters after the subject and Apple Mail up
+// to ~140, so 140 keeps the snippet useful without shipping the body twice.
+const previewTextMaxLen = 140
+
+// previewBoundaryTags are the elements whose start or end interrupts text
+// flow in rendered HTML — block-level, sectioning, table, and break elements.
+// The editor can serialize adjacent blocks without whitespace, so
+// "<p>Hello</p><p>members</p>" must not preview as "Hellomembers" and
+// "<td>Name</td><td>Status</td>" must not preview as "NameStatus". Everything
+// else — phrasing elements and unknown/custom elements — stays inline:
+// "<strong>bo</strong>ld" must not split mid-word, and splitting a word is a
+// worse preview corruption than joining two blocks that only nonstandard
+// markup would leave unseparated.
+var previewBoundaryTags = map[string]bool{
+	"address": true, "article": true, "aside": true, "blockquote": true,
+	"br": true, "caption": true, "col": true, "colgroup": true, "dd": true,
+	"details": true, "dialog": true, "div": true, "dl": true, "dt": true,
+	"fieldset": true, "figcaption": true, "figure": true, "footer": true,
+	"form": true, "h1": true, "h2": true, "h3": true, "h4": true, "h5": true,
+	"h6": true, "header": true, "hgroup": true, "hr": true, "legend": true,
+	"li": true, "main": true, "menu": true, "nav": true, "ol": true,
+	"p": true, "pre": true, "section": true, "summary": true, "table": true,
+	"tbody": true, "td": true, "tfoot": true, "th": true, "thead": true,
+	"tr": true, "ul": true,
+}
+
+// previewSkipTags are elements whose text content is not authored copy and
+// must never surface in the inbox preview.
+var previewSkipTags = map[string]bool{
+	"head": true, "iframe": true, "noscript": true, "script": true,
+	"style": true, "template": true, "title": true,
+}
+
+// previewText derives the inbox-preview snippet from the authored body:
+// non-content nodes dropped, block boundaries turned into spaces, tags
+// stripped, character references decoded exactly once, whitespace collapsed,
+// and the result truncated at a word boundary under previewTextMaxLen.
+// Empty when the body has no text content.
+func previewText(bodyHTML string) string {
+	// Tokenize instead of regexing tags away: a regex cannot tell an
+	// attribute's ">" from a tag close (`<a title="1 > 0">Hi</a>` would leak
+	// `0">Hi`) and would surface style/script payloads as preview text. The
+	// tokenizer also decodes character references in text nodes exactly once,
+	// so an authored literal "&amp;mdash;" previews as "&mdash;", matching
+	// the visible body.
+	z := xhtml.NewTokenizer(strings.NewReader(bodyHTML))
+	var b strings.Builder
+	skip := 0
+tokens:
+	for {
+		switch tt := z.Next(); tt {
+		case xhtml.ErrorToken:
+			// io.EOF, or unparseable input: either way, what accumulated so
+			// far is the best available preview.
+			break tokens
+		case xhtml.TextToken:
+			if skip == 0 {
+				b.Write(z.Text())
+			}
+		case xhtml.StartTagToken, xhtml.EndTagToken, xhtml.SelfClosingTagToken:
+			name, _ := z.TagName()
+			tag := string(name) // TagName is already lowercased
+			switch {
+			case previewSkipTags[tag]:
+				// Self-closing syntax counts as opening the skipped region:
+				// none of these are void elements, so browsers treat
+				// "<script/>" as an opening tag and everything up to the real
+				// closing tag is payload, not authored copy.
+				if tt == xhtml.StartTagToken || tt == xhtml.SelfClosingTagToken {
+					skip++
+				} else if skip > 0 {
+					skip--
+				}
+			case previewBoundaryTags[tag]:
+				b.WriteByte(' ')
+			}
+		}
+	}
+	text := strings.Join(strings.Fields(b.String()), " ")
+	runes := []rune(text)
+	if len(runes) <= previewTextMaxLen {
+		return text
+	}
+	// Reserve one rune for the ellipsis so the result never exceeds the cap.
+	cut := string(runes[:previewTextMaxLen-1])
+	if idx := strings.LastIndex(cut, " "); idx > 0 {
+		cut = cut[:idx]
+	}
+	return cut + "…"
+}
+
+// renderPreheaderHTML emits the hidden div email clients read for the inbox
+// preview line. Without it, clients fall back to the first rendered text —
+// the header chrome, which just repeats the subject. The trailing padding of
+// non-breaking-space + zero-width-non-joiner pairs stops that chrome from
+// bleeding into the preview after a short snippet: clients show up to
+// ~previewTextMaxLen characters, so the padding provides at least that many
+// non-collapsible spaces and a short preview still fills the whole window.
+// Empty when the body yields no preview text.
+func renderPreheaderHTML(bodyHTML string) string {
+	preview := previewText(bodyHTML)
+	if preview == "" {
+		return ""
+	}
+	return `<div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">` +
+		escapeHTML(preview) + strings.Repeat("&nbsp;&zwnj;", previewTextMaxLen) + `</div>
+`
+}
+
 // renderComplianceFooterHTML emits the sender attribution + reply-to + UNSUBSCRIBE
 // block. Empty when input.IncludeComplianceFooter is false.
 func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
@@ -273,6 +385,7 @@ func EmailHTML(input Chrome) string {
 	displayNameSafe := escapeHTML(display)
 	styledBody := convertStandaloneCtas(inlineBodyStyles(input.BodyHTML))
 	complianceFooter := renderComplianceFooterHTML(input, displayNameSafe)
+	preheader := renderPreheaderHTML(input.BodyHTML)
 
 	logoCell := ""
 	if input.LogoURL != "" {
@@ -298,7 +411,7 @@ func EmailHTML(input Chrome) string {
 </style>
 </head>
 <body style="margin:0;padding:0;background-color:` + colorGray50 + `;font-family:` + fontStack + `;">
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:` + colorGray50 + `;padding:16px 8px;">
+` + preheader + `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:` + colorGray50 + `;padding:16px 8px;">
 <tr>
 <td align="center">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;max-width:680px;background-color:` + colorWhite + `;border:1px solid ` + colorGray200 + `;border-radius:8px;overflow:hidden;">
