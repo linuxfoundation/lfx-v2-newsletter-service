@@ -11,7 +11,9 @@ import (
 	"time"
 
 	emailapi "github.com/linuxfoundation/lfx-v2-email-service/pkg/api"
+	"github.com/nats-io/nats.go"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
@@ -129,7 +131,7 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 	}
 	reply, err := d.client.Request(ctx, EmailServiceSendEmailSubject, data)
 	if err != nil {
-		return "", err
+		return "", classifySendRequestError(err)
 	}
 	if len(reply) == 0 {
 		// Email-service convention: empty reply means accepted with no
@@ -145,9 +147,29 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 		return "", pkgerrors.NewUnexpected("malformed email-service reply", jsonErr)
 	}
 	if errResp.Error != "" {
-		return "", pkgerrors.NewServiceUnavailable("email-service returned error", errors.New(errResp.Error))
+		// An explicit error reply proves email-service saw the request and
+		// rejected it — the email definitively did not go out, so tag the
+		// failure retry-safe for the orchestrator.
+		return "", fmt.Errorf("%w: %w",
+			pkgerrors.NewServiceUnavailable("email-service returned error", errors.New(errResp.Error)),
+			domain.ErrEmailNotDispatched)
 	}
 	return "", nil
+}
+
+// classifySendRequestError tags send_email transport failures that prove the
+// request never reached email-service. NATS no-responders is the only such
+// condition today: the server reported that nothing is subscribed to the
+// subject, so the message was dropped before any service saw it. Every other
+// transport failure (request timeout, cancelled context, connection loss
+// mid-flight) is ambiguous — email-service may already have accepted the
+// message — and is passed through untagged so the orchestrator does not retry
+// it.
+func classifySendRequestError(err error) error {
+	if errors.Is(err, nats.ErrNoResponders) {
+		return fmt.Errorf("%w: %w", err, domain.ErrEmailNotDispatched)
+	}
+	return err
 }
 
 // GetEngagement fetches per-group engagement totals from email-service.

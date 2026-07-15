@@ -28,4 +28,14 @@ var (
 	// edited, or deleted until the send settles (sent, or reverted to draft on
 	// total failure).
 	ErrSendInProgress = errors.New("newsletter send in progress")
+
+	// ErrEmailNotDispatched marks a per-recipient email dispatch failure where
+	// the email is known NOT to have been handed to email-service: an explicit
+	// error reply, or a NATS no-responders condition. Only failures carrying
+	// this sentinel are safe to retry — ambiguous transport failures (request
+	// timeout, cancelled context) may have been accepted upstream, and
+	// email-service has no idempotency key, so retrying them risks sending a
+	// recipient the same newsletter twice. The send orchestrator matches this
+	// sentinel with errors.Is to gate its bounded per-recipient retry.
+	ErrEmailNotDispatched = errors.New("email was not dispatched")
 )

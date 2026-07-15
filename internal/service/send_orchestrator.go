@@ -31,6 +31,17 @@ const defaultSendConcurrency = 5
 // round-trip, 30 minutes covers ~9000 recipients.
 const defaultSendJobTimeout = 30 * time.Minute
 
+// dispatchMaxAttempts caps per-recipient dispatch attempts during fan-out:
+// the initial attempt plus up to two retries. Retries apply only to failures
+// tagged domain.ErrEmailNotDispatched — see dispatchWithRetry.
+const dispatchMaxAttempts = 3
+
+// defaultDispatchRetryBackoff is the wait before the first dispatch retry;
+// the wait doubles for each subsequent retry (500ms, then 1s). Short enough
+// that retries stay well inside the job timeout even at full concurrency,
+// long enough to ride out a momentary email-service blip.
+const defaultDispatchRetryBackoff = 500 * time.Millisecond
+
 // persistTimeout bounds the terminal MarkSent / RevertSending write issued by
 // the background job. Deliberately independent of the job context, which may
 // already be exhausted when the fan-out consumed the full job timeout.
@@ -61,6 +72,10 @@ type SendOrchestrator struct {
 	fromAddress   string
 	fromOverrides map[string]string
 	jobTimeout    time.Duration
+	// retryBackoff is the base wait before the first per-recipient dispatch
+	// retry (doubling per retry). Fixed to defaultDispatchRetryBackoff in
+	// production; overridden only by tests to keep retry paths fast.
+	retryBackoff time.Duration
 	// jobs tracks detached background send goroutines so graceful shutdown
 	// (and tests) can wait for in-flight fan-outs via Drain.
 	jobs sync.WaitGroup
@@ -133,6 +148,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		fromAddress:   from,
 		fromOverrides: overrides,
 		jobTimeout:    jobTimeout,
+		retryBackoff:  defaultDispatchRetryBackoff,
 	}
 }
 
@@ -588,8 +604,11 @@ type emailEnvelope struct {
 // fanOut dispatches per-recipient send_email requests to email-service with
 // bounded concurrency. The fan-out never returns an error — per-recipient
 // failures are captured and surfaced in the result so the caller can decide
-// how to react. A nil EmailDispatcher (or FanoutEnabled=false) short-circuits
-// to "all sent, none failed" for dev/test environments.
+// how to react. Each dispatch is retried within its worker for retry-safe
+// failures (see dispatchWithRetry); a recipient counts as failed only after
+// its final attempt, recording the last error. A nil EmailDispatcher (or
+// FanoutEnabled=false) short-circuits to "all sent, none failed" for dev/test
+// environments.
 func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipients []model.CommitteeMember, env emailEnvelope) (sent, failed int, failures []SendFailure) {
 	if len(recipients) == 0 {
 		return 0, 0, nil
@@ -645,7 +664,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				mu.Unlock()
 				return
 			}
-			_, err := o.email.SendEmail(ctx, port.SendEmailInput{
+			err := o.dispatchWithRetry(ctx, port.SendEmailInput{
 				To:              recipient.Email,
 				Subject:         env.Subject,
 				HTML:            recipientHTML,
@@ -672,6 +691,55 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 	}
 	wg.Wait()
 	return sent, failed, failures
+}
+
+// dispatchWithRetry sends one recipient's email, retrying up to
+// dispatchMaxAttempts total attempts with a doubling backoff — but only for
+// failures tagged domain.ErrEmailNotDispatched (an explicit error reply from
+// email-service, or NATS no-responders), where the email definitively never
+// went out. Ambiguous transport failures (request timeout, cancelled context)
+// are terminal on first occurrence: email-service may already have accepted
+// the message and it has no idempotency key today, so retrying would risk
+// sending the recipient the same newsletter twice — a worse outcome than the
+// miss, which the caller's failure accounting already surfaces.
+//
+// Running inside the per-recipient worker keeps the fan-out concurrency cap
+// as the bound on total in-flight requests. The backoff wait respects ctx
+// cancellation; on cancellation the last dispatch error is returned so the
+// failure list records why the dispatch failed rather than that the job was
+// winding down.
+func (o *SendOrchestrator) dispatchWithRetry(ctx context.Context, in port.SendEmailInput) error {
+	backoff := o.retryBackoff
+	if backoff <= 0 {
+		backoff = defaultDispatchRetryBackoff
+	}
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		_, err := o.email.SendEmail(ctx, in)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if attempt >= dispatchMaxAttempts || !errors.Is(err, domain.ErrEmailNotDispatched) {
+			return lastErr
+		}
+		slog.WarnContext(ctx, "send fanout: recipient dispatch failed, retrying",
+			"recipient", redactEmail(in.To),
+			"group_id", in.GroupID,
+			"attempt", attempt,
+			"max_attempts", dispatchMaxAttempts,
+			"backoff", backoff.String(),
+			"error", err.Error(),
+		)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return lastErr
+		}
+		backoff *= 2
+	}
 }
 
 // resolveSenderName looks up the sender's display name from auth-service using

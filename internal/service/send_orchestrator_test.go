@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -1180,5 +1181,226 @@ func TestDraftGuardsWhileSending(t *testing.T) {
 
 	if err := svc.DeleteDraft(ctx, "p1", draft.ID); !errors.Is(err, domain.ErrSendInProgress) {
 		t.Fatalf("DeleteDraft while sending: got err=%v, want ErrSendInProgress", err)
+	}
+}
+
+// ---- dispatch retry ----------------------------------------------------------
+
+// scriptedEmailDispatcher fails SendEmail with the queued errors in order (one
+// per attempt), then delegates to the embedded fake (success). It counts every
+// attempt so retry tests can assert exactly how many dispatches were issued.
+// onFail, when set, runs after each scripted failure — used to cancel the
+// context between an attempt and its backoff wait.
+type scriptedEmailDispatcher struct {
+	fakeEmailDispatcher
+	scriptMu sync.Mutex
+	errs     []error
+	attempts int
+	onFail   func(attempt int)
+}
+
+func (s *scriptedEmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
+	s.scriptMu.Lock()
+	s.attempts++
+	attempt := s.attempts
+	var err error
+	if len(s.errs) > 0 {
+		err = s.errs[0]
+		s.errs = s.errs[1:]
+	}
+	hook := s.onFail
+	s.scriptMu.Unlock()
+	if err != nil {
+		if hook != nil {
+			hook(attempt)
+		}
+		return "", err
+	}
+	return s.fakeEmailDispatcher.SendEmail(ctx, in)
+}
+
+func (s *scriptedEmailDispatcher) attemptCount() int {
+	s.scriptMu.Lock()
+	defer s.scriptMu.Unlock()
+	return s.attempts
+}
+
+// retryableDispatchErr builds a failure tagged retry-safe, mirroring the shape
+// the NATS dispatcher produces for explicit error replies and no-responders.
+func retryableDispatchErr(msg string) error {
+	return fmt.Errorf("%s: %w", msg, domain.ErrEmailNotDispatched)
+}
+
+// newRetryOrchestrator wires an orchestrator with a millisecond retry backoff
+// so retry-path tests stay fast.
+func newRetryOrchestrator(email port.EmailDispatcher) *SendOrchestrator {
+	o := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          newFakeRepo(),
+		Committee:     &fakeCommitteeClient{},
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		Concurrency:   2,
+		FanoutEnabled: true,
+	})
+	o.retryBackoff = time.Millisecond
+	return o
+}
+
+func testSendInput(to string) port.SendEmailInput {
+	return port.SendEmailInput{To: to, Subject: "s", HTML: "<p>b</p>", Text: "b", GroupID: "g1"}
+}
+
+// TestDispatchWithRetrySucceedsAfterRetryableFailures asserts a recipient that
+// fails retry-safely twice is delivered on the third (final) attempt.
+func TestDispatchWithRetrySucceedsAfterRetryableFailures(t *testing.T) {
+	email := &scriptedEmailDispatcher{errs: []error{
+		retryableDispatchErr("first"),
+		retryableDispatchErr("second"),
+	}}
+	orch := newRetryOrchestrator(email)
+
+	if err := orch.dispatchWithRetry(context.Background(), testSendInput("alice@example.com")); err != nil {
+		t.Fatalf("dispatchWithRetry: %v, want success on final attempt", err)
+	}
+	if got := email.attemptCount(); got != 3 {
+		t.Fatalf("attempts=%d, want 3", got)
+	}
+}
+
+// TestDispatchWithRetryDoesNotRetryAmbiguousFailures asserts the retry-safety
+// boundary: failures that do not prove the email was never dispatched (request
+// timeout, cancelled context, generic transport errors) are terminal on the
+// first attempt — email-service has no idempotency key, so retrying them could
+// double-send.
+func TestDispatchWithRetryDoesNotRetryAmbiguousFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"request timeout", pkgerrors.NewServiceUnavailable("NATS request failed", context.DeadlineExceeded)},
+		{"cancelled context", pkgerrors.NewServiceUnavailable("NATS request failed", context.Canceled)},
+		{"generic transport error", errors.New("email-service unreachable")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			email := &scriptedEmailDispatcher{errs: []error{tc.err, tc.err, tc.err}}
+			orch := newRetryOrchestrator(email)
+
+			err := orch.dispatchWithRetry(context.Background(), testSendInput("alice@example.com"))
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("dispatchWithRetry err=%v, want the original dispatch error", err)
+			}
+			if got := email.attemptCount(); got != 1 {
+				t.Fatalf("attempts=%d, want 1 (ambiguous failures must not be retried)", got)
+			}
+		})
+	}
+}
+
+// TestDispatchWithRetryExhaustionReturnsLastError asserts a recipient failing
+// retry-safely on every attempt is dispatched exactly dispatchMaxAttempts
+// times and surfaces the final attempt's error.
+func TestDispatchWithRetryExhaustionReturnsLastError(t *testing.T) {
+	email := &scriptedEmailDispatcher{errs: []error{
+		retryableDispatchErr("first"),
+		retryableDispatchErr("second"),
+		retryableDispatchErr("third"),
+	}}
+	orch := newRetryOrchestrator(email)
+
+	err := orch.dispatchWithRetry(context.Background(), testSendInput("alice@example.com"))
+	if err == nil {
+		t.Fatalf("dispatchWithRetry succeeded, want exhaustion")
+	}
+	if got := email.attemptCount(); got != dispatchMaxAttempts {
+		t.Fatalf("attempts=%d, want %d", got, dispatchMaxAttempts)
+	}
+	if !strings.Contains(err.Error(), "third") {
+		t.Fatalf("err=%q, want the last attempt's error", err)
+	}
+}
+
+// TestDispatchWithRetryCtxCancelledMidBackoff asserts a context cancelled
+// during the backoff wait aborts the remaining retries promptly and surfaces
+// the last dispatch error (not the winding-down context) to failure
+// accounting.
+func TestDispatchWithRetryCtxCancelledMidBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	email := &scriptedEmailDispatcher{
+		errs:   []error{retryableDispatchErr("email-service rejected")},
+		onFail: func(int) { cancel() },
+	}
+	orch := newRetryOrchestrator(email)
+	orch.retryBackoff = 30 * time.Second // cancellation must win, not the timer
+
+	start := time.Now()
+	err := orch.dispatchWithRetry(ctx, testSendInput("alice@example.com"))
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("dispatchWithRetry blocked %v in backoff after cancel", elapsed)
+	}
+	if !errors.Is(err, domain.ErrEmailNotDispatched) || !strings.Contains(err.Error(), "email-service rejected") {
+		t.Fatalf("err=%v, want the last dispatch error", err)
+	}
+	if got := email.attemptCount(); got != 1 {
+		t.Fatalf("attempts=%d, want 1 (no retry after cancellation)", got)
+	}
+}
+
+// perRecipientDispatcher fails every attempt for failAddr with a retry-safe
+// error and succeeds for all other recipients, tracking attempts per address.
+type perRecipientDispatcher struct {
+	fakeEmailDispatcher
+	failAddr string
+	countMu  sync.Mutex
+	perAddr  map[string]int
+}
+
+func (p *perRecipientDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
+	p.countMu.Lock()
+	if p.perAddr == nil {
+		p.perAddr = make(map[string]int)
+	}
+	p.perAddr[in.To]++
+	p.countMu.Unlock()
+	if in.To == p.failAddr {
+		return "", retryableDispatchErr("email-service rejected")
+	}
+	return p.fakeEmailDispatcher.SendEmail(ctx, in)
+}
+
+func (p *perRecipientDispatcher) attemptsFor(addr string) int {
+	p.countMu.Lock()
+	defer p.countMu.Unlock()
+	return p.perAddr[addr]
+}
+
+// TestFanOutRetryAccounting asserts failure accounting is unchanged by the
+// retry loop: an exhausted recipient counts as failed exactly once with the
+// last error, a first-attempt success is dispatched exactly once, and the
+// concurrency-capped worker owns all attempts for its recipient.
+func TestFanOutRetryAccounting(t *testing.T) {
+	email := &perRecipientDispatcher{failAddr: "alice@example.com"}
+	orch := newRetryOrchestrator(email)
+
+	sent, failed, failures := orch.fanOut(context.Background(), "p1", []model.CommitteeMember{
+		{Email: "alice@example.com"},
+		{Email: "bob@example.com"},
+	}, emailEnvelope{Subject: "s", HTML: "<p>b</p>", Text: "b", GroupID: "g1"})
+
+	if sent != 1 || failed != 1 {
+		t.Fatalf("sent=%d failed=%d, want 1/1", sent, failed)
+	}
+	if len(failures) != 1 || failures[0].Email != "alice@example.com" {
+		t.Fatalf("failures=%v, want exactly one entry for alice (failed recipients count once, after the final attempt)", failures)
+	}
+	if !strings.Contains(failures[0].Error, "email-service rejected") {
+		t.Fatalf("failure error=%q, want the last dispatch error", failures[0].Error)
+	}
+	if got := email.attemptsFor("alice@example.com"); got != dispatchMaxAttempts {
+		t.Fatalf("alice attempts=%d, want %d", got, dispatchMaxAttempts)
+	}
+	if got := email.attemptsFor("bob@example.com"); got != 1 {
+		t.Fatalf("bob attempts=%d, want 1 (no retry on success)", got)
 	}
 }
