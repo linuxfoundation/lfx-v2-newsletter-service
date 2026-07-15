@@ -176,10 +176,12 @@ Once the PR is open, the agentic review flow owns iteration: follow
 `/newsletter-service-agentic-pr` (`.claude/skills/newsletter-service-agentic-pr/SKILL.md`).
 In short: read the lfx-reviewer **Agentic review check** comment after each
 round, fix or rebut every blocking finding, answer every review thread, batch
-the round into one `fix(review): ...` commit and one push, wait for the
-conductor's verdict on the new head, and repeat until the check is green and
-the gate approves. Offer to babysit this loop in a background agent so the
-user can keep working.
+the round into at most one push — a `fix(review): ...` commit for code
+changes, a signed empty commit for a rebuttal-only round, and no push at all
+for a replies-only round on a clean head (the scheduled sweep releases the
+approval) — wait for the conductor's verdict on the new head, and repeat
+until the check is green and the gate approves. Offer to babysit this loop in
+a background agent so the user can keep working.
 
 ## Conventions
 

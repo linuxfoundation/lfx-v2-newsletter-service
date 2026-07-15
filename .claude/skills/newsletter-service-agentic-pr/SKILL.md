@@ -40,6 +40,28 @@ resolutions never trigger a round by themselves — only pushes (and PR
 open/reopen) do. That is deliberate: it keeps the pipeline's cost proportional
 to code changes and keeps humans from being able to talk the gate open.
 
+## Setup
+
+Every snippet below assumes these two variables, derived from the PR branch
+checkout:
+
+```bash
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+PR="$(gh pr view --json number --jq .number)"
+```
+
+The flow covers **same-repository PRs only**: the conductor and escalation
+workflows explicitly skip fork PRs (their PAT-holding jobs must never run for
+a head they do not own). Check before starting the loop:
+
+```bash
+gh pr view "$PR" --repo "$REPO" --json isCrossRepository --jq .isCrossRepository
+```
+
+If that prints `true`, no round will ever run and no check comment or clean
+status will appear — the PR follows ordinary human review. Tell the user and
+stop; do not poll for a verdict that cannot come.
+
 ## The round loop
 
 1. **Read the latest check comment** (see commands below). Confirm its hidden
@@ -190,10 +212,25 @@ per-head judging.
 
 ## Babysitting the loop in the background
 
-The loop is mostly waiting. When a PR enters the flow, offer to babysit it in
-a background agent so the user's session stays free for real work — for
-example: "Want me to babysit this PR in the background? I'll fix or rebut
-each round and report back when it's green, or when something needs you."
+The loop is mostly waiting, and the checkout is the only contended resource —
+so when a PR enters the flow, tell the user they do not have to sit through
+it, and lay out both arrangements:
+
+- **Background agent works the PR, this session moves on**: a worktree-
+  isolated background agent runs this loop on the PR branch while the user
+  starts the next feature right here in the main checkout. For example:
+  "Want me to babysit this PR in the background? I'll fix or rebut each
+  round and report back when it's green, or when something needs you — and
+  we can start the next feature here meanwhile."
+- **This session works the PR, the next feature starts in a worktree**: keep
+  the loop here and point the user at a worktree for the new work — either
+  spawned from this session or opened as a fresh Claude session in that
+  directory (`git worktree add ../lfx-v2-newsletter-service-<feature> main`).
+  The PR branch checkout stays undisturbed either way.
+
+Offer whichever fits how the user is working; the point to get across is
+that PR resolution and the next feature never need to queue behind each
+other.
 
 If accepted, spawn a general-purpose agent in the background with worktree
 isolation, have it check out the PR branch, and hand it this loop with clear
