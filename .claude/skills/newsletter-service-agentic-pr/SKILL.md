@@ -291,8 +291,9 @@ manual; do not restate its rules. The prompt needs only:
   head with every thread answered, then report which ending applies.
 - The PR number and current head SHA.
 - The newest `pr=#<PR>:`-bound `agentic-review/clean` status id as the
-  pending anchor if one exists, plus any hazard the main session knows about
-  (e.g. the head SHA was previously pushed on another PR).
+  pending anchor if one exists (it also seeds the monitor's round
+  baseline), plus any hazard the main session knows about (e.g. the head
+  SHA was previously pushed on another PR).
 
 Example prompt: "You are the PR driver for PR #57 on this repo. Load the
 `newsletter-service-agentic-pr` skill — or, if unavailable, read
@@ -355,18 +356,23 @@ background polls — they die silently, and silence is never success. As your
 interval) as your standing wake source and leave it running for the whole
 drive. It fingerprints everything that can change the drive's state — the
 head, the newest PR-bound stamp, the `needs-human` label, the gate's
-approval, the current head's escalation verdict, and the unanswered-thread
-count across ALL pages (`totalCount < 2`, matching the gate's tidiness
-check — resolution state is cosmetic and deliberately not fingerprinted) —
-and emits an event on any change, plus `stall` events when a stamp stays
-empty or `pending` past the bounded-wait deadlines, so it stays a wake
-source after the clean stamp goes quiet (including when the authoritative
-`needs-human: no` verdict lands without an approval); each event re-invokes
-you:
+approval **for the current head** (approvals are commit-bound: the gate only
+honors one whose `commit_id` is the head, and a previous head's approval can
+stay visible until the dismissal run completes, so the fingerprint filters
+the same way), the current head's escalation verdict, and the
+unanswered-thread count across ALL pages (`totalCount < 2`, matching the
+gate's tidiness check — resolution state is cosmetic and deliberately not
+fingerprinted) — and emits an event on any change, plus `stall` events when
+the current round produces no stamp newer than its baseline or `pending`
+outlives its deadline, so it stays a wake source after the clean stamp goes
+quiet (including when the authoritative `needs-human: no` verdict lands
+without an approval); each event re-invokes you:
 
 ```bash
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"; PR=<pr>   # adjust PR
-prev=""; fails=0; last_stamp="init"; waits=0
+BASE=<anchor>   # newest PR-bound status id from your launch prompt (0 if none):
+                # stamps at or below it belong to a previous round or occurrence
+prev=""; fails=0; last_head=""; last_stamp="init"; max_seen=$BASE; waits=0
 while true; do
   # Each API call is captured and checked on its own — a failed call must
   # increment the failure counter, never masquerade as an empty-but-valid
@@ -377,7 +383,13 @@ while true; do
     stamps=$(gh api "repos/$REPO/commits/$head/statuses" --paginate --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .state] | @tsv" 2>/dev/null) || ok=0
   fi
   if [ "$ok" -eq 1 ]; then
-    gate=$(gh pr view "$PR" --repo "$REPO" --json labels,latestReviews --jq "{label: ([.labels[].name] | contains([\"needs-human\"])), approved: ([.latestReviews[] | select(.author.login==\"lfx-reviewer\" and .state==\"APPROVED\")] | length > 0)}" 2>/dev/null) || ok=0
+    label=$(gh pr view "$PR" --repo "$REPO" --json labels --jq "[.labels[].name] | contains([\"needs-human\"])" 2>/dev/null) || ok=0
+  fi
+  if [ "$ok" -eq 1 ]; then
+    # Approvals are commit-bound: only an APPROVED lfx-reviewer review whose
+    # commit_id is the current head counts, exactly as the gate checks it —
+    # a stale approval for a previous head must never read as clear.
+    approvals=$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate --jq ".[] | select(.user.login==\"lfx-reviewer\" and .state==\"APPROVED\" and .commit_id==\"$head\") | .id" 2>/dev/null) || ok=0
   fi
   if [ "$ok" -eq 1 ]; then
     verdicts=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"agentic:needs-human\")) and (.body | contains(\"head: $head\"))) | .body" 2>/dev/null) || ok=0
@@ -394,33 +406,48 @@ while true; do
   # succeeded, so an empty parse is a VALID state (no stamp yet, no verdict
   # yet — grep finding nothing must read as "none", not as a failure).
   stamp=$(printf '%s\n' "$stamps" | sort -n | tail -1)
+  sid=$(printf '%s' "$stamp" | cut -f1); sid=${sid:-0}
+  approved=$([ -n "$approvals" ] && echo true || echo false)
   verdict=$(printf '%s\n' "$verdicts" | grep -o "needs-human: [a-z]*" | tail -1)
   unanswered=$(printf '%s\n' "$pages" | awk '{s+=$1} END{print s+0}')
-  # Deadline heartbeat: an unchanged empty/pending stamp emits no fingerprint
-  # event, so count iterations (one per 2 minutes) toward the bounded-wait
-  # deadlines and emit a stall event when one is crossed.
+  # Round epoch + deadline heartbeat: a round is live only once a stamp NEWER
+  # than the baseline exists. On a reused SHA the newest visible stamp can be
+  # a past occurrence's terminal state — never this round's verdict — so an
+  # empty stamp and a stale one count toward the same no-stamp deadline. The
+  # baseline advances past everything already seen whenever the head moves
+  # (status ids are repo-global and monotonic).
+  if [ "$head" != "$last_head" ]; then last_head="$head"; BASE=$max_seen; waits=0; fi
+  [ "$sid" -gt "$max_seen" ] && max_seen=$sid
   [ "$stamp" != "$last_stamp" ] && { last_stamp="$stamp"; waits=0; }
-  case "$stamp" in
-    "")        waits=$((waits+1)); [ "$waits" -eq 8 ]  && echo "stall: no PR-bound stamp after ~15m — run the bounded-wait diagnostics";;
-    *pending*) waits=$((waits+1)); [ "$waits" -eq 20 ] && echo "stall: pending outlived ~40m — run the bounded-wait diagnostics";;
-  esac
-  fp="head=$head stamp=${stamp:-none} gate=$gate verdict=${verdict:-none} unanswered=$unanswered"
+  if [ "$sid" -le "$BASE" ]; then
+    waits=$((waits+1)); [ "$waits" -eq 8 ]  && echo "stall: no stamp newer than the round baseline after ~15m — run the bounded-wait diagnostics"
+  else
+    case "$stamp" in
+      *pending*) waits=$((waits+1)); [ "$waits" -eq 20 ] && echo "stall: pending outlived ~40m — run the bounded-wait diagnostics";;
+    esac
+  fi
+  fp="head=$head stamp=${stamp:-none} label=$label approved=$approved verdict=${verdict:-none} unanswered=$unanswered"
   [ "$fp" != "$prev" ] && { echo "$fp"; prev="$fp"; }
   sleep 120
 done
 ```
 
 It follows the PR's current head across your own pushes. Record `pending`
-stamps as the round's anchor and treat terminal ones as verdicts. A
-post-clean fingerprint change — the gate's approval landing, the current
-head's escalation verdict arriving, the `needs-human` label appearing, an
-unanswered-thread count change — is the cue to re-check that surface
-directly: the fingerprint is a wake trigger, not the authoritative read
-(threads come from the paginated listing, the label/approval from the PR
-itself). Repeated query failures emit `poll-error` events instead of
-leaving you in permanent silence, and a stamp stuck empty or `pending` past
-its bounded-wait deadline emits a `stall` event, so the dead-round
-diagnostics are reachable even when the fingerprint never changes. On each
+stamps newer than the baseline as the round's anchor and treat newer
+terminal ones as verdicts. A post-clean fingerprint change — the current
+head's approval landing, its escalation verdict arriving, the `needs-human`
+label appearing, an unanswered-thread count change — is the cue to re-check
+that surface directly: the fingerprint is a wake trigger, not the
+authoritative read (threads come from the paginated listing, the
+label/approval from the PR itself). Repeated query failures emit
+`poll-error` events instead of leaving you in permanent silence, and a
+round that never produces a stamp newer than its baseline — including the
+reused-SHA case where the only visible stamp is an old occurrence's
+terminal state — or whose `pending` outlives its deadline emits a `stall`
+event, so the dead-round diagnostics are reachable even when the
+fingerprint never changes. (A stall right after launching onto an
+already-settled round is a prompt to apply the arrival rule in "Waiting for
+the verdict", not proof the round is dead.) On each
 wake-up: handle the new state and send a one-line round-transition note to
 the main session (SendMessage to `main`, e.g. "round 2: 3 blocking;
 fixing") so liveness stays visible. End a turn only with a final report, a
