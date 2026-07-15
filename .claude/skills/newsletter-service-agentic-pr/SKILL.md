@@ -334,19 +334,38 @@ git push origin "HEAD:$BRANCH"
 subject (`fix(review): ...`). New `.go` files start with the repo's two-line
 license header. Before any push: `export PATH="$(go env GOPATH)/bin:$PATH"`
 (the Makefile installs `golangci-lint` into GOPATH/bin, which is not always
-`$HOME/go/bin`), then `make lint`, `go vet ./...`, and `make test` — all
-must pass.
+`$HOME/go/bin`), then `make check` (fmt + lint + license-check + go vet) and
+`make test` — all must pass.
 
-**Liveness — waiting without dying.** A round takes 10–20 minutes and you
-must survive that wait unattended. Never end a turn "waiting" unless a
-background Bash poll of your own is live and will wake you: every poll must
-**exit** when the watched condition changes — a terminal `pr=#<PR>:`-bound
-stamp newer than your recorded anchor — or after a ~45-minute bound, because
-a background task re-invokes its launcher when it exits. On each wake-up:
-handle the new state, record the new anchor, start the next bounded poll,
-and send a one-line round-transition note to the main session (SendMessage
-to `main`, e.g. "round 2: 3 blocking; fixing") so liveness stays visible. No
-unbounded polls; no turns ending with neither a result nor a live poll.
+**Liveness — one persistent monitor, armed first.** A round takes 10–20
+minutes and you must survive every wait unattended. Never rely on one-shot
+background polls — they die silently, and silence is never success. As your
+**first act**, arm ONE persistent Monitor (`persistent: true`, 2-minute
+interval) as your standing wake source and leave it running for the whole
+drive; every stamp change it emits is an event that re-invokes you:
+
+```bash
+REPO="lfx-v2-newsletter-service-owner/repo"; PR=<pr>   # adjust
+prev=""
+while true; do
+  head=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)
+  line=$(gh api "repos/$REPO/commits/$head/statuses" --paginate --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .state] | @tsv" 2>/dev/null | sort -n | tail -1 || true)
+  [ -n "$line" ] && [ "$line" != "$prev" ] && { echo "$head $line"; prev="$line"; }
+  sleep 120
+done
+```
+
+It follows the PR's current head across your own pushes and emits one event
+per stamp change — record `pending` stamps as the round's anchor, work
+terminal ones as verdicts. Once the check is green, stamp changes go quiet:
+gate approval, thread state, and the `needs-human` label do not stamp, so
+check that surface directly on each wake-up instead of waiting for another
+stamp. On each wake-up: handle the new state and send a one-line
+round-transition note to the main session (SendMessage to `main`, e.g.
+"round 2: 3 blocking; fixing") so liveness stays visible. End a turn only
+with a final report, a must-stop report, or the armed monitor standing
+watch — never with neither. Call TaskStop on the monitor before your final
+report.
 
 **Authority bounds.**
 
