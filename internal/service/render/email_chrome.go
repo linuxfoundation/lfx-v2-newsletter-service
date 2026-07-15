@@ -159,13 +159,61 @@ func extractAttrs(match, tag string) string {
 	return inner
 }
 
-var styleAttrRe = regexp.MustCompile(`(?i)\sstyle\s*=`)
-
-func hasStyleAttr(attrs string) bool {
-	if attrs == "" {
-		return false
+// isAttrSpace reports whether c is an HTML attribute-list whitespace byte.
+func isAttrSpace(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '\f':
+		return true
 	}
-	return styleAttrRe.MatchString(attrs)
+	return false
+}
+
+// hasStyleAttr reports whether the attribute string carries a real `style=`
+// attribute. It scans attribute names outside quoted values — a regex over
+// the raw text would also match "style=" occurring inside a quoted value
+// (e.g. alt="choose style=wide") and wrongly skip styling the tag.
+func hasStyleAttr(attrs string) bool {
+	i, n := 0, len(attrs)
+	for i < n {
+		for i < n && isAttrSpace(attrs[i]) {
+			i++
+		}
+		if i >= n {
+			break
+		}
+		start := i
+		for i < n && !isAttrSpace(attrs[i]) && attrs[i] != '=' {
+			i++
+		}
+		name := attrs[start:i]
+		for i < n && isAttrSpace(attrs[i]) {
+			i++
+		}
+		if i < n && attrs[i] == '=' {
+			if strings.EqualFold(name, "style") {
+				return true
+			}
+			i++ // consume '='
+			for i < n && isAttrSpace(attrs[i]) {
+				i++
+			}
+			if i < n && (attrs[i] == '"' || attrs[i] == '\'') {
+				quote := attrs[i]
+				i++
+				for i < n && attrs[i] != quote {
+					i++
+				}
+				if i < n {
+					i++ // consume closing quote
+				}
+			} else {
+				for i < n && !isAttrSpace(attrs[i]) {
+					i++
+				}
+			}
+		}
+	}
+	return false
 }
 
 // ctaButtonStyle is the inline button style for standalone-link CTAs.

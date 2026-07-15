@@ -63,6 +63,23 @@ func TestInlineBodyStylesEmbeddedMedia(t *testing.T) {
 			},
 		},
 		{
+			name: "'style=' inside a quoted value does not count as a style attribute",
+			body: `<img alt="choose style=wide" src="https://example.org/x.png">`,
+			want: []string{
+				`<img style="` + bodyTagStyles["img"] + `" alt="choose style=wide" src="https://example.org/x.png">`,
+			},
+		},
+		{
+			name:     "author style attribute with spaces around '=' still wins",
+			body:     `<img style = "width:120px;" src="https://example.org/logo.png">`,
+			wantSame: true,
+		},
+		{
+			name:     "uppercase STYLE attribute still wins",
+			body:     `<img STYLE="width:120px;" src="https://example.org/logo.png">`,
+			wantSame: true,
+		},
+		{
 			name:     "author-supplied code style wins",
 			body:     `<p><code style="color:red;">x</code></p>`,
 			want:     []string{`<code style="color:red;">x</code>`},
