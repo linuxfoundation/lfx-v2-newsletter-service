@@ -101,6 +101,26 @@ func TestPreviewText(t *testing.T) {
 			body: "<p>one&emsp;two&thinsp;three&#x2028;four&#8239;five</p>",
 			want: "one two three four five",
 		},
+		{
+			name: "omitted head end tag still yields body text",
+			body: "<head><title>Hidden title</title><body>Visible copy",
+			want: "Visible copy",
+		},
+		{
+			name: "self-closing slash on style is ignored per HTML5",
+			body: "<style/>.x{color:red;}</style><p>Visible copy</p>",
+			want: "Visible copy",
+		},
+		{
+			name: "zwj emoji sequence in authored text is preserved",
+			body: "<p>Meet \U0001F469\u200D\U0001F4BB today</p>",
+			want: "Meet \U0001F469\u200D\U0001F4BB today",
+		},
+		{
+			name: "zwnj inside a word is preserved",
+			body: "<p>\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645</p>",
+			want: "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

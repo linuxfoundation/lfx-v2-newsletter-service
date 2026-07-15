@@ -25,7 +25,7 @@ const preheaderPadPairs = 96
 // invisible, and mso-hide for Outlook desktop.
 const preheaderStyle = "display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;visibility:hidden;"
 
-// previewDropTags are elements whose entire content is non-visible and must
+// previewDropTags are elements whose entire subtree is non-visible and must
 // not leak into the preview text.
 var previewDropTags = map[string]bool{
 	"style":    true,
@@ -51,63 +51,70 @@ var previewBlockTags = map[string]bool{
 	"nav": true, "main": true,
 }
 
-// previewInvisibleReplacer removes decoded characters that render as nothing
-// at all (the zero-width set) so they neither survive into the preview nor
-// defeat whitespace collapsing. Blank-rendering whitespace (nbsp, em space,
-// line separator, …) needs no entry here: unicode.IsSpace covers it during
-// whitespace collapsing below.
-var previewInvisibleReplacer = strings.NewReplacer(
-	"\u200b", "", // zero-width space
-	"\u200c", "", // zero-width non-joiner
-	"\u200d", "", // zero-width joiner
-	"\ufeff", "", // zero-width no-break space / BOM
-)
+// previewZeroWidthCutset are zero-width characters trimmed from the EDGES of
+// whitespace-delimited tokens only: zero-width space, zero-width non-joiner,
+// zero-width joiner, and the zero-width no-break space / BOM. At a token edge
+// they join nothing, so trimming them strips authored "&nbsp;&zwnj;…" padding
+// runs (each zwnj sits between spaces) without touching joiners inside words,
+// where ZWJ carries emoji sequences and ZWNJ is orthographically significant
+// (e.g. in Persian).
+const previewZeroWidthCutset = "\u200b\u200c\u200d\ufeff"
 
 // previewText reduces the authored body HTML to a single plain-text line
-// suitable for the inbox preview: non-visible elements dropped, block
+// suitable for the inbox preview: non-visible subtrees dropped, block
 // boundaries turned into spaces, remaining tags stripped, entities decoded,
 // whitespace collapsed, and the result truncated to roughly previewMaxRunes
 // with a trailing ellipsis when cut. Returns "" for effectively empty bodies.
 //
-// Extraction walks x/net/html tokens rather than regexes so quoted
-// attributes containing ">" (e.g. <p title="2 > 1">), comments, and raw-text
-// elements are parsed the way a mail client would parse them, and entities
-// are decoded only in text nodes — literal "&lt;b&gt;" stays literal text.
+// The body is parsed into a DOM with the HTML5 tree-construction rules — not
+// just tokenized — so the preview walks the same tree a mail client renders:
+// quoted attributes containing ">" (e.g. <p title="2 > 1">), omitted end tags
+// (an unclosed <head> still yields the body text), a stray "/" on a non-void
+// raw-text element (<style/>), comments, and raw-text content are all handled
+// by the parser, and entities are decoded only in text nodes — literal
+// "&lt;b&gt;" stays literal text.
 func previewText(bodyHTML string) string {
+	doc, err := html.Parse(strings.NewReader(bodyHTML))
+	if err != nil {
+		// html.Parse cannot fail on an in-memory reader; be defensive anyway.
+		return ""
+	}
 	var b strings.Builder
-	z := html.NewTokenizer(strings.NewReader(bodyHTML))
-	skip := 0 // depth of enclosing previewDropTags elements
-tokens:
-	for {
-		switch tt := z.Next(); tt {
-		case html.ErrorToken:
-			// io.EOF or malformed input: keep whatever was extracted.
-			break tokens
-		case html.TextToken:
-			if skip == 0 {
-				b.Write(z.Text())
+	var walk func(n *html.Node)
+	walk = func(n *html.Node) {
+		switch n.Type {
+		case html.TextNode:
+			b.WriteString(n.Data)
+			return
+		case html.ElementNode:
+			if previewDropTags[n.Data] {
+				return
 			}
-		case html.StartTagToken, html.EndTagToken, html.SelfClosingTagToken:
-			name, _ := z.TagName()
-			tag := string(name) // the tokenizer lower-cases tag names
-			switch {
-			case previewDropTags[tag]:
-				if tt == html.StartTagToken {
-					skip++
-				} else if tt == html.EndTagToken && skip > 0 {
-					skip--
-				}
-			case previewBlockTags[tag]:
+			if previewBlockTags[n.Data] {
 				b.WriteByte(' ')
 			}
 		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+		if n.Type == html.ElementNode && previewBlockTags[n.Data] {
+			b.WriteByte(' ')
+		}
 	}
-	out := previewInvisibleReplacer.Replace(b.String())
+	walk(doc)
 	// strings.Fields splits on unicode.IsSpace — the full Unicode whitespace
 	// set, not regexp's ASCII-only \s — so decoded entities such as &emsp;,
-	// &thinsp;, and &#x2028; collapse to single spaces too.
-	out = strings.Join(strings.Fields(out), " ")
-	return truncatePreview(out, previewMaxRunes)
+	// &thinsp;, and &#x2028; collapse to single spaces too. Zero-width
+	// characters are trimmed at token edges only (see previewZeroWidthCutset)
+	// so padding runs vanish while in-word joiners survive.
+	fields := strings.Fields(b.String())
+	kept := fields[:0]
+	for _, f := range fields {
+		if f = strings.Trim(f, previewZeroWidthCutset); f != "" {
+			kept = append(kept, f)
+		}
+	}
+	return truncatePreview(strings.Join(kept, " "), previewMaxRunes)
 }
 
 // truncatePreview cuts text to at most maxRunes runes, backing up to the last
