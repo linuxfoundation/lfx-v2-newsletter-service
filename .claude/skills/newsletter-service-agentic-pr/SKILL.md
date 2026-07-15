@@ -284,8 +284,10 @@ Keep the launch prompt minimal — this document is the driver's operating
 manual; do not restate its rules. The prompt needs only:
 
 - The instruction to first load this skill (`newsletter-service-agentic-pr`,
-  via the Skill tool) — falling back to reading this SKILL.md **by absolute
-  path in the main checkout** if the skill is unavailable (never the
+  via the Skill tool) — falling back, if the skill is unavailable, to
+  reading this SKILL.md at the **main checkout's actual absolute filesystem
+  path**, which the main session substitutes into the prompt (a literal
+  `<main-checkout>` placeholder is not executable; never point at the
   worktree copy, whose snapshot may be stale) — and drive the PR by it to
   its terminal state: a green `agentic-review/clean` check on the current
   head with every thread answered, then report which ending applies.
@@ -295,10 +297,12 @@ manual; do not restate its rules. The prompt needs only:
   baseline), plus any hazard the main session knows about (e.g. the head
   SHA was previously pushed on another PR).
 
-Example prompt: "You are the PR driver for PR #57 on this repo. Load the
-`newsletter-service-agentic-pr` skill — or, if unavailable, read
-`<main-checkout>/.claude/skills/newsletter-service-agentic-pr/SKILL.md` —
-and drive the PR by it to a green check on the current head with every
+Example prompt (with `<main-checkout>` already substituted with the main
+checkout's absolute path, as the main session must do): "You are the PR
+driver for PR #57 on this repo. Load the `newsletter-service-agentic-pr`
+skill — or, if unavailable, read
+`/home/dev/lfx/lfx-v2-newsletter-service/.claude/skills/newsletter-service-agentic-pr/SKILL.md`
+— and drive the PR by it to a green check on the current head with every
 thread answered, then report which ending applies. Head: `<sha>`. Pending
 anchor: status id `<id>`. Do not merge."
 
