@@ -144,19 +144,34 @@ func inlineBodyStyles(html string) string {
 }
 
 // extractAttrs returns the attribute string of a tag match (everything between
-// the tag name and the closing `>`/`/>`), or empty.
+// the tag name and the closing `>`/`/>`), or empty. A non-empty result keeps
+// its leading whitespace so callers can concatenate it directly after the
+// injected style attribute.
 func extractAttrs(match, tag string) string {
 	// match is like "<p attrs...>" or "<p>" or "<hr/>".
 	inner := strings.TrimPrefix(match, "<")
 	inner = strings.TrimSuffix(inner, ">")
-	inner = strings.TrimSuffix(inner, "/")
-	inner = strings.TrimSpace(inner)
-	// Strip the leading tag name (case-insensitive).
+	// Strip the leading tag name (case-insensitive); the regex guarantees the
+	// match starts with "<" followed immediately by the tag name.
 	lower := strings.ToLower(inner)
 	if strings.HasPrefix(lower, strings.ToLower(tag)) {
 		inner = inner[len(tag):]
 	}
-	return inner
+	// A trailing solidus is a self-closing marker only when it is NOT part of
+	// an unquoted attribute value: directly after the tag name, or preceded by
+	// whitespace or a closing quote. HTML parses <img src=https://x/assets/>
+	// with the solidus as part of the value (no whitespace precedes it), so
+	// stripping it there would corrupt the URL — keep it.
+	if strings.HasSuffix(inner, "/") {
+		rest := inner[:len(inner)-1]
+		if rest == "" || isAttrSpace(rest[len(rest)-1]) || rest[len(rest)-1] == '"' || rest[len(rest)-1] == '\'' {
+			inner = rest
+		}
+	}
+	if strings.TrimSpace(inner) == "" {
+		return ""
+	}
+	return strings.TrimRight(inner, " \t\n\r\f")
 }
 
 // isAttrSpace reports whether c is an HTML attribute-list whitespace byte.

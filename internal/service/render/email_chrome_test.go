@@ -80,6 +80,18 @@ func TestInlineBodyStylesEmbeddedMedia(t *testing.T) {
 			wantSame: true,
 		},
 		{
+			name: "unquoted src value ending in '/' keeps the slash",
+			body: `<img src=https://example.org/assets/>`,
+			want: []string{
+				`<img style="` + bodyTagStyles["img"] + `" src=https://example.org/assets/>`,
+			},
+		},
+		{
+			name:     "author style wins with an unquoted value ending in '/'",
+			body:     `<img style="width:120px;" src=https://example.org/assets/>`,
+			wantSame: true,
+		},
+		{
 			name:     "author-supplied code style wins",
 			body:     `<p><code style="color:red;">x</code></p>`,
 			want:     []string{`<code style="color:red;">x</code>`},
