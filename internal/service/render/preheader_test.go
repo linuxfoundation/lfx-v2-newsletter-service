@@ -86,6 +86,21 @@ func TestPreviewText(t *testing.T) {
 			body: "<p>spread\n\n   over \t lines</p>",
 			want: "spread over lines",
 		},
+		{
+			name: "gt inside quoted attribute is not a tag end",
+			body: "<p title=\"2 > 1\">Visible</p>",
+			want: "Visible",
+		},
+		{
+			name: "gt inside drop-tag content stays dropped",
+			body: "<script>if (a > b) { alert(\"x>y\") }</script><p>Visible copy</p>",
+			want: "Visible copy",
+		},
+		{
+			name: "unicode whitespace entities collapse",
+			body: "<p>one&emsp;two&thinsp;three&#x2028;four&#8239;five</p>",
+			want: "one two three four five",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

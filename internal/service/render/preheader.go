@@ -4,9 +4,9 @@
 package render
 
 import (
-	"html"
-	"regexp"
 	"strings"
+
+	"golang.org/x/net/html"
 )
 
 // previewMaxRunes is the rough preview length target. Mail clients show
@@ -27,31 +27,36 @@ const preheaderStyle = "display:none;font-size:1px;line-height:1px;max-height:0;
 
 // previewDropTags are elements whose entire content is non-visible and must
 // not leak into the preview text.
-var previewDropTags = []string{"style", "script", "title", "head", "noscript", "template"}
+var previewDropTags = map[string]bool{
+	"style":    true,
+	"script":   true,
+	"title":    true,
+	"head":     true,
+	"noscript": true,
+	"template": true,
+}
 
-var previewDropRes = func() []*regexp.Regexp {
-	res := make([]*regexp.Regexp, 0, len(previewDropTags))
-	for _, tag := range previewDropTags {
-		res = append(res, regexp.MustCompile(`(?is)<`+tag+`\b[^>]*>.*?</`+tag+`\s*>`))
-	}
-	return res
-}()
+// previewBlockTags are tags that introduce a visual break; they contribute a
+// space so "…end of list item</li><li>Next…" does not run the words
+// together. Inline tags (strong, em, a, span…) contribute nothing so words
+// split across them stay intact.
+var previewBlockTags = map[string]bool{
+	"p": true, "div": true, "br": true, "li": true, "ul": true, "ol": true,
+	"h1": true, "h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
+	"table": true, "thead": true, "tbody": true, "tfoot": true, "tr": true,
+	"td": true, "th": true, "blockquote": true, "hr": true, "pre": true,
+	"section": true, "article": true, "aside": true, "header": true,
+	"footer": true, "figure": true, "figcaption": true, "dl": true,
+	"dt": true, "dd": true, "form": true, "fieldset": true, "address": true,
+	"nav": true, "main": true,
+}
 
-var previewCommentRe = regexp.MustCompile(`(?s)<!--.*?-->`)
-
-// previewBlockBoundaryRe matches tags that introduce a visual break; they are
-// replaced with a space so "…end of list item</li><li>Next…" does not run the
-// words together. Inline tags (strong, em, a, span…) are stripped without a
-// separator so words split across them stay intact.
-var previewBlockBoundaryRe = regexp.MustCompile(`(?i)</?(?:p|div|br|li|ul|ol|h[1-6]|table|thead|tbody|tfoot|tr|td|th|blockquote|hr|pre|section|article|aside|header|footer|figure|figcaption|dl|dt|dd|form|fieldset|address|nav|main)\b[^>]*>`)
-
-var previewWhitespaceRe = regexp.MustCompile(`\s+`)
-
-// previewInvisibleReplacer normalizes decoded characters that render as
-// blank (nbsp) or nothing at all (zero-width set) so they neither survive
-// into the preview nor defeat whitespace collapsing.
+// previewInvisibleReplacer removes decoded characters that render as nothing
+// at all (the zero-width set) so they neither survive into the preview nor
+// defeat whitespace collapsing. Blank-rendering whitespace (nbsp, em space,
+// line separator, …) needs no entry here: unicode.IsSpace covers it during
+// whitespace collapsing below.
 var previewInvisibleReplacer = strings.NewReplacer(
-	"\u00a0", " ", // no-break space
 	"\u200b", "", // zero-width space
 	"\u200c", "", // zero-width non-joiner
 	"\u200d", "", // zero-width joiner
@@ -63,18 +68,45 @@ var previewInvisibleReplacer = strings.NewReplacer(
 // boundaries turned into spaces, remaining tags stripped, entities decoded,
 // whitespace collapsed, and the result truncated to roughly previewMaxRunes
 // with a trailing ellipsis when cut. Returns "" for effectively empty bodies.
+//
+// Extraction walks x/net/html tokens rather than regexes so quoted
+// attributes containing ">" (e.g. <p title="2 > 1">), comments, and raw-text
+// elements are parsed the way a mail client would parse them, and entities
+// are decoded only in text nodes — literal "&lt;b&gt;" stays literal text.
 func previewText(bodyHTML string) string {
-	out := previewCommentRe.ReplaceAllString(bodyHTML, " ")
-	for _, re := range previewDropRes {
-		out = re.ReplaceAllString(out, " ")
+	var b strings.Builder
+	z := html.NewTokenizer(strings.NewReader(bodyHTML))
+	skip := 0 // depth of enclosing previewDropTags elements
+tokens:
+	for {
+		switch tt := z.Next(); tt {
+		case html.ErrorToken:
+			// io.EOF or malformed input: keep whatever was extracted.
+			break tokens
+		case html.TextToken:
+			if skip == 0 {
+				b.Write(z.Text())
+			}
+		case html.StartTagToken, html.EndTagToken, html.SelfClosingTagToken:
+			name, _ := z.TagName()
+			tag := string(name) // the tokenizer lower-cases tag names
+			switch {
+			case previewDropTags[tag]:
+				if tt == html.StartTagToken {
+					skip++
+				} else if tt == html.EndTagToken && skip > 0 {
+					skip--
+				}
+			case previewBlockTags[tag]:
+				b.WriteByte(' ')
+			}
+		}
 	}
-	out = previewBlockBoundaryRe.ReplaceAllString(out, " ")
-	out = tagRe.ReplaceAllString(out, "")
-	// Decode after stripping so literal "&lt;b&gt;" text cannot become a tag.
-	out = html.UnescapeString(out)
-	out = previewInvisibleReplacer.Replace(out)
-	out = previewWhitespaceRe.ReplaceAllString(out, " ")
-	out = strings.TrimSpace(out)
+	out := previewInvisibleReplacer.Replace(b.String())
+	// strings.Fields splits on unicode.IsSpace — the full Unicode whitespace
+	// set, not regexp's ASCII-only \s — so decoded entities such as &emsp;,
+	// &thinsp;, and &#x2028; collapse to single spaces too.
+	out = strings.Join(strings.Fields(out), " ")
 	return truncatePreview(out, previewMaxRunes)
 }
 
