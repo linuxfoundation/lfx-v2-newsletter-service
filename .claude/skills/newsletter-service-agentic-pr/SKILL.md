@@ -23,9 +23,14 @@ the loop: Copilot reviews the diff, an escalation judge decides whether a
 human must look (`needs-human` label), and the conductor adjudicates every
 review thread and posts an **Agentic review check** comment as `lfx-reviewer`,
 stamping the `agentic-review/clean` commit status on the head it judged. A
-deterministic gate approves the PR as `lfx-reviewer` once three things hold:
+deterministic gate approves the PR as `lfx-reviewer` once four things hold:
 the current head's clean status is `success`, the `needs-human` label is
-absent, and every review thread has at least one reply beyond the finding.
+absent, every review thread has at least one reply beyond the finding, and
+escalation is satisfied for the current head — normally a per-head
+`needs-human: no` verdict comment. The gate deliberately withholds while that
+verdict is still in flight even with the label absent, so a green check with
+no approval a few minutes after a push is usually just the judge finishing,
+not a fault.
 
 Your job on the developer side is therefore a loop, not a conversation:
 **everything you do is adjudicated at the next push.** Replies, rebuttals, and
@@ -36,8 +41,10 @@ to code changes and keeps humans from being able to talk the gate open.
 ## The round loop
 
 1. **Read the latest check comment** (see commands below). Confirm its hidden
-   `head:` line matches the PR's current head — a check for an older head is
-   stale and the next push owns the verdict.
+   `head:` line matches the PR's current head. A check for an older head is
+   stale, and the current head's round is already running or queued (every
+   push starts one) — poll for its verdict and wait. Never push just to
+   refresh a stale check: that cancels the running round and burns another.
 2. **Triage every blocking row.** `[critical]`, `[high]`, and `[should-fix]`
    findings block; `[nit]` never blocks. For each blocking finding decide: fix
    it, or reply on its thread with a substantive technical rebuttal. Both
@@ -91,28 +98,35 @@ every adjudicated thread with its status (`fixed`, `obsolete`, `outstanding`,
 
 Poll the head's commit status; the conductor stamps `pending` at round start
 and `success`/`failure` when the check posts. Statuses are per-PR-bound via
-the description, and the newest status id wins:
+the description, and the newest status id wins. Select the newest first and
+only then look at its state — filtering `pending` out before selecting would,
+on a reused SHA (reopen, force-push back), surface a stale `success`/`failure`
+from a past occurrence while the current round's newer `pending` is the truth:
 
 ```bash
 HEAD="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
 gh api "repos/$REPO/commits/$HEAD/statuses" --paginate \
-  --jq ".[] | select(.context==\"agentic-review/clean\" and .state!=\"pending\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .state] | @tsv" \
+  --jq ".[] | select(.context==\"agentic-review/clean\" and ((.description // \"\") | contains(\"pr=#$PR:\"))) | [(.id|tostring), .state] | @tsv" \
   | sort -n | tail -1 | cut -f2
 ```
 
-Empty output means the round is still running — poll every minute or so
-rather than pushing again.
+`pending` or empty output means the round is still running — poll every
+minute or so rather than pushing again.
 
 ## Threads: fixing, rebutting, answering, resolving
 
 List threads and find the unanswered ones (`totalCount < 2` means the finding
-has no reply yet):
+has no reply yet). Paginate the full connection, exactly as the gate does — a
+long PR can carry more than 100 threads, and a work list built from page one
+alone cannot satisfy the answer-every-thread rule:
 
 ```bash
-gh api graphql -f query='query($owner:String!,$name:String!,$pr:Int!){
+gh api graphql --paginate -f query='query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
   repository(owner:$owner,name:$name){pullRequest(number:$pr){
-    reviewThreads(first:100){nodes{id isResolved path
-      comments(first:1){totalCount nodes{databaseId author{login} body}}}}}}}' \
+    reviewThreads(first:100,after:$endCursor){
+      nodes{id isResolved path
+        comments(first:1){totalCount nodes{databaseId author{login} body}}}
+      pageInfo{hasNextPage endCursor}}}}}' \
   -f owner="${REPO%/*}" -f name="${REPO#*/}" -F pr="$PR"
 ```
 
@@ -181,7 +195,8 @@ it is blocked on and the round-by-round history in one paragraph.
 
 ## Hard rules
 
-- Rounds fire on pushes only. Do not wait for a reaction to a comment.
+- Rounds fire on developer events only — push, open, reopen. Comments and
+  replies never start one; do not wait for a reaction to a comment.
 - One push per round; batch fixes and rebuttals.
 - Fix or rebut every blocking finding; answer every thread; say how you fixed
   it or why it stands, then resolve what you answered.
