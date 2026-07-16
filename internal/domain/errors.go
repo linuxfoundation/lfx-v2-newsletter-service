@@ -39,4 +39,15 @@ var (
 	// recipient the same newsletter twice. The send orchestrator matches this
 	// sentinel with errors.Is to gate its bounded per-recipient retry.
 	ErrEmailNotDispatched = errors.New("email was not dispatched")
+
+	// ErrEmailServiceUnreachable marks the NATS no-responders condition: the
+	// NATS server itself reported that nothing is subscribed to the send
+	// subject, so the request was dropped before any service saw it. Unlike a
+	// timeout, this is a server-side fact rather than a statistical signal —
+	// which is why the fan-out treats one post-retry exhaustion on it as proof
+	// of a systemic email-service outage and skips the recipients it has not
+	// started yet, instead of re-spending attempts on a subject known to be
+	// dead. Always accompanies ErrEmailNotDispatched: a dropped request is by
+	// definition not dispatched.
+	ErrEmailServiceUnreachable = errors.New("email-service is not reachable")
 )

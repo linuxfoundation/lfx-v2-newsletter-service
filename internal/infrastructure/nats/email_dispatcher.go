@@ -187,14 +187,16 @@ func classifyErrorReply(errMsg string) error {
 // classifySendRequestError tags send_email transport failures that prove the
 // request never reached email-service. NATS no-responders is the only such
 // condition today: the server reported that nothing is subscribed to the
-// subject, so the message was dropped before any service saw it. Every other
-// transport failure (request timeout, cancelled context, connection loss
-// mid-flight) is ambiguous — email-service may already have accepted the
-// message — and is passed through untagged so the orchestrator does not retry
-// it.
+// subject, so the message was dropped before any service saw it. It carries
+// both sentinels — ErrEmailNotDispatched (retry-safe) and the stronger
+// ErrEmailServiceUnreachable, which the orchestrator reads as authoritative
+// proof of a systemic outage. Every other transport failure (request timeout,
+// cancelled context, connection loss mid-flight) is ambiguous — email-service
+// may already have accepted the message — and is passed through untagged so
+// the orchestrator neither retries nor trips an outage on it.
 func classifySendRequestError(err error) error {
 	if errors.Is(err, nats.ErrNoResponders) {
-		return fmt.Errorf("%w: %w", err, domain.ErrEmailNotDispatched)
+		return fmt.Errorf("%w: %w: %w", err, domain.ErrEmailNotDispatched, domain.ErrEmailServiceUnreachable)
 	}
 	return err
 }

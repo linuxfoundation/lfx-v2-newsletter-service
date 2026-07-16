@@ -11,6 +11,7 @@ import (
 	"net/mail"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,6 +42,11 @@ const dispatchMaxAttempts = 3
 // that retries stay well inside the job timeout even at full concurrency,
 // long enough to ride out a momentary email-service blip.
 const defaultDispatchRetryBackoff = 500 * time.Millisecond
+
+// outageSkipReason is recorded against every recipient the fan-out skips after
+// declaring a systemic email-service outage. Distinct from a dispatch error so
+// operators can tell "we tried and it failed" from "we never tried".
+const outageSkipReason = "skipped: email-service unavailable"
 
 // persistTimeout bounds the terminal MarkSent / RevertSending write issued by
 // the background job. Deliberately independent of the job context, which may
@@ -609,6 +615,20 @@ type emailEnvelope struct {
 // its final attempt, recording the last error. A nil EmailDispatcher (or
 // FanoutEnabled=false) short-circuits to "all sent, none failed" for dev/test
 // environments.
+//
+// Systemic-outage fail-fast: once any recipient exhausts its attempts on a
+// NATS no-responders condition, email-service is provably not subscribed to
+// the send subject, and every remaining dispatch would burn three attempts
+// plus backoff to deliver nothing. The fan-out then skips the recipients it
+// has not started (recording outageSkipReason), while dispatches already in
+// flight finish normally. Stopping early is the deliberate choice: a fan-out
+// that fails totally reverts the row to draft — cleanly re-sendable — whereas
+// dribbling out more partial deliveries strands the send in the one state with
+// no clean recovery, since there is no per-recipient dedup and a re-send would
+// double-send the delivered slice. No circuit breaker or half-open probing is
+// involved: this is a one-shot batch, and no-responders is a server-side fact
+// rather than a statistical signal, so probing would add machinery without
+// adding information.
 func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipients []model.CommitteeMember, env emailEnvelope) (sent, failed int, failures []SendFailure) {
 	if len(recipients) == 0 {
 		return 0, 0, nil
@@ -624,6 +644,9 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 	sem := make(chan struct{}, o.concurrency)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	// outage is scoped to this fan-out, not the orchestrator: a dead subject
+	// during one send says nothing about the next one, which resolves fresh.
+	var outage atomic.Bool
 	for _, r := range recipients {
 		recipient := r
 		// Respect ctx cancellation when acquiring a worker slot. A naked
@@ -644,6 +667,16 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// Fail fast: an earlier worker proved nothing is listening on the
+			// send subject. This worker has not dispatched yet, so it spends
+			// no attempts and records the skip instead.
+			if outage.Load() {
+				mu.Lock()
+				failed++
+				failures = append(failures, SendFailure{Email: recipient.Email, Error: outageSkipReason})
+				mu.Unlock()
+				return
+			}
 			recipientHTML, recipientText := env.HTML, env.Text
 			if o.unsub.Enabled() {
 				url := o.unsub.BuildURL(projectUID, recipient.Email)
@@ -664,7 +697,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				mu.Unlock()
 				return
 			}
-			err := o.dispatchWithRetry(ctx, port.SendEmailInput{
+			exhausted, err := o.dispatchWithRetry(ctx, port.SendEmailInput{
 				To:              recipient.Email,
 				Subject:         env.Subject,
 				HTML:            recipientHTML,
@@ -674,6 +707,18 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				ReplyTo:         env.ReplyTo,
 				GroupID:         env.GroupID,
 			})
+			// Declaring the outage requires exhaustion, not a single failure:
+			// a momentary blip that a retry rides out must not skip the rest
+			// of the list. Exhausted-on-no-responders means the subject stayed
+			// dead across every attempt and its backoff.
+			if exhausted && errors.Is(err, domain.ErrEmailServiceUnreachable) && outage.CompareAndSwap(false, true) {
+				slog.WarnContext(ctx, "send fanout: email-service has no responders after retries, skipping recipients not yet dispatched",
+					"recipient", redactEmail(recipient.Email),
+					"group_id", env.GroupID,
+					"attempts", dispatchMaxAttempts,
+					"error", err.Error(),
+				)
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -709,7 +754,13 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 // cancellation; on cancellation the last dispatch error is returned so the
 // failure list records why the dispatch failed rather than that the job was
 // winding down.
-func (o *SendOrchestrator) dispatchWithRetry(ctx context.Context, in port.SendEmailInput) error {
+//
+// The reported `exhausted` is true only when every attempt was spent — not
+// when a failure was terminal on its first occurrence, and not when ctx
+// cancellation cut the retries short. The caller uses it to distinguish a
+// subject that stayed dead across all attempts (proof of outage) from one
+// failure that merely looked like it.
+func (o *SendOrchestrator) dispatchWithRetry(ctx context.Context, in port.SendEmailInput) (exhausted bool, err error) {
 	backoff := o.retryBackoff
 	if backoff <= 0 {
 		backoff = defaultDispatchRetryBackoff
@@ -718,11 +769,14 @@ func (o *SendOrchestrator) dispatchWithRetry(ctx context.Context, in port.SendEm
 	for attempt := 1; ; attempt++ {
 		_, err := o.email.SendEmail(ctx, in)
 		if err == nil {
-			return nil
+			return false, nil
 		}
 		lastErr = err
-		if attempt >= dispatchMaxAttempts || !errors.Is(err, domain.ErrEmailNotDispatched) {
-			return lastErr
+		if !errors.Is(err, domain.ErrEmailNotDispatched) {
+			return false, lastErr
+		}
+		if attempt >= dispatchMaxAttempts {
+			return true, lastErr
 		}
 		slog.WarnContext(ctx, "send fanout: recipient dispatch failed, retrying",
 			"recipient", redactEmail(in.To),
@@ -737,7 +791,7 @@ func (o *SendOrchestrator) dispatchWithRetry(ctx context.Context, in port.SendEm
 		case <-timer.C:
 		case <-ctx.Done():
 			timer.Stop()
-			return lastErr
+			return false, lastErr
 		}
 		backoff *= 2
 	}
