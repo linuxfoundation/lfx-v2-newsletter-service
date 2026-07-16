@@ -38,9 +38,12 @@ const defaultSendJobTimeout = 30 * time.Minute
 const dispatchMaxAttempts = 3
 
 // defaultDispatchRetryBackoff is the wait before the first dispatch retry;
-// the wait doubles for each subsequent retry (500ms, then 1s). Short enough
-// that retries stay well inside the job timeout even at full concurrency,
-// long enough to ride out a momentary email-service blip.
+// the wait doubles for each subsequent retry (500ms, then 1s). It is sized for
+// the one retryable failure that is genuinely transient — a no-responders gap
+// while email-service redeploys — long enough to span such a gap, short enough
+// that retries stay well inside the job timeout at full concurrency. The
+// retryable rejection replies are deterministic and no wait helps them; see
+// dispatchWithRetry for why they are retried anyway.
 const defaultDispatchRetryBackoff = 500 * time.Millisecond
 
 // outageSkipReason is recorded against every recipient the fan-out skips after
@@ -757,6 +760,17 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 // message and it has no idempotency key today, so retrying would risk sending
 // the recipient the same newsletter twice — a worse outcome than the miss,
 // which the caller's failure accounting already surfaces.
+//
+// The boundary is drawn on safety, not usefulness, and the two genuinely
+// differ: among the retry-safe failures only no-responders is transient, while
+// the rejection replies are deterministic and re-fail identically on every
+// attempt. Retrying those costs two wasted round-trips and 1.5s per recipient
+// and buys nothing — accepted deliberately, because the alternative is a
+// second taxonomy (transient vs. deterministic) that email-service does not
+// expose today, and guessing at one is how a retry gate starts double-sending.
+// The cost is bounded, falls only on an already-doomed send, and the end state
+// is unchanged: zero deliveries, row reverted to draft. See
+// docs/recipient-resolution.md for the operator-visible consequence.
 //
 // Running inside the per-recipient worker keeps the fan-out concurrency cap
 // as the bound on total in-flight requests. The backoff wait respects ctx

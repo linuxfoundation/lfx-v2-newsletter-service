@@ -92,7 +92,8 @@ Match the existing package boundaries before adding a new abstraction.
 
 ## Errors
 
-- Domain sentinels: `ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`.
+- Domain sentinels: `ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrSendInProgress`, `ErrEmailNotDispatched`, `ErrEmailServiceUnreachable`.
+- The last two are the exception to the transport mapping below: they classify per-recipient send failures inside the background fan-out (retry-safety and outage fail-fast) and never reach `classifyError`.
 - Transport mapping:
   - not found -> 404
   - version mismatch -> 412

@@ -20,16 +20,23 @@ import (
 // (timeout, cancelled context, generic connection errors) pass through
 // untagged so the send orchestrator does not retry a request email-service may
 // already have accepted.
+//
+// wantUnreachable pins the producer half of the outage fail-fast: the
+// orchestrator's trip keys on domain.ErrEmailServiceUnreachable, so if this
+// tag were ever dropped here the fail-fast would go permanently dead in
+// production with no other test noticing.
 func TestClassifySendRequestError(t *testing.T) {
 	cases := []struct {
-		name      string
-		err       error
-		wantRetry bool
+		name            string
+		err             error
+		wantRetry       bool
+		wantUnreachable bool
 	}{
 		{
-			name:      "no responders is tagged retry-safe",
-			err:       pkgerrors.NewServiceUnavailable("NATS request failed", nats.ErrNoResponders),
-			wantRetry: true,
+			name:            "no responders is tagged retry-safe and unreachable",
+			err:             pkgerrors.NewServiceUnavailable("NATS request failed", nats.ErrNoResponders),
+			wantRetry:       true,
+			wantUnreachable: true,
 		},
 		{
 			name:      "request timeout stays ambiguous",
@@ -57,6 +64,10 @@ func TestClassifySendRequestError(t *testing.T) {
 			got := classifySendRequestError(tc.err)
 			if errors.Is(got, domain.ErrEmailNotDispatched) != tc.wantRetry {
 				t.Fatalf("classifySendRequestError(%v) retry-safe=%v, want %v", tc.err, !tc.wantRetry, tc.wantRetry)
+			}
+			if errors.Is(got, domain.ErrEmailServiceUnreachable) != tc.wantUnreachable {
+				t.Fatalf("classifySendRequestError(%v) unreachable=%v, want %v (the fan-out outage fail-fast keys on this tag)",
+					tc.err, !tc.wantUnreachable, tc.wantUnreachable)
 			}
 			// The original error must survive classification in the chain so
 			// the HTTP error mapper still sees the typed ServiceUnavailable
@@ -113,6 +124,12 @@ func TestClassifyErrorReply(t *testing.T) {
 			got := classifyErrorReply(tc.reply)
 			if errors.Is(got, domain.ErrEmailNotDispatched) != tc.wantRetry {
 				t.Fatalf("classifyErrorReply(%q) retry-safe=%v, want %v", tc.reply, !tc.wantRetry, tc.wantRetry)
+			}
+			// No reply may claim email-service is unreachable: a reply proves
+			// something answered. Tagging one would let a validation error
+			// declare a systemic outage and skip the rest of the fan-out.
+			if errors.Is(got, domain.ErrEmailServiceUnreachable) {
+				t.Fatalf("classifyErrorReply(%q) tagged ErrEmailServiceUnreachable; a reply proves a responder exists", tc.reply)
 			}
 			// Every reply keeps the typed ServiceUnavailable so the HTTP
 			// mapper (test-send path) still resolves 503.

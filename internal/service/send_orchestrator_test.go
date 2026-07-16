@@ -1425,8 +1425,21 @@ func TestFanOutRetryAccounting(t *testing.T) {
 // unreachableDispatchErr builds a failure carrying both sentinels the NATS
 // dispatcher attaches to a no-responders condition: retry-safe, and
 // authoritative proof email-service is not subscribed to the send subject.
+// That the real dispatcher emits both is pinned by TestClassifySendRequestError
+// in the nats package — this helper only mirrors the shape.
 func unreachableDispatchErr(msg string) error {
 	return fmt.Errorf("%s: %w: %w", msg, domain.ErrEmailNotDispatched, domain.ErrEmailServiceUnreachable)
+}
+
+// waitFor receives from ch with a deadline, so a behavioral regression surfaces
+// as a named failure rather than a package-wide hang.
+func waitFor(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
 }
 
 // TestFanOutOutageSkipsRecipientsNotYetDispatched asserts the fail-fast: the
@@ -1471,11 +1484,10 @@ func TestFanOutOutageSkipsRecipientsNotYetDispatched(t *testing.T) {
 //
 // Scope, honestly stated: a ridden-out blip ends in err == nil, so it is the
 // error check alone that rejects the trip here — this test does not exercise
-// the `exhausted` guard. That guard's distinguishing case (a no-responders
-// failure whose retries ctx cancellation cut short) is pinned one level down
-// by TestDispatchWithRetryCtxCancelledOnUnreachableReportsNotExhausted; it is
-// not reachable deterministically through fanOut, because a cancelled ctx also
-// makes the parent loop stop acquiring slots.
+// the `exhausted` guard. That guard is pinned by
+// TestFanOutOutageRequiresExhaustionNotMerelyUnreachable at this level, and by
+// TestDispatchWithRetryCtxCancelledOnUnreachableReportsNotExhausted one level
+// down.
 func TestFanOutOutageDoesNotTripOnRecoveredBlip(t *testing.T) {
 	email := &scriptedEmailDispatcher{errs: []error{unreachableDispatchErr("momentary blip")}}
 	orch := newRetryOrchestrator(email)
@@ -1567,8 +1579,10 @@ func TestFanOutOutageLeavesInFlightDispatchUntouched(t *testing.T) {
 		done <- result{s, f, fs}
 	}()
 
-	<-email.started      // the in-flight dispatch is parked inside SendEmail
-	<-tripped            // the outage is declared while it is still parked
+	// Bounded waits: a regression in the trip must fail this test by name, not
+	// hang until the package-wide timeout buries the signal in a goroutine dump.
+	waitFor(t, email.started, "the in-flight dispatch to park")
+	waitFor(t, tripped, "the outage to trip")
 	close(email.release) // only now can it finish, provably after the trip
 	got := <-done
 
@@ -1638,14 +1652,15 @@ func TestSendNewsletterOutageRevertsToDraft(t *testing.T) {
 }
 
 // TestDispatchWithRetryCtxCancelledOnUnreachableReportsNotExhausted pins the
-// `exhausted` guard that keeps the outage from tripping on an unreachable
-// failure whose retries were cut short. Without the guard, this exact input —
-// a no-responders error that never spent its budget — would satisfy
-// fanOut's errors.Is check and declare a systemic outage off one attempt.
+// producer side of the `exhausted` signal for the cancellation route: a
+// no-responders failure whose retries ctx cancellation cut short must not
+// report exhaustion, since fanOut would otherwise be free to read it as proof
+// of a systemic outage.
 //
-// This is the guard's only distinguishing case: through fanOut it is
-// unreachable deterministically, because a cancelled ctx also stops the parent
-// loop acquiring slots, so it is pinned here instead.
+// This route is not reachable through fanOut deterministically (a cancelled
+// ctx also stops the parent loop acquiring slots), so it is pinned here. The
+// guard's effect at fan-out level is covered by
+// TestFanOutOutageRequiresExhaustionNotMerelyUnreachable.
 func TestDispatchWithRetryCtxCancelledOnUnreachableReportsNotExhausted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1665,5 +1680,72 @@ func TestDispatchWithRetryCtxCancelledOnUnreachableReportsNotExhausted(t *testin
 	}
 	if got := email.attemptCount(); got != 1 {
 		t.Fatalf("attempts=%d, want 1", got)
+	}
+}
+
+// unreachableOnlyDispatcher fails failAddr with an error carrying
+// ErrEmailServiceUnreachable but NOT ErrEmailNotDispatched — violating the
+// "always accompanies" invariant documented on the sentinel. That combination
+// is precisely what the fan-out's `exhausted` guard defends against: the retry
+// gate returns such an error immediately (not retry-safe, so not exhausted),
+// and without the guard the errors.Is check alone would declare a systemic
+// outage off a single attempt.
+type unreachableOnlyDispatcher struct {
+	fakeEmailDispatcher
+	failAddr string
+	countMu  sync.Mutex
+	perAddr  map[string]int
+}
+
+func (d *unreachableOnlyDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
+	d.countMu.Lock()
+	if d.perAddr == nil {
+		d.perAddr = make(map[string]int)
+	}
+	d.perAddr[in.To]++
+	d.countMu.Unlock()
+	if in.To == d.failAddr {
+		return "", fmt.Errorf("unreachable but not tagged undispatched: %w", domain.ErrEmailServiceUnreachable)
+	}
+	return d.fakeEmailDispatcher.SendEmail(ctx, in)
+}
+
+func (d *unreachableOnlyDispatcher) attemptsFor(addr string) int {
+	d.countMu.Lock()
+	defer d.countMu.Unlock()
+	return d.perAddr[addr]
+}
+
+// TestFanOutOutageRequiresExhaustionNotMerelyUnreachable pins the `exhausted`
+// guard at the fan-out level: an unreachable-tagged failure that never spent
+// its attempt budget must not declare an outage. Without the guard, one
+// non-retry-safe failure would skip every remaining recipient of a send that
+// email-service is answering perfectly well.
+func TestFanOutOutageRequiresExhaustionNotMerelyUnreachable(t *testing.T) {
+	email := &unreachableOnlyDispatcher{failAddr: "bad@example.com"}
+	orch := newRetryOrchestrator(email)
+	orch.concurrency = 1 // serialize: "later" is dispatched strictly after "bad"
+
+	sent, failed, failures := orch.fanOut(context.Background(), "p1", []model.CommitteeMember{
+		{Email: "bad@example.com"},
+		{Email: "later@example.com"},
+	}, emailEnvelope{Subject: "s", HTML: "<p>b</p>", Text: "b", GroupID: "g1"})
+
+	// Not retry-safe, so it fails on the first attempt and never exhausts.
+	if n := email.attemptsFor("bad@example.com"); n != 1 {
+		t.Fatalf("failing recipient attempts=%d, want 1", n)
+	}
+	// The load-bearing assertion: the guard rejects the trip, so the next
+	// recipient is still dispatched rather than skipped.
+	if n := email.attemptsFor("later@example.com"); n != 1 {
+		t.Fatalf("later recipient attempts=%d, want 1 (a non-exhausted unreachable failure must not trip the outage)", n)
+	}
+	if sent != 1 || failed != 1 {
+		t.Fatalf("sent=%d failed=%d, want 1/1", sent, failed)
+	}
+	for _, f := range failures {
+		if f.Error == outageSkipReason {
+			t.Fatalf("recipient %s was skipped for an outage that must not have tripped", f.Email)
+		}
 	}
 }
