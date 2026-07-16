@@ -1362,11 +1362,13 @@ func TestDispatchWithRetryCtxCancelledMidBackoff(t *testing.T) {
 	}
 }
 
-// perRecipientDispatcher fails every attempt for failAddr with a retry-safe
-// error and succeeds for all other recipients, tracking attempts per address.
+// perRecipientDispatcher fails every attempt for failAddr and succeeds for all
+// other recipients, tracking attempts per address. failErr overrides the
+// failure; it defaults to a retry-safe rejection.
 type perRecipientDispatcher struct {
 	fakeEmailDispatcher
 	failAddr string
+	failErr  error
 	countMu  sync.Mutex
 	perAddr  map[string]int
 }
@@ -1379,6 +1381,9 @@ func (p *perRecipientDispatcher) SendEmail(ctx context.Context, in port.SendEmai
 	p.perAddr[in.To]++
 	p.countMu.Unlock()
 	if in.To == p.failAddr {
+		if p.failErr != nil {
+			return "", p.failErr
+		}
 		return "", retryableDispatchErr("email-service rejected")
 	}
 	return p.fakeEmailDispatcher.SendEmail(ctx, in)
@@ -1544,16 +1549,21 @@ func (d *outageMixDispatcher) attemptsFor(addr string) int {
 }
 
 // TestFanOutOutageLeavesInFlightDispatchUntouched asserts an outage declared
-// while another dispatch is parked mid-flight neither cancels nor fails that
-// dispatch: it completes and counts as sent, while a recipient that had not
-// started is skipped.
+// while another dispatch is parked mid-flight neither cancels, retries, nor
+// fails that dispatch: it completes on its own terms and counts as sent. The
+// fan-out has no mechanism to interrupt a running worker, and this pins that.
 //
 // Determinism rests on the onOutageTripped seam, which fires after the trip is
-// committed and before the tripping worker frees its slot: the parked dispatch
-// is released only once the outage provably exists, so every later worker sees
-// it. The skipped third recipient is what makes the outage load-bearing here —
-// without it, a test of two always-slotted recipients passes whether or not
-// the fail-fast works at all.
+// committed: the parked dispatch is released only once the outage provably
+// exists, so it is proven to have spanned the trip.
+//
+// Scope, honestly stated: with both recipients slotted from the start there is
+// no queued worker here, so this test does not exercise the skip branch — that
+// is covered by TestFanOutOutageSkipsRecipientsNotYetDispatched (skip when
+// nothing has been delivered) and TestFanOutOutageDoesNotSkipAfterAnyDelivery-
+// Succeeded (no skip once a delivery has landed). Adding a queued recipient
+// here would race: whether it skips legitimately depends on whether the parked
+// success has landed first.
 func TestFanOutOutageLeavesInFlightDispatchUntouched(t *testing.T) {
 	email := &outageMixDispatcher{
 		inflightAddr: "inflight@example.com",
@@ -1561,7 +1571,7 @@ func TestFanOutOutageLeavesInFlightDispatchUntouched(t *testing.T) {
 		started:      make(chan struct{}, 1),
 	}
 	orch := newRetryOrchestrator(email)
-	orch.concurrency = 2 // dead and inflight hold both slots; later must wait
+	orch.concurrency = 2 // one slot each: neither waits on the other
 	tripped := make(chan struct{})
 	orch.onOutageTripped = func() { close(tripped) }
 
@@ -1574,7 +1584,6 @@ func TestFanOutOutageLeavesInFlightDispatchUntouched(t *testing.T) {
 		s, f, fs := orch.fanOut(context.Background(), "p1", []model.CommitteeMember{
 			{Email: "dead@example.com"},
 			{Email: "inflight@example.com"},
-			{Email: "later@example.com"},
 		}, emailEnvelope{Subject: "s", HTML: "<p>b</p>", Text: "b", GroupID: "g1"})
 		done <- result{s, f, fs}
 	}()
@@ -1586,8 +1595,8 @@ func TestFanOutOutageLeavesInFlightDispatchUntouched(t *testing.T) {
 	close(email.release) // only now can it finish, provably after the trip
 	got := <-done
 
-	if got.sent != 1 || got.failed != 2 {
-		t.Fatalf("sent=%d failed=%d, want 1/2 (the in-flight dispatch must still land)", got.sent, got.failed)
+	if got.sent != 1 || got.failed != 1 {
+		t.Fatalf("sent=%d failed=%d, want 1/1 (the in-flight dispatch must still land)", got.sent, got.failed)
 	}
 	if n := email.attemptsFor("inflight@example.com"); n != 1 {
 		t.Fatalf("in-flight recipient attempts=%d, want 1 (the outage must not retry, cancel, or re-drive it)", n)
@@ -1595,25 +1604,8 @@ func TestFanOutOutageLeavesInFlightDispatchUntouched(t *testing.T) {
 	if n := email.attemptsFor("dead@example.com"); n != dispatchMaxAttempts {
 		t.Fatalf("tripping recipient attempts=%d, want %d", n, dispatchMaxAttempts)
 	}
-	// The load-bearing assertion: a worker that had not started when the
-	// outage tripped spends no attempts and records the skip.
-	if n := email.attemptsFor("later@example.com"); n != 0 {
-		t.Fatalf("later recipient attempts=%d, want 0 (must skip once the outage tripped)", n)
-	}
-	var skipped, inflightFailed bool
-	for _, f := range got.failures {
-		if f.Email == "later@example.com" && f.Error == outageSkipReason {
-			skipped = true
-		}
-		if f.Email == "inflight@example.com" {
-			inflightFailed = true
-		}
-	}
-	if !skipped {
-		t.Fatalf("failures=%+v, want later@example.com recorded with %q", got.failures, outageSkipReason)
-	}
-	if inflightFailed {
-		t.Fatalf("failures=%+v, want the in-flight recipient counted as sent, not failed", got.failures)
+	if len(got.failures) != 1 || got.failures[0].Email != "dead@example.com" {
+		t.Fatalf("failures=%+v, want only the tripping recipient (the parked dispatch must not be failed or skipped by the trip)", got.failures)
 	}
 }
 
@@ -1746,6 +1738,46 @@ func TestFanOutOutageRequiresExhaustionNotMerelyUnreachable(t *testing.T) {
 	for _, f := range failures {
 		if f.Error == outageSkipReason {
 			t.Fatalf("recipient %s was skipped for an outage that must not have tripped", f.Email)
+		}
+	}
+}
+
+// TestFanOutOutageDoesNotSkipAfterAnyDeliverySucceeded pins the boundary the
+// outage skip must not cross. Once a recipient has been delivered to,
+// runSendJob will mark the row sent (sent > 0), so a skip from that point
+// strands the remaining recipients on a newsletter permanently recorded as
+// sent — the unrecoverable outcome the fail-fast exists to avoid. Since
+// no-responders is only a point-in-time fact, those recipients are dispatched
+// instead.
+//
+// Ordering is deterministic at concurrency 1: "good" is delivered, then "dead"
+// trips the outage, then "later" is dispatched — not skipped — because a
+// delivery has already landed.
+func TestFanOutOutageDoesNotSkipAfterAnyDeliverySucceeded(t *testing.T) {
+	email := &perRecipientDispatcher{failAddr: "dead@example.com", failErr: unreachableDispatchErr("no responders")}
+	orch := newRetryOrchestrator(email)
+	orch.concurrency = 1
+
+	sent, failed, failures := orch.fanOut(context.Background(), "p1", []model.CommitteeMember{
+		{Email: "good@example.com"},
+		{Email: "dead@example.com"},
+		{Email: "later@example.com"},
+	}, emailEnvelope{Subject: "s", HTML: "<p>b</p>", Text: "b", GroupID: "g1"})
+
+	if n := email.attemptsFor("dead@example.com"); n != dispatchMaxAttempts {
+		t.Fatalf("tripping recipient attempts=%d, want %d", n, dispatchMaxAttempts)
+	}
+	// The load-bearing assertion: the outage tripped, but a delivery had
+	// already landed, so the queued recipient must still be dispatched.
+	if n := email.attemptsFor("later@example.com"); n != 1 {
+		t.Fatalf("later recipient attempts=%d, want 1 (must not be skipped once a delivery has landed — the row will be marked sent regardless)", n)
+	}
+	if sent != 2 || failed != 1 {
+		t.Fatalf("sent=%d failed=%d, want 2/1", sent, failed)
+	}
+	for _, f := range failures {
+		if f.Error == outageSkipReason {
+			t.Fatalf("recipient %s skipped after a delivery had already succeeded", f.Email)
 		}
 	}
 }

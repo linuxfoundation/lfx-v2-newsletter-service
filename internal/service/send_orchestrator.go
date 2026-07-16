@@ -676,15 +676,30 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			// Fail fast: an earlier worker proved nothing is listening on the
-			// send subject. This worker has not dispatched yet, so it spends
-			// no attempts and records the skip instead.
+			// Fail fast, but only while the send can still converge to total
+			// failure. An earlier worker found nothing listening on the send
+			// subject, and this worker has not dispatched yet — so skipping
+			// costs no attempts and drives the fan-out toward sent == 0, which
+			// reverts the row to draft and leaves a cleanly re-sendable
+			// newsletter.
+			//
+			// Once any recipient has been delivered to, that reasoning
+			// inverts. runSendJob marks the row sent whenever sent > 0, so
+			// skipping from here cannot reach the recoverable state: it
+			// strands every remaining recipient on a newsletter permanently
+			// recorded as sent, with no re-send path. No-responders is only a
+			// point-in-time fact — a redeploy ends, and these recipients may
+			// well succeed — so once delivery has started, dispatching is
+			// strictly better than skipping.
 			if outage.Load() {
 				mu.Lock()
-				failed++
-				failures = append(failures, SendFailure{Email: recipient.Email, Error: outageSkipReason})
+				if sent == 0 {
+					failed++
+					failures = append(failures, SendFailure{Email: recipient.Email, Error: outageSkipReason})
+					mu.Unlock()
+					return
+				}
 				mu.Unlock()
-				return
 			}
 			recipientHTML, recipientText := env.HTML, env.Text
 			if o.unsub.Enabled() {
@@ -718,8 +733,16 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 			})
 			// Declaring the outage requires exhaustion, not a single failure:
 			// a momentary blip that a retry rides out must not skip the rest
-			// of the list. Exhausted-on-no-responders means the subject stayed
-			// dead across every attempt and its backoff.
+			// of the list.
+			//
+			// Precisely: this means the recipient spent every attempt and its
+			// final failure was no-responders. It does NOT mean every attempt
+			// was no-responders — a recipient that saw two rejection replies
+			// and then no-responders also qualifies. That is deliberate but
+			// weak evidence, and it is why the skip above is gated on nothing
+			// having been delivered yet: the worst this can do is push a send
+			// that has delivered nothing toward the revert-to-draft state it
+			// was already heading for.
 			if exhausted && errors.Is(err, domain.ErrEmailServiceUnreachable) && outage.CompareAndSwap(false, true) {
 				slog.WarnContext(ctx, "send fanout: email-service has no responders after retries, skipping recipients not yet dispatched",
 					"recipient", redactEmail(recipient.Email),

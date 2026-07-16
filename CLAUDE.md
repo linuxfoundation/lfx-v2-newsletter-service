@@ -215,7 +215,7 @@ All `os.Getenv` calls belong in `cmd/newsletter-api/service/config.go` →
 
 ### Error handling
 - Domain errors live in `internal/domain/errors.go` (`ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrSendInProgress`, `ErrEmailNotDispatched`, `ErrEmailServiceUnreachable`).
-- Map domain errors to HTTP status codes in `internal/handler/http.go`. The two dispatch sentinels are the exception: `ErrEmailNotDispatched` and `ErrEmailServiceUnreachable` classify per-recipient send failures inside the background fan-out (retry-safety and outage fail-fast) and never reach `classifyError`.
+- Map domain errors to HTTP status codes in `internal/handler/http.go`. `ErrEmailNotDispatched` and `ErrEmailServiceUnreachable` are different in kind: they exist to drive fan-out policy (retry-safety and the outage fail-fast), not transport mapping, so `classifyError` does not switch on them. They can still reach it — `/test-send` dispatches inline and returns the dispatcher error — but the status comes from the typed `pkgerrors.ServiceUnavailable` preserved in the same chain, which maps to 503.
 - Always pass `ctx` for OTel trace correlation.
 
 ### Logging
