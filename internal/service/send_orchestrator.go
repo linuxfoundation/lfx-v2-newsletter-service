@@ -82,6 +82,12 @@ type SendOrchestrator struct {
 	// retry (doubling per retry). Fixed to defaultDispatchRetryBackoff in
 	// production; overridden only by tests to keep retry paths fast.
 	retryBackoff time.Duration
+	// onOutageTripped, when non-nil, is invoked once per fan-out immediately
+	// after an outage is declared and before the tripping worker frees its
+	// slot. A test seam: it lets a test synchronize on the trip instead of
+	// sleeping, which is the difference between proving the fail-fast and
+	// racing it. Always nil in production wiring.
+	onOutageTripped func()
 	// jobs tracks detached background send goroutines so graceful shutdown
 	// (and tests) can wait for in-flight fan-outs via Drain.
 	jobs sync.WaitGroup
@@ -718,6 +724,9 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 					"attempts", dispatchMaxAttempts,
 					"error", err.Error(),
 				)
+				if o.onOutageTripped != nil {
+					o.onOutageTripped()
+				}
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -765,18 +774,17 @@ func (o *SendOrchestrator) dispatchWithRetry(ctx context.Context, in port.SendEm
 	if backoff <= 0 {
 		backoff = defaultDispatchRetryBackoff
 	}
-	var lastErr error
 	for attempt := 1; ; attempt++ {
-		_, err := o.email.SendEmail(ctx, in)
-		if err == nil {
+		// err is the named return: it always holds the latest attempt's error,
+		// which is what every failure path below surfaces to the caller.
+		if _, err = o.email.SendEmail(ctx, in); err == nil {
 			return false, nil
 		}
-		lastErr = err
 		if !errors.Is(err, domain.ErrEmailNotDispatched) {
-			return false, lastErr
+			return false, err
 		}
 		if attempt >= dispatchMaxAttempts {
-			return true, lastErr
+			return true, err
 		}
 		slog.WarnContext(ctx, "send fanout: recipient dispatch failed, retrying",
 			"recipient", redactEmail(in.To),
@@ -791,7 +799,7 @@ func (o *SendOrchestrator) dispatchWithRetry(ctx context.Context, in port.SendEm
 		case <-timer.C:
 		case <-ctx.Done():
 			timer.Stop()
-			return false, lastErr
+			return false, err
 		}
 		backoff *= 2
 	}
