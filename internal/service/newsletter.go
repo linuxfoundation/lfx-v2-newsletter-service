@@ -17,7 +17,6 @@ import (
 	"net/mail"
 	"regexp"
 	"strings"
-	"sync"
 
 	"github.com/google/uuid"
 
@@ -37,25 +36,6 @@ const (
 	maxBodyHTMLLength     = 100_000
 	maxCommitteesPerDraft = 50
 )
-
-// embeddedTemplates carries the declarative templates baked into the binary,
-// parsed once and shared by every NewsletterService. Parsing is deterministic
-// and side-effect free, so a process-wide guarded singleton avoids re-parsing
-// on every write without forcing the parse to happen at construction time.
-var (
-	embeddedTemplatesOnce sync.Once
-	embeddedTemplates     declarative.Templates
-	embeddedTemplatesErr  error
-)
-
-// loadEmbeddedTemplates returns the process-wide embedded templates, parsing
-// them on first use.
-func loadEmbeddedTemplates() (declarative.Templates, error) {
-	embeddedTemplatesOnce.Do(func() {
-		embeddedTemplates, embeddedTemplatesErr = declarative.LoadEmbeddedTemplate(declarative.RenderTemplateKey)
-	})
-	return embeddedTemplates, embeddedTemplatesErr
-}
 
 // NewsletterService implements business logic for draft management.
 type NewsletterService struct {
@@ -509,10 +489,16 @@ func normalizeCommitteeUIDs(in []string) []string {
 // A render failure is surfaced as ErrUnprocessable (422), matching render-preview
 // for the same unrenderable layout — the request itself is well-formed.
 func renderLayout(ctx context.Context, layout *declarative.Layout, replyEmail string, unsubEnabled bool) (bodyHTML string, raw json.RawMessage, err error) {
-	templates, err := loadEmbeddedTemplates()
+	templates, err := declarative.LoadEmbeddedTemplateCached(layout.TemplateKey)
 	if err != nil {
-		// Template parse failure is a deployment defect (templates ship with the
-		// binary), not a client error — bubble it up untyped so it maps to 500.
+		if errors.Is(err, declarative.ErrTemplateNotFound) {
+			// A client-selected library that isn't embedded makes the stored layout
+			// unrenderable (422), consistent with an unknown block_type.
+			return "", nil, fmt.Errorf("%w: unknown template_key %q", domain.ErrUnprocessable, strings.TrimSpace(layout.TemplateKey))
+		}
+		// A present library that failed to parse is a deployment defect (templates
+		// ship with the binary), not a client error — bubble it up untyped so it
+		// maps to 500.
 		return "", nil, fmt.Errorf("load render templates: %w", err)
 	}
 

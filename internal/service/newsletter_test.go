@@ -123,6 +123,87 @@ func TestCreateDraft_UnrenderableLayout_ErrorsAndPersistsNothing(t *testing.T) {
 	}
 }
 
+// TestCreateDraft_TemplateKey_RoundTripsAndRendersFromSelectedLibrary asserts a
+// layout carrying an explicit template_key persists that key and derives its
+// body_html from the named library.
+func TestCreateDraft_TemplateKey_RoundTripsAndRendersFromSelectedLibrary(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, true)
+
+	const marker = "Hello from the default library"
+	layout := introLayout(marker)
+	layout.TemplateKey = "default" // intro_paragraph exists in the "default" set
+
+	draft, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "News",
+		BodyLayout:    layout,
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	var stored declarative.Layout
+	if err := json.Unmarshal(draft.BodyLayout, &stored); err != nil {
+		t.Fatalf("unmarshal stored layout: %v", err)
+	}
+	if stored.TemplateKey != "default" {
+		t.Errorf("template_key did not round-trip: got %q, want %q", stored.TemplateKey, "default")
+	}
+	if !strings.Contains(draft.BodyHTML, marker) {
+		t.Errorf("derived body_html missing block content %q; got:\n%s", marker, draft.BodyHTML)
+	}
+}
+
+// TestCreateDraft_TemplateKey_SelectsLibrary proves the key actually routes the
+// render library: hidden_gems exists in the default render library
+// (aaif-user-community) but NOT in the smaller "default" set, so a layout tagged
+// template_key="default" with a hidden_gems block is unrenderable (422) — it is
+// bound against the selected library, not the fallback superset.
+func TestCreateDraft_TemplateKey_SelectsLibrary(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, true)
+
+	layout := &declarative.Layout{
+		TemplateKey: "default",
+		Blocks:      []declarative.Block{{BlockType: "hidden_gems", Content: map[string]any{}}},
+	}
+	_, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "News",
+		BodyLayout:    layout,
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if !IsUnprocessableError(err) {
+		t.Fatalf("expected 422 for a block absent from the selected library, got %v", err)
+	}
+}
+
+// TestCreateDraft_UnknownTemplateKey_Is422 asserts a layout naming a library the
+// binary does not embed is unrenderable (422), not a 500.
+func TestCreateDraft_UnknownTemplateKey_Is422(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, true)
+
+	layout := introLayout("hi")
+	layout.TemplateKey = "no-such-library"
+	_, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "News",
+		BodyLayout:    layout,
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if !IsUnprocessableError(err) {
+		t.Fatalf("expected 422 for unknown template_key, got %v", err)
+	}
+}
+
 func TestUpdateDraft_WithLayout_PersistsLayoutAndDerivedHTML(t *testing.T) {
 	repo := newFakeRepo()
 	svc := NewNewsletterService(repo, true)

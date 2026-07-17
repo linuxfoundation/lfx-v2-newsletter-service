@@ -5,10 +5,19 @@ package declarative
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
+	"strings"
+	"sync"
 )
+
+// ErrTemplateNotFound is returned when a template-set key names no embedded
+// library. It lets callers distinguish a client-selected unknown key (a 422
+// unrenderable layout) from a library that IS embedded but fails to parse (a
+// 500 deployment defect) — collapsing the two would mask a real deploy failure.
+var ErrTemplateNotFound = errors.New("declarative: embedded template not found")
 
 // embeddedTemplates carries the declarative template sets baked into the
 // binary at build time, one directory per template key:
@@ -24,12 +33,13 @@ import (
 //go:embed templates
 var embeddedTemplates embed.FS
 
-// RenderTemplateKey selects which embedded template set the render paths
-// (render-on-write and render-preview) use. It is the superset template —
-// every block type the editor can offer across all manifests — so any
-// composed layout renders regardless of which manifest the editor loaded.
-// Per-newsletter template selection (a template_key on the newsletter)
-// replaces this constant in a later phase.
+// RenderTemplateKey is the DEFAULT render library: the set the render paths
+// (render-on-write and render-preview) use when a layout carries no
+// template_key. It is the superset template — every block type the editor can
+// offer across all manifests — so a layout composed without an explicit library
+// (or saved before per-newsletter selection) renders regardless of which
+// manifest the editor loaded. A layout WITH a template_key renders from that
+// library instead (see loadRenderTemplates).
 const RenderTemplateKey = "aaif-user-community"
 
 // EmbeddedTemplateKeys returns the sorted keys of every template set compiled
@@ -56,9 +66,51 @@ func EmbeddedTemplateKeys() ([]string, error) {
 func LoadEmbeddedTemplate(key string) (Templates, error) {
 	root := "templates/" + key
 	if _, err := fs.Stat(embeddedTemplates, root); err != nil {
-		return Templates{}, fmt.Errorf("declarative: embedded template %q not found", key)
+		// Missing directory: the key names no embedded library. Wrap the sentinel
+		// so callers can map it to 422 (vs a parse failure of a present library,
+		// which stays an untyped 500 deployment defect).
+		return Templates{}, fmt.Errorf("%w: %q", ErrTemplateNotFound, key)
 	}
 	return loadFromFS(embeddedTemplates, root)
+}
+
+// renderTemplateCache memoizes parsed template sets by key. Only successful
+// parses are cached, so a stream of unknown client keys can't grow the map
+// unbounded. Parsing happens OUTSIDE the lock (a cold parse of one library must
+// not block renders of others, and cache hits take the lock only for a map
+// read); a concurrent duplicate parse of the same key is harmless since parsing
+// is deterministic and idempotent.
+var (
+	renderTemplateCacheMu sync.Mutex
+	renderTemplateCache   = map[string]Templates{}
+)
+
+// LoadEmbeddedTemplateCached returns the parsed template set for a library key,
+// memoizing successful parses process-wide. An empty (or whitespace) key falls
+// back to RenderTemplateKey — the default/superset library — so layouts without
+// an explicit library still render. A not-found key surfaces ErrTemplateNotFound.
+func LoadEmbeddedTemplateCached(key string) (Templates, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		key = RenderTemplateKey
+	}
+
+	renderTemplateCacheMu.Lock()
+	cached, ok := renderTemplateCache[key]
+	renderTemplateCacheMu.Unlock()
+	if ok {
+		return cached, nil
+	}
+
+	t, err := LoadEmbeddedTemplate(key)
+	if err != nil {
+		return Templates{}, err
+	}
+
+	renderTemplateCacheMu.Lock()
+	renderTemplateCache[key] = t
+	renderTemplateCacheMu.Unlock()
+	return t, nil
 }
 
 // BuildEmbeddedManifest builds the editor manifest for one embedded template

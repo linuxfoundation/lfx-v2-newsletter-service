@@ -4,9 +4,10 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
-	"sync"
+	"strings"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render/declarative"
@@ -17,26 +18,6 @@ import (
 // path's body_html ceiling (service.maxBodyHTMLLength, 100 KB) so a pathological
 // layout can't return an unbounded document.
 const maxRenderedHTMLBytes = 100_000
-
-// embeddedTemplates holds the declarative templates baked into the binary,
-// loaded once on first render-preview request. Parsing the embedded FS is
-// deterministic and side-effect free, so a process-wide singleton is safe and
-// avoids re-parsing on every request.
-var (
-	embeddedTemplatesOnce sync.Once
-	embeddedTemplates     declarative.Templates
-	embeddedTemplatesErr  error
-)
-
-// loadRenderTemplates returns the process-wide embedded Templates, parsing them
-// on first use. A parse failure is a deployment defect (the templates ship with
-// the binary), so it surfaces as a 500 rather than a client error.
-func loadRenderTemplates() (declarative.Templates, error) {
-	embeddedTemplatesOnce.Do(func() {
-		embeddedTemplates, embeddedTemplatesErr = declarative.LoadEmbeddedTemplate(declarative.RenderTemplateKey)
-	})
-	return embeddedTemplates, embeddedTemplatesErr
-}
 
 // RenderPreview handles POST /projects/{project_uid}/newsletters/render-preview.
 //
@@ -55,9 +36,14 @@ func (h *Handler) RenderPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	templates, err := loadRenderTemplates()
+	templates, err := declarative.LoadEmbeddedTemplateCached(body.BodyLayout.TemplateKey)
 	if err != nil {
-		// Template load failure is a server-side defect, not a client error.
+		if errors.Is(err, declarative.ErrTemplateNotFound) {
+			// An unknown client-selected library can't be rendered — 422.
+			writeError(r.Context(), w, fmt.Errorf("%w: unknown template_key %q", domain.ErrUnprocessable, strings.TrimSpace(body.BodyLayout.TemplateKey)))
+			return
+		}
+		// A present library that failed to parse is a server-side defect, not a client error.
 		writeError(r.Context(), w, fmt.Errorf("load render templates: %w", err))
 		return
 	}
@@ -97,8 +83,9 @@ func toEmitterLayoutPtr(l *publicapi.NewsletterLayout) *declarative.Layout {
 // internal Layout, keeping the internal type out of the public contract.
 func toEmitterLayout(l publicapi.NewsletterLayout) declarative.Layout {
 	return declarative.Layout{
-		WrapperKey: l.WrapperKey,
-		Blocks:     toEmitterBlocks(l.Blocks),
+		WrapperKey:  l.WrapperKey,
+		TemplateKey: l.TemplateKey,
+		Blocks:      toEmitterBlocks(l.Blocks),
 	}
 }
 

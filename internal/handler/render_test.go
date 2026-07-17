@@ -112,6 +112,100 @@ func TestRenderPreviewUnprocessable(t *testing.T) {
 	}
 }
 
+// TestRenderPreview_TemplateKey_RendersFromSelectedLibrary asserts a block that
+// exists in the selected library renders 200 under that library.
+func TestRenderPreview_TemplateKey_RendersFromSelectedLibrary(t *testing.T) {
+	h := &Handler{}
+
+	reqBody := publicapi.RenderPreviewRequest{
+		BodyLayout: publicapi.NewsletterLayout{
+			TemplateKey: "default", // intro_paragraph exists in the "default" set
+			Blocks: []publicapi.LayoutBlock{
+				{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Hi from default</p>"}},
+			},
+		},
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/projects/p/newsletters/render-preview", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.RenderPreview(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200. body=%s", w.Code, w.Body.String())
+	}
+	var resp publicapi.RenderPreviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v. body=%s", err, w.Body.String())
+	}
+	if !strings.Contains(resp.BodyHTML, "Hi from default") {
+		t.Errorf("expected bound content in output:\n%s", resp.BodyHTML)
+	}
+}
+
+// TestRenderPreview_TemplateKey_SelectsLibrary proves the key routes the render
+// library: hidden_gems exists in the default render library but NOT in the
+// smaller "default" set, so tagging the layout template_key="default" makes it
+// unrenderable (422) — it is bound against the selected library, not the
+// fallback superset.
+func TestRenderPreview_TemplateKey_SelectsLibrary(t *testing.T) {
+	h := &Handler{}
+
+	reqBody := publicapi.RenderPreviewRequest{
+		BodyLayout: publicapi.NewsletterLayout{
+			TemplateKey: "default",
+			Blocks:      []publicapi.LayoutBlock{{BlockType: "hidden_gems", Content: map[string]any{}}},
+		},
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/projects/p/newsletters/render-preview", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.RenderPreview(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422. body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestRenderPreview_UnknownTemplateKey_Is422 asserts an unknown library key is a
+// client error (422) that names the key.
+func TestRenderPreview_UnknownTemplateKey_Is422(t *testing.T) {
+	h := &Handler{}
+
+	reqBody := publicapi.RenderPreviewRequest{
+		BodyLayout: publicapi.NewsletterLayout{
+			TemplateKey: "no-such-library",
+			Blocks:      []publicapi.LayoutBlock{{BlockType: "intro_paragraph", Content: map[string]any{"text": "hi"}}},
+		},
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/projects/p/newsletters/render-preview", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.RenderPreview(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422. body=%s", w.Code, w.Body.String())
+	}
+	var payload errorPayload
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal error payload: %v. body=%s", err, w.Body.String())
+	}
+	if !strings.Contains(payload.Message, "no-such-library") {
+		t.Errorf("expected message to name the unknown library, got: %q", payload.Message)
+	}
+}
+
 // TestRenderPreviewBadJSON asserts a malformed body is a 400 (decode error),
 // distinct from the 422 render-failure path.
 func TestRenderPreviewBadJSON(t *testing.T) {

@@ -206,8 +206,12 @@ type LayoutBlock struct {
 // NewsletterLayout is the structured newsletter body: a wrapper key plus the
 // ordered top-level blocks that render inside the wrapper's body slot.
 type NewsletterLayout struct {
-	WrapperKey string        `json:"wrapper_key"`
-	Blocks     []LayoutBlock `json:"blocks"`
+	WrapperKey string `json:"wrapper_key"`
+	// TemplateKey selects which block library the layout was composed from and is
+	// rendered with. Optional: empty means the default render library, so layouts
+	// saved before per-newsletter selection stay valid.
+	TemplateKey string        `json:"template_key,omitempty"`
+	Blocks      []LayoutBlock `json:"blocks"`
 }
 
 // RenderPreviewRequest is the body of POST

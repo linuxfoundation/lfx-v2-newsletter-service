@@ -25,6 +25,10 @@ type Layout struct {
 	// WrapperKey selects which wrapper template to use. When empty, the "default"
 	// wrapper key is used (see Templates.wrapper).
 	WrapperKey string `json:"wrapper_key"`
+	// TemplateKey selects which embedded template set (block library) renders
+	// this layout. When empty, the render paths fall back to RenderTemplateKey so
+	// layouts saved before per-newsletter selection keep rendering.
+	TemplateKey string `json:"template_key,omitempty"`
 	// Blocks are the ordered top-level blocks of the edition body.
 	Blocks []Block `json:"blocks"`
 }

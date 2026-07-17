@@ -80,6 +80,7 @@ On update, `body_layout` is tri-state: **absent** preserves a layout newsletter'
 | Field | Description |
 | --- | --- |
 | `wrapper_key` | Selects the wrapper template the top-level blocks render inside. |
+| `template_key` | Optional (`omitempty`). Selects the embedded block library the layout is rendered with. Empty means the default render library, so layouts saved before per-newsletter selection stay valid. Naming a library the binary does not embed is a `422`. |
 | `blocks` | Ordered top-level `LayoutBlock`s rendered in the wrapper's body slot. |
 
 `LayoutBlock` is a recursive content node:
@@ -162,14 +163,14 @@ The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sen
 | Draft already sent | 409 | `already_sent` |
 | Send fan-out still in flight | 409 | `send_in_progress` |
 | Invalid request | 400 | `invalid_request` |
-| A layout cannot be rendered — unknown `block_type`, malformed markup, MJML compile failure (on `render-preview`, or render-on-write during create/update) | 422 | `unprocessable_entity` |
+| A layout cannot be rendered — unknown `block_type`, an unknown/unembedded `template_key`, malformed markup, MJML compile failure (on `render-preview`, or render-on-write during create/update) | 422 | `unprocessable_entity` |
 | Upstream conflict (typed `pkgerrors.Conflict`) | 409 | `conflict` |
 | Upstream dependency unavailable | 503 | `service_unavailable` |
 | Unexpected server error | 500 | `internal_error` |
 
 Domain sentinels match first; typed `pkgerrors.*` wrappers from the NATS upstream clients (committee, project, email-dispatcher) match by `errors.As`. 5xx responses intentionally use a generic client message. Details are logged server-side.
 
-`422 unprocessable_entity` is a client/markup error — the request was well-formed but its layout could not be rendered. The same status applies whether the layout fails on `render-preview` or on render-on-write during create/update, so an editor that previews then saves the same bad layout sees a consistent code. It is distinct from a template-load failure, which is a deployment defect (the templates ship with the binary) and surfaces as `500 internal_error`.
+`422 unprocessable_entity` is a client/markup error — the request was well-formed but its layout could not be rendered. This includes a `template_key` that names a block library the binary does not embed. The same status applies whether the layout fails on `render-preview` or on render-on-write during create/update, so an editor that previews then saves the same bad layout sees a consistent code. It is distinct from a failure to load the *default* render library, which is a deployment defect (the templates ship with the binary) and surfaces as `500 internal_error`.
 
 ## Change Checklist
 

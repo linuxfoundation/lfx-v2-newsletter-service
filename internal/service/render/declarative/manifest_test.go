@@ -5,6 +5,7 @@ package declarative
 
 import (
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
@@ -30,11 +31,42 @@ func TestEmbeddedTemplateKeys(t *testing.T) {
 }
 
 func TestLoadEmbeddedTemplate_UnknownKey(t *testing.T) {
-	if _, err := LoadEmbeddedTemplate("nope"); err == nil {
+	_, err := LoadEmbeddedTemplate("nope")
+	if err == nil {
 		t.Fatalf("expected error for unknown template key")
+	}
+	// The not-found sentinel is what lets render callers map a truly-unknown key
+	// to 422 while a present-but-broken library stays a 500 deployment defect.
+	if !errors.Is(err, ErrTemplateNotFound) {
+		t.Errorf("expected ErrTemplateNotFound for a missing key, got %v", err)
 	}
 	if _, err := BuildEmbeddedManifest("nope"); err == nil {
 		t.Fatalf("expected error for unknown manifest key")
+	}
+}
+
+func TestLoadEmbeddedTemplateCached(t *testing.T) {
+	// A real key parses, and repeated calls return the cached set.
+	first, err := LoadEmbeddedTemplateCached(RenderTemplateKey)
+	if err != nil {
+		t.Fatalf("LoadEmbeddedTemplateCached(%s): %v", RenderTemplateKey, err)
+	}
+	if _, err := LoadEmbeddedTemplateCached(RenderTemplateKey); err != nil {
+		t.Fatalf("second cached load: %v", err)
+	}
+
+	// An empty (or whitespace) key falls back to the default render library.
+	fallback, err := LoadEmbeddedTemplateCached("   ")
+	if err != nil {
+		t.Fatalf("empty-key fallback: %v", err)
+	}
+	if len(fallback.Blocks) != len(first.Blocks) {
+		t.Errorf("empty key did not fall back to %s: %d vs %d blocks", RenderTemplateKey, len(fallback.Blocks), len(first.Blocks))
+	}
+
+	// An unknown key surfaces the not-found sentinel (→ 422 at the callers).
+	if _, err := LoadEmbeddedTemplateCached("no-such-library"); !errors.Is(err, ErrTemplateNotFound) {
+		t.Errorf("expected ErrTemplateNotFound for unknown key, got %v", err)
 	}
 }
 
