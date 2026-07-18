@@ -137,12 +137,24 @@ func buildManifestEntry(blockType, src string) (ManifestEntry, error) {
 	return entry, nil
 }
 
+// knownAcronyms maps a lowercase segment to its canonical capitalization so
+// HumanizeKey renders acronyms correctly (e.g. "AAIF") instead of title-casing
+// them ("Aaif"). Extend as new acronyms appear in keys.
+var knownAcronyms = map[string]string{
+	"aaif": "AAIF",
+}
+
 // HumanizeKey turns a snake_case or kebab-case identifier into a Title Case
 // label, e.g. "job_of_week" -> "Job Of Week", "aaif-user-community" ->
-// "Aaif User Community". Used for block labels and template-set labels.
+// "AAIF User Community". Known acronyms (see knownAcronyms) keep their casing.
+// Used for block labels and template-set labels.
 func HumanizeKey(t string) string {
 	words := strings.FieldsFunc(t, func(r rune) bool { return r == '_' || r == '-' })
 	for i, w := range words {
+		if ac, ok := knownAcronyms[strings.ToLower(w)]; ok {
+			words[i] = ac
+			continue
+		}
 		words[i] = strings.ToUpper(w[:1]) + w[1:]
 	}
 	return strings.Join(words, " ")

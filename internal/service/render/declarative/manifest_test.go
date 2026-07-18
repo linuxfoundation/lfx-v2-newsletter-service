@@ -186,7 +186,8 @@ func TestRenderSupersetInvariant(t *testing.T) {
 func TestHumanizeKey(t *testing.T) {
 	cases := map[string]string{
 		"job_of_week":         "Job Of Week",
-		"aaif-user-community": "Aaif User Community",
+		"aaif-user-community": "AAIF User Community",
+		"aaif":                "AAIF",
 		"default":             "Default",
 	}
 	for in, want := range cases {
