@@ -118,9 +118,11 @@ func writeSection(b *strings.Builder, n *node) {
 		return
 	}
 
-	// Column-less run: split it around any multi-column breakouts.
+	// Column-less run: split it around any multi-column breakouts. The section's
+	// own style is threaded down as the initial ancestor style so a breakout
+	// lifted out of this section keeps its card chrome (see splitBreakouts).
 	style := styleAttr(n, styleSection)
-	segments := splitBreakouts(n.Children)
+	segments := splitBreakouts(n.Children, styleOf(n))
 	for _, seg := range segments {
 		if seg.breakout != nil {
 			writeBreakoutSection(b, seg.breakout)
@@ -184,7 +186,14 @@ func isBreakout(n *node) bool {
 // inert node is recursed into: if it contains a breakout descendant, it is
 // dissolved at this level so the breakout can surface as a sibling section,
 // with its surrounding inline content preserved in order.
-func splitBreakouts(children []*node) []segment {
+//
+// ancestorStyle carries the container styling (card background / radius /
+// padding) of every wrapper dissolved on the way down. It is layered UNDER a
+// surfacing breakout's own style so the broken-out section keeps the chrome of
+// the card it was lifted out of instead of rendering bare — without it, e.g.
+// hot_take's poll Row loses the outer card background/radius and the wrapping
+// div's padding.
+func splitBreakouts(children []*node, ancestorStyle string) []segment {
 	var segs []segment
 	var run []*node
 	flush := func() {
@@ -199,13 +208,16 @@ func splitBreakouts(children []*node) []segment {
 			continue
 		case isBreakout(c):
 			flush()
+			carryBreakoutStyle(c, ancestorStyle)
 			segs = append(segs, segment{breakout: c})
 		case containsBreakout(c):
 			// A wrapper (inert div or single-column layout) that hides a
 			// breakout deeper down. Dissolve it here so the breakout can reach
-			// the section boundary, recursing to preserve order.
+			// the section boundary, recursing to preserve order. Fold this
+			// wrapper's own style into the ancestor chain so its background /
+			// padding survives onto the breakout it hides.
 			flush()
-			inner := splitBreakouts(c.Children)
+			inner := splitBreakouts(c.Children, mergeStyleDecls(ancestorStyle, styleOf(c)))
 			segs = append(segs, inner...)
 		default:
 			run = append(run, c)
@@ -213,6 +225,30 @@ func splitBreakouts(children []*node) []segment {
 	}
 	flush()
 	return segs
+}
+
+// styleOf returns a node's raw inline style, tolerating a nil node / Attrs.
+func styleOf(n *node) string {
+	if n == nil || n.Attrs == nil {
+		return ""
+	}
+	return n.Attrs["style"]
+}
+
+// carryBreakoutStyle layers the dissolved-ancestor container styling UNDER a
+// breakout node's own style (the node's own declarations still win per
+// property), so the breakout's compiled mj-section carries the card chrome of
+// the wrappers it was lifted out of. Non-container declarations are dropped
+// later by styleAttr's per-element allowlist.
+func carryBreakoutStyle(n *node, ancestorStyle string) {
+	if n == nil || strings.TrimSpace(ancestorStyle) == "" {
+		return
+	}
+	merged := mergeStyleDecls(ancestorStyle, styleOf(n))
+	if n.Attrs == nil {
+		n.Attrs = map[string]string{}
+	}
+	n.Attrs["style"] = merged
 }
 
 // containsBreakout reports whether n has a breakout descendant (a nested

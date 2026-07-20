@@ -229,12 +229,25 @@ func stripHTML(html string) string {
 	return strings.TrimSpace(out)
 }
 
+// nonRenderedRe matches <head>, <style>, and <script> elements (and their inner
+// text). The layout send path feeds StripHTMLForText a COMPLETE compiled MJML
+// document whose <head><style>…</style></head> carries CSS/media-query text;
+// without dropping these first, stripHTML's tag-only pass would leak that style
+// text into the text/plain part. Case-insensitive, dot-matches-newline so
+// multi-line <style> bodies are removed whole.
+var nonRenderedRe = regexp.MustCompile(`(?is)<(head|style|script)\b[^>]*>.*?</(head|style|script)>`)
+
 // StripHTMLForText derives a plain-text body from a full HTML email. It is the
 // exported counterpart to EmailText for the layout-based send path, where the
 // emitter already owns the whole email and there is no Chrome to wrap. Link
 // destinations are preserved (`label (href)`) before tags are stripped so the
 // plain-text fallback keeps its URLs, matching EmailText's body treatment.
+//
+// The layout body is a full HTML document, so its <head>/<style>/<script>
+// contents are removed first: stripHTML only removes tags, so their inner
+// CSS/JS text would otherwise survive into the text/plain part.
 func StripHTMLForText(html string) string {
+	html = nonRenderedRe.ReplaceAllString(html, "")
 	return stripHTML(preserveLinkDestinations(html))
 }
 

@@ -98,6 +98,11 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 
 	q := r.db.NewSelect().
 		Model((*model.Newsletter)(nil)).
+		// body_layout can approach the 1 MiB request cap; list rows discard it
+		// (see toAPIListItem), so never materialize it here — a 100-row page would
+		// otherwise fetch up to ~100 MiB of JSON only to throw it away. Get/single
+		// -row paths still SELECT it (they need the layout).
+		ExcludeColumn("body_layout").
 		Where("project_uid = ?", filters.ProjectUID).
 		Order("updated_at DESC").
 		Order("id DESC").

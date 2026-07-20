@@ -17,6 +17,7 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render/declarative"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
@@ -1404,6 +1405,72 @@ func TestTestSendLayoutNotDoubleWrapped(t *testing.T) {
 	for _, ph := range []string{UnsubscribeURLPlaceholder, ManageSubscriptionsURLPlaceholder, ViewOnlineURLPlaceholder} {
 		if strings.Contains(s.HTML, ph) {
 			t.Errorf("test-send: sentinel %q not substituted: %s", ph, s.HTML)
+		}
+	}
+}
+
+// TestTestSendLayoutSuppressesUnsubscribeFooter asserts that a layout test send
+// driven by a structured BodyLayout recompiles server-side with the unsubscribe
+// / compliance footer suppressed: no opt-out link (and so no dangling
+// <a href="">Unsubscribe</a>) and no unsubscribe sentinel survive, while the
+// rest of the footer still renders. This is the secure/clean test-send shape —
+// a non-recipient test mints no real opt-out token.
+func TestTestSendLayoutSuppressesUnsubscribeFooter(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		ToEmail:    "tester@example.com",
+		BodyLayout: &declarative.Layout{
+			Blocks: []declarative.Block{
+				{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Test body copy</p>"}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+
+	// The recompiled emitter body is present, no chrome re-wrap.
+	if !strings.Contains(s.HTML, "Test body copy") {
+		t.Errorf("test-send layout missing emitter content: %s", s.HTML)
+	}
+	for _, marker := range chromeEnvelopeMarkers {
+		if strings.Contains(s.HTML, marker) {
+			t.Errorf("test-send layout double-wrapped: chrome marker %q present: %s", marker, s.HTML)
+		}
+	}
+	// The unsubscribe row is suppressed entirely: no opt-out link text, no
+	// dangling empty href, no unsubscribe sentinel, and no real token.
+	if strings.Contains(s.HTML, ">Unsubscribe<") {
+		t.Errorf("test-send layout must not render an unsubscribe link: %s", s.HTML)
+	}
+	if strings.Contains(s.HTML, `href=""`) {
+		t.Errorf("test-send layout left a dangling empty href: %s", s.HTML)
+	}
+	if strings.Contains(s.HTML, UnsubscribeURLPlaceholder) {
+		t.Errorf("test-send layout left the unsubscribe sentinel: %s", s.HTML)
+	}
+	if strings.Contains(s.HTML, unsub.BuildURL("p1", "tester@example.com")) {
+		t.Errorf("test-send must not embed a real unsubscribe token: %s", s.HTML)
+	}
+	// The rest of the footer still renders (proves it was suppressed, not lost).
+	if !strings.Contains(s.HTML, "Delivered by") {
+		t.Errorf("test-send layout dropped the whole footer: %s", s.HTML)
+	}
+	// Send-scoped sentinels resolved.
+	for _, ph := range []string{SenderNamePlaceholder, ProjectNamePlaceholder} {
+		if strings.Contains(s.HTML, ph) {
+			t.Errorf("test-send layout left send-scoped sentinel %q: %s", ph, s.HTML)
 		}
 	}
 }

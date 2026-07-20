@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render/declarative"
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
@@ -48,7 +49,21 @@ func (h *Handler) RenderPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	html, err := declarative.Render(r.Context(), toEmitterLayout(body.BodyLayout), templates, body.WrapperContent)
+	// Inject the SAME wrapper binding context the send / render-on-write path
+	// uses (service.LayoutWrapperContent), so the preview renders the send-time
+	// footer — the unsubscribe / sender / project rows — and its byte size
+	// reflects the email that will actually be sent. Passing the client's
+	// wrapper_content verbatim would omit that footer and understate the size.
+	//
+	// render-preview is stateless (no persisted newsletter), so two inputs the
+	// real send derives from context are approximated here: the unsubscribe row
+	// tracks this deployment's unsubscribe config (h.unsub.Enabled(), the same
+	// signal renderLayout uses), and reply_email is taken from the client's
+	// wrapper_content when the editor supplies it — the draft's persisted
+	// ed_reply_email is the only residual gap between this preview and the send.
+	wrapperContent := service.LayoutWrapperContent(replyEmailFromWrapperContent(body.WrapperContent), h.unsub.Enabled())
+
+	html, err := declarative.Render(r.Context(), toEmitterLayout(body.BodyLayout), templates, wrapperContent)
 	if err != nil {
 		// The layout parsed but could not be rendered — 422. Wrap the emitter
 		// error so the message reaches the client while the status maps via the
@@ -66,6 +81,20 @@ func (h *Handler) RenderPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(r.Context(), w, http.StatusOK, publicapi.RenderPreviewResponse{BodyHTML: html})
+}
+
+// replyEmailFromWrapperContent best-effort extracts edition.reply_email from a
+// client-supplied wrapper_content map (shape: {"edition": {"reply_email": ...}}).
+// render-preview is stateless, so this is the only place the reply-to address
+// can come from; anything missing or mis-typed yields "" and the preview simply
+// omits the reply row (the wrapper's if= guard drops it).
+func replyEmailFromWrapperContent(wc map[string]any) string {
+	edition, ok := wc["edition"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	replyEmail, _ := edition["reply_email"].(string)
+	return replyEmail
 }
 
 // toEmitterLayoutPtr converts an optional public-API layout into an optional

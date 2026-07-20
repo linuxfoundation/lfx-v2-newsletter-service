@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
 
@@ -31,9 +32,15 @@ func TestRenderPreviewSuccess(t *testing.T) {
 				},
 			},
 		},
+		// The preview derives the wrapper footer from the send path
+		// (LayoutWrapperContent), NOT from client wrapper_content — so a
+		// client-supplied edition.date is ignored for parity with the sent
+		// email, which binds date empty. reply_email is the one field the
+		// stateless preview still honors from the client.
 		WrapperContent: map[string]any{
 			"edition": map[string]any{
-				"date": "January 1, 2026",
+				"date":        "January 1, 2026",
+				"reply_email": "ed@example.com",
 			},
 		},
 	}
@@ -64,9 +71,57 @@ func TestRenderPreviewSuccess(t *testing.T) {
 	if !strings.Contains(resp.BodyHTML, "this week's") {
 		t.Errorf("expected bound richtext in output:\n%s", resp.BodyHTML)
 	}
-	// Supplied wrapper content (edition.date) must render.
-	if !strings.Contains(resp.BodyHTML, "January 1, 2026") {
-		t.Errorf("expected edition.date in output:\n%s", resp.BodyHTML)
+	// Send-time footer is injected: the sender/project sentinels the send path
+	// substitutes per send are present in the preview (parity of structure).
+	for _, want := range []string{"%%SENDER_NAME%%", "%%PROJECT_NAME%%"} {
+		if !strings.Contains(resp.BodyHTML, want) {
+			t.Errorf("expected send-time footer sentinel %q in preview:\n%s", want, resp.BodyHTML)
+		}
+	}
+	// reply_email supplied via wrapper_content is honored (stateless preview's
+	// only client-sourced footer field).
+	if !strings.Contains(resp.BodyHTML, "ed@example.com") {
+		t.Errorf("expected client reply_email in preview footer:\n%s", resp.BodyHTML)
+	}
+	// Client-supplied edition.date is NOT rendered: the send path binds date
+	// empty, so the preview does too.
+	if strings.Contains(resp.BodyHTML, "January 1, 2026") {
+		t.Errorf("client edition.date must not leak into the send-parity preview:\n%s", resp.BodyHTML)
+	}
+}
+
+// TestRenderPreviewInjectsUnsubscribeFooter asserts that when the deployment has
+// an enabled unsubscribe service, render-preview injects the send-time
+// unsubscribe row (the %%UNSUBSCRIBE_URL%% sentinel) so the preview's footer —
+// and its byte size — matches the email that will be sent.
+func TestRenderPreviewInjectsUnsubscribeFooter(t *testing.T) {
+	h := &Handler{unsub: service.NewUnsubscribeService(nil, []byte("k"), "https://api.example")}
+
+	reqBody := publicapi.RenderPreviewRequest{
+		BodyLayout: publicapi.NewsletterLayout{
+			Blocks: []publicapi.LayoutBlock{
+				{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Hi</p>"}},
+			},
+		},
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/projects/p/newsletters/render-preview", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.RenderPreview(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200. body=%s", w.Code, w.Body.String())
+	}
+	var resp publicapi.RenderPreviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v. body=%s", err, w.Body.String())
+	}
+	if !strings.Contains(resp.BodyHTML, "%%UNSUBSCRIBE_URL%%") {
+		t.Errorf("expected the unsubscribe sentinel in the preview footer when unsub is enabled:\n%s", resp.BodyHTML)
 	}
 }
 

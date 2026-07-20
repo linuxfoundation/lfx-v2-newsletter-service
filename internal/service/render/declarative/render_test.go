@@ -257,6 +257,55 @@ func TestRenderMJML_PollColumnsSideBySide(t *testing.T) {
 	}
 }
 
+// TestRenderMJML_PollBreakoutKeepsCardChrome asserts that when hot_take's poll
+// Row breaks out into its own sibling mj-section, it still carries the card
+// chrome of the wrappers it was lifted out of: the outer `card` class'
+// background-color / border-radius and the poll wrapper div's padding. Without
+// the ancestor-style carry, the poll section renders bare (no white card
+// background, no radius, no padding) and visually detaches from the rest of the
+// block.
+func TestRenderMJML_PollBreakoutKeepsCardChrome(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+
+	layout := Layout{
+		Blocks: []Block{
+			{
+				BlockType: "hot_take",
+				Content: map[string]any{
+					"title":               "Is RAG dead?",
+					"body":                "<p>Probably not.</p>",
+					"poll_option_1_label": "Yes",
+					"poll_option_1_link":  "https://example.com/yes",
+					"poll_option_2_label": "No",
+					"poll_option_2_link":  "https://example.com/no",
+				},
+			},
+		},
+	}
+
+	doc, err := RenderMJML(layout, tmpl, nil)
+	if err != nil {
+		t.Fatalf("RenderMJML: %v", err)
+	}
+
+	sec := sectionContaining(doc, "https://example.com/yes")
+	if sec == "" {
+		t.Fatalf("could not isolate poll mj-section\n---\n%s", doc)
+	}
+	// card class → background-color:#ffffff;border-radius:8px carried onto the
+	// broken-out poll section; the poll wrapper div's padding:0 5px 15px wins
+	// over the card's own padding.
+	for _, want := range []string{
+		`background-color="#ffffff"`,
+		`border-radius="8px"`,
+		`padding="0 5px 15px"`,
+	} {
+		if !strings.Contains(sec, want) {
+			t.Errorf("poll breakout section missing carried card chrome %q:\n%s", want, sec)
+		}
+	}
+}
+
 // sectionContaining returns the <mj-section>…</mj-section> substring that holds
 // the given needle, or "" if none does. It is test-only and assumes the
 // translator never nests mj-section (which MJML forbids).

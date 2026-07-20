@@ -23,6 +23,7 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render/declarative"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
@@ -416,6 +417,12 @@ type TestSendInput struct {
 	// When true the test send dispatches BodyHTML directly instead of wrapping
 	// it in email_chrome — mirroring the real-send layout branch.
 	IsLayout bool
+	// BodyLayout, when set, is the structured layout to recompile server-side
+	// for the test send. It takes precedence over BodyHTML: the body is derived
+	// from it with the unsubscribe / compliance footer suppressed (no dangling
+	// opt-out link in a non-recipient test), mirroring how the real send path
+	// omits the compliance footer for a test. Nil keeps the legacy BodyHTML path.
+	BodyLayout *declarative.Layout
 }
 
 // TestSend dispatches a single test email — no persistence, no analytics, no
@@ -427,9 +434,6 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	if err := validateSubject(in.Subject); err != nil {
 		return err
 	}
-	if err := validateBodyHTML(in.BodyHTML); err != nil {
-		return err
-	}
 	if strings.TrimSpace(in.EDReplyEmail) != "" {
 		if err := validateEDReplyEmail(in.EDReplyEmail); err != nil {
 			return err
@@ -437,6 +441,31 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	}
 	if _, err := mail.ParseAddress(strings.TrimSpace(in.ToEmail)); err != nil {
 		return fmt.Errorf("%w: to_email is not a valid email: %v", domain.ErrInvalidRequest, err)
+	}
+
+	// A layout test send recompiles server-side from the structured layout with
+	// the compliance / unsubscribe footer SUPPRESSED (unsubEnabled=false drops
+	// the unsubscribe row via the wrapper's if= guard), matching the real send
+	// path's compliance:false for a non-recipient test. Without this, a
+	// pre-compiled layout body still carries the unsubscribe row, and
+	// substituting its per-recipient sentinel to empty (a test send mints no real
+	// token) leaves a dangling <a href="">Unsubscribe</a>. When no layout is
+	// supplied the legacy path stands: the caller's body_html is dispatched
+	// as-is (chrome-wrapped unless IsLayout).
+	bodyHTML := in.BodyHTML
+	isLayout := in.IsLayout
+	if in.BodyLayout != nil {
+		derived, _, rerr := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, false)
+		if rerr != nil {
+			return rerr
+		}
+		if err := validateDerivedBodyHTML(derived); err != nil {
+			return err
+		}
+		bodyHTML = derived
+		isLayout = true
+	} else if err := validateBodyHTML(in.BodyHTML); err != nil {
+		return err
 	}
 
 	projectName, _ := o.project.Name(ctx, in.ProjectUID)
@@ -453,11 +482,11 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	}
 
 	// Mirror the real-send branch: a layout-based test send carries the full
-	// emitter email in BodyHTML and must not be re-wrapped in email_chrome.
+	// emitter email in bodyHTML and must not be re-wrapped in email_chrome.
 	// The test-send path never sets the compliance footer (preview/test only).
-	htmlBody, textBody := o.renderBody(in.IsLayout, bodyRenderInput{
+	htmlBody, textBody := o.renderBody(isLayout, bodyRenderInput{
 		subject:     in.Subject,
-		bodyHTML:    in.BodyHTML,
+		bodyHTML:    bodyHTML,
 		displayName: projectName,
 		compliance:  false,
 	})

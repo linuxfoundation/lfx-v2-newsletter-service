@@ -108,6 +108,7 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 		ToEmail:      body.ToEmail,
 		EDReplyEmail: body.EDReplyEmail,
 		IsLayout:     body.IsLayout,
+		BodyLayout:   toEmitterLayoutPtr(body.BodyLayout),
 		Principal:    UserFromContext(r.Context()),
 	}); err != nil {
 		writeError(r.Context(), w, err)

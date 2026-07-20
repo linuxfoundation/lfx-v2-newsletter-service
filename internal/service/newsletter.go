@@ -502,11 +502,35 @@ func renderLayout(ctx context.Context, layout *declarative.Layout, replyEmail st
 		return "", nil, fmt.Errorf("load render templates: %w", err)
 	}
 
+	html, err := declarative.Render(ctx, *layout, templates, LayoutWrapperContent(replyEmail, unsubEnabled))
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: render body_layout: %v", domain.ErrUnprocessable, err)
+	}
+
+	raw, err = json.Marshal(layout)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: marshal body_layout: %v", domain.ErrUnprocessable, err)
+	}
+	return html, raw, nil
+}
+
+// LayoutWrapperContent builds the wrapper template's runtime binding context for
+// the layout render path. Send-time-known values bind to PLACEHOLDER sentinels
+// that the send path substitutes per recipient (unsubscribe URL, sender name,
+// project name); write-time-known values (the reply email) bind directly.
+// Fields left empty are dropped by the wrapper's `if=` guards at render time,
+// so a compiled body only carries the rows that will actually resolve.
+//
+// It is the single source of truth for that context so every layout-render
+// caller — render-on-write (renderLayout) and the stateless render-preview
+// handler — produces the SAME footer structure, and a preview's byte size
+// therefore matches the email that will be sent.
+func LayoutWrapperContent(replyEmail string, unsubEnabled bool) map[string]any {
 	unsubURL := ""
 	if unsubEnabled {
 		unsubURL = UnsubscribeURLPlaceholder
 	}
-	wrapperContent := map[string]any{
+	return map[string]any{
 		"edition": map[string]any{
 			"date":                     "",
 			"view_online_link":         "",
@@ -517,17 +541,6 @@ func renderLayout(ctx context.Context, layout *declarative.Layout, replyEmail st
 			"reply_email":              strings.TrimSpace(replyEmail),
 		},
 	}
-
-	html, err := declarative.Render(ctx, *layout, templates, wrapperContent)
-	if err != nil {
-		return "", nil, fmt.Errorf("%w: render body_layout: %v", domain.ErrUnprocessable, err)
-	}
-
-	raw, err = json.Marshal(layout)
-	if err != nil {
-		return "", nil, fmt.Errorf("%w: marshal body_layout: %v", domain.ErrUnprocessable, err)
-	}
-	return html, raw, nil
 }
 
 // IsValidationError reports whether err is a validation/domain ErrInvalidRequest.

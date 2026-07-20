@@ -155,8 +155,15 @@ type TestSendRequest struct {
 	// When true the service dispatches body_html directly instead of wrapping
 	// it in email_chrome — mirroring the layout branch of the real send path.
 	// Omitted/false keeps the legacy chrome-wrapped test send.
-	IsLayout     bool   `json:"is_layout,omitempty"`
-	EDReplyEmail string `json:"ed_reply_email,omitempty"`
+	IsLayout bool `json:"is_layout,omitempty"`
+	// BodyLayout, when present, is the structured layout the service recompiles
+	// server-side for the test send. It takes precedence over body_html and
+	// suppresses the unsubscribe / compliance footer (a non-recipient test mints
+	// no opt-out token, so the footer would otherwise render a dangling empty
+	// Unsubscribe link). Send the layout — not a pre-compiled body_html — for a
+	// layout test send so its footer matches the real send.
+	BodyLayout   *NewsletterLayout `json:"body_layout,omitempty"`
+	EDReplyEmail string            `json:"ed_reply_email,omitempty"`
 }
 
 // TestSendResponse is the body of POST /projects/{project_uid}/newsletters/test-send.
