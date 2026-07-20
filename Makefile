@@ -136,6 +136,7 @@ helm-install-cnpg:
 helm-install-local:
 	helm upgrade --force --install $(HELM_RELEASE_NAME) $(HELM_CHART_PATH) \
 		--namespace $(HELM_NAMESPACE) --create-namespace \
+		--kube-context $(KUBE_CONTEXT) \
 		--values $(HELM_VALUES_FILE)
 
 # redeploy-local is the inner dev loop against the full-local (OrbStack) stack:
