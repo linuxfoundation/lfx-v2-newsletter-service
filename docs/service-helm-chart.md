@@ -63,6 +63,7 @@ In CNPG modes and `external.shape=fields`, the deployment forwards `PGHOST`, `PG
 `httproute.yaml` routes (regex path matches, so only the newsletter sub-paths of `/projects/...` route here):
 
 - `^/projects/[^/]+/newsletters(/.*)?$`
+- `^/projects/[^/]+/newsletter-opt-outs(/.*)?$`
 - `^/projects/[^/]+/newsletter-opens/[^/]+$`
 - `/newsletters/unsubscribe` (exact)
 
@@ -70,11 +71,11 @@ When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 
 `ruleset.yaml`:
 
-- Authenticates normal API routes through OIDC and creates the service JWT.
-- Uses `allow_all` today rather than direct `openfga_check` rules.
-- Leaves the open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
+- Newsletter CRUD routes authenticate through OIDC and use OpenFGA `viewer` (read) or `writer` (write) roles.
+- The opt-out list endpoint (`/projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **fail-closed**: it requires the `auditor` OpenFGA role and does NOT fall back to `allow_all` when OpenFGA is disabled. OpenFGA must be enabled and configured to expose this endpoint.
+- The open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` are intentionally unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
 
-`openfga.enabled` is currently reserved for future use. Do not add FGA contract docs unless the service starts enforcing or emitting concrete FGA behavior.
+`openfga.enabled` is required for project-scoped API routes, particularly the opt-out list endpoint which is fail-closed for security.
 
 ## Local Development
 

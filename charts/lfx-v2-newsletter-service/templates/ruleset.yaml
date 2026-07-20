@@ -265,7 +265,8 @@ spec:
 
     # ---------------------------------------------------------------------
     # Newsletter opt-outs list (project-scoped). Returns PII (email addresses).
-    # Requires `auditor` role since viewer access is too broad on public projects.
+    # Requires `auditor` role. Does NOT fall back to allow_all — OpenFGA must be
+    # enabled and properly configured to expose this endpoint. Fail-closed for security.
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:opt_outs_list"
       allow_encoded_slashes: 'off'
@@ -280,15 +281,11 @@ spec:
         {{- if .Values.app.use_oidc_contextualizer }}
         - contextualizer: oidc_contextualizer
         {{- end }}
-        {{- if .Values.openfga.enabled }}
         - authorizer: openfga_check
           config:
             values:
               relation: auditor
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
-        {{- else }}
-        - authorizer: allow_all
-        {{- end }}
         - finalizer: create_jwt
           config:
             values:

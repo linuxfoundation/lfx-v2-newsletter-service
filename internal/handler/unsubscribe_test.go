@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 )
@@ -165,11 +166,76 @@ func TestListOptOutsWithData(t *testing.T) {
 	if !strings.Contains(body, "2024-01-01") || !strings.Contains(body, "2024-01-02") {
 		t.Errorf("body missing expected timestamps: %s", body)
 	}
+	// Verify the requested project_uid was passed to the repository
+	if repo.lastProjectUID != "proj-1" {
+		t.Errorf("repo.lastProjectUID = %q, want proj-1", repo.lastProjectUID)
+	}
 }
 
-// testOptOutRepo is a test stub that returns canned opt-out data.
+func TestListOptOutsRepositoryError(t *testing.T) {
+	repo := &testOptOutRepo{
+		returnErr: domain.ErrInvalidRequest,
+	}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub}
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/newsletter-opt-outs", nil)
+	req.SetPathValue("project_uid", "proj-1")
+	w := httptest.NewRecorder()
+	h.ListOptOuts(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for repository error, body=%s", w.Code, w.Body.String())
+	}
+	// Verify the requested project_uid was passed even when error occurs
+	if repo.lastProjectUID != "proj-1" {
+		t.Errorf("repo.lastProjectUID = %q, want proj-1", repo.lastProjectUID)
+	}
+}
+
+func TestListOptOutsProjectScope(t *testing.T) {
+	// Verify that each call passes its own project_uid to the repository,
+	// so a regression that queries the wrong project would be caught.
+	repo := &testOptOutRepo{
+		optOuts: []*model.NewsletterUnsubscribe{
+			{Email: "proj1user@example.com", CreatedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+		},
+	}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub}
+
+	// Request for proj-1
+	req1 := httptest.NewRequest(http.MethodGet, "/projects/proj-1/newsletter-opt-outs", nil)
+	req1.SetPathValue("project_uid", "proj-1")
+	w1 := httptest.NewRecorder()
+	h.ListOptOuts(w1, req1)
+
+	if w1.Code != http.StatusOK {
+		t.Fatalf("proj-1 request failed: status = %d, body=%s", w1.Code, w1.Body.String())
+	}
+	if repo.lastProjectUID != "proj-1" {
+		t.Errorf("proj-1: repo.lastProjectUID = %q, want proj-1", repo.lastProjectUID)
+	}
+
+	// Request for proj-2
+	req2 := httptest.NewRequest(http.MethodGet, "/projects/proj-2/newsletter-opt-outs", nil)
+	req2.SetPathValue("project_uid", "proj-2")
+	w2 := httptest.NewRecorder()
+	h.ListOptOuts(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("proj-2 request failed: status = %d, body=%s", w2.Code, w2.Body.String())
+	}
+	if repo.lastProjectUID != "proj-2" {
+		t.Errorf("proj-2: repo.lastProjectUID = %q, want proj-2", repo.lastProjectUID)
+	}
+}
+
+// testOptOutRepo is a test stub that tracks the projectUID requested and returns canned opt-out data.
 type testOptOutRepo struct {
-	optOuts []*model.NewsletterUnsubscribe
+	optOuts        []*model.NewsletterUnsubscribe
+	lastProjectUID string
+	returnErr      error
 }
 
 func (t *testOptOutRepo) CreateUnsubscribe(_ context.Context, projectUID, email string) error {
@@ -178,6 +244,10 @@ func (t *testOptOutRepo) CreateUnsubscribe(_ context.Context, projectUID, email 
 func (t *testOptOutRepo) ListUnsubscribedEmails(_ context.Context, _ string) (map[string]struct{}, error) {
 	return map[string]struct{}{}, nil
 }
-func (t *testOptOutRepo) ListUnsubscribes(_ context.Context, _ string) ([]*model.NewsletterUnsubscribe, error) {
+func (t *testOptOutRepo) ListUnsubscribes(ctx context.Context, projectUID string) ([]*model.NewsletterUnsubscribe, error) {
+	t.lastProjectUID = projectUID
+	if t.returnErr != nil {
+		return nil, t.returnErr
+	}
 	return t.optOuts, nil
 }
