@@ -11,6 +11,7 @@
 > - `newsletter-service-pr-readiness`: pre-PR shape check only: branch/JIRA/conventional commits/rebase/DCO + GPG/diff size/protected files. See `.claude/skills/newsletter-service-pr-readiness/SKILL.md`.
 > - `newsletter-service-preflight`: Go mechanical before-PR pipeline: working tree, license, formatting, lint/vet, build, tests, protected files, commit verification, and PR change summary. See `.claude/skills/newsletter-service-preflight/SKILL.md`.
 > - `newsletter-service-agentic-pr`: the PR driver's operating manual for driving an OPEN PR through the agentic review flow — read the lfx-reviewer check comment, fix or rebut blocking findings, answer every thread, push one round at a time, and loop until green. On PR open, the main session launches the PR driver (worktree-isolated background agent) with a minimal prompt pointing at this skill. See `.claude/skills/newsletter-service-agentic-pr/SKILL.md`.
+> - `newsletter-service-cut-release`: cuts a new GitHub release/tag from `main`, verifies the tagged build published the image and Helm chart, then opens a version-bump PR on `lfx-v2-argocd` pinning the target environments (never `dev`) to the new version. Opens the argocd PR only — never merges it. See `.claude/skills/newsletter-service-cut-release/SKILL.md`.
 >
 > If the plugin is missing, install with `/plugin marketplace add linuxfoundation/lfx-skills` then `/plugin install lfx-skills@lfx-skills`.
 
