@@ -37,8 +37,9 @@ name: Agentic Escalation
 # branch — a pull_request trigger would run the PR's modified copy of this file
 # with those privileges, letting a same-repo PR exfiltrate the credential.
 # pull_request_target is safe here because the job checks out only the trusted
-# base-branch copy of its own automation scripts (the default checkout ref for
-# this event is the base branch, never the PR head; persist-credentials: false;
+# default-branch copy of its own automation scripts (the default checkout ref
+# for this event is the repository's default branch, never the PR head;
+# persist-credentials: false;
 # sparse to .github/actions and .github/scripts) and never PR code; it only
 # reads the GitHub API and starts an agent task.
 "on":
@@ -73,10 +74,10 @@ jobs:
           egress-policy: audit
           disable-sudo: true
 
-      # Trusted checkout: the default ref for this event is the PR's BASE
-      # branch (github.sha — never the PR head), the same ref this workflow
-      # definition came from, so the scripts and the YAML calling them are
-      # always the same revision. Only the automation scripts are
+      # Trusted checkout: the default ref for this event is the repository's
+      # DEFAULT branch (github.sha — never the PR head, whatever base branch
+      # the PR targets), the same ref this workflow definition came from, so
+      # the scripts and the YAML calling them are always the same revision. Only the automation scripts are
       # materialized, and no credential is persisted to disk.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:

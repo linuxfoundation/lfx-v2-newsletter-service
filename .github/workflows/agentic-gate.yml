@@ -138,11 +138,18 @@ jobs:
           egress-policy: audit
           disable-sudo: true
 
-      # Trusted checkout: the default ref for every event this job handles is
-      # a base/default-branch commit (github.sha — never the PR head), the
-      # same ref this workflow definition came from, so the scripts and the
-      # YAML calling them are always the same revision. Only the automation
-      # scripts are materialized, and no credential is persisted to disk.
+      # Trusted checkout: for the status, label, comment, and schedule events
+      # this job handles, the default ref is a default-branch commit
+      # (github.sha — never the PR head). workflow_dispatch is the one
+      # caveat: github.sha and this workflow definition both follow the
+      # DISPATCHED ref, so a non-default ref would materialize that ref's
+      # scripts — the sweep pins its dispatches to the default branch
+      # (gate-sweep.sh passes --ref explicitly), and manual dispatchers are
+      # part of the trust boundary: dispatching takes write access, which
+      # already implies push access to these scripts. In every case the
+      # checkout ref and this workflow definition are the same revision.
+      # Only the automation scripts are materialized, and no credential is
+      # persisted to disk.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
@@ -229,11 +236,11 @@ jobs:
           egress-policy: audit
           disable-sudo: true
 
-      # Trusted checkout: the default ref for every event this job handles is
-      # a base/default-branch commit (github.sha — never the PR head), the
-      # same ref this workflow definition came from, so the scripts and the
-      # YAML calling them are always the same revision. Only the automation
-      # scripts are materialized, and no credential is persisted to disk.
+      # Trusted checkout: this job runs on schedule only, so github.sha is a
+      # default-branch commit (never the PR head), the same ref this workflow
+      # definition came from, so the scripts and the YAML calling them are
+      # always the same revision. Only the automation scripts are
+      # materialized, and no credential is persisted to disk.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
