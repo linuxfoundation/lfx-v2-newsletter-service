@@ -54,6 +54,7 @@ name: Agentic Conductor (reconcile)
 # id-token is what lets the job assume the AWS role via OIDC; everything the job
 # writes on GitHub goes through the fetched PAT, not the workflow token.
 permissions:
+  contents: read   # sparse checkout of the trusted automation scripts
   id-token: write
 
 concurrency:
@@ -85,8 +86,10 @@ jobs:
       # Trusted checkout: the default ref for this event is the repository's
       # DEFAULT branch (github.sha — never the PR head, whatever base branch
       # the PR targets), the same ref this workflow definition came from, so
-      # the scripts and the YAML calling them are always the same revision. Only the automation scripts are
-      # materialized, and no credential is persisted to disk.
+      # the scripts and the YAML calling them are always the same revision.
+      # The cone-mode sparse checkout materializes the automation directories
+      # plus top-level root files — all from that same trusted ref, never the
+      # PR — and no credential is persisted to disk.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
