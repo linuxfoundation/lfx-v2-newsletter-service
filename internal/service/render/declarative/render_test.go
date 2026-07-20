@@ -131,6 +131,39 @@ func TestRenderMJML_Directives(t *testing.T) {
 	}
 }
 
+// TestRenderMJML_LinkWrappingImageKeepsHref asserts that a block-level <Img>
+// inside a <Link> (logo_header's clickable logo) survives the link-dissolve
+// path with its destination intact: the link's href must be carried onto the
+// emitted mj-image so the rendered logo stays clickable.
+func TestRenderMJML_LinkWrappingImageKeepsHref(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+
+	layout := Layout{
+		Blocks: []Block{
+			{
+				BlockType: "logo_header",
+				Content: map[string]any{
+					"image_url": "https://cdn.example/logo.png",
+					"link":      "https://example.com/home",
+				},
+			},
+		},
+	}
+
+	doc, err := RenderMJML(layout, tmpl, nil)
+	if err != nil {
+		t.Fatalf("RenderMJML: %v", err)
+	}
+	// The link wrapper is dissolved to the image child, but the href must land
+	// on the mj-image so the logo remains a clickable link.
+	if !strings.Contains(doc, `href="https://example.com/home"`) {
+		t.Errorf("expected the link href carried onto the mj-image:\n%s", doc)
+	}
+	if !strings.Contains(doc, "<mj-image") {
+		t.Errorf("expected an mj-image for the logo:\n%s", doc)
+	}
+}
+
 func TestRender_CompilesToTableHTML(t *testing.T) {
 	tmpl := loadTestTemplates(t)
 

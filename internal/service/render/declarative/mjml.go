@@ -351,6 +351,7 @@ func writeChildren(b *strings.Builder, children []*node) {
 			// one-wrapper-per-section case is additionally hoisted onto the
 			// mj-column in writeSection.
 			flush()
+			carryLinkHrefToImageChildren(c)
 			pushContainerStyleToBlockChildren(c)
 			writeChildren(b, c.Children)
 		default:
@@ -359,6 +360,43 @@ func writeChildren(b *strings.Builder, children []*node) {
 		}
 	}
 	flush()
+}
+
+// carryLinkHrefToImageChildren propagates a dissolving link's href onto image
+// descendants that lack their own href. A block-level <Img> inside a <Link>
+// (e.g. logo_header's clickable logo) reaches the dissolve branch above, which
+// emits only the image child and discards the link wrapper; without this the
+// link destination would be lost. writeImage already renders href onto the
+// mj-image (MJML wraps the image in an <a>), so carrying the link's href here
+// preserves the clickable image. An image that already carries its own href
+// keeps it — that is the more specific author intent.
+func carryLinkHrefToImageChildren(container *node) {
+	if container.Tag != "link" {
+		return
+	}
+	href := container.Attrs["href"]
+	if strings.TrimSpace(href) == "" {
+		return
+	}
+	var walk func(n *node)
+	walk = func(n *node) {
+		for _, child := range n.Children {
+			if child == nil {
+				continue
+			}
+			if child.Tag == "img" {
+				if child.Attrs == nil {
+					child.Attrs = map[string]string{}
+				}
+				if strings.TrimSpace(child.Attrs["href"]) == "" {
+					child.Attrs["href"] = href
+				}
+				continue
+			}
+			walk(child)
+		}
+	}
+	walk(container)
 }
 
 // pushContainerStyleToBlockChildren merges a dissolving inert container's

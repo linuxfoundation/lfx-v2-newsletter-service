@@ -103,6 +103,8 @@ On update, `body_layout` is tri-state: **absent** preserves a layout newsletter'
 
 `TestSendRequest` (the `…/test-send` body) carries an optional `is_layout` boolean (`omitempty`). When `true`, `body_html` is treated as a full layout-based emitter email (wrapper + blocks, already rendered, with `%%…%%` runtime placeholders) and is dispatched directly instead of being wrapped in email chrome — mirroring the layout branch of the real send path. Omitted/false keeps the legacy chrome-wrapped test send.
 
+`TestSendRequest` also carries an optional `body_layout` (`NewsletterLayout`, `omitempty`). When present it **takes precedence over both `body_html` and `is_layout`**: the service recompiles the layout server-side (declarative emitter) and dispatches that HTML, with the unsubscribe / compliance footer **suppressed** — the wrapper renders with `unsubEnabled=false` so the `if=`-guarded unsubscribe row is dropped, avoiding a dangling unsubscribe link in a test that mints no real signed token. When `body_layout` is omitted the request falls back to the `body_html` / `is_layout` path described above.
+
 ## Optimistic Locking
 
 `POST /projects/{project_uid}/newsletters`, `GET …/newsletters/{newsletter_uid}`, and `PUT …/newsletters/{newsletter_uid}` return a strong ETag formatted as the current integer version.

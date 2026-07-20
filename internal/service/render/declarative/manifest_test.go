@@ -87,7 +87,7 @@ func TestBuildEmbeddedManifest_AAIF(t *testing.T) {
 		byType[b.BlockType] = b
 	}
 
-	// The full palette: 14 blocks + 4 bricks in one namespace.
+	// The full palette: 19 blocks + 4 bricks in one namespace.
 	if len(m.Blocks) != 23 {
 		t.Errorf("expected 23 palette entries, got %d", len(m.Blocks))
 	}

@@ -147,12 +147,13 @@ helm-install-local:
 .PHONY: redeploy-local
 redeploy-local:
 	@which ko >/dev/null 2>&1 || (echo "ko not found — install from https://ko.build" && exit 1)
-	@TAG=local-$$(date +%Y%m%d%H%M%S); \
+	@set -e; \
+	TAG=local-$$(date +%Y%m%d%H%M%S); \
 	echo "==> Building $(KO_LOCAL_REPO):$$TAG from $$(git rev-parse --short HEAD)..."; \
 	KO_DOCKER_REPO=$(KO_LOCAL_REPO) VERSION=$(VERSION) BUILD_TIME=$(BUILD_TIME) GIT_COMMIT=$(GIT_COMMIT) \
-		ko build --local --bare --tags=$$TAG ./cmd/newsletter-api; \
-	echo "==> Rolling $(HELM_RELEASE_NAME) to $$TAG..."; \
-	kubectl --namespace $(HELM_NAMESPACE) set image deploy/$(HELM_RELEASE_NAME) app=$(KO_LOCAL_REPO):$$TAG; \
+		ko build --local --bare --tags=$$TAG ./cmd/newsletter-api && \
+	echo "==> Rolling $(HELM_RELEASE_NAME) to $$TAG..." && \
+	kubectl --namespace $(HELM_NAMESPACE) set image deploy/$(HELM_RELEASE_NAME) app=$(KO_LOCAL_REPO):$$TAG && \
 	kubectl --namespace $(HELM_NAMESPACE) rollout status deploy/$(HELM_RELEASE_NAME) --timeout=180s
 
 # helm-uninstall removes the chart release. Run helm-uninstall-cnpg afterwards

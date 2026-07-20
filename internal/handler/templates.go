@@ -78,6 +78,14 @@ func (h *Handler) ListTemplates(w http.ResponseWriter, r *http.Request) {
 // It returns the editor manifest (palette of block types with schemas and
 // renderable templates, plus the page-chrome wrapper) for one template set.
 // An unknown key is a client error, not a defect.
+//
+// WIRE CONTRACT: the response body is declarative.Manifest serialized via its
+// json tags. That JSON shape — not the Go type — is the public contract: it is
+// pinned by docs/newsletter-service-contract.md and mirrored by
+// NewsletterTemplateManifest in @lfx-one/shared. The renderer type is reused
+// here deliberately (a parallel DTO would only add drift risk without changing
+// the bytes); any field/tag change to declarative.Manifest is a contract change
+// and must update the doc and the shared frontend type in lockstep.
 func (h *Handler) GetTemplateManifest(w http.ResponseWriter, r *http.Request) {
 	_, manifests, err := loadTemplateCatalog()
 	if err != nil {

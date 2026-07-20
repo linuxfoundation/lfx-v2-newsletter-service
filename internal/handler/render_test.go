@@ -32,11 +32,10 @@ func TestRenderPreviewSuccess(t *testing.T) {
 				},
 			},
 		},
-		// The preview derives the wrapper footer from the send path
-		// (LayoutWrapperContent), NOT from client wrapper_content — so a
-		// client-supplied edition.date is ignored for parity with the sent
-		// email, which binds date empty. reply_email is the one field the
-		// stateless preview still honors from the client.
+		// The preview MERGES the client's wrapper_content over the send-path
+		// footer defaults: the footer sentinels (sender/project/unsubscribe)
+		// come from the send path for size parity, while client-owned bindings
+		// like edition.date and reply_email are honored.
 		WrapperContent: map[string]any{
 			"edition": map[string]any{
 				"date":        "January 1, 2026",
@@ -83,10 +82,59 @@ func TestRenderPreviewSuccess(t *testing.T) {
 	if !strings.Contains(resp.BodyHTML, "ed@example.com") {
 		t.Errorf("expected client reply_email in preview footer:\n%s", resp.BodyHTML)
 	}
-	// Client-supplied edition.date is NOT rendered: the send path binds date
-	// empty, so the preview does too.
-	if strings.Contains(resp.BodyHTML, "January 1, 2026") {
-		t.Errorf("client edition.date must not leak into the send-parity preview:\n%s", resp.BodyHTML)
+	// Client-supplied edition.date IS rendered: the merge honors client-owned
+	// (non-footer) wrapper_content bindings.
+	if !strings.Contains(resp.BodyHTML, "January 1, 2026") {
+		t.Errorf("expected client edition.date in the merged preview:\n%s", resp.BodyHTML)
+	}
+}
+
+// TestRenderPreviewMergesWrapperContent asserts the merge honors client-owned
+// non-footer bindings (edition.view_online_link) while a client attempt to
+// override a footer sentinel (edition.sender_name) is ignored — the send-path
+// sentinel is preserved so the preview's footer size matches the sent email.
+func TestRenderPreviewMergesWrapperContent(t *testing.T) {
+	h := &Handler{}
+
+	reqBody := publicapi.RenderPreviewRequest{
+		BodyLayout: publicapi.NewsletterLayout{
+			Blocks: []publicapi.LayoutBlock{
+				{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Hi</p>"}},
+			},
+		},
+		WrapperContent: map[string]any{
+			"edition": map[string]any{
+				"view_online_link": "https://example.com/view",
+				"sender_name":      "ClientSpoofedSender",
+			},
+		},
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/projects/p/newsletters/render-preview", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.RenderPreview(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200. body=%s", w.Code, w.Body.String())
+	}
+	var resp publicapi.RenderPreviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v. body=%s", err, w.Body.String())
+	}
+	// Client-owned non-footer binding is honored.
+	if !strings.Contains(resp.BodyHTML, "https://example.com/view") {
+		t.Errorf("expected client edition.view_online_link in preview:\n%s", resp.BodyHTML)
+	}
+	// Footer sentinel is preserved; the client's spoofed value must not appear.
+	if !strings.Contains(resp.BodyHTML, "%%SENDER_NAME%%") {
+		t.Errorf("expected send-path sender sentinel to survive the merge:\n%s", resp.BodyHTML)
+	}
+	if strings.Contains(resp.BodyHTML, "ClientSpoofedSender") {
+		t.Errorf("client must not override the sender_name footer sentinel:\n%s", resp.BodyHTML)
 	}
 }
 

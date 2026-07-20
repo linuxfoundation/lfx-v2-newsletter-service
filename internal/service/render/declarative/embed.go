@@ -40,6 +40,18 @@ var embeddedTemplates embed.FS
 // (or saved before per-newsletter selection) renders regardless of which
 // manifest the editor loaded. A layout WITH a template_key renders from that
 // library instead (see loadRenderTemplates).
+//
+// KNOWN ISSUE (LFXV2-2760): this fallback is AAIF-specific. The
+// aaif-user-community wrapper hard-codes AAIF's subscription URL, so a non-AAIF
+// project whose layout omits template_key renders that AAIF-branded chrome. We
+// intentionally do NOT switch the fallback to the neutral "default" library:
+// aaif-user-community is the render SUPERSET (TestRenderSupersetInvariant pins
+// that every library's blocks exist here), and "default" is a strict subset, so
+// falling back to it would fail to render aaif-only blocks and break the
+// invariant. The correct fix is a neutral superset wrapper, tracked under
+// template finalization (LFXV2-2760); until then the omitted-key path stays on
+// this superset and callers should pass an explicit, project-appropriate
+// template_key.
 const RenderTemplateKey = "aaif-user-community"
 
 // EmbeddedTemplateKeys returns the sorted keys of every template set compiled

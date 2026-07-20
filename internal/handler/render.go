@@ -49,19 +49,21 @@ func (h *Handler) RenderPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Inject the SAME wrapper binding context the send / render-on-write path
-	// uses (service.LayoutWrapperContent), so the preview renders the send-time
-	// footer — the unsubscribe / sender / project rows — and its byte size
-	// reflects the email that will actually be sent. Passing the client's
-	// wrapper_content verbatim would omit that footer and understate the size.
+	// Build the wrapper binding context by MERGING the client's wrapper_content
+	// over the SAME send-path footer defaults (service.LayoutWrapperContent).
+	// The defaults supply the send-time footer sentinels — the unsubscribe /
+	// sender / project rows the send path substitutes per recipient — so the
+	// preview's footer structure and byte size match the email that will be
+	// sent. The client's wrapper_content then supplies the non-footer bindings
+	// the contract says it owns (edition.date, view_online_link, …) so a
+	// client-supplied edition.date IS honored in the preview.
 	//
-	// render-preview is stateless (no persisted newsletter), so two inputs the
-	// real send derives from context are approximated here: the unsubscribe row
-	// tracks this deployment's unsubscribe config (h.unsub.Enabled(), the same
-	// signal renderLayout uses), and reply_email is taken from the client's
-	// wrapper_content when the editor supplies it — the draft's persisted
-	// ed_reply_email is the only residual gap between this preview and the send.
-	wrapperContent := service.LayoutWrapperContent(replyEmailFromWrapperContent(body.WrapperContent), h.unsub.Enabled())
+	// render-preview is stateless (no persisted newsletter): reply_email is
+	// taken from the client's wrapper_content when supplied (else the send-path
+	// default), and the unsubscribe row tracks this deployment's unsubscribe
+	// config (h.unsub.Enabled(), the same signal renderLayout uses). The draft's
+	// persisted ed_reply_email is the only residual gap between preview and send.
+	wrapperContent := buildPreviewWrapperContent(body.WrapperContent, h.unsub.Enabled())
 
 	html, err := declarative.Render(r.Context(), toEmitterLayout(body.BodyLayout), templates, wrapperContent)
 	if err != nil {
@@ -81,6 +83,51 @@ func (h *Handler) RenderPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(r.Context(), w, http.StatusOK, publicapi.RenderPreviewResponse{BodyHTML: html})
+}
+
+// footerSentinelKeys are the edition.* fields the send path substitutes per
+// recipient (unsubscribe URL, sender name, project name). A client's
+// wrapper_content must NOT override these — the preview keeps the send-path
+// sentinels so its footer structure and byte size match the sent email.
+var footerSentinelKeys = map[string]struct{}{
+	"unsubscribe_url": {},
+	"sender_name":     {},
+	"project_name":    {},
+}
+
+// buildPreviewWrapperContent merges a client-supplied wrapper_content over the
+// send-path footer defaults for the stateless render-preview.
+//
+// It starts from service.LayoutWrapperContent (the send-path defaults: footer
+// sentinels plus reply_email taken from the client when supplied) and overlays
+// the client's edition.* bindings on top, so client-owned fields like
+// edition.date and edition.view_online_link are honored while the footer
+// sentinels (unsubscribe / sender / project) and the already-applied reply_email
+// are preserved. Only the edition sub-map is deep-merged; that is the only shape
+// the wrapper contract defines.
+func buildPreviewWrapperContent(clientWC map[string]any, unsubEnabled bool) map[string]any {
+	base := service.LayoutWrapperContent(replyEmailFromWrapperContent(clientWC), unsubEnabled)
+
+	clientEdition, ok := clientWC["edition"].(map[string]any)
+	if !ok {
+		return base
+	}
+	baseEdition, ok := base["edition"].(map[string]any)
+	if !ok {
+		return base
+	}
+	for k, v := range clientEdition {
+		if _, sentinel := footerSentinelKeys[k]; sentinel {
+			// Footer sentinel: keep the send-path value so preview size matches.
+			continue
+		}
+		if k == "reply_email" {
+			// Already applied via LayoutWrapperContent (trimmed); don't re-overlay.
+			continue
+		}
+		baseEdition[k] = v
+	}
+	return base
 }
 
 // replyEmailFromWrapperContent best-effort extracts edition.reply_email from a
