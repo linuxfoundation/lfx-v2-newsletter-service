@@ -264,8 +264,8 @@ spec:
               aud: {{ .Values.app.audience }}
 
     # ---------------------------------------------------------------------
-    # Newsletter opt-outs list (project-scoped).
-    # Reads require `viewer`.
+    # Newsletter opt-outs list (project-scoped). Returns PII (email addresses).
+    # Requires `auditor` role since viewer access is too broad on public projects.
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:opt_outs_list"
       allow_encoded_slashes: 'off'
@@ -284,7 +284,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: viewer
+              relation: auditor
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
