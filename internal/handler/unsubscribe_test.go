@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 )
 
@@ -23,6 +24,9 @@ func (s *stubUnsubRepo) CreateUnsubscribe(_ context.Context, projectUID, email s
 }
 func (s *stubUnsubRepo) ListUnsubscribedEmails(_ context.Context, _ string) (map[string]struct{}, error) {
 	return map[string]struct{}{}, nil
+}
+func (s *stubUnsubRepo) ListUnsubscribes(_ context.Context, _ string) ([]*model.NewsletterUnsubscribe, error) {
+	return nil, nil
 }
 
 type stubProjectClient struct{}

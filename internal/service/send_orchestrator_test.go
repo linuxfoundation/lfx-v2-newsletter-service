@@ -253,6 +253,18 @@ func (r *fakeNewsletterRepo) ListUnsubscribedEmails(_ context.Context, projectUI
 	return out, nil
 }
 
+func (r *fakeNewsletterRepo) ListUnsubscribes(_ context.Context, projectUID string) ([]*model.NewsletterUnsubscribe, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*model.NewsletterUnsubscribe
+	for _, u := range r.created {
+		if u.ProjectUID == projectUID {
+			out = append(out, &u)
+		}
+	}
+	return out, nil
+}
+
 // fakeUserMetadataReader stands in for the auth-service NATS client. The
 // orchestrator only calls it when a Principal is provided, so existing tests
 // that leave Principal empty exercise the dev-mode fallback path without ever

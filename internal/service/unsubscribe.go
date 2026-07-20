@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 )
 
@@ -124,6 +125,11 @@ func (s *UnsubscribeService) Unsubscribe(ctx context.Context, token string) (pro
 		"email", redactEmail(email),
 	)
 	return projectUID, email, nil
+}
+
+// ListOptOuts returns the list of unsubscribes for the given project.
+func (s *UnsubscribeService) ListOptOuts(ctx context.Context, projectUID string) ([]*model.NewsletterUnsubscribe, error) {
+	return s.repo.ListUnsubscribes(ctx, projectUID)
 }
 
 func (s *UnsubscribeService) sign(payload string) string {

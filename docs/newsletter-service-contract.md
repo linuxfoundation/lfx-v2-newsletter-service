@@ -38,6 +38,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics` | yes | Return analytics for one newsletter. |
 | `GET` | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}` | no | Tracking pixel. Records open by recipient hash and returns a GIF. |
 | `GET` | `/newsletters/unsubscribe` | no | One-click unsubscribe via HMAC-signed `t` token. Returns HTML. A direct-service HEAD is a no-op so link previews don't unsubscribe; the gateway ruleset allows only `GET`, so HEAD is blocked at the gateway. |
+| `GET` | `/projects/{project_uid}/newsletter-opt-outs` | yes | List all unsubscribes for the project — `email` and `unsubscribed_at`, ordered by `unsubscribed_at` descending. No pagination (opt-out volumes are small). |
 
 Auth routes expect a Heimdall-issued JWT. `REQUIRE_USER_AUTH=false` is only for local development; startup refuses auth-disabled mode outside local/dev `LFX_ENVIRONMENT` values.
 
@@ -110,6 +111,8 @@ The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sen
 - `failed_recipients`: the lowercased, deduplicated email addresses email-service marked failed (synchronous send errors plus async bounce/complaint events), drawn from the per-recipient status records. Always present (empty array when there are no known failures or the per-recipient status fetch fails). Best-effort: because the scalar `failed` count comes from the engagement rollup while the list comes from the per-recipient records, the two may briefly diverge while the group index propagates. No failure reason is exposed (the per-recipient records carry no error string).
 
 `GET /newsletters/unsubscribe?t=<token>` is intentionally unauthenticated; authorization comes from the HMAC-signed token binding `(project_uid, email)`. Invalid tokens return `400` HTML. Successful opt-outs are idempotent and project-scoped. The endpoint always renders HTML, and a HEAD request handled directly by the service is a no-op so mail-client link previews cannot unsubscribe recipients. Note that the gateway ruleset (`charts/lfx-v2-newsletter-service/templates/ruleset.yaml`) allows only `GET` on this path, so HEAD probes are blocked at the gateway and never reach the handler; the handler's HEAD no-op is a defensive fallback for direct-service traffic that bypasses the gateway.
+
+`GET /projects/{project_uid}/newsletter-opt-outs` lists everyone who has unsubscribed for the project — `{ "opt_outs": [{ "email": "...", "unsubscribed_at": "..." }] }`, ordered by `unsubscribed_at` descending. No name is returned; the unsubscribe token never captures one. No pagination in v1.
 
 ## Error Mapping
 
