@@ -129,6 +129,11 @@ func (s *UnsubscribeService) Unsubscribe(ctx context.Context, token string) (pro
 
 // ListOptOuts returns the list of unsubscribes for the given project.
 func (s *UnsubscribeService) ListOptOuts(ctx context.Context, projectUID string) ([]*model.NewsletterUnsubscribe, error) {
+	// Validate projectUID matches the established pattern — a whitespace-only
+	// project should return invalid-request, not an empty list.
+	if strings.TrimSpace(projectUID) == "" {
+		return nil, fmt.Errorf("%w: project_uid is required", domain.ErrInvalidRequest)
+	}
 	return s.repo.ListUnsubscribes(ctx, projectUID)
 }
 

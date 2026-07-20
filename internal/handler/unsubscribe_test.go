@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
@@ -95,4 +96,88 @@ func TestUnsubscribeHandlerInvalidToken(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "invalid") && !strings.Contains(w.Body.String(), "Invalid") {
 		t.Errorf("body should mention invalid link: %s", w.Body.String())
 	}
+}
+
+func TestListOptOutsSuccess(t *testing.T) {
+	repo := &stubUnsubRepo{}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub}
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/newsletter-opt-outs", nil)
+	// Simulate path parameter extraction via Go 1.22+ ServeMux
+	req.SetPathValue("project_uid", "proj-1")
+	w := httptest.NewRecorder()
+	h.ListOptOuts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("content-type = %q, want application/json", ct)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "opt_outs") {
+		t.Errorf("body missing opt_outs field: %s", body)
+	}
+}
+
+func TestListOptOutsInvalidProject(t *testing.T) {
+	repo := &stubUnsubRepo{}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub}
+
+	// Create a valid request, but override the path value with whitespace
+	req := httptest.NewRequest(http.MethodGet, "/projects/valid-uid/newsletter-opt-outs", nil)
+	req.SetPathValue("project_uid", "  ") // whitespace-only projectUID
+	w := httptest.NewRecorder()
+	h.ListOptOuts(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "invalid_request") {
+		t.Errorf("body should mention invalid_request: %s", w.Body.String())
+	}
+}
+
+func TestListOptOutsWithData(t *testing.T) {
+	repo := &testOptOutRepo{
+		optOuts: []*model.NewsletterUnsubscribe{
+			{Email: "alice@example.com", CreatedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+			{Email: "bob@example.com", CreatedAt: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)},
+		},
+	}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub}
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/newsletter-opt-outs", nil)
+	req.SetPathValue("project_uid", "proj-1")
+	w := httptest.NewRecorder()
+	h.ListOptOuts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "alice@example.com") || !strings.Contains(body, "bob@example.com") {
+		t.Errorf("body missing expected emails: %s", body)
+	}
+	if !strings.Contains(body, "2024-01-01") || !strings.Contains(body, "2024-01-02") {
+		t.Errorf("body missing expected timestamps: %s", body)
+	}
+}
+
+// testOptOutRepo is a test stub that returns canned opt-out data.
+type testOptOutRepo struct {
+	optOuts []*model.NewsletterUnsubscribe
+}
+
+func (t *testOptOutRepo) CreateUnsubscribe(_ context.Context, projectUID, email string) error {
+	return nil
+}
+func (t *testOptOutRepo) ListUnsubscribedEmails(_ context.Context, _ string) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
+func (t *testOptOutRepo) ListUnsubscribes(_ context.Context, _ string) ([]*model.NewsletterUnsubscribe, error) {
+	return t.optOuts, nil
 }
