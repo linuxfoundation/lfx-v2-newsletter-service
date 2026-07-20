@@ -228,9 +228,28 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// path must NOT re-wrap it in email_chrome — doing so would nest a complete
 	// document inside the chrome envelope and double the header/footer. Legacy
 	// (body_html-only) newsletters take the chrome path unchanged.
-	htmlBody, textBody := o.renderBody(layoutPresent(draft.BodyLayout), bodyRenderInput{
+	//
+	// COMPLIANCE: draft.BodyHTML was rendered at WRITE time against the
+	// unsubscribe config in effect then. If that config has since flipped (e.g.
+	// unsubscribe was enabled after the draft was saved), the persisted body
+	// carries a STALE compliance footer — a draft saved while unsubscribe was
+	// disabled would otherwise send with NO opt-out row after it's enabled, a
+	// CAN-SPAM gap. For a layout newsletter we therefore RE-RENDER body_html from
+	// the persisted BodyLayout using the SEND-TIME config (o.unsub.Enabled()), so
+	// the footer always reflects the current deployment setting instead of the
+	// write-time snapshot. Legacy newsletters have no layout to re-render and
+	// dispatch draft.BodyHTML unchanged.
+	isLayout := layoutPresent(draft.BodyLayout)
+	sendBodyHTML := draft.BodyHTML
+	if isLayout {
+		if rerendered, ok := o.reRenderLayoutBody(ctx, draft); ok {
+			sendBodyHTML = rerendered
+		}
+	}
+
+	htmlBody, textBody := o.renderBody(isLayout, bodyRenderInput{
 		subject:      draft.Subject,
-		bodyHTML:     draft.BodyHTML,
+		bodyHTML:     sendBodyHTML,
 		displayName:  projectName,
 		senderName:   senderName,
 		edReplyEmail: draft.EDReplyEmail,
@@ -301,6 +320,51 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		GroupID:         groupID,
 		TotalRecipients: len(recipients),
 	}, nil
+}
+
+// reRenderLayoutBody recompiles a layout newsletter's body_html from its
+// persisted BodyLayout using the SEND-TIME unsubscribe configuration
+// (o.unsub.Enabled()), so the compliance/unsubscribe footer reflects the
+// deployment's CURRENT setting rather than the write-time snapshot baked into
+// draft.BodyHTML. It returns the recompiled HTML and ok=true on success.
+//
+// FALLBACK (ok=false): on any failure — an unparseable stored layout, a block
+// type no longer present in the template set, or an MJML compile error — it
+// logs a warning and returns ok=false so the caller dispatches the persisted
+// draft.BodyHTML instead of hard-failing the send. Rationale: the persisted
+// body already passed validation at write time and IS deliverable, so refusing
+// to send a newsletter whose layout later became unrenderable (e.g. a template
+// library changed under it) would strand an otherwise valid send with no
+// self-service recovery. The stale-footer risk this guards against only
+// materializes in the rarer compound case — a re-render failure AND an
+// unsubscribe-config flip in the same window — and the warning log surfaces it
+// for operators. This mirrors the orchestrator's other non-fatal degradations
+// (resolveFromAddress logs and uses the default From rather than blocking the
+// send).
+func (o *SendOrchestrator) reRenderLayoutBody(ctx context.Context, draft *model.Newsletter) (string, bool) {
+	var layout declarative.Layout
+	if err := json.Unmarshal(draft.BodyLayout, &layout); err != nil {
+		slog.WarnContext(ctx, "newsletter send: stored body_layout unparseable; dispatching persisted body_html, whose compliance footer may reflect write-time config",
+			"newsletter_id", draft.ID,
+			"project_uid", draft.ProjectUID,
+			"error", err,
+		)
+		return "", false
+	}
+	// renderLayout binds the send-time-known reply email and the current
+	// unsubscribe setting into the wrapper footer, matching how the write path
+	// builds body_html. StripHTMLForText later derives the text/plain part from
+	// this same HTML, so the two stay consistent.
+	html, _, err := renderLayout(ctx, &layout, draft.EDReplyEmail, o.unsub.Enabled())
+	if err != nil {
+		slog.WarnContext(ctx, "newsletter send: body_layout re-render failed; dispatching persisted body_html, whose compliance footer may reflect write-time config",
+			"newsletter_id", draft.ID,
+			"project_uid", draft.ProjectUID,
+			"error", err,
+		)
+		return "", false
+	}
+	return html, true
 }
 
 // runSendJob is the detached background half of SendNewsletter: fan out to

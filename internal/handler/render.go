@@ -86,13 +86,16 @@ func (h *Handler) RenderPreview(w http.ResponseWriter, r *http.Request) {
 }
 
 // footerSentinelKeys are the edition.* fields the send path substitutes per
-// recipient (unsubscribe URL, sender name, project name). A client's
+// recipient (unsubscribe URL, sender/project name) or forces empty
+// (manage_subscriptions_url — there is no preferences surface yet). A client's
 // wrapper_content must NOT override these — the preview keeps the send-path
-// sentinels so its footer structure and byte size match the sent email.
+// values so its footer structure and byte size match the sent email (and it
+// can't preview a working "Manage subscription" link that won't exist on send).
 var footerSentinelKeys = map[string]struct{}{
-	"unsubscribe_url": {},
-	"sender_name":     {},
-	"project_name":    {},
+	"unsubscribe_url":          {},
+	"sender_name":              {},
+	"project_name":             {},
+	"manage_subscriptions_url": {},
 }
 
 // buildPreviewWrapperContent merges a client-supplied wrapper_content over the

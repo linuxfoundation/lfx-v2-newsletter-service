@@ -1201,28 +1201,25 @@ func TestDraftGuardsWhileSending(t *testing.T) {
 	}
 }
 
-// addLayoutDraft stores a layout-based draft: BodyLayout is non-empty (so the
-// orchestrator takes the layout send path) and BodyHTML is a hand-built stand-in
-// that embeds all three runtime placeholders so the test exercises placeholder
-// substitution (including %%VIEW_ONLINE_URL%% collapsing to empty). It is NOT a
-// byte-for-byte mirror of render-on-write output, which drops the View Online row
-// and persists snake_case layout JSON.
+// addLayoutDraft stores a layout-based draft: BodyLayout is a real, renderable
+// structured layout (so the orchestrator's send-time re-render recompiles it
+// against the send-time config, exactly as production does). BodyHTML is the
+// write-time snapshot the send path now RE-RENDERS over — it is retained only as
+// a stale fallback and is NOT what a successful send dispatches, so it is
+// deliberately marked with an unmistakable sentinel that must never reach a
+// recipient when re-render succeeds.
 func (r *fakeNewsletterRepo) addLayoutDraft(projectUID string, committeeUIDs []string) *model.Newsletter {
 	n := &model.Newsletter{
 		ID:         uuid.New(),
 		ProjectUID: projectUID,
 		Subject:    "Layout Hello",
-		// A minimal stand-in for the emitter's full email: a <body>-level
-		// document with the wrapper's runtime placeholders. It deliberately
-		// contains none of the email_chrome envelope markers.
-		BodyHTML: `<!DOCTYPE html><html><body>` +
-			`<div id="emitter-content">Emitter body</div>` +
-			`<a href="` + ViewOnlineURLPlaceholder + `">View Online</a>` +
-			`<a href="` + UnsubscribeURLPlaceholder + `">Unsubscribe</a>` +
-			`<a href="` + ManageSubscriptionsURLPlaceholder + `">Manage your email preferences</a>` +
-			`<p>From ` + SenderNamePlaceholder + ` for ` + ProjectNamePlaceholder + `</p>` +
-			`</body></html>`,
-		BodyLayout:    json.RawMessage(`{"wrapper_key":"default","blocks":[{"block_type":"intro_paragraph"}]}`),
+		// Stale write-time snapshot. A successful send-time re-render replaces
+		// this entirely; the marker proves the dispatched body came from the
+		// re-render, not from this persisted string.
+		BodyHTML: `<!DOCTYPE html><html><body>STALE_PERSISTED_BODY</body></html>`,
+		BodyLayout: json.RawMessage(
+			`{"blocks":[{"block_type":"intro_paragraph","content":{"text":"<p>Emitter body</p>"}}]}`,
+		),
 		EDReplyEmail:  "ed@example.com",
 		CommitteeUIDs: committeeUIDs,
 		Status:        model.StatusDraft,
@@ -1290,19 +1287,28 @@ func TestSendNewsletterLayoutNotDoubleWrapped(t *testing.T) {
 		if strings.Contains(s.HTML, `<a href="`+wantURL+`">Manage`) {
 			t.Errorf("send to %s: manage-preferences link aliases the unsubscribe URL", s.To)
 		}
-		// Send-scoped sentinels substituted with the resolved names.
-		if !strings.Contains(s.HTML, "From Test Sender for") && !strings.Contains(s.HTML, "From ") {
-			t.Errorf("send to %s: sender/project sentinels not substituted: %s", s.To, s.HTML)
+		// The dispatched body came from the send-time re-render, NOT the stale
+		// persisted body_html.
+		if strings.Contains(s.HTML, "STALE_PERSISTED_BODY") {
+			t.Errorf("send to %s: dispatched stale persisted body_html instead of re-rendering: %s", s.To, s.HTML)
+		}
+		// Send-scoped sentinels substituted with the resolved names: the wrapper
+		// footer reads "Sent by <sender> on behalf of <project>." with the
+		// sentinels resolved (sender falls back to "Executive Director" when no
+		// principal is supplied).
+		if !strings.Contains(s.HTML, "Sent by") || !strings.Contains(s.HTML, "Executive Director") {
+			t.Errorf("send to %s: sender sentinel not substituted in footer: %s", s.To, s.HTML)
 		}
 		for _, ph := range []string{SenderNamePlaceholder, ProjectNamePlaceholder} {
 			if strings.Contains(s.HTML, ph) {
 				t.Errorf("send to %s: send-scoped sentinel %q not substituted", s.To, ph)
 			}
 		}
-		// View Online resolved to empty (no hosted web version yet) — the href
-		// collapses to an empty string rather than leaving the sentinel.
-		if !strings.Contains(s.HTML, `<a href="">View Online</a>`) {
-			t.Errorf("send to %s: view-online placeholder not emptied: %s", s.To, s.HTML)
+		// The wrapper's if=-guarded rows with empty runtime values (view-online,
+		// manage-subscriptions) are dropped at render time, so no dangling empty
+		// href reaches the recipient.
+		if strings.Contains(s.HTML, `href=""`) {
+			t.Errorf("send to %s: left a dangling empty href (if= guard should drop empty rows): %s", s.To, s.HTML)
 		}
 		// Text body derived from the final HTML via the strip pass.
 		if !strings.Contains(s.Text, "Emitter body") {
@@ -1312,6 +1318,89 @@ func TestSendNewsletterLayoutNotDoubleWrapped(t *testing.T) {
 		if !strings.Contains(s.Text, wantURL) {
 			t.Errorf("send to %s: text body missing unsubscribe URL: %q", s.To, s.Text)
 		}
+	}
+}
+
+// TestSendNewsletterLayoutReRendersFooterAtSendTime proves the CAN-SPAM
+// compliance fix: a layout draft whose body_html was rendered at WRITE time with
+// unsubscribe DISABLED (no opt-out row) must, when sent while unsubscribe is
+// ENABLED, carry the unsubscribe row. The body is RE-RENDERED from the persisted
+// BodyLayout at send time using the send-time config, not dispatched from the
+// stale persisted body_html.
+func TestSendNewsletterLayoutReRendersFooterAtSendTime(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	// The orchestrator's unsubscribe service is ENABLED at send time.
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	if !unsub.Enabled() {
+		t.Fatalf("precondition: unsubscribe service should be enabled at send time")
+	}
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	layout := &declarative.Layout{
+		Blocks: []declarative.Block{
+			{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Compliance body</p>"}},
+		},
+	}
+	// Persist body_html as it would have been rendered at WRITE time with
+	// unsubscribe DISABLED: the wrapper's if= guard drops the opt-out row, so the
+	// stale persisted body carries NO unsubscribe sentinel and NO opt-out link.
+	staleBody, rawLayout, err := renderLayout(ctx, layout, "ed@example.com", false /* unsubEnabled */)
+	if err != nil {
+		t.Fatalf("write-time render: %v", err)
+	}
+	if strings.Contains(staleBody, UnsubscribeURLPlaceholder) || strings.Contains(staleBody, ">Unsubscribe<") {
+		t.Fatalf("precondition: write-time body with unsub disabled must not carry an opt-out row")
+	}
+
+	draft := &model.Newsletter{
+		ID:            uuid.New(),
+		ProjectUID:    "p1",
+		Subject:       "Compliance",
+		BodyHTML:      staleBody,
+		BodyLayout:    rawLayout,
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		Status:        model.StatusDraft,
+		Version:       1,
+	}
+	repo.drafts[draft.ID] = draft
+
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+
+	// The sent email carries the recipient's unsubscribe link even though the
+	// persisted (write-time) body had none — proving the send-time re-render
+	// injected the opt-out row using the SEND-TIME config.
+	wantURL := unsub.BuildURL("p1", "alice@example.com")
+	if !strings.Contains(s.HTML, wantURL) {
+		t.Errorf("sent HTML missing the send-time unsubscribe link (stale body_html dispatched instead of re-rendering): %s", s.HTML)
+	}
+	if !strings.Contains(s.HTML, ">Unsubscribe<") {
+		t.Errorf("sent HTML missing the unsubscribe row: %s", s.HTML)
+	}
+	// The recompiled emitter content is present and no chrome re-wrap happened.
+	if !strings.Contains(s.HTML, "Compliance body") {
+		t.Errorf("sent HTML missing recompiled emitter content: %s", s.HTML)
+	}
+	for _, marker := range chromeEnvelopeMarkers {
+		if strings.Contains(s.HTML, marker) {
+			t.Errorf("layout send double-wrapped in chrome (marker %q): %s", marker, s.HTML)
+		}
+	}
+	// Text/plain, derived from the SAME re-rendered HTML, carries the opt-out link.
+	if !strings.Contains(s.Text, wantURL) {
+		t.Errorf("sent text missing the send-time unsubscribe link: %q", s.Text)
 	}
 }
 
