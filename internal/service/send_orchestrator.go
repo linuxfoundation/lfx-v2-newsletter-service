@@ -244,6 +244,15 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	if isLayout {
 		if rerendered, ok := o.reRenderLayoutBody(ctx, draft); ok {
 			sendBodyHTML = rerendered
+		} else if o.unsub.Enabled() {
+			// Re-render failed AND unsubscribe is required: the persisted body_html
+			// may predate that requirement (rendered while unsubscribe was disabled,
+			// so with no opt-out row). Falling back to it would send without the
+			// opt-out link — the exact CAN-SPAM gap the re-render exists to prevent —
+			// so refuse instead. The send reverts to draft for retry once the stored
+			// layout is renderable again. (With unsubscribe disabled the persisted
+			// body is compliant, so the fallback below stands.)
+			return nil, fmt.Errorf("newsletter send: body_layout re-render failed while unsubscribe is enabled; refusing to dispatch a persisted body that may lack the opt-out row")
 		}
 	}
 
