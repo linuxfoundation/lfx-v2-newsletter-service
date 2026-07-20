@@ -69,13 +69,13 @@ In CNPG modes and `external.shape=fields`, the deployment forwards `PGHOST`, `PG
 
 When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 
-`ruleset.yaml`:
+`ruleset.yaml` authentication and authorization:
 
-- Newsletter CRUD routes authenticate through OIDC and use OpenFGA `viewer` (read) or `writer` (write) roles.
-- The opt-out list endpoint (`/projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **fail-closed**: it requires the `auditor` OpenFGA role and does NOT fall back to `allow_all` when OpenFGA is disabled. OpenFGA must be enabled and configured to expose this endpoint.
+- Most authenticated project routes (newsletter CRUD, analytics, etc.) authenticate via OIDC and fall back to `allow_all` when `openfga.enabled=false`. When OpenFGA is enabled, these routes enforce `viewer` (read) or `writer` (write) roles.
+- The opt-out list endpoint (`/projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor` role and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` or OpenFGA is misconfigured — that is intentional for PII security.
 - The open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` are intentionally unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
 
-`openfga.enabled` is required for project-scoped API routes, particularly the opt-out list endpoint which is fail-closed for security.
+`openfga.enabled=false` is the default. When false, most routes still work via `allow_all`, but the opt-out endpoint becomes unreachable. Enable OpenFGA to access the opt-out list endpoint.
 
 ## Local Development
 

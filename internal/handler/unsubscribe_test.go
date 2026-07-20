@@ -5,13 +5,13 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 )
@@ -173,8 +173,10 @@ func TestListOptOutsWithData(t *testing.T) {
 }
 
 func TestListOptOutsRepositoryError(t *testing.T) {
+	// Use a non-domain error to simulate a real database/persistence failure,
+	// not a validation error.
 	repo := &testOptOutRepo{
-		returnErr: domain.ErrInvalidRequest,
+		returnErr: errors.New("postgres connection failed"),
 	}
 	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
 	h := &Handler{unsub: unsub}
@@ -184,8 +186,16 @@ func TestListOptOutsRepositoryError(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ListOptOuts(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for repository error, body=%s", w.Code, w.Body.String())
+	// Persistence failures should return 500 without leaking details
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 for persistence error, body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "internal_error") {
+		t.Errorf("body missing internal_error code: %s", body)
+	}
+	if strings.Contains(body, "postgres") || strings.Contains(body, "connection failed") {
+		t.Errorf("body leaked error details: %s", body)
 	}
 	// Verify the requested project_uid was passed even when error occurs
 	if repo.lastProjectUID != "proj-1" {

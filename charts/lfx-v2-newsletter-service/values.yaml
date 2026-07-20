@@ -283,9 +283,10 @@ heimdall:
   # / heimdall). Leave false when another chart owns the middleware.
   add_middleware: false
 
-# openfga configures OpenFGA fine-grained authorization. The newsletter
-# RuleSet currently authorizes via service-layer checks rather than direct
-# OpenFGA lookups, so this is reserved for future use.
+# openfga configures OpenFGA fine-grained authorization. Most newsletter
+# RuleSet routes fall back to allow_all when disabled; the opt-outs PII route
+# uses direct openfga_check (fail-closed, no fallback) and requires this to be
+# enabled.
 openfga:
   enabled: false
 
