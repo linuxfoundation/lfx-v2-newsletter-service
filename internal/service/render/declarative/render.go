@@ -54,14 +54,17 @@ func RenderMJML(layout Layout, templates Templates, wrapperContent map[string]an
 		return "", fmt.Errorf("declarative: parse wrapper: %w", err)
 	}
 
-	// Bind every top-level block into one assembled body slice.
+	// Bind every top-level block into one assembled body slice. Each block's
+	// bound nodes are then wrapped in a per-block outer-spacing wrapper when its
+	// reserved `_spacing_padding` / `_spacing_margin` content keys request it
+	// (a no-op — byte-identical output — when both are absent/"0px").
 	var body []*node
 	for _, blk := range layout.Blocks {
 		bound, bindErr := bindBlock(blk, templates)
 		if bindErr != nil {
 			return "", bindErr
 		}
-		body = append(body, bound...)
+		body = append(body, applyBlockSpacing(blk, bound)...)
 	}
 
 	// Bind the wrapper itself (its own {{}}/if= against wrapperContent, e.g.

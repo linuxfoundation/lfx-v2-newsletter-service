@@ -61,6 +61,18 @@ func writeBlock(b *strings.Builder, n *node) {
 		return
 	}
 	switch n.Tag {
+	case spacingWrapperTag:
+		// Per-block outer spacing: emit one mj-wrapper carrying the combined
+		// padding (see spacing.go) and render the block's own layout nodes
+		// inside it. mj-wrapper is MJML's group-with-outer-spacing primitive and
+		// may hold sibling mj-sections.
+		b.WriteString("<mj-wrapper")
+		writeAttr(b, "padding", n.Attrs["padding"])
+		b.WriteString(">")
+		for _, c := range n.Children {
+			writeBlock(b, c)
+		}
+		b.WriteString("</mj-wrapper>")
 	case "section", "row":
 		writeSection(b, n)
 	case "column":

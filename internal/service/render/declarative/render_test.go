@@ -384,6 +384,151 @@ func TestBindAttrs_SingleEscape(t *testing.T) {
 	}
 }
 
+// TestRenderMJML_BlockSpacingPadding asserts that a top-level block carrying
+// `_spacing_padding` is wrapped in an mj-wrapper whose padding attribute carries
+// that value, so the outer spacing reaches the sent email.
+func TestRenderMJML_BlockSpacingPadding(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+
+	layout := Layout{
+		Blocks: []Block{
+			{
+				BlockType: "intro_paragraph",
+				Content: map[string]any{
+					"text":            "<p>Body.</p>",
+					spacingPaddingKey: "16px",
+				},
+			},
+		},
+	}
+
+	doc, err := RenderMJML(layout, tmpl, nil)
+	if err != nil {
+		t.Fatalf("RenderMJML: %v", err)
+	}
+	if !strings.Contains(doc, `<mj-wrapper padding="16px">`) {
+		t.Errorf("expected mj-wrapper with padding=16px\n---\n%s", doc)
+	}
+	// The wrapper must enclose the block's own section(s).
+	if idx := strings.Index(doc, `<mj-wrapper padding="16px">`); idx >= 0 {
+		if inner := doc[idx:]; !strings.Contains(inner[:strings.Index(inner, "</mj-wrapper>")], "<mj-section") {
+			t.Errorf("expected the block's mj-section inside the wrapper\n---\n%s", doc)
+		}
+	}
+	// The reserved key must not leak into the output.
+	if strings.Contains(doc, spacingPaddingKey) {
+		t.Errorf("reserved spacing key leaked into output\n---\n%s", doc)
+	}
+
+	// It must also survive the full mjml compile.
+	out, err := Render(context.Background(), layout, tmpl, nil)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if out == "" || !strings.Contains(out, "<table") {
+		t.Errorf("expected compiled table HTML for a spaced block")
+	}
+}
+
+// TestRenderMJML_BlockSpacingMargin asserts that a block carrying only
+// `_spacing_margin` still produces a visible outer-spacing wrapper (margin is
+// mapped onto the wrapper padding — see combineSpacing).
+func TestRenderMJML_BlockSpacingMargin(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+
+	layout := Layout{
+		Blocks: []Block{
+			{
+				BlockType: "intro_paragraph",
+				Content: map[string]any{
+					"text":           "<p>Body.</p>",
+					spacingMarginKey: "24px",
+				},
+			},
+		},
+	}
+
+	doc, err := RenderMJML(layout, tmpl, nil)
+	if err != nil {
+		t.Fatalf("RenderMJML: %v", err)
+	}
+	if !strings.Contains(doc, `<mj-wrapper padding="24px">`) {
+		t.Errorf("expected margin-only block to emit mj-wrapper padding=24px\n---\n%s", doc)
+	}
+}
+
+// TestRenderMJML_BlockSpacingPaddingAndMargin asserts that when both keys are
+// set, they are combined component-wise into a single wrapper padding (the
+// composer's div stacks margin+padding into one visible gap).
+func TestRenderMJML_BlockSpacingPaddingAndMargin(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+
+	layout := Layout{
+		Blocks: []Block{
+			{
+				BlockType: "intro_paragraph",
+				Content: map[string]any{
+					"text":            "<p>Body.</p>",
+					spacingPaddingKey: "8px 16px",
+					spacingMarginKey:  "4px",
+				},
+			},
+		},
+	}
+
+	doc, err := RenderMJML(layout, tmpl, nil)
+	if err != nil {
+		t.Fatalf("RenderMJML: %v", err)
+	}
+	// 8px/16px (t/b, r/l) + 4px all sides = 12px vertical, 20px horizontal.
+	if !strings.Contains(doc, `<mj-wrapper padding="12px 20px">`) {
+		t.Errorf("expected combined padding=12px 20px\n---\n%s", doc)
+	}
+}
+
+// TestRenderMJML_BlockSpacingZeroNoWrapper pins the "0px = no wrapper" contract:
+// a block with `_spacing_padding: "0px"` and no margin must render byte-identically
+// to the same block with no spacing keys at all — i.e. no mj-wrapper.
+func TestRenderMJML_BlockSpacingZeroNoWrapper(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+
+	spaced := Layout{
+		Blocks: []Block{
+			{
+				BlockType: "intro_paragraph",
+				Content: map[string]any{
+					"text":            "<p>Body.</p>",
+					spacingPaddingKey: "0px",
+					spacingMarginKey:  "0px",
+				},
+			},
+		},
+	}
+	bare := Layout{
+		Blocks: []Block{
+			{
+				BlockType: "intro_paragraph",
+				Content:   map[string]any{"text": "<p>Body.</p>"},
+			},
+		},
+	}
+
+	spacedDoc, err := RenderMJML(spaced, tmpl, nil)
+	if err != nil {
+		t.Fatalf("RenderMJML(spaced): %v", err)
+	}
+	bareDoc, err := RenderMJML(bare, tmpl, nil)
+	if err != nil {
+		t.Fatalf("RenderMJML(bare): %v", err)
+	}
+	if strings.Contains(spacedDoc, "<mj-wrapper") {
+		t.Errorf("0px spacing must not emit an mj-wrapper\n---\n%s", spacedDoc)
+	}
+	if spacedDoc != bareDoc {
+		t.Errorf("0px spacing must be byte-identical to no spacing\n--- spaced ---\n%s\n--- bare ---\n%s", spacedDoc, bareDoc)
+	}
+}
+
 // TestParse_SelfClosedCustomTagKeepsSiblings pins the parser fix for
 // self-closed custom tags: HTML5 parsing ignores the self-closing slash on
 // unknown elements, so <richtext … /> previously stayed open and swallowed
