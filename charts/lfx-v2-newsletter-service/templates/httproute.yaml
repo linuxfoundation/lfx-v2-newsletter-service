@@ -32,6 +32,9 @@ spec:
             value: "^/projects/[^/]+/newsletters(/.*)?$"
         - path:
             type: RegularExpression
+            value: "^/projects/[^/]+/newsletter-opt-outs(/.*)?$"
+        - path:
+            type: RegularExpression
             value: "^/projects/[^/]+/newsletter-opens/[^/]+$"
         # One-click unsubscribe link clicked from a recipient's email client.
         # Not project-scoped in the URL: the project_uid is carried inside the

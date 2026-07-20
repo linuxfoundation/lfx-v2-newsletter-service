@@ -167,3 +167,14 @@ type NewsletterAnalytics struct {
 	DailyOpens       []NewsletterDailyOpens `json:"daily_opens"`
 	LastEventAt      *time.Time             `json:"last_event_at,omitempty"`
 }
+
+// OptOut is a single entry in the newsletter opt-outs list.
+type OptOut struct {
+	Email          string    `json:"email"`
+	UnsubscribedAt time.Time `json:"unsubscribed_at"`
+}
+
+// OptOutListResponse is the body of GET /projects/{project_uid}/newsletter-opt-outs.
+type OptOutListResponse struct {
+	OptOuts []OptOut `json:"opt_outs"`
+}

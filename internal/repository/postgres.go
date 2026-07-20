@@ -424,6 +424,21 @@ func (r *PostgresNewsletterRepo) ListUnsubscribedEmails(ctx context.Context, pro
 	return out, nil
 }
 
+// ListUnsubscribes returns all unsubscribes for the given project, ordered by
+// created_at DESC. Returns the full NewsletterUnsubscribe model for API responses.
+func (r *PostgresNewsletterRepo) ListUnsubscribes(ctx context.Context, projectUID string) ([]*model.NewsletterUnsubscribe, error) {
+	var rows []*model.NewsletterUnsubscribe
+	err := r.db.NewSelect().
+		Model(&rows).
+		Where("project_uid = ?", projectUID).
+		Order("created_at DESC").
+		Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list unsubscribes: %w", err)
+	}
+	return rows, nil
+}
+
 // classifyMissing distinguishes ErrNotFound from ErrVersionMismatch after an
 // Update affected zero rows.
 func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UUID) error {

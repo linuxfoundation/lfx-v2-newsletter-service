@@ -86,6 +86,7 @@ type NewsletterRepository interface {
 type UnsubscribeRepository interface {
 	CreateUnsubscribe(ctx context.Context, projectUID, email string) error
 	ListUnsubscribedEmails(ctx context.Context, projectUID string) (map[string]struct{}, error)
+	ListUnsubscribes(ctx context.Context, projectUID string) ([]*model.NewsletterUnsubscribe, error)
 }
 
 // CommitteeClient resolves committee members for newsletter recipient calculation.

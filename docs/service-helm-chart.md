@@ -63,18 +63,19 @@ In CNPG modes and `external.shape=fields`, the deployment forwards `PGHOST`, `PG
 `httproute.yaml` routes (regex path matches, so only the newsletter sub-paths of `/projects/...` route here):
 
 - `^/projects/[^/]+/newsletters(/.*)?$`
+- `^/projects/[^/]+/newsletter-opt-outs(/.*)?$`
 - `^/projects/[^/]+/newsletter-opens/[^/]+$`
 - `/newsletters/unsubscribe` (exact)
 
 When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 
-`ruleset.yaml`:
+`ruleset.yaml` authentication and authorization:
 
-- Authenticates normal API routes through OIDC and creates the service JWT.
-- Uses `allow_all` today rather than direct `openfga_check` rules.
-- Leaves the open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
+- Most authenticated project routes (newsletter CRUD, analytics, etc.) authenticate via OIDC and fall back to `allow_all` when `openfga.enabled=false`. When OpenFGA is enabled, these routes enforce `viewer` (read) or `writer` (write) roles.
+- The opt-out list endpoint (`/projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor` role and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` or OpenFGA is misconfigured — that is intentional for PII security.
+- The open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` are intentionally unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
 
-`openfga.enabled` is currently reserved for future use. Do not add FGA contract docs unless the service starts enforcing or emitting concrete FGA behavior.
+`openfga.enabled=false` is the default. When false, most routes still work via `allow_all`, but the opt-out endpoint becomes unreachable. Enable OpenFGA to access the opt-out list endpoint.
 
 ## Local Development
 

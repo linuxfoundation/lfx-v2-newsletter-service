@@ -264,6 +264,33 @@ spec:
               aud: {{ .Values.app.audience }}
 
     # ---------------------------------------------------------------------
+    # Newsletter opt-outs list (project-scoped). Returns PII (email addresses).
+    # Requires `auditor` role. Does NOT fall back to allow_all — OpenFGA must be
+    # enabled and properly configured to expose this endpoint. Fail-closed for security.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:opt_outs_list"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /projects/:project_uid/newsletter-opt-outs
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: auditor
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
     # Per-newsletter analytics.
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:analytics"
