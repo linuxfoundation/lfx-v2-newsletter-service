@@ -7,6 +7,7 @@
     "preheader":                {"type": "text", "label": "Preheader"},
     "view_online_link":         {"type": "text", "label": "View Online URL"},
     "unsubscribe_url":          {"type": "text", "label": "Unsubscribe URL"},
+    "unsubscribe_fallback":     {"type": "text", "label": "Unsubscribe fallback text"},
     "manage_subscriptions_url": {"type": "text", "label": "Manage subscriptions URL"},
     "sender_name":              {"type": "text", "label": "Sender name"},
     "project_name":             {"type": "text", "label": "Project name"},
@@ -69,6 +70,7 @@
         </span>
         &middot;
       </span>
+      <span if="edition.unsubscribe_fallback">{{edition.unsubscribe_fallback}} &middot; </span>
       Delivered by LFX.
     </Text>
   </div>

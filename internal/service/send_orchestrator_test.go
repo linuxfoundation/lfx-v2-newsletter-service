@@ -1347,14 +1347,15 @@ func TestSendNewsletterLayoutReRendersFooterAtSendTime(t *testing.T) {
 		},
 	}
 	// Persist body_html as it would have been rendered at WRITE time with
-	// unsubscribe DISABLED: the wrapper's if= guard drops the opt-out row, so the
-	// stale persisted body carries NO unsubscribe sentinel and NO opt-out link.
-	staleBody, rawLayout, err := renderLayout(ctx, layout, "ed@example.com", false /* unsubEnabled */)
+	// unsubscribe DISABLED: no per-recipient opt-out LINK (the reply-based
+	// fallback stands in), so the stale persisted body carries no unsubscribe
+	// sentinel and no Unsubscribe link.
+	staleBody, rawLayout, err := renderLayout(ctx, layout, "ed@example.com", sendUnsubFooterMode(false) /* write-time, unsub disabled */)
 	if err != nil {
 		t.Fatalf("write-time render: %v", err)
 	}
 	if strings.Contains(staleBody, UnsubscribeURLPlaceholder) || strings.Contains(staleBody, ">Unsubscribe<") {
-		t.Fatalf("precondition: write-time body with unsub disabled must not carry an opt-out row")
+		t.Fatalf("precondition: write-time body with unsub disabled must not carry an opt-out link")
 	}
 
 	draft := &model.Newsletter{
@@ -1501,13 +1502,13 @@ func TestSendNewsletterFallsBackOnCorruptLayoutWhenUnsubscribeDisabled(t *testin
 	}
 }
 
-// TestTestSendRejectsIsLayoutWithoutBodyLayout proves a layout test send must
-// carry the structured body_layout. Accepting is_layout + a precompiled
-// body_html would dispatch it verbatim and, after substituting the per-recipient
-// unsubscribe sentinel to empty (a test send mints no real token), leave a
-// visible dangling <a href="">Unsubscribe</a>. The request is rejected with
-// ErrInvalidRequest and no email is dispatched.
-func TestTestSendRejectsIsLayoutWithoutBodyLayout(t *testing.T) {
+// TestTestSendIgnoresIsLayoutWithoutBodyLayout proves body_layout is the SOLE
+// layout trigger for a test send: a deprecated is_layout=true WITHOUT body_layout
+// is treated as simple editor HTML on the legacy chrome path — not dispatched as
+// a precompiled layout — so there is no verbatim body_html whose emptied opt-out
+// sentinel could leave a dangling <a href="">Unsubscribe</a>. is_layout has no
+// effect; the send succeeds and is chrome-wrapped.
+func TestTestSendIgnoresIsLayoutWithoutBodyLayout(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
 	committee := &fakeCommitteeClient{}
@@ -1515,22 +1516,29 @@ func TestTestSendRejectsIsLayoutWithoutBodyLayout(t *testing.T) {
 	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
 	orch := newTestOrchestrator(repo, committee, email, unsub)
 
-	err := orch.TestSend(ctx, TestSendInput{
+	if err := orch.TestSend(ctx, TestSendInput{
 		ProjectUID: "p1",
 		Subject:    "Hello",
 		ToEmail:    "tester@example.com",
-		IsLayout:   true,
-		BodyHTML:   `<a href="%%UNSUBSCRIBE_URL%%">Unsubscribe</a>`,
-		// BodyLayout deliberately nil — the unsupported precompiled mode.
-	})
-	if err == nil {
-		t.Fatalf("expected TestSend to reject is_layout without body_layout")
+		IsLayout:   true, // deprecated, ignored
+		BodyHTML:   "<p>Simple editor body</p>",
+	}); err != nil {
+		t.Fatalf("TestSend should treat is_layout+body_html as simple HTML, got: %v", err)
 	}
-	if !errors.Is(err, domain.ErrInvalidRequest) {
-		t.Errorf("expected ErrInvalidRequest, got %v", err)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
 	}
-	if len(email.sends) != 0 {
-		t.Fatalf("rejected test send dispatched %d emails, want 0", len(email.sends))
+	s := email.sends[0]
+	// Chrome-wrapped (legacy path), not dispatched as a full layout email.
+	if !strings.Contains(s.HTML, "&middot; Newsletter") {
+		t.Errorf("expected chrome header (legacy path), got: %s", s.HTML)
+	}
+	if !strings.Contains(s.HTML, "Simple editor body") {
+		t.Errorf("missing authored body: %s", s.HTML)
+	}
+	// No dangling empty opt-out anchor.
+	if strings.Contains(s.HTML, `href=""`) {
+		t.Errorf("left a dangling empty href: %s", s.HTML)
 	}
 }
 
@@ -1576,12 +1584,60 @@ func TestSendNewsletterLegacyStillUsesChrome(t *testing.T) {
 	}
 }
 
+// TestSendNewsletterLayoutReplyFallbackWhenUnsubscribeDisabled proves a real
+// layout send with the unsubscribe service DISABLED still carries an opt-out
+// mechanism: the reply-based fallback copy (parity with the legacy chrome
+// footer), not a blank footer. No unsubscribe LINK is rendered (none can be
+// minted), no unsubscribe sentinel survives, and no dangling empty href is left.
+func TestSendNewsletterLayoutReplyFallbackWhenUnsubscribeDisabled(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, nil, "") // DISABLED
+	if unsub.Enabled() {
+		t.Fatalf("precondition: unsubscribe service should be disabled")
+	}
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addLayoutDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	// The reply-based fallback copy is present (opt-out mechanism preserved)...
+	if !strings.Contains(s.HTML, "reply with UNSUBSCRIBE") {
+		t.Errorf("disabled-unsub layout send missing the reply-based opt-out fallback: %s", s.HTML)
+	}
+	// ...with no unsubscribe LINK, no leftover sentinel, and no dangling href.
+	if strings.Contains(s.HTML, ">Unsubscribe<") {
+		t.Errorf("disabled-unsub send rendered an unsubscribe link: %s", s.HTML)
+	}
+	if strings.Contains(s.HTML, `href=""`) {
+		t.Errorf("disabled-unsub send left a dangling empty href: %s", s.HTML)
+	}
+	if strings.Contains(s.HTML, UnsubscribeURLPlaceholder) {
+		t.Errorf("disabled-unsub send left an unsubscribe sentinel: %s", s.HTML)
+	}
+	// text/plain, derived from the same HTML, carries the fallback too.
+	if !strings.Contains(s.Text, "reply with UNSUBSCRIBE") {
+		t.Errorf("disabled-unsub send text missing the reply-based opt-out fallback: %q", s.Text)
+	}
+}
+
 // The precompiled is_layout + body_html test-send mode (no structured
-// body_layout) is no longer supported — it is rejected by TestSend, covered by
-// TestTestSendRejectsIsLayoutWithoutBodyLayout, because binding its per-recipient
-// unsubscribe sentinel to empty left a visible dangling <a href="">Unsubscribe</a>.
-// The not-double-wrapped guarantee for the supported (body_layout) path is
-// covered by TestTestSendLayoutSuppressesUnsubscribeFooter below.
+// body_layout) is no longer dispatched verbatim — is_layout is deprecated and
+// ignored, so such a request is treated as simple editor HTML on the legacy
+// chrome path (covered by TestTestSendIgnoresIsLayoutWithoutBodyLayout), which
+// never leaves the dangling <a href="">Unsubscribe</a> the old verbatim path
+// could. The not-double-wrapped guarantee for the supported (body_layout) path
+// is covered by TestTestSendLayoutSuppressesUnsubscribeFooter below.
 
 // TestTestSendLayoutSuppressesUnsubscribeFooter asserts that a layout test send
 // driven by a structured BodyLayout recompiles server-side with the unsubscribe

@@ -111,7 +111,7 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	bodyHTML := in.BodyHTML
 	var bodyLayout json.RawMessage
 	if in.BodyLayout != nil {
-		html, raw, err := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, s.unsubEnabled)
+		html, raw, err := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled))
 		if err != nil {
 			return nil, err
 		}
@@ -298,7 +298,7 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	case in.BodyLayoutSet && in.BodyLayout != nil:
 		// New / updated layout: the emitter owns the whole email; body_html is
 		// DERIVED and the request's body_html is ignored.
-		html, raw, renderErr := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, s.unsubEnabled)
+		html, raw, renderErr := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled))
 		if renderErr != nil {
 			return nil, renderErr
 		}
@@ -333,7 +333,7 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 		if err := json.Unmarshal(existing.BodyLayout, &stored); err != nil {
 			return nil, fmt.Errorf("unmarshal stored body_layout: %w", err)
 		}
-		html, raw, renderErr := renderLayout(ctx, &stored, in.EDReplyEmail, s.unsubEnabled)
+		html, raw, renderErr := renderLayout(ctx, &stored, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled))
 		if renderErr != nil {
 			return nil, renderErr
 		}
@@ -488,8 +488,8 @@ func normalizeCommitteeUIDs(in []string) []string {
 //
 // A render failure is surfaced as ErrUnprocessable (422), matching render-preview
 // for the same unrenderable layout — the request itself is well-formed.
-func renderLayout(ctx context.Context, layout *declarative.Layout, replyEmail string, unsubEnabled bool) (bodyHTML string, raw json.RawMessage, err error) {
-	html, err := renderLayoutBody(ctx, layout, LayoutWrapperContent(replyEmail, unsubEnabled))
+func renderLayout(ctx context.Context, layout *declarative.Layout, replyEmail string, mode unsubFooterMode) (bodyHTML string, raw json.RawMessage, err error) {
+	html, err := renderLayoutBody(ctx, layout, LayoutWrapperContent(replyEmail, mode))
 	if err != nil {
 		return "", nil, err
 	}
@@ -536,7 +536,7 @@ func renderLayoutBody(ctx context.Context, layout *declarative.Layout, wrapperCo
 // over the send-path footer defaults (previewWrapperContent) so the preview's
 // footer structure and byte size match the email that will be sent.
 func (s *NewsletterService) RenderPreview(ctx context.Context, layout *declarative.Layout, clientWrapperContent map[string]any, unsubEnabled bool) (string, error) {
-	html, err := renderLayoutBody(ctx, layout, previewWrapperContent(clientWrapperContent, unsubEnabled))
+	html, err := renderLayoutBody(ctx, layout, previewWrapperContent(clientWrapperContent, sendUnsubFooterMode(unsubEnabled)))
 	if err != nil {
 		return "", err
 	}
@@ -554,6 +554,7 @@ func (s *NewsletterService) RenderPreview(ctx context.Context, layout *declarati
 // can't preview a working "Manage subscription" link that won't exist on send).
 var previewFooterSentinelKeys = map[string]struct{}{
 	"unsubscribe_url":          {},
+	"unsubscribe_fallback":     {},
 	"sender_name":              {},
 	"project_name":             {},
 	"manage_subscriptions_url": {},
@@ -569,8 +570,8 @@ var previewFooterSentinelKeys = map[string]struct{}{
 // (unsubscribe / sender / project) and the already-applied reply_email are
 // preserved. Only the edition sub-map is deep-merged; that is the only shape the
 // wrapper contract defines.
-func previewWrapperContent(clientWC map[string]any, unsubEnabled bool) map[string]any {
-	base := LayoutWrapperContent(replyEmailFromWrapperContent(clientWC), unsubEnabled)
+func previewWrapperContent(clientWC map[string]any, mode unsubFooterMode) map[string]any {
+	base := LayoutWrapperContent(replyEmailFromWrapperContent(clientWC), mode)
 
 	clientEdition, ok := clientWC["edition"].(map[string]any)
 	if !ok {
@@ -608,27 +609,72 @@ func replyEmailFromWrapperContent(wc map[string]any) string {
 	return replyEmail
 }
 
+// unsubFooterMode selects how a layout wrapper's opt-out row renders.
+type unsubFooterMode int
+
+const (
+	// unsubFooterLink: a working per-recipient unsubscribe link is available
+	// (the unsubscribe service is enabled). The wrapper renders the link.
+	unsubFooterLink unsubFooterMode = iota
+	// unsubFooterReplyFallback: no unsubscribe link can be minted (the service
+	// is disabled/misconfigured), but this is a REAL send, so the email must
+	// still carry an opt-out mechanism. The wrapper renders reply-based copy,
+	// matching the legacy chrome path's fallback (see email_chrome.go).
+	unsubFooterReplyFallback
+	// unsubFooterSuppressed: omit the opt-out row entirely. Used only by test
+	// sends, which mint no real token and are not commercial mailings.
+	unsubFooterSuppressed
+)
+
+// unsubscribeReplyFallbackText is the reply-based opt-out copy used when no
+// unsubscribe link can be minted for a real send. It mirrors the legacy chrome
+// footer's fallback and mints no token, so it is compliant without the
+// unsubscribe service configured.
+const unsubscribeReplyFallbackText = "To unsubscribe, reply with UNSUBSCRIBE."
+
+// sendUnsubFooterMode maps the deployment's unsubscribe-enabled flag to the
+// footer mode for a REAL send or preview: a link when enabled, the reply-based
+// fallback when not. A real send is never suppressed — it always needs an
+// opt-out mechanism (only test sends suppress).
+func sendUnsubFooterMode(unsubEnabled bool) unsubFooterMode {
+	if unsubEnabled {
+		return unsubFooterLink
+	}
+	return unsubFooterReplyFallback
+}
+
 // LayoutWrapperContent builds the wrapper template's runtime binding context for
 // the layout render path. Send-time-known values bind to PLACEHOLDER sentinels
 // that the send path substitutes per recipient (unsubscribe URL, sender name,
 // project name); write-time-known values (the reply email) bind directly.
 // Fields left empty are dropped by the wrapper's `if=` guards at render time,
-// so a compiled body only carries the rows that will actually resolve.
+// so a compiled body only carries the rows that will actually resolve. The
+// opt-out row is driven by mode: a real unsubscribe link (sentinel), the
+// reply-based fallback copy, or nothing (test sends) — the wrapper renders
+// exactly one via mutually-exclusive `if=` guards on unsubscribe_url and
+// unsubscribe_fallback.
 //
 // It is the single source of truth for that context so every layout-render
 // caller — render-on-write (renderLayout) and the stateless render-preview
 // handler — produces the SAME footer structure, and a preview's byte size
 // therefore matches the email that will be sent.
-func LayoutWrapperContent(replyEmail string, unsubEnabled bool) map[string]any {
+func LayoutWrapperContent(replyEmail string, mode unsubFooterMode) map[string]any {
 	unsubURL := ""
-	if unsubEnabled {
+	unsubFallback := ""
+	switch mode {
+	case unsubFooterLink:
 		unsubURL = UnsubscribeURLPlaceholder
+	case unsubFooterReplyFallback:
+		unsubFallback = unsubscribeReplyFallbackText
+	case unsubFooterSuppressed:
+		// Both empty: the opt-out row is dropped entirely.
 	}
 	return map[string]any{
 		"edition": map[string]any{
 			"date":                     "",
 			"view_online_link":         "",
 			"unsubscribe_url":          unsubURL,
+			"unsubscribe_fallback":     unsubFallback,
 			"manage_subscriptions_url": "",
 			"sender_name":              SenderNamePlaceholder,
 			"project_name":             ProjectNamePlaceholder,

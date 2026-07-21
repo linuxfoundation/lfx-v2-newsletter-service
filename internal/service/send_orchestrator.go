@@ -371,9 +371,23 @@ func (o *SendOrchestrator) reRenderLayoutBody(ctx context.Context, draft *model.
 	// unsubscribe setting into the wrapper footer, matching how the write path
 	// builds body_html. StripHTMLForText later derives the text/plain part from
 	// this same HTML, so the two stay consistent.
-	html, _, err := renderLayout(ctx, &layout, draft.EDReplyEmail, o.unsub.Enabled())
+	html, _, err := renderLayout(ctx, &layout, draft.EDReplyEmail, sendUnsubFooterMode(o.unsub.Enabled()))
 	if err != nil {
 		slog.WarnContext(ctx, "newsletter send: body_layout re-render failed; caller refuses the send when unsubscribe is enabled, else dispatches persisted body_html whose compliance footer may reflect write-time config",
+			"newsletter_id", draft.ID,
+			"project_uid", draft.ProjectUID,
+			"error", err,
+		)
+		return "", false
+	}
+	// Bound the re-rendered output to the same ceiling create/update enforce.
+	// Embedded templates can change between write and send (the whole reason this
+	// helper re-renders), so a layout that was under the cap at write time can
+	// compile past it now — validating here keeps an oversized body off the wire,
+	// and ok=false routes it through the same refuse/fallback policy as any other
+	// re-render failure.
+	if err := validateDerivedBodyHTML(html); err != nil {
+		slog.WarnContext(ctx, "newsletter send: re-rendered body_layout exceeds the size cap; caller refuses the send when unsubscribe is enabled, else dispatches persisted body_html",
 			"newsletter_id", draft.ID,
 			"project_uid", draft.ProjectUID,
 			"error", err,
@@ -492,16 +506,15 @@ type TestSendInput struct {
 	ToEmail      string
 	EDReplyEmail string
 	Principal    string
-	// IsLayout marks BodyHTML as a full layout-based emitter email (gatewaze
-	// wrapper + blocks, already MJML-compiled, with %%…%% runtime placeholders).
-	// When true the test send dispatches BodyHTML directly instead of wrapping
-	// it in email_chrome — mirroring the real-send layout branch.
+	// IsLayout is DEPRECATED and ignored (see api.TestSendRequest.IsLayout).
+	// BodyLayout is the sole layout trigger; this field has no effect and is
+	// retained only for wire-compatibility with clients that still send it.
 	IsLayout bool
 	// BodyLayout, when set, is the structured layout to recompile server-side
-	// for the test send. It takes precedence over BodyHTML: the body is derived
-	// from it with the unsubscribe / compliance footer suppressed (no dangling
-	// opt-out link in a non-recipient test), mirroring how the real send path
-	// omits the compliance footer for a test. Nil keeps the legacy BodyHTML path.
+	// for the test send. It is the sole layout trigger: the body is derived from
+	// it with the unsubscribe / compliance footer suppressed (no dangling opt-out
+	// link in a non-recipient test), mirroring how the real send path omits the
+	// compliance footer for a test. Nil keeps the legacy BodyHTML path.
 	BodyLayout *declarative.Layout
 }
 
@@ -523,29 +536,19 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		return fmt.Errorf("%w: to_email is not a valid email: %v", domain.ErrInvalidRequest, err)
 	}
 
-	// A layout test send MUST supply the structured body_layout so the server can
-	// recompile with the compliance/unsubscribe footer suppressed. Accepting a
-	// pre-compiled is_layout body_html instead would dispatch it verbatim, and
-	// substituting its per-recipient unsubscribe sentinel to empty (a test send
-	// mints no real token) would leave a visible dangling <a href="">Unsubscribe</a>.
-	// Reject that mode rather than ship a broken opt-out row to the tester.
-	if in.IsLayout && in.BodyLayout == nil {
-		return fmt.Errorf("%w: a layout test send requires body_layout so the compliance footer can be recompiled and suppressed; is_layout with only body_html is not supported", domain.ErrInvalidRequest)
-	}
-
-	// A layout test send recompiles server-side from the structured layout with
-	// the compliance / unsubscribe footer SUPPRESSED (unsubEnabled=false drops
-	// the unsubscribe row via the wrapper's if= guard), matching the real send
-	// path's compliance:false for a non-recipient test. Without this, a
-	// pre-compiled layout body still carries the unsubscribe row, and
-	// substituting its per-recipient sentinel to empty (a test send mints no real
-	// token) leaves a dangling <a href="">Unsubscribe</a>. When no layout is
-	// supplied the legacy path stands: the caller's body_html is dispatched
-	// as-is (chrome-wrapped unless IsLayout).
+	// body_layout is the SOLE layout trigger for a test send. When present the
+	// server recompiles server-side with the opt-out row SUPPRESSED
+	// (unsubFooterSuppressed drops it via the wrapper's if= guard), matching the
+	// non-recipient test's compliance:false — a test mints no real token, so it
+	// carries no opt-out link. When absent the legacy path stands: the caller's
+	// body_html is simple editor HTML, chrome-wrapped. in.IsLayout is deprecated
+	// and ignored here (a precompiled is_layout body_html is no longer dispatched
+	// verbatim — that path could leave a dangling <a href="">Unsubscribe</a> once
+	// its sentinel resolved empty); layout clients send body_layout instead.
 	bodyHTML := in.BodyHTML
-	isLayout := in.IsLayout
+	isLayout := false
 	if in.BodyLayout != nil {
-		derived, _, rerr := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, false)
+		derived, _, rerr := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, unsubFooterSuppressed)
 		if rerr != nil {
 			return rerr
 		}

@@ -150,18 +150,20 @@ type TestSendRequest struct {
 	Subject  string `json:"subject"`
 	BodyHTML string `json:"body_html"`
 	ToEmail  string `json:"to_email"`
-	// IsLayout marks body_html as a full layout-based emitter email (gatewaze
-	// wrapper + blocks, already rendered, with %%…%% runtime placeholders).
-	// When true the service dispatches body_html directly instead of wrapping
-	// it in email_chrome — mirroring the layout branch of the real send path.
-	// Omitted/false keeps the legacy chrome-wrapped test send.
+	// IsLayout is DEPRECATED and ignored. body_layout is the sole layout trigger
+	// for a test send (see below); a precompiled is_layout body_html is no longer
+	// dispatched verbatim, because binding its per-recipient unsubscribe sentinel
+	// to empty left a dangling <a href="">Unsubscribe</a>. The field is retained
+	// only so existing clients that still send it are not rejected (the decoder
+	// disallows unknown fields); its value has no effect. Send body_layout for a
+	// layout test send.
 	IsLayout bool `json:"is_layout,omitempty"`
 	// BodyLayout, when present, is the structured layout the service recompiles
-	// server-side for the test send. It takes precedence over body_html and
-	// suppresses the unsubscribe / compliance footer (a non-recipient test mints
-	// no opt-out token, so the footer would otherwise render a dangling empty
-	// Unsubscribe link). Send the layout — not a pre-compiled body_html — for a
-	// layout test send so its footer matches the real send.
+	// server-side for the test send. It is the sole layout trigger and suppresses
+	// the unsubscribe / compliance footer (a non-recipient test mints no opt-out
+	// token, so the footer would otherwise render a dangling empty Unsubscribe
+	// link). Send the layout — not a pre-compiled body_html — for a layout test
+	// send so its footer matches the real send.
 	BodyLayout   *NewsletterLayout `json:"body_layout,omitempty"`
 	EDReplyEmail string            `json:"ed_reply_email,omitempty"`
 }

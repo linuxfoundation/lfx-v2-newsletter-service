@@ -93,6 +93,22 @@ func TestLoadEmbeddedTemplateCached(t *testing.T) {
 // omits template_key renders (1) with neutral chrome — no AAIF aaif.live
 // subscription branding — yet (2) still resolves a block that exists ONLY in the
 // superset library, not in the neutral "default" library.
+// TestLoadEmbeddedTemplate_NonSingleSegmentKeyIs422 pins that a client-controlled
+// template_key with a path separator or dot segment is an unknown library
+// (ErrTemplateNotFound → 422), not a 500 defect. Without the guard, a key like
+// "aaif-user-community/blocks" Stat-matches a nested embedded directory and then
+// fails deeper on a missing wrappers/ dir, misclassifying as a deployment defect.
+func TestLoadEmbeddedTemplate_NonSingleSegmentKeyIs422(t *testing.T) {
+	for _, key := range []string{"aaif-user-community/blocks", "../secret", "a/b", ".", ".."} {
+		if _, err := LoadEmbeddedTemplate(key); !errors.Is(err, ErrTemplateNotFound) {
+			t.Errorf("LoadEmbeddedTemplate(%q) err = %v, want ErrTemplateNotFound", key, err)
+		}
+		if _, err := LoadEmbeddedTemplateCached(key); !errors.Is(err, ErrTemplateNotFound) {
+			t.Errorf("LoadEmbeddedTemplateCached(%q) err = %v, want ErrTemplateNotFound", key, err)
+		}
+	}
+}
+
 func TestEmptyKeyFallbackRendersNeutralChromeWithSupersetBlocks(t *testing.T) {
 	tmpl, err := LoadEmbeddedTemplateCached("") // empty template_key → fallback
 	if err != nil {

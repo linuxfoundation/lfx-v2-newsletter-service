@@ -78,6 +78,15 @@ func EmbeddedTemplateKeys() ([]string, error) {
 // templates; LoadTemplates (filesystem) remains available for tests and local
 // iteration.
 func LoadEmbeddedTemplate(key string) (Templates, error) {
+	// template_key is client-controlled and must name a DIRECT child template set
+	// (a single path segment). Without this guard a key with a separator or a dot
+	// segment — e.g. "aaif-user-community/blocks" — Stat-matches a nested embedded
+	// directory, then fails loadFromFS on the missing wrappers/ dir and gets
+	// misclassified as a 500 deployment defect. Treat any non-single-segment key
+	// as an unknown library (→ 422), the same as a key that names nothing.
+	if key == "" || key == "." || key == ".." || strings.ContainsAny(key, `/\`) {
+		return Templates{}, fmt.Errorf("%w: %q", ErrTemplateNotFound, key)
+	}
 	root := "templates/" + key
 	if _, err := fs.Stat(embeddedTemplates, root); err != nil {
 		// Missing directory: the key names no embedded library. Wrap the sentinel
