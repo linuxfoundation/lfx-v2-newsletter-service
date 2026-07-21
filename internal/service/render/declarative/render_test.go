@@ -448,6 +448,26 @@ func TestRender_WrapperEditionFields(t *testing.T) {
 // bindAttrs keeps bound values RAW and serialization (writeAttr) escapes
 // exactly once, so a URL with query parameters ships as &amp; in the HTML, not
 // &amp;amp; (which delivered links with a broken amp;-prefixed parameter).
+// TestRender_RespectsContextCancellation proves the mjml compile is bound by the
+// caller's context: a context already cancelled before Render is called surfaces
+// an error instead of compiling. This is the plumbing behind the service-owned
+// mjmlCompileTimeout that bounds every render path against a pathological layout.
+func TestRender_RespectsContextCancellation(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+	layout := Layout{
+		Blocks: []Block{
+			{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Body.</p>"}},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled before the compile runs
+
+	if _, err := Render(ctx, layout, tmpl, nil); err == nil {
+		t.Fatalf("expected Render to fail on a cancelled context")
+	}
+}
+
 func TestBindAttrs_SingleEscape(t *testing.T) {
 	url := "https://example.com/?a=1&b=2"
 	got := bindAttrs(map[string]string{"href": "{{link}}"}, map[string]any{"link": url})

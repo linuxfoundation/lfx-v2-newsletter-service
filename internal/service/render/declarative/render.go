@@ -6,9 +6,22 @@ package declarative
 import (
 	"context"
 	"fmt"
+	"time"
 
 	mjml "github.com/Boostport/mjml-go"
 )
+
+// mjmlCompileTimeout bounds the mjml-go (wasm) compilation — a synchronous,
+// CPU-heavy step. The HTTP request context carries no fixed deadline (the server
+// only sets ReadHeaderTimeout, which does not bound the handler body), so without
+// this a pathological layout could pin a core for as long as the client holds the
+// connection. mjml.ToHTML honors context cancellation, so a service-owned
+// deadline applied centrally here bounds EVERY render path (preview / create /
+// update / test-send / send). A compile that exceeds it surfaces as a render
+// failure (→ 422 at the callers), consistent with any other layout the emitter
+// cannot process within budget. The ceiling is generous — a ~100 KB document
+// compiles in well under a second — so only genuinely pathological input hits it.
+const mjmlCompileTimeout = 15 * time.Second
 
 // Render binds a structured newsletter Layout against the declarative
 // templates, assembles the bound blocks into the wrapper's <slot name="body">,
@@ -31,7 +44,12 @@ func Render(ctx context.Context, layout Layout, templates Templates, wrapperCont
 	if err != nil {
 		return "", err
 	}
-	out, err := mjml.ToHTML(ctx, mjmlDoc, mjml.WithMinify(false))
+	// Bound the wasm compile with a service-owned deadline (derived from the
+	// caller's ctx, so an earlier client cancellation still wins). See
+	// mjmlCompileTimeout.
+	compileCtx, cancel := context.WithTimeout(ctx, mjmlCompileTimeout)
+	defer cancel()
+	out, err := mjml.ToHTML(compileCtx, mjmlDoc, mjml.WithMinify(false))
 	if err != nil {
 		return "", fmt.Errorf("declarative: compile mjml: %w", err)
 	}
