@@ -489,22 +489,9 @@ func normalizeCommitteeUIDs(in []string) []string {
 // A render failure is surfaced as ErrUnprocessable (422), matching render-preview
 // for the same unrenderable layout — the request itself is well-formed.
 func renderLayout(ctx context.Context, layout *declarative.Layout, replyEmail string, unsubEnabled bool) (bodyHTML string, raw json.RawMessage, err error) {
-	templates, err := declarative.LoadEmbeddedTemplateCached(layout.TemplateKey)
+	html, err := renderLayoutBody(ctx, layout, LayoutWrapperContent(replyEmail, unsubEnabled))
 	if err != nil {
-		if errors.Is(err, declarative.ErrTemplateNotFound) {
-			// A client-selected library that isn't embedded makes the stored layout
-			// unrenderable (422), consistent with an unknown block_type.
-			return "", nil, fmt.Errorf("%w: unknown template_key %q", domain.ErrUnprocessable, strings.TrimSpace(layout.TemplateKey))
-		}
-		// A present library that failed to parse is a deployment defect (templates
-		// ship with the binary), not a client error — bubble it up untyped so it
-		// maps to 500.
-		return "", nil, fmt.Errorf("load render templates: %w", err)
-	}
-
-	html, err := declarative.Render(ctx, *layout, templates, LayoutWrapperContent(replyEmail, unsubEnabled))
-	if err != nil {
-		return "", nil, fmt.Errorf("%w: render body_layout: %v", domain.ErrUnprocessable, err)
+		return "", nil, err
 	}
 
 	raw, err = json.Marshal(layout)
@@ -512,6 +499,113 @@ func renderLayout(ctx context.Context, layout *declarative.Layout, replyEmail st
 		return "", nil, fmt.Errorf("%w: marshal body_layout: %v", domain.ErrUnprocessable, err)
 	}
 	return html, raw, nil
+}
+
+// renderLayoutBody selects a layout's template set by template_key, renders it
+// against the supplied wrapper binding context, and maps failures to the domain
+// sentinels: an unknown template_key or a render failure is a 422 (well-formed
+// request the emitter can't process), while a present-but-unparseable library is
+// an untyped 500 deployment defect (the templates ship with the binary). It is
+// the shared core behind render-on-write (renderLayout) and the stateless
+// editor preview (NewsletterService.RenderPreview), so both classify template
+// selection and render errors identically. The two paths differ only in the
+// wrapper content they pass: the write path uses the persisted reply email; the
+// preview merges the client's wrapper_content over the send-path footer defaults.
+func renderLayoutBody(ctx context.Context, layout *declarative.Layout, wrapperContent map[string]any) (string, error) {
+	templates, err := declarative.LoadEmbeddedTemplateCached(layout.TemplateKey)
+	if err != nil {
+		if errors.Is(err, declarative.ErrTemplateNotFound) {
+			return "", fmt.Errorf("%w: unknown template_key %q", domain.ErrUnprocessable, strings.TrimSpace(layout.TemplateKey))
+		}
+		return "", fmt.Errorf("load render templates: %w", err)
+	}
+
+	html, err := declarative.Render(ctx, *layout, templates, wrapperContent)
+	if err != nil {
+		return "", fmt.Errorf("%w: render body_layout: %v", domain.ErrUnprocessable, err)
+	}
+	return html, nil
+}
+
+// RenderPreview renders a layout to email-safe HTML for the stateless editor
+// preview. It runs the SAME template selection, render, and derived-output size
+// policy as the create/update render-on-write path (renderLayoutBody +
+// validateDerivedBodyHTML), so a preview and the eventual persisted render agree
+// on which template_key resolves, which failures are 422 vs 500, and the output
+// ceiling. clientWrapperContent is the caller's wrapper_content; it is merged
+// over the send-path footer defaults (previewWrapperContent) so the preview's
+// footer structure and byte size match the email that will be sent.
+func (s *NewsletterService) RenderPreview(ctx context.Context, layout *declarative.Layout, clientWrapperContent map[string]any, unsubEnabled bool) (string, error) {
+	html, err := renderLayoutBody(ctx, layout, previewWrapperContent(clientWrapperContent, unsubEnabled))
+	if err != nil {
+		return "", err
+	}
+	if err := validateDerivedBodyHTML(html); err != nil {
+		return "", err
+	}
+	return html, nil
+}
+
+// previewFooterSentinelKeys are the edition.* fields the send path substitutes
+// per recipient (unsubscribe URL, sender/project name) or forces empty
+// (manage_subscriptions_url — there is no preferences surface yet). A client's
+// wrapper_content must NOT override these — the preview keeps the send-path
+// values so its footer structure and byte size match the sent email (and it
+// can't preview a working "Manage subscription" link that won't exist on send).
+var previewFooterSentinelKeys = map[string]struct{}{
+	"unsubscribe_url":          {},
+	"sender_name":              {},
+	"project_name":             {},
+	"manage_subscriptions_url": {},
+}
+
+// previewWrapperContent merges a client-supplied wrapper_content over the
+// send-path footer defaults for the stateless render-preview.
+//
+// It starts from LayoutWrapperContent (the send-path defaults: footer sentinels
+// plus reply_email taken from the client when supplied) and overlays the
+// client's edition.* bindings on top, so client-owned fields like edition.date
+// and edition.view_online_link are honored while the footer sentinels
+// (unsubscribe / sender / project) and the already-applied reply_email are
+// preserved. Only the edition sub-map is deep-merged; that is the only shape the
+// wrapper contract defines.
+func previewWrapperContent(clientWC map[string]any, unsubEnabled bool) map[string]any {
+	base := LayoutWrapperContent(replyEmailFromWrapperContent(clientWC), unsubEnabled)
+
+	clientEdition, ok := clientWC["edition"].(map[string]any)
+	if !ok {
+		return base
+	}
+	baseEdition, ok := base["edition"].(map[string]any)
+	if !ok {
+		return base
+	}
+	for k, v := range clientEdition {
+		if _, sentinel := previewFooterSentinelKeys[k]; sentinel {
+			// Footer sentinel: keep the send-path value so preview size matches.
+			continue
+		}
+		if k == "reply_email" {
+			// Already applied via LayoutWrapperContent (trimmed); don't re-overlay.
+			continue
+		}
+		baseEdition[k] = v
+	}
+	return base
+}
+
+// replyEmailFromWrapperContent best-effort extracts edition.reply_email from a
+// client-supplied wrapper_content map (shape: {"edition": {"reply_email": ...}}).
+// render-preview is stateless, so this is the only place the reply-to address
+// can come from; anything missing or mis-typed yields "" and the preview simply
+// omits the reply row (the wrapper's if= guard drops it).
+func replyEmailFromWrapperContent(wc map[string]any) string {
+	edition, ok := wc["edition"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	replyEmail, _ := edition["reply_email"].(string)
+	return replyEmail
 }
 
 // LayoutWrapperContent builds the wrapper template's runtime binding context for

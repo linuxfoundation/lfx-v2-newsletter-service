@@ -33,26 +33,28 @@ var ErrTemplateNotFound = errors.New("declarative: embedded template not found")
 //go:embed templates
 var embeddedTemplates embed.FS
 
-// RenderTemplateKey is the DEFAULT render library: the set the render paths
-// (render-on-write and render-preview) use when a layout carries no
-// template_key. It is the superset template — every block type the editor can
-// offer across all manifests — so a layout composed without an explicit library
-// (or saved before per-newsletter selection) renders regardless of which
-// manifest the editor loaded. A layout WITH a template_key renders from that
-// library instead (see loadRenderTemplates).
+// RenderTemplateKey is the render BLOCK SUPERSET: the library whose block set
+// contains every block type the editor can offer across all manifests
+// (TestRenderSupersetInvariant pins that every library's blocks exist here). It
+// backs the empty-key fallback's BLOCKS so a layout composed without an explicit
+// library (or saved before per-newsletter selection) resolves every block
+// regardless of which manifest the editor loaded. A layout WITH a template_key
+// renders from that library instead (see LoadEmbeddedTemplateCached).
 //
-// KNOWN ISSUE (LFXV2-2760): this fallback is AAIF-specific. The
-// aaif-user-community wrapper hard-codes AAIF's subscription URL, so a non-AAIF
-// project whose layout omits template_key renders that AAIF-branded chrome. We
-// intentionally do NOT switch the fallback to the neutral "default" library:
-// aaif-user-community is the render SUPERSET (TestRenderSupersetInvariant pins
-// that every library's blocks exist here), and "default" is a strict subset, so
-// falling back to it would fail to render aaif-only blocks and break the
-// invariant. The correct fix is a neutral superset wrapper, tracked under
-// template finalization (LFXV2-2760); until then the omitted-key path stays on
-// this superset and callers should pass an explicit, project-appropriate
-// template_key.
+// The superset library is a BRANDED one (aaif-user-community's wrapper hard-codes
+// AAIF's subscription URLs), so the empty-key fallback does NOT use its wrapper:
+// it pairs the superset blocks with the neutral NeutralWrapperTemplateKey wrapper
+// (see loadFallbackTemplates) so a keyless layout renders project-neutral chrome,
+// never AAIF branding. A layout that wants AAIF chrome must set its template_key.
 const RenderTemplateKey = "aaif-user-community"
+
+// NeutralWrapperTemplateKey is the project-neutral library whose "default"
+// wrapper backs the empty-key render fallback. That wrapper carries no
+// brand-specific URLs or copy (any project can render through it) while keeping
+// the same compliance footer structure — the `if=`-guarded unsubscribe row and
+// the send-time edition.* sentinels — as every other wrapper, so a keyless
+// fallback render stays CAN-SPAM-correct.
+const NeutralWrapperTemplateKey = "default"
 
 // EmbeddedTemplateKeys returns the sorted keys of every template set compiled
 // into the binary.
@@ -97,14 +99,50 @@ var (
 	renderTemplateCache   = map[string]Templates{}
 )
 
+// fallbackTemplates memoizes the composed empty-key fallback set (built once;
+// the embedded FS never changes at runtime).
+var (
+	fallbackTemplatesOnce sync.Once
+	fallbackTemplatesVal  Templates
+	fallbackTemplatesErr  error
+)
+
+// loadFallbackTemplates returns the template set used when a layout omits
+// template_key: the neutral NeutralWrapperTemplateKey wrapper paired with the
+// RenderTemplateKey SUPERSET blocks. Decoupling the wrapper from the blocks is
+// what lets a keyless layout render project-neutral chrome (no AAIF branding)
+// while still resolving every block any manifest can offer — switching the
+// fallback wholesale to the neutral library would drop the superset-only blocks
+// and 422 a layout that uses them.
+func loadFallbackTemplates() (Templates, error) {
+	fallbackTemplatesOnce.Do(func() {
+		super, err := LoadEmbeddedTemplate(RenderTemplateKey)
+		if err != nil {
+			fallbackTemplatesErr = fmt.Errorf("declarative: load fallback superset blocks: %w", err)
+			return
+		}
+		neutral, err := LoadEmbeddedTemplate(NeutralWrapperTemplateKey)
+		if err != nil {
+			fallbackTemplatesErr = fmt.Errorf("declarative: load fallback neutral wrapper: %w", err)
+			return
+		}
+		fallbackTemplatesVal = Templates{
+			Wrappers: neutral.Wrappers,
+			Blocks:   super.Blocks,
+		}
+	})
+	return fallbackTemplatesVal, fallbackTemplatesErr
+}
+
 // LoadEmbeddedTemplateCached returns the parsed template set for a library key,
 // memoizing successful parses process-wide. An empty (or whitespace) key falls
-// back to RenderTemplateKey — the default/superset library — so layouts without
-// an explicit library still render. A not-found key surfaces ErrTemplateNotFound.
+// back to the neutral-wrapper + superset-blocks set (loadFallbackTemplates) so a
+// layout without an explicit library renders with project-neutral chrome yet
+// still resolves every block. A not-found key surfaces ErrTemplateNotFound.
 func LoadEmbeddedTemplateCached(key string) (Templates, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
-		key = RenderTemplateKey
+		return loadFallbackTemplates()
 	}
 
 	renderTemplateCacheMu.Lock()

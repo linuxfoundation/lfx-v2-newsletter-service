@@ -4,6 +4,7 @@
 package declarative
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -55,18 +56,86 @@ func TestLoadEmbeddedTemplateCached(t *testing.T) {
 		t.Fatalf("second cached load: %v", err)
 	}
 
-	// An empty (or whitespace) key falls back to the default render library.
+	// An empty (or whitespace) key falls back to the neutral-wrapper + superset-
+	// blocks set: the same block coverage as the superset library...
 	fallback, err := LoadEmbeddedTemplateCached("   ")
 	if err != nil {
 		t.Fatalf("empty-key fallback: %v", err)
 	}
 	if len(fallback.Blocks) != len(first.Blocks) {
-		t.Errorf("empty key did not fall back to %s: %d vs %d blocks", RenderTemplateKey, len(fallback.Blocks), len(first.Blocks))
+		t.Errorf("empty-key fallback lost superset block coverage: %d vs %d blocks", len(fallback.Blocks), len(first.Blocks))
+	}
+	// ...but the NEUTRAL wrapper, not the branded superset wrapper. The superset
+	// (aaif) wrapper hard-codes AAIF's aaif.live subscription URL; the neutral
+	// fallback wrapper must not, so a keyless layout never renders AAIF chrome.
+	neutralWrapper, err := LoadEmbeddedTemplate(NeutralWrapperTemplateKey)
+	if err != nil {
+		t.Fatalf("load neutral wrapper: %v", err)
+	}
+	if fallback.Wrappers["default"] != neutralWrapper.Wrappers["default"] {
+		t.Errorf("empty-key fallback did not use the neutral %q wrapper", NeutralWrapperTemplateKey)
+	}
+	if strings.Contains(fallback.Wrappers["default"], "aaif.live") {
+		t.Errorf("empty-key fallback wrapper carries AAIF branding (aaif.live)")
+	}
+	if !strings.Contains(first.Wrappers["default"], "aaif.live") {
+		t.Errorf("precondition: the superset (%s) wrapper should carry AAIF branding", RenderTemplateKey)
 	}
 
 	// An unknown key surfaces the not-found sentinel (→ 422 at the callers).
 	if _, err := LoadEmbeddedTemplateCached("no-such-library"); !errors.Is(err, ErrTemplateNotFound) {
 		t.Errorf("expected ErrTemplateNotFound for unknown key, got %v", err)
+	}
+}
+
+// TestEmptyKeyFallbackRendersNeutralChromeWithSupersetBlocks proves the keyless
+// render fallback delivers both halves of the decoupled contract: a layout that
+// omits template_key renders (1) with neutral chrome — no AAIF aaif.live
+// subscription branding — yet (2) still resolves a block that exists ONLY in the
+// superset library, not in the neutral "default" library.
+func TestEmptyKeyFallbackRendersNeutralChromeWithSupersetBlocks(t *testing.T) {
+	tmpl, err := LoadEmbeddedTemplateCached("") // empty template_key → fallback
+	if err != nil {
+		t.Fatalf("empty-key fallback load: %v", err)
+	}
+
+	// sponsored_ad exists in the aaif superset but NOT in the neutral "default"
+	// library — so its presence proves the fallback keeps superset block coverage.
+	if _, ok := tmpl.Blocks["sponsored_ad"]; !ok {
+		t.Fatalf("fallback set missing superset-only block sponsored_ad")
+	}
+	neutral, err := LoadEmbeddedTemplate(NeutralWrapperTemplateKey)
+	if err != nil {
+		t.Fatalf("load neutral library: %v", err)
+	}
+	if _, ok := neutral.Blocks["sponsored_ad"]; ok {
+		t.Fatalf("precondition: neutral library unexpectedly has sponsored_ad")
+	}
+
+	layout := Layout{
+		Blocks: []Block{
+			{BlockType: "sponsored_ad", Content: map[string]any{"sponsor_name": "Acme", "headline": "Hello"}},
+		},
+	}
+	wrapperContent := map[string]any{
+		"edition": map[string]any{"unsubscribe_url": "https://example.com/unsub"},
+	}
+	out, err := Render(context.Background(), layout, tmpl, wrapperContent)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	// The superset-only block rendered.
+	if !strings.Contains(out, "Acme") {
+		t.Errorf("superset-only block sponsored_ad did not render\n%s", out)
+	}
+	// Neutral chrome still carries the compliant unsubscribe row...
+	if !strings.Contains(out, "https://example.com/unsub") {
+		t.Errorf("neutral fallback wrapper dropped the unsubscribe row")
+	}
+	// ...but none of the AAIF wrapper's brand chrome.
+	if strings.Contains(out, "aaif.live") {
+		t.Errorf("keyless fallback rendered AAIF-branded chrome (aaif.live)\n%s", out)
 	}
 }
 
