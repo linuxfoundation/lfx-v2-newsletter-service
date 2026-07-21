@@ -240,6 +240,42 @@ type RenderPreviewResponse struct {
 	BodyHTML string `json:"body_html"`
 }
 
+// TemplateSummary is one entry in the template-list response: a selectable block
+// library keyed by its embedded template key.
+type TemplateSummary struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// TemplatesResponse is the body of GET /projects/{project_uid}/newsletters/templates.
+type TemplatesResponse struct {
+	Templates []TemplateSummary `json:"templates"`
+}
+
+// TemplateManifestBlock is one palette entry in a template manifest: a block
+// type with its editor schema and comment-stripped renderable template body.
+// Mirrors NewsletterBlockManifestEntry in @lfx-one/shared.
+type TemplateManifestBlock struct {
+	BlockType   string          `json:"block_type"`
+	Label       string          `json:"label"`
+	Category    string          `json:"category"`
+	Schema      json.RawMessage `json:"schema"`
+	IsContainer bool            `json:"is_container,omitempty"`
+	// Template is the raw element tree with all HTML comments stripped — the
+	// client-side renderer walks it to draw the canvas preview.
+	Template string `json:"template"`
+}
+
+// TemplateManifest is the editor manifest for one template set: the block
+// palette plus the page-chrome wrapper. Body of
+// GET /projects/{project_uid}/newsletters/templates/{template_key}/manifest.
+// Mirrors NewsletterTemplateManifest in @lfx-one/shared.
+type TemplateManifest struct {
+	WrapperKey string                  `json:"wrapper_key"`
+	Blocks     []TemplateManifestBlock `json:"blocks"`
+	Wrapper    string                  `json:"wrapper,omitempty"`
+}
+
 // NewsletterListItem is one row in the unified list response. Inherits the
 // Newsletter shape and adds engagement fields populated only when status='sent'.
 // body_layout is always omitted on list rows: a layout can approach the 1 MiB

@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render/declarative"
+	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
 
 // TestListTemplates asserts the template catalog route returns 200 with every
@@ -24,7 +24,7 @@ func TestListTemplates(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200. body=%s", w.Code, w.Body.String())
 	}
-	var resp templatesResponse
+	var resp publicapi.TemplatesResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v. body=%s", err, w.Body.String())
 	}
@@ -59,7 +59,7 @@ func TestGetTemplateManifest(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200. body=%s", w.Code, w.Body.String())
 	}
-	var manifest declarative.Manifest
+	var manifest publicapi.TemplateManifest
 	if err := json.Unmarshal(w.Body.Bytes(), &manifest); err != nil {
 		t.Fatalf("unmarshal manifest: %v", err)
 	}

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render/declarative"
+	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
 
 // templateCatalog caches the embedded template keys and their built manifests.
@@ -43,17 +44,6 @@ func loadTemplateCatalog() ([]string, map[string]declarative.Manifest, error) {
 	return templateKeys, templateManifests, templateCatalogErr
 }
 
-// templateInfo is one entry in the template list response.
-type templateInfo struct {
-	Key   string `json:"key"`
-	Label string `json:"label"`
-}
-
-// templatesResponse is the JSON shape of GET .../newsletters/templates.
-type templatesResponse struct {
-	Templates []templateInfo `json:"templates"`
-}
-
 // ListTemplates handles GET /projects/{project_uid}/newsletters/templates.
 //
 // It returns the keys and labels of the template sets compiled into the
@@ -65,9 +55,9 @@ func (h *Handler) ListTemplates(w http.ResponseWriter, r *http.Request) {
 		writeError(r.Context(), w, err)
 		return
 	}
-	resp := templatesResponse{Templates: make([]templateInfo, 0, len(keys))}
+	resp := publicapi.TemplatesResponse{Templates: make([]publicapi.TemplateSummary, 0, len(keys))}
 	for _, key := range keys {
-		resp.Templates = append(resp.Templates, templateInfo{Key: key, Label: declarative.HumanizeKey(key)})
+		resp.Templates = append(resp.Templates, publicapi.TemplateSummary{Key: key, Label: declarative.HumanizeKey(key)})
 	}
 	writeJSON(r.Context(), w, http.StatusOK, resp)
 }
@@ -79,13 +69,10 @@ func (h *Handler) ListTemplates(w http.ResponseWriter, r *http.Request) {
 // renderable templates, plus the page-chrome wrapper) for one template set.
 // An unknown key is a client error, not a defect.
 //
-// WIRE CONTRACT: the response body is declarative.Manifest serialized via its
-// json tags. That JSON shape — not the Go type — is the public contract: it is
-// pinned by docs/newsletter-service-contract.md and mirrored by
-// NewsletterTemplateManifest in @lfx-one/shared. The renderer type is reused
-// here deliberately (a parallel DTO would only add drift risk without changing
-// the bytes); any field/tag change to declarative.Manifest is a contract change
-// and must update the doc and the shared frontend type in lockstep.
+// The response is the public publicapi.TemplateManifest DTO (pinned by
+// docs/newsletter-service-contract.md and mirrored by NewsletterTemplateManifest
+// in @lfx-one/shared), mapped from the internal renderer manifest by
+// toAPITemplateManifest so the wire contract stays independent of the render type.
 func (h *Handler) GetTemplateManifest(w http.ResponseWriter, r *http.Request) {
 	_, manifests, err := loadTemplateCatalog()
 	if err != nil {
@@ -101,5 +88,28 @@ func (h *Handler) GetTemplateManifest(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeJSON(r.Context(), w, http.StatusOK, manifest)
+	writeJSON(r.Context(), w, http.StatusOK, toAPITemplateManifest(manifest))
+}
+
+// toAPITemplateManifest maps the internal renderer manifest to the public
+// TemplateManifest DTO, keeping the render type (declarative.Manifest) out of
+// the wire contract. The JSON shapes are identical by design — the mapping is
+// the seam that lets the two evolve independently.
+func toAPITemplateManifest(m declarative.Manifest) publicapi.TemplateManifest {
+	blocks := make([]publicapi.TemplateManifestBlock, 0, len(m.Blocks))
+	for _, b := range m.Blocks {
+		blocks = append(blocks, publicapi.TemplateManifestBlock{
+			BlockType:   b.BlockType,
+			Label:       b.Label,
+			Category:    b.Category,
+			Schema:      b.Schema,
+			IsContainer: b.IsContainer,
+			Template:    b.Template,
+		})
+	}
+	return publicapi.TemplateManifest{
+		WrapperKey: m.WrapperKey,
+		Blocks:     blocks,
+		Wrapper:    m.Wrapper,
+	}
 }
