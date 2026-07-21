@@ -483,6 +483,10 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	if fromDisplayName == "" {
 		fromDisplayName = projectName + fromDisplayNameSuffix
 	}
+	// Mirror SendNewsletter's Reply-To resolution so a test-send previews the
+	// same envelope a real send would produce, not the drafter's stored
+	// EDReplyEmail unconditionally.
+	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), strings.TrimSpace(in.EDReplyEmail))
 
 	chrome := render.Chrome{
 		Subject:                 in.Subject,
@@ -507,7 +511,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		Text:            textBody,
 		From:            o.resolveFromAddress(ctx, in.ProjectUID),
 		FromDisplayName: fromDisplayName,
-		ReplyTo:         strings.TrimSpace(in.EDReplyEmail),
+		ReplyTo:         replyTo,
 	}); dispatchErr != nil {
 		return fmt.Errorf("dispatch test-send: %w", dispatchErr)
 	}

@@ -97,6 +97,19 @@ app:
     # ALSO be in the email-service allowlist (SMTP_ALLOWED_FROM_DOMAINS) or
     # send_email rejects the message. Empty disables per-project overrides.
     fromAddressOverrides: "agentic-ai-foundation=newsletter@lfx.aaif.io"
+    # replyToAllowedDomains lists the domains a resolved sender email may use
+    # as Reply-To (comma-separated, subdomain suffix matching applies). A
+    # resolved address outside this list falls back to the draft's stored
+    # ed_reply_email instead of being sent to email-service, which enforces
+    # its own SMTP_ALLOWED_REPLY_TO_DOMAINS allowlist (default
+    # "linuxfoundation.org") and would otherwise reject the entire send. Keep
+    # in sync with email-service's allowlist — e.g. if a project's sender
+    # uses an address outside linuxfoundation.org (such as an aaif.io-domain
+    # AAIF account), add that domain here AND to email-service's
+    # SMTP_ALLOWED_REPLY_TO_DOMAINS, or the resolved address is silently
+    # dropped in favor of the fallback. Empty falls back to the app default
+    # ("linuxfoundation.org").
+    replyToAllowedDomains: ""
 
   # unsubscribe configures the per-recipient one-click opt-out link
   # embedded in the email footer. publicBaseURL is the externally-reachable

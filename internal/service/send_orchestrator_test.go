@@ -967,6 +967,70 @@ func TestTestSendUsesAuthServiceName(t *testing.T) {
 	}
 }
 
+// TestTestSendReplyToUsesSenderEmail asserts TestSend resolves Reply-To the
+// same way SendNewsletter does: when the Principal resolves to a sender email,
+// that email is used even though the request also carries an EDReplyEmail —
+// a test-send should preview the real production envelope, not the drafter's
+// stored EDReplyEmail unconditionally.
+func TestTestSendReplyToUsesSenderEmail(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{name: "Jim Zemlin"}
+	userEmail := &fakeUserEmailReader{email: "jzemlin@linuxfoundation.org"}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
+
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID:   "p1",
+		Subject:      "Hello",
+		BodyHTML:     "<p>Body</p>",
+		ToEmail:      "tester@example.com",
+		EDReplyEmail: "drafter@example.com",
+		Principal:    "auth0|jzemlin",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if got := email.sends[0].ReplyTo; got != "jzemlin@linuxfoundation.org" {
+		t.Errorf("ReplyTo=%q, want %q (sender), not drafter", got, "jzemlin@linuxfoundation.org")
+	}
+}
+
+// TestTestSendReplyToFallsBackOnDisallowedDomain asserts TestSend falls back
+// to EDReplyEmail when the resolved sender email's domain isn't in the
+// Reply-To allowlist, mirroring SendNewsletter's fallback behavior.
+func TestTestSendReplyToFallsBackOnDisallowedDomain(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{name: "Jim Zemlin"}
+	userEmail := &fakeUserEmailReader{email: "jzemlin@gmail.com"}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
+
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID:   "p1",
+		Subject:      "Hello",
+		BodyHTML:     "<p>Body</p>",
+		ToEmail:      "tester@example.com",
+		EDReplyEmail: "drafter@example.com",
+		Principal:    "auth0|jzemlin",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if got := email.sends[0].ReplyTo; got != "drafter@example.com" {
+		t.Errorf("ReplyTo=%q, want fallback %q", got, "drafter@example.com")
+	}
+}
+
 // TestSendNewsletterRespectsFromAddressOverride asserts an explicit FromAddress
 // on SendOrchestratorConfig wins over the built-in default.
 func TestSendNewsletterRespectsFromAddressOverride(t *testing.T) {
