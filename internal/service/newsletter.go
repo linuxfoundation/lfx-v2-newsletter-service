@@ -503,14 +503,24 @@ func renderLayout(ctx context.Context, layout *declarative.Layout, replyEmail st
 
 // renderLayoutBody selects a layout's template set by template_key, renders it
 // against the supplied wrapper binding context, and maps failures to the domain
-// sentinels: an unknown template_key or a render failure is a 422 (well-formed
-// request the emitter can't process), while a present-but-unparseable library is
-// an untyped 500 deployment defect (the templates ship with the binary). It is
-// the shared core behind render-on-write (renderLayout) and the stateless
-// editor preview (NewsletterService.RenderPreview), so both classify template
-// selection and render errors identically. The two paths differ only in the
-// wrapper content they pass: the write path uses the persisted reply email; the
-// preview merges the client's wrapper_content over the send-path footer defaults.
+// sentinels by cause:
+//
+//   - Unknown template_key (a client-selected library the binary doesn't embed)
+//     → 422.
+//   - A CLIENT-driven render failure — unknown wrapper key or block_type, or
+//     content the emitter cannot compile — is flagged by the emitter with
+//     declarative.ErrUnrenderableLayout → 422.
+//   - Anything else is a packaging/deployment defect: a present-but-broken
+//     embedded library that fails to load or parse (the templates ship with the
+//     binary) → untyped, so callers surface it as a 500. This keeps the
+//     "present-but-broken library" 500 real instead of collapsing every render
+//     failure to a client 422.
+//
+// It is the shared core behind render-on-write (renderLayout) and the stateless
+// editor preview (NewsletterService.RenderPreview), so both classify identically.
+// The two paths differ only in the wrapper content they pass: the write path uses
+// the persisted reply email; the preview merges the client's wrapper_content over
+// the send-path footer defaults.
 func renderLayoutBody(ctx context.Context, layout *declarative.Layout, wrapperContent map[string]any) (string, error) {
 	templates, err := declarative.LoadEmbeddedTemplateCached(layout.TemplateKey)
 	if err != nil {
@@ -522,7 +532,12 @@ func renderLayoutBody(ctx context.Context, layout *declarative.Layout, wrapperCo
 
 	html, err := declarative.Render(ctx, *layout, templates, wrapperContent)
 	if err != nil {
-		return "", fmt.Errorf("%w: render body_layout: %v", domain.ErrUnprocessable, err)
+		if errors.Is(err, declarative.ErrUnrenderableLayout) {
+			return "", fmt.Errorf("%w: render body_layout: %v", domain.ErrUnprocessable, err)
+		}
+		// Not attributable to the client layout — an embedded template that will
+		// not parse is a packaging defect; stay untyped so it surfaces as a 500.
+		return "", fmt.Errorf("render body_layout: %w", err)
 	}
 	return html, nil
 }

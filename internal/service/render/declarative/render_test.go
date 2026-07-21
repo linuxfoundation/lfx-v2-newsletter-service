@@ -5,6 +5,7 @@ package declarative
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -452,6 +453,27 @@ func TestRender_WrapperEditionFields(t *testing.T) {
 // caller's context: a context already cancelled before Render is called surfaces
 // an error instead of compiling. This is the plumbing behind the service-owned
 // mjmlCompileTimeout that bounds every render path against a pathological layout.
+// TestRender_ClientLayoutFailuresAreUnrenderable pins the error classification:
+// a client-driven layout failure (unknown wrapper key, unknown block_type) is
+// flagged ErrUnrenderableLayout so callers map it to 422, rather than surfacing
+// as an untyped error the callers would treat as a 500 packaging defect.
+func TestRender_ClientLayoutFailuresAreUnrenderable(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+
+	unknownBlock := Layout{Blocks: []Block{{BlockType: "no_such_block_type"}}}
+	if _, err := Render(context.Background(), unknownBlock, tmpl, nil); !errors.Is(err, ErrUnrenderableLayout) {
+		t.Errorf("unknown block_type err = %v, want ErrUnrenderableLayout", err)
+	}
+
+	unknownWrapper := Layout{
+		WrapperKey: "no_such_wrapper",
+		Blocks:     []Block{{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Body.</p>"}}},
+	}
+	if _, err := Render(context.Background(), unknownWrapper, tmpl, nil); !errors.Is(err, ErrUnrenderableLayout) {
+		t.Errorf("unknown wrapper key err = %v, want ErrUnrenderableLayout", err)
+	}
+}
+
 func TestRender_RespectsContextCancellation(t *testing.T) {
 	tmpl := loadTestTemplates(t)
 	layout := Layout{

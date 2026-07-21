@@ -19,6 +19,15 @@ import (
 // 500 deployment defect) — collapsing the two would mask a real deploy failure.
 var ErrTemplateNotFound = errors.New("declarative: embedded template not found")
 
+// ErrUnrenderableLayout marks a render failure attributable to the CLIENT's
+// layout — an unknown wrapper key or block_type, or content the emitter cannot
+// compile (e.g. richtext that yields invalid MJML). Callers map it to 422. A
+// render failure NOT wrapped with it — an embedded template that will not parse
+// — is a packaging defect and stays untyped so callers surface it as a 500,
+// keeping the "present-but-broken library" classification real rather than
+// collapsing every render failure to a client 422.
+var ErrUnrenderableLayout = errors.New("declarative: layout cannot be rendered")
+
 // embeddedTemplates carries the declarative template sets baked into the
 // binary at build time, one directory per template key:
 //

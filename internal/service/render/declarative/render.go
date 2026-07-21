@@ -51,7 +51,11 @@ func Render(ctx context.Context, layout Layout, templates Templates, wrapperCont
 	defer cancel()
 	out, err := mjml.ToHTML(compileCtx, mjmlDoc, mjml.WithMinify(false))
 	if err != nil {
-		return "", fmt.Errorf("declarative: compile mjml: %w", err)
+		// Compilation failures are predominantly client-driven — richtext or
+		// content that yields invalid/oversized MJML, or the compile deadline —
+		// so classify as an unrenderable layout (422). A translator bug on valid
+		// input is a code defect caught by the render tests, not a runtime 500.
+		return "", fmt.Errorf("%w: compile mjml: %v", ErrUnrenderableLayout, err)
 	}
 	return out, nil
 }

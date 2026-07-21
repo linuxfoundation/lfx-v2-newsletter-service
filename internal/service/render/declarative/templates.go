@@ -44,7 +44,7 @@ func (t Templates) wrapper(key string) (string, error) {
 	}
 	w, ok := t.Wrappers[key]
 	if !ok {
-		return "", fmt.Errorf("declarative: wrapper %q not found", key)
+		return "", fmt.Errorf("%w: wrapper %q not found", ErrUnrenderableLayout, key)
 	}
 	return w, nil
 }
@@ -53,7 +53,7 @@ func (t Templates) wrapper(key string) (string, error) {
 func (t Templates) block(blockType string) (string, error) {
 	b, ok := t.Blocks[blockType]
 	if !ok {
-		return "", fmt.Errorf("declarative: block template %q not found", blockType)
+		return "", fmt.Errorf("%w: block template %q not found", ErrUnrenderableLayout, blockType)
 	}
 	return b, nil
 }
