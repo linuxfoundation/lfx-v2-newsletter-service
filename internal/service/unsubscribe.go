@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
@@ -135,6 +137,17 @@ func (s *UnsubscribeService) ListOptOuts(ctx context.Context, projectUID string)
 		return nil, fmt.Errorf("%w: project_uid is required", domain.ErrInvalidRequest)
 	}
 	return s.repo.ListUnsubscribes(ctx, projectUID)
+}
+
+// DeleteOptOut deletes an opt-out record by id. Validates projectUID and
+// delegates to the repository; UUID format is validated by the caller.
+// Returns domain.ErrInvalidRequest for blank projectUID, domain.ErrNotFound
+// if the id does not exist or belongs to a different project.
+func (s *UnsubscribeService) DeleteOptOut(ctx context.Context, projectUID string, id uuid.UUID) error {
+	if strings.TrimSpace(projectUID) == "" {
+		return fmt.Errorf("%w: project_uid is required", domain.ErrInvalidRequest)
+	}
+	return s.repo.DeleteUnsubscribe(ctx, projectUID, id)
 }
 
 func (s *UnsubscribeService) sign(payload string) string {

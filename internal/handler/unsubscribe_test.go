@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 )
@@ -29,6 +32,9 @@ func (s *stubUnsubRepo) ListUnsubscribedEmails(_ context.Context, _ string) (map
 }
 func (s *stubUnsubRepo) ListUnsubscribes(_ context.Context, _ string) ([]*model.NewsletterUnsubscribe, error) {
 	return nil, nil
+}
+func (s *stubUnsubRepo) DeleteUnsubscribe(_ context.Context, _ string, _ uuid.UUID) error {
+	return nil
 }
 
 type stubProjectClient struct{}
@@ -260,4 +266,121 @@ func (t *testOptOutRepo) ListUnsubscribes(ctx context.Context, projectUID string
 		return nil, t.returnErr
 	}
 	return t.optOuts, nil
+}
+func (t *testOptOutRepo) DeleteUnsubscribe(_ context.Context, _ string, _ uuid.UUID) error {
+	if t.returnErr != nil {
+		return t.returnErr
+	}
+	return nil
+}
+
+// TestDeleteOptOutSuccess tests the happy path: a valid UUID and project_uid
+// returns 204 No Content.
+func TestDeleteOptOutSuccess(t *testing.T) {
+	repo := &testOptOutRepo{}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub}
+
+	testID := uuid.New().String()
+	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/newsletter-opt-outs/"+testID, nil)
+	req.SetPathValue("project_uid", "proj-1")
+	req.SetPathValue("opt_out_id", testID)
+	w := httptest.NewRecorder()
+	h.DeleteOptOut(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestDeleteOptOutNotFound tests that a non-existent opt-out id returns 404.
+func TestDeleteOptOutNotFound(t *testing.T) {
+	repo := &testOptOutRepo{
+		returnErr: domain.ErrNotFound,
+	}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub}
+
+	testID := uuid.New().String()
+	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/newsletter-opt-outs/"+testID, nil)
+	req.SetPathValue("project_uid", "proj-1")
+	req.SetPathValue("opt_out_id", testID)
+	w := httptest.NewRecorder()
+	h.DeleteOptOut(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "not_found") {
+		t.Errorf("body should contain not_found code: %s", w.Body.String())
+	}
+}
+
+// TestDeleteOptOutRepositoryError tests that a persistence failure returns 500
+// without leaking error details.
+func TestDeleteOptOutRepositoryError(t *testing.T) {
+	repo := &testOptOutRepo{
+		returnErr: errors.New("postgres connection failed"),
+	}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub}
+
+	testID := uuid.New().String()
+	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/newsletter-opt-outs/"+testID, nil)
+	req.SetPathValue("project_uid", "proj-1")
+	req.SetPathValue("opt_out_id", testID)
+	w := httptest.NewRecorder()
+	h.DeleteOptOut(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 for persistence error, body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "internal_error") {
+		t.Errorf("body missing internal_error code: %s", body)
+	}
+	if strings.Contains(body, "postgres") || strings.Contains(body, "connection failed") {
+		t.Errorf("body leaked error details: %s", body)
+	}
+}
+
+// TestDeleteOptOutMalformedUUID tests that a malformed UUID returns 400.
+func TestDeleteOptOutMalformedUUID(t *testing.T) {
+	repo := &testOptOutRepo{}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub}
+
+	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/newsletter-opt-outs/not-a-uuid", nil)
+	req.SetPathValue("project_uid", "proj-1")
+	req.SetPathValue("opt_out_id", "not-a-uuid")
+	w := httptest.NewRecorder()
+	h.DeleteOptOut(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for malformed UUID, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "invalid_request") {
+		t.Errorf("body should mention invalid_request: %s", w.Body.String())
+	}
+}
+
+// TestDeleteOptOutBlankProjectUID tests that a blank project_uid returns 400.
+func TestDeleteOptOutBlankProjectUID(t *testing.T) {
+	repo := &testOptOutRepo{}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub}
+
+	testID := uuid.New().String()
+	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/newsletter-opt-outs/"+testID, nil)
+	req.SetPathValue("project_uid", "  ") // whitespace-only projectUID
+	req.SetPathValue("opt_out_id", testID)
+	w := httptest.NewRecorder()
+	h.DeleteOptOut(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for blank project_uid", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "invalid_request") {
+		t.Errorf("body should mention invalid_request: %s", w.Body.String())
+	}
 }
