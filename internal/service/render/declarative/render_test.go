@@ -474,6 +474,28 @@ func TestRender_ClientLayoutFailuresAreUnrenderable(t *testing.T) {
 	}
 }
 
+// TestRender_NumericBindingNoScientificNotation binds a large numeric field — as
+// JSON decodes it into content, a float64 — and asserts it renders as a plain
+// integer, not the "1e+06" exponent form fmt's %v produces for float64 >= 1e6.
+func TestRender_NumericBindingNoScientificNotation(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+	layout := Layout{
+		Blocks: []Block{
+			{BlockType: "logo_header", Content: map[string]any{"brand_label": float64(1000000)}},
+		},
+	}
+	out, err := Render(context.Background(), layout, tmpl, nil)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(out, "1000000") {
+		t.Errorf("numeric binding did not render as a plain integer:\n%s", out)
+	}
+	if strings.Contains(out, "1e+06") {
+		t.Errorf("numeric binding rendered in scientific notation:\n%s", out)
+	}
+}
+
 func TestRender_RespectsContextCancellation(t *testing.T) {
 	tmpl := loadTestTemplates(t)
 	layout := Layout{

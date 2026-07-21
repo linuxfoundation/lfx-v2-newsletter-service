@@ -8,6 +8,7 @@ import (
 	"html"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	nethtml "golang.org/x/net/html"
@@ -222,6 +223,13 @@ func lookupString(content map[string]any, path string) string {
 		return ""
 	case string:
 		return t
+	case float64:
+		// JSON numbers decode into map[string]any as float64, and fmt's %v
+		// switches float64 to exponent form at magnitudes >= 1e6 — so a count of
+		// 1000000 would render as "1e+06" in the sent email. Format without an
+		// exponent and drop any trailing zeros (-1 precision) so integers stay
+		// integers and fractions keep their significant digits.
+		return strconv.FormatFloat(t, 'f', -1, 64)
 	default:
 		return fmt.Sprintf("%v", t)
 	}
