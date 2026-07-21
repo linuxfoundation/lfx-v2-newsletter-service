@@ -109,6 +109,7 @@ func (h *Handler) Routes() http.Handler {
 
 	// Newsletter opt-outs — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletter-opt-outs", h.withAuth(http.HandlerFunc(h.ListOptOuts)))
+	mux.Handle("DELETE /projects/{project_uid}/newsletter-opt-outs/{opt_out_id}", h.withAuth(http.HandlerFunc(h.DeleteOptOut)))
 
 	// Open tracking pixel — intentionally unauthenticated; requested by the
 	// recipient's email client which has no session. Identity comes from the

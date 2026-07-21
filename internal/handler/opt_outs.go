@@ -28,9 +28,28 @@ func (h *Handler) ListOptOuts(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, u := range unsubscribes {
 		out.OptOuts = append(out.OptOuts, publicapi.OptOut{
+			ID:             u.ID.String(),
 			Email:          u.Email,
 			UnsubscribedAt: u.CreatedAt,
 		})
 	}
 	writeJSON(r.Context(), w, http.StatusOK, out)
+}
+
+// DeleteOptOut handles DELETE /projects/{project_uid}/newsletter-opt-outs/{opt_out_id}.
+//
+// Deletes a single opt-out entry. Returns 204 No Content on success.
+// Returns 404 for unknown id or project mismatch, 400 for a malformed UUID.
+func (h *Handler) DeleteOptOut(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
+	id, err := parseUUID(r.PathValue("opt_out_id"))
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+	if err := h.unsub.DeleteOptOut(r.Context(), projectUID, id); err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -72,10 +72,11 @@ When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 `ruleset.yaml` authentication and authorization:
 
 - Most authenticated project routes (newsletter CRUD, analytics, etc.) authenticate via OIDC and fall back to `allow_all` when `openfga.enabled=false`. When OpenFGA is enabled, these routes enforce `viewer` (read) or `writer` (write) roles.
-- The opt-out list endpoint (`/projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor` role and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` or OpenFGA is misconfigured — that is intentional for PII security.
+- The opt-out list endpoint (`GET /projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor` role and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` or OpenFGA is misconfigured — that is intentional for PII security.
+- The opt-out delete endpoint (`DELETE /projects/{project_uid}/newsletter-opt-outs/{opt_out_id}`) mutates a user's consent record and is **always fail-closed**: it uses direct `openfga_check` with the `writer` role and does NOT have an `allow_all` fallback, matching the security posture of the list endpoint.
 - The open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` are intentionally unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
 
-`openfga.enabled=false` is the default. When false, most routes still work via `allow_all`, but the opt-out endpoint becomes unreachable. Enable OpenFGA to access the opt-out list endpoint.
+`openfga.enabled=false` is the default. When false, most routes still work via `allow_all`, but the opt-out endpoints become unreachable. Enable OpenFGA to access the opt-out list and delete endpoints.
 
 ## Local Development
 

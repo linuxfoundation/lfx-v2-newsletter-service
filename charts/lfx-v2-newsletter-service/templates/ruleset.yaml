@@ -291,6 +291,29 @@ spec:
             values:
               aud: {{ .Values.app.audience }}
 
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:opt_outs_delete"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - DELETE
+        routes:
+          - path: /projects/:project_uid/newsletter-opt-outs/:opt_out_id
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
     # Per-newsletter analytics.
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:analytics"
