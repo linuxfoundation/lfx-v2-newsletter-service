@@ -57,7 +57,7 @@ Core state:
 | `project_uid` | Owning project UID (also in the URL path). |
 | `subject` | Subject line. |
 | `body_html` | Newsletter HTML body. For layout-based newsletters this is derived from `body_layout` on write (see below); for legacy newsletters it is the authored HTML. |
-| `body_layout` | Optional `NewsletterLayout` — the editor's structured layout. Returned **only by single-resource responses** (get / create / update) and **only** for layout-based newsletters (`omitempty` for legacy / html-only rows). The **list** endpoint always omits it: `NewsletterListItem` clears `body_layout` on every row regardless of type, so list consumers must never rely on receiving it — fetch the single resource when the structured layout is needed. |
+| `body_layout` | Optional `NewsletterLayout` — the editor's structured layout. Returned **only by the editable single-resource reads** (get / create / update) and **only** for layout-based newsletters (`omitempty` for legacy / html-only rows). The **list** and **send** responses always omit it (`NewsletterListItem` and the send transition clear `body_layout` on every row regardless of type), so those consumers must never rely on receiving it — fetch the single resource when the structured layout is needed. |
 | `ed_reply_email` | Reply-to address. |
 | `committee_uids` | Committees used for recipient resolution. |
 | `status` | `draft`, `sending`, or `sent`. |

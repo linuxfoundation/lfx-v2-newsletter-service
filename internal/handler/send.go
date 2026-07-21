@@ -123,8 +123,15 @@ func toAPISendResponse(ctx context.Context, result *service.SendResult) publicap
 	for _, f := range result.Failures {
 		failures = append(failures, publicapi.SendFailure{Email: f.Email, Error: f.Error})
 	}
+	newsletter := toAPINewsletter(ctx, result.Newsletter)
+	// The send response echoes the newsletter's post-send state (status, counts),
+	// not its editable content. Omit body_layout here — as list rows do — so the
+	// structured layout is carried only by the explicit get / create / update
+	// single-resource reads (see docs/newsletter-service-contract.md). The client
+	// already holds the layout it just sent.
+	newsletter.BodyLayout = nil
 	return publicapi.SendNewsletterResponse{
-		Newsletter:      *toAPINewsletter(ctx, result.Newsletter),
+		Newsletter:      *newsletter,
 		GroupID:         result.GroupID,
 		TotalRecipients: result.TotalRecipients,
 		Sent:            result.Sent,
