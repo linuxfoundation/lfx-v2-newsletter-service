@@ -108,8 +108,11 @@ app:
     # AAIF account), add that domain here AND to email-service's
     # SMTP_ALLOWED_REPLY_TO_DOMAINS, or the resolved address is silently
     # dropped in favor of the fallback. Empty falls back to the app default
-    # ("linuxfoundation.org").
-    replyToAllowedDomains: ""
+    # ("linuxfoundation.org"). aaif.io covers AAIF senders whose auth-service
+    # account isn't on the linuxfoundation.org domain, mirroring
+    # fromAddressOverrides above; requires "aaif.io" in email-service's
+    # SMTP_ALLOWED_REPLY_TO_DOMAINS too.
+    replyToAllowedDomains: "linuxfoundation.org,aaif.io"
 
   # unsubscribe configures the per-recipient one-click opt-out link
   # embedded in the email footer. publicBaseURL is the externally-reachable
