@@ -5,6 +5,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
+	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
 
 type stubUnsubRepo struct {
@@ -148,10 +150,12 @@ func TestListOptOutsInvalidProject(t *testing.T) {
 }
 
 func TestListOptOutsWithData(t *testing.T) {
+	aliceID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	bobID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	repo := &testOptOutRepo{
 		optOuts: []*model.NewsletterUnsubscribe{
-			{Email: "alice@example.com", CreatedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
-			{Email: "bob@example.com", CreatedAt: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)},
+			{ID: aliceID, Email: "alice@example.com", CreatedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+			{ID: bobID, Email: "bob@example.com", CreatedAt: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)},
 		},
 	}
 	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
@@ -171,6 +175,24 @@ func TestListOptOutsWithData(t *testing.T) {
 	}
 	if !strings.Contains(body, "2024-01-01") || !strings.Contains(body, "2024-01-02") {
 		t.Errorf("body missing expected timestamps: %s", body)
+	}
+	// The id is the contract clients use with the DELETE endpoint — decode
+	// and assert it round-trips per entry, not just that some id appears.
+	var decoded publicapi.OptOutListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(decoded.OptOuts) != 2 {
+		t.Fatalf("len(opt_outs) = %d, want 2", len(decoded.OptOuts))
+	}
+	wantIDs := map[string]string{
+		"alice@example.com": aliceID.String(),
+		"bob@example.com":   bobID.String(),
+	}
+	for _, o := range decoded.OptOuts {
+		if o.ID != wantIDs[o.Email] {
+			t.Errorf("id for %s = %q, want %q", o.Email, o.ID, wantIDs[o.Email])
+		}
 	}
 	// Verify the requested project_uid was passed to the repository
 	if repo.lastProjectUID != "proj-1" {
@@ -249,9 +271,11 @@ func TestListOptOutsProjectScope(t *testing.T) {
 
 // testOptOutRepo is a test stub that tracks the projectUID requested and returns canned opt-out data.
 type testOptOutRepo struct {
-	optOuts        []*model.NewsletterUnsubscribe
-	lastProjectUID string
-	returnErr      error
+	optOuts              []*model.NewsletterUnsubscribe
+	lastProjectUID       string
+	lastDeleteProjectUID string
+	lastDeleteID         uuid.UUID
+	returnErr            error
 }
 
 func (t *testOptOutRepo) CreateUnsubscribe(_ context.Context, projectUID, email string) error {
@@ -267,7 +291,9 @@ func (t *testOptOutRepo) ListUnsubscribes(ctx context.Context, projectUID string
 	}
 	return t.optOuts, nil
 }
-func (t *testOptOutRepo) DeleteUnsubscribe(_ context.Context, _ string, _ uuid.UUID) error {
+func (t *testOptOutRepo) DeleteUnsubscribe(_ context.Context, projectUID string, id uuid.UUID) error {
+	t.lastDeleteProjectUID = projectUID
+	t.lastDeleteID = id
 	if t.returnErr != nil {
 		return t.returnErr
 	}
@@ -281,15 +307,23 @@ func TestDeleteOptOutSuccess(t *testing.T) {
 	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
 	h := &Handler{unsub: unsub}
 
-	testID := uuid.New().String()
-	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/newsletter-opt-outs/"+testID, nil)
+	testID := uuid.New()
+	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/newsletter-opt-outs/"+testID.String(), nil)
 	req.SetPathValue("project_uid", "proj-1")
-	req.SetPathValue("opt_out_id", testID)
+	req.SetPathValue("opt_out_id", testID.String())
 	w := httptest.NewRecorder()
 	h.DeleteOptOut(w, req)
 
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204, body=%s", w.Code, w.Body.String())
+	}
+	// Project scoping is the boundary that stops one project from deleting
+	// another project's opt-out — assert both values reach the repository.
+	if repo.lastDeleteProjectUID != "proj-1" {
+		t.Errorf("repo.lastDeleteProjectUID = %q, want proj-1", repo.lastDeleteProjectUID)
+	}
+	if repo.lastDeleteID != testID {
+		t.Errorf("repo.lastDeleteID = %s, want %s", repo.lastDeleteID, testID)
 	}
 }
 
