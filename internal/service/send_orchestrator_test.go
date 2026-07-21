@@ -282,6 +282,20 @@ func (f *fakeUserMetadataReader) Name(_ context.Context, _ string) (string, erro
 	return f.name, f.err
 }
 
+// fakeUserEmailReader stands in for the auth-service user_emails.read NATS
+// client. Mirrors fakeUserMetadataReader's shape: the orchestrator only calls
+// it when a Principal is provided, so existing tests that leave Principal
+// empty (or never wire UserEmail at all) exercise the ed_reply_email fallback
+// path without ever touching this fake.
+type fakeUserEmailReader struct {
+	email string
+	err   error
+}
+
+func (f *fakeUserEmailReader) PrimaryEmail(_ context.Context, _ string) (string, error) {
+	return f.email, f.err
+}
+
 // ---- helpers --------------------------------------------------------------
 
 func newTestOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService) *SendOrchestrator {
@@ -305,6 +319,23 @@ func newTestOrchestratorWithUser(repo *fakeNewsletterRepo, committee *fakeCommit
 		Project:       &fakeProjectClient{},
 		Email:         email,
 		UserMetadata:  user,
+		Unsubscribe:   unsub,
+		Concurrency:   2,
+		FanoutEnabled: true,
+	})
+}
+
+// newTestOrchestratorWithUserEmail wires a fake UserMetadataReader and a fake
+// UserEmailReader so tests can drive both the sender-name and sender-email
+// auth-service lookups deterministically.
+func newTestOrchestratorWithUserEmail(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService, user port.UserMetadataReader, userEmail port.UserEmailReader) *SendOrchestrator {
+	return NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Committee:     committee,
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		UserMetadata:  user,
+		UserEmail:     userEmail,
 		Unsubscribe:   unsub,
 		Concurrency:   2,
 		FanoutEnabled: true,
@@ -547,6 +578,140 @@ func TestSendNewsletterUsesAuthServiceName(t *testing.T) {
 		if s.FromDisplayName != "Jane Doe" {
 			t.Errorf("send to %s: FromDisplayName=%q, want %q", s.To, s.FromDisplayName, "Jane Doe")
 		}
+	}
+}
+
+// TestSendNewsletterReplyToUsesSenderEmail asserts that when a Principal
+// resolves to a primary email via UserEmailReader, that address — not the
+// drafter's stored ed_reply_email — is stamped as ReplyTo on every
+// per-recipient envelope.
+func TestSendNewsletterReplyToUsesSenderEmail(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{name: "Jim Zemlin"}
+	userEmail := &fakeUserEmailReader{email: "jzemlin@linuxfoundation.org"}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
+
+	// draft.EDReplyEmail defaults to "ed@example.com" (the drafter's stored
+	// value) — distinct from the sender's resolved email below, so the
+	// assertion below only passes if ReplyTo genuinely tracks the sender.
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+		Principal:    "auth0|jzemlin",
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 2 {
+		t.Fatalf("got %d sends, want 2", len(email.sends))
+	}
+	for _, s := range email.sends {
+		if s.ReplyTo != "jzemlin@linuxfoundation.org" {
+			t.Errorf("send to %s: ReplyTo=%q, want %q (sender), not drafter", s.To, s.ReplyTo, "jzemlin@linuxfoundation.org")
+		}
+	}
+}
+
+// TestSendNewsletterReplyToFallsBackOnEmptyPrincipal asserts that with no
+// Principal (dev mode / auth disabled), ReplyTo falls back to the draft's
+// stored ed_reply_email exactly as before this fix.
+func TestSendNewsletterReplyToFallsBackOnEmptyPrincipal(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	userEmail := &fakeUserEmailReader{email: "jzemlin@linuxfoundation.org"}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, nil, userEmail)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if email.sends[0].ReplyTo != draft.EDReplyEmail {
+		t.Errorf("ReplyTo=%q, want fallback %q", email.sends[0].ReplyTo, draft.EDReplyEmail)
+	}
+}
+
+// TestSendNewsletterReplyToFallsBackOnResolverError asserts that a
+// UserEmailReader failure is non-fatal: the send proceeds and ReplyTo falls
+// back to the draft's stored ed_reply_email rather than blocking the send
+// (unlike sender-name resolution, which does block).
+func TestSendNewsletterReplyToFallsBackOnResolverError(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{name: "Jim Zemlin"}
+	userEmail := &fakeUserEmailReader{err: errors.New("auth-service unavailable")}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+		Principal:    "auth0|jzemlin",
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if email.sends[0].ReplyTo != draft.EDReplyEmail {
+		t.Errorf("ReplyTo=%q, want fallback %q", email.sends[0].ReplyTo, draft.EDReplyEmail)
+	}
+}
+
+// TestSendNewsletterReplyToFallsBackOnInvalidEmail asserts that an
+// unparseable address from UserEmailReader is treated the same as a resolver
+// error: fall back to ed_reply_email rather than propagating a malformed
+// Reply-To header.
+func TestSendNewsletterReplyToFallsBackOnInvalidEmail(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{name: "Jim Zemlin"}
+	userEmail := &fakeUserEmailReader{email: "not-an-email"}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+		Principal:    "auth0|jzemlin",
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if email.sends[0].ReplyTo != draft.EDReplyEmail {
+		t.Errorf("ReplyTo=%q, want fallback %q", email.sends[0].ReplyTo, draft.EDReplyEmail)
 	}
 }
 

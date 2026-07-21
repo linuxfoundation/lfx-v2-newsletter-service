@@ -34,4 +34,14 @@ const (
 	// extracted from the inbound JWT. Response: JSON { success, data: { name,
 	// given_name, family_name, ... } }. See lfx-v2-auth-service/docs/user_metadata.md.
 	AuthUserMetadataReadSubject = "lfx.auth-service.user_metadata.read"
+
+	// AuthUserEmailsReadSubject resolves a user's primary (and alternate) email
+	// addresses from auth-service. Request payload: JSON
+	// { "user": { "auth_token": "<principal>" } }, where auth_token accepts the
+	// validated principal extracted from the inbound JWT (a JWT/Authelia token,
+	// subject identifier, or LFID username — auth-service auto-detects).
+	// Response: JSON { success, data: { primary_email, alternate_emails } }.
+	// Mirrors lfx-v2-committee-service's EmailsByAuthToken pattern. See
+	// lfx-v2-auth-service/docs/subjects/user_emails.md.
+	AuthUserEmailsReadSubject = "lfx.auth-service.user_emails.read"
 )

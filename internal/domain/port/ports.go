@@ -121,6 +121,16 @@ type UserMetadataReader interface {
 	Name(ctx context.Context, principal string) (string, error)
 }
 
+// UserEmailReader resolves the authenticated user's primary email address by
+// their JWT principal. Backed by the NATS subject
+// `lfx.auth-service.user_emails.read` (lfx-v2-auth-service). Used to derive
+// the send-time Reply-To address from the same principal that drives the
+// From display name, so a newsletter's reply-to always tracks whoever sends
+// it rather than whoever last saved the draft.
+type UserEmailReader interface {
+	PrimaryEmail(ctx context.Context, principal string) (string, error)
+}
+
 // SendEmailInput is one per-recipient send envelope dispatched to email-service.
 //
 // From, FromDisplayName, and ReplyTo are optional: when empty, email-service

@@ -55,6 +55,7 @@ type SendOrchestrator struct {
 	project       port.ProjectMetadataClient
 	email         port.EmailDispatcher
 	userMetadata  port.UserMetadataReader
+	userEmail     port.UserEmailReader
 	unsub         *UnsubscribeService
 	concurrency   int
 	fanoutEnabled bool
@@ -73,8 +74,12 @@ type SendOrchestratorConfig struct {
 	Project      port.ProjectMetadataClient
 	Email        port.EmailDispatcher
 	UserMetadata port.UserMetadataReader
-	Unsubscribe  *UnsubscribeService
-	Concurrency  int
+	// UserEmail resolves the sender's primary email by principal, used to
+	// derive the send-time Reply-To address. Nil is tolerated (e.g. tests) —
+	// resolveSenderEmail falls back to the draft's stored ed_reply_email.
+	UserEmail   port.UserEmailReader
+	Unsubscribe *UnsubscribeService
+	Concurrency int
 	// FanoutEnabled is the feature toggle for the per-recipient send loop.
 	// Defaults to true; flip false in environments where we want to validate
 	// the recipient-resolution path without sending real mail.
@@ -127,6 +132,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		project:       cfg.Project,
 		email:         cfg.Email,
 		userMetadata:  cfg.UserMetadata,
+		userEmail:     cfg.UserEmail,
 		unsub:         cfg.Unsubscribe,
 		concurrency:   c,
 		fanoutEnabled: cfg.FanoutEnabled,
@@ -217,6 +223,12 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	if fromDisplayName == "" {
 		fromDisplayName = projectName + fromDisplayNameSuffix
 	}
+	// Reply-To tracks whoever is sending, not whoever last saved the draft:
+	// the same principal drives both the From display name and the Reply-To
+	// address, so a recipient's reply always reaches the actual sender.
+	// draft.EDReplyEmail (the drafter's address, captured at save time) is
+	// only a fallback for dev mode or a resolution failure.
+	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), draft.EDReplyEmail)
 
 	chrome := render.Chrome{
 		Subject:                 draft.Subject,
@@ -224,7 +236,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		DisplayName:             projectName,
 		IncludeComplianceFooter: true,
 		EDName:                  fallbackString(senderName, "Executive Director"),
-		EDReplyEmail:            draft.EDReplyEmail,
+		EDReplyEmail:            replyTo,
 	}
 	if o.unsub.Enabled() {
 		chrome.UnsubscribeURL = UnsubscribeURLPlaceholder
@@ -240,7 +252,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		Text:            textBody,
 		From:            o.resolveFromAddress(ctx, draft.ProjectUID),
 		FromDisplayName: fromDisplayName,
-		ReplyTo:         draft.EDReplyEmail,
+		ReplyTo:         replyTo,
 		GroupID:         groupID,
 	}
 
@@ -715,6 +727,41 @@ func (o *SendOrchestrator) resolveSenderName(ctx context.Context, principal stri
 		return "", pkgerrors.NewUnexpected(fmt.Sprintf("invalid sender display name from auth-service: %v", err))
 	}
 	return parsed.Name, nil
+}
+
+// resolveSenderEmail looks up the sender's primary email from auth-service
+// using the validated JWT principal, so Reply-To can track whoever is
+// actually sending rather than the drafter recorded in
+// draft.EDReplyEmail. Unlike resolveSenderName, failure here is
+// non-fatal: an empty principal (dev mode), an unconfigured UserEmail
+// client, an auth-service error, or an unparseable address all fall back
+// to "" so the caller substitutes draft.EDReplyEmail — a newsletter should
+// still send even if the sender's own email can't be resolved.
+func (o *SendOrchestrator) resolveSenderEmail(ctx context.Context, principal string) string {
+	if strings.TrimSpace(principal) == "" {
+		return ""
+	}
+	if o.userEmail == nil {
+		return ""
+	}
+	email, err := o.userEmail.PrimaryEmail(ctx, principal)
+	if err != nil {
+		slog.WarnContext(ctx, "reply-to: sender email resolution failed, falling back to stored ed_reply_email",
+			"error", err,
+		)
+		return ""
+	}
+	trimmed := strings.TrimSpace(email)
+	if trimmed == "" {
+		return ""
+	}
+	if _, err := mail.ParseAddress(trimmed); err != nil {
+		slog.WarnContext(ctx, "reply-to: sender email from auth-service failed RFC 5322 validation, falling back to stored ed_reply_email",
+			"error", err,
+		)
+		return ""
+	}
+	return trimmed
 }
 
 // resolveFromAddress returns the project-specific From override keyed by the

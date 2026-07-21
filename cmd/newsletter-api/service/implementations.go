@@ -123,6 +123,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		Project:              projectClient,
 		Email:                emailDispatcher,
 		UserMetadata:         userMetadataClient,
+		UserEmail:            userMetadataClient,
 		Unsubscribe:          unsubSvc,
 		Concurrency:          cfg.SendConcurrency,
 		FanoutEnabled:        cfg.SendFanoutEnabled,
