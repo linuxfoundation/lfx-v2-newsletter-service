@@ -48,6 +48,7 @@ Read the relevant contract before changing `pkg/api`, handlers, database schema,
 - Project name/slug over NATS (`lfx.projects-api.get_name` / `get_slug`): `lfx-v2-project-service`
 - Email send and engagement tracking over NATS (`lfx.email-service.*`): `lfx-v2-email-service/docs/email-service-contract.md`
 - Sender display name over NATS (`lfx.auth-service.user_metadata.read`): `lfx-v2-auth-service/docs/user_metadata.md`
+- Sender primary email over NATS (`lfx.auth-service.user_emails.read`), used to resolve send-time Reply-To: `lfx-v2-auth-service/docs/subjects/user_emails.md`
 - Shared service chart conventions: `lfx-v2-helm/docs/service-chart-patterns.md`
 - Deployed values, image tags, database secrets, ExternalSecret wiring: `lfx-v2-argocd`
 
@@ -116,7 +117,7 @@ internal/infrastructure/
 │   ├── committee_client.go   # lfx.committee-api.list_members
 │   ├── project_client.go     # lfx.projects-api.get_name / get_slug
 │   ├── email_dispatcher.go   # lfx.email-service.send_email + engagement analytics
-│   └── user_metadata_client.go # lfx.auth-service.user_metadata.read
+│   └── user_metadata_client.go # lfx.auth-service.user_metadata.read + lfx.auth-service.user_emails.read
 └── upstream/                 # Retired HTTP client package (placeholder only)
 
 pkg/api/
@@ -244,5 +245,5 @@ Every `.go` file must start with:
 | `lfx-v2-committee-service` | Source of committee member emails (`lfx.committee-api.list_members` NATS) |
 | `lfx-v2-project-service`   | Project name/slug lookup (`lfx.projects-api.get_name` / `get_slug` NATS)  |
 | `lfx-v2-email-service`     | Per-recipient send fan-out and engagement analytics (NATS)                |
-| `lfx-v2-auth-service`      | Sender display-name lookup (`lfx.auth-service.user_metadata.read` NATS)   |
+| `lfx-v2-auth-service`      | Sender display-name and primary-email lookup (`lfx.auth-service.user_metadata.read` / `user_emails.read` NATS) |
 | LFX UI / Self Serve        | HTTP consumer of this service's project-scoped newsletter API             |

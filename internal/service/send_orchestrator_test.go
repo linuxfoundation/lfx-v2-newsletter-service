@@ -715,6 +715,40 @@ func TestSendNewsletterReplyToFallsBackOnInvalidEmail(t *testing.T) {
 	}
 }
 
+// TestSendNewsletterReplyToFallsBackOnDisallowedDomain asserts that a
+// well-formed sender email whose domain is outside the Reply-To allowlist
+// (default: linuxfoundation.org) falls back to draft.EDReplyEmail instead of
+// being used verbatim — email-service would otherwise reject the entire
+// fan-out with "reply_to address domain not allowed".
+func TestSendNewsletterReplyToFallsBackOnDisallowedDomain(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{name: "Jim Zemlin"}
+	userEmail := &fakeUserEmailReader{email: "jzemlin@gmail.com"}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+		Principal:    "auth0|jzemlin",
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if email.sends[0].ReplyTo != draft.EDReplyEmail {
+		t.Errorf("ReplyTo=%q, want fallback %q", email.sends[0].ReplyTo, draft.EDReplyEmail)
+	}
+}
+
 // TestSendNewsletterValidatesAuthServiceName asserts the orchestrator delegates
 // safety of the resolved sender name to net/mail.ParseAddress: well-formed
 // names are accepted (whitespace trimmed), an all-whitespace value falls back

@@ -41,6 +41,12 @@ const persistTimeout = 30 * time.Second
 // always sets one through SendOrchestratorConfig.
 const defaultFromAddress = "newsletter@lfx.linuxfoundation.org"
 
+// defaultReplyToAllowedDomains mirrors lfx-v2-email-service's default
+// SMTP_ALLOWED_REPLY_TO_DOMAINS, used when the orchestrator is constructed
+// without an explicit ReplyToAllowedDomains (e.g. tests). Production wiring
+// always sets this through SendOrchestratorConfig from AppConfig.
+var defaultReplyToAllowedDomains = []string{"linuxfoundation.org"}
+
 // fromDisplayNameSuffix is appended to the project name to build the From
 // display name, yielding e.g. "Kubernetes Newsletter".
 const fromDisplayNameSuffix = " Newsletter"
@@ -61,7 +67,12 @@ type SendOrchestrator struct {
 	fanoutEnabled bool
 	fromAddress   string
 	fromOverrides map[string]string
-	jobTimeout    time.Duration
+	// replyToAllowedDomains gates resolveSenderEmail's output: a resolved
+	// address outside these domains (suffix-matched) is dropped in favor of
+	// the draft.EDReplyEmail fallback, so we never hand email-service a
+	// reply_to it will reject outright (see ReplyToAllowedDomains doc).
+	replyToAllowedDomains []string
+	jobTimeout            time.Duration
 	// jobs tracks detached background send goroutines so graceful shutdown
 	// (and tests) can wait for in-flight fan-outs via Drain.
 	jobs sync.WaitGroup
@@ -91,6 +102,11 @@ type SendOrchestratorConfig struct {
 	// From address used for that project, overriding FromAddress. Nil/empty
 	// means every project uses FromAddress.
 	FromAddressOverrides map[string]string
+	// ReplyToAllowedDomains lists the domains a resolved sender email may use
+	// as Reply-To; a resolved address outside this list falls back to
+	// draft.EDReplyEmail (see resolveSenderEmail). Empty defaults to
+	// defaultReplyToAllowedDomains ("linuxfoundation.org").
+	ReplyToAllowedDomains []string
 	// SendJobTimeout bounds the detached background fan-out that runs after a
 	// send is accepted. Zero falls back to defaultSendJobTimeout.
 	//
@@ -122,23 +138,38 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		}
 		overrides[slug] = addr
 	}
+	// Normalize the reply-to allowlist the same way; empty config falls back
+	// to the email-service default rather than an empty (reject-everything)
+	// list.
+	var replyToDomains []string
+	for _, domain := range cfg.ReplyToAllowedDomains {
+		domain = strings.ToLower(strings.TrimSpace(domain))
+		if domain == "" {
+			continue
+		}
+		replyToDomains = append(replyToDomains, domain)
+	}
+	if len(replyToDomains) == 0 {
+		replyToDomains = defaultReplyToAllowedDomains
+	}
 	jobTimeout := cfg.SendJobTimeout
 	if jobTimeout <= 0 {
 		jobTimeout = defaultSendJobTimeout
 	}
 	return &SendOrchestrator{
-		repo:          cfg.Repo,
-		committee:     cfg.Committee,
-		project:       cfg.Project,
-		email:         cfg.Email,
-		userMetadata:  cfg.UserMetadata,
-		userEmail:     cfg.UserEmail,
-		unsub:         cfg.Unsubscribe,
-		concurrency:   c,
-		fanoutEnabled: cfg.FanoutEnabled,
-		fromAddress:   from,
-		fromOverrides: overrides,
-		jobTimeout:    jobTimeout,
+		repo:                  cfg.Repo,
+		committee:             cfg.Committee,
+		project:               cfg.Project,
+		email:                 cfg.Email,
+		userMetadata:          cfg.UserMetadata,
+		userEmail:             cfg.UserEmail,
+		unsub:                 cfg.Unsubscribe,
+		concurrency:           c,
+		fanoutEnabled:         cfg.FanoutEnabled,
+		fromAddress:           from,
+		fromOverrides:         overrides,
+		replyToAllowedDomains: replyToDomains,
+		jobTimeout:            jobTimeout,
 	}
 }
 
@@ -761,7 +792,39 @@ func (o *SendOrchestrator) resolveSenderEmail(ctx context.Context, principal str
 		)
 		return ""
 	}
+	if !domainAllowed(trimmed, o.replyToAllowedDomains) {
+		slog.WarnContext(ctx, "reply-to: sender email domain not in allowed reply-to domains, falling back to stored ed_reply_email",
+			"domain", domainOf(trimmed),
+		)
+		return ""
+	}
 	return trimmed
+}
+
+// domainOf returns the lowercased domain portion of an email address, or ""
+// if the address has no "@".
+func domainOf(email string) string {
+	_, domain, ok := strings.Cut(email, "@")
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(domain)
+}
+
+// domainAllowed reports whether email's domain is in allowed, either exactly
+// or as a subdomain (suffix match), mirroring lfx-v2-email-service's
+// SMTP_ALLOWED_REPLY_TO_DOMAINS matching.
+func domainAllowed(email string, allowed []string) bool {
+	domain := domainOf(email)
+	if domain == "" {
+		return false
+	}
+	for _, a := range allowed {
+		if domain == a || strings.HasSuffix(domain, "."+a) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveFromAddress returns the project-specific From override keyed by the
