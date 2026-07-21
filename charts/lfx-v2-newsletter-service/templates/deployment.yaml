@@ -8,6 +8,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "lfx-v2-newsletter-service.labels" . | nindent 4 }}
+  {{- with .Values.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:

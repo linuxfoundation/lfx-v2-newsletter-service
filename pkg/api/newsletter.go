@@ -326,6 +326,7 @@ type NewsletterAnalytics struct {
 
 // OptOut is a single entry in the newsletter opt-outs list.
 type OptOut struct {
+	ID             string    `json:"id"`
 	Email          string    `json:"email"`
 	UnsubscribedAt time.Time `json:"unsubscribed_at"`
 }

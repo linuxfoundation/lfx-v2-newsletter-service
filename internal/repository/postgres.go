@@ -447,6 +447,26 @@ func (r *PostgresNewsletterRepo) ListUnsubscribes(ctx context.Context, projectUI
 	return rows, nil
 }
 
+// DeleteUnsubscribe deletes a single opt-out record. If the id does not exist
+// or belongs to a different project, returns domain.ErrNotFound.
+func (r *PostgresNewsletterRepo) DeleteUnsubscribe(ctx context.Context, projectUID string, id uuid.UUID) error {
+	result, err := r.db.NewDelete().
+		Model((*model.NewsletterUnsubscribe)(nil)).
+		Where("id = ? AND project_uid = ?", id, projectUID).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("delete unsubscribe: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete unsubscribe: %w", err)
+	}
+	if rows == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 // classifyMissing distinguishes ErrNotFound from ErrVersionMismatch after an
 // Update affected zero rows.
 func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UUID) error {
