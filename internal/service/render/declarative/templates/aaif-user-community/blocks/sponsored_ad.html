@@ -1,11 +1,11 @@
 <!-- Copyright The Linux Foundation and each contributor to LFX. -->
 <!-- SPDX-License-Identifier: MIT -->
-<!-- SCHEMA: { "sponsor_name":{"type":"text","label":"Sponsor name"}, "headline":{"type":"text","label":"Headline"}, "image_url":{"type":"image","label":"Image"}, "image_link":{"type":"text","label":"Image click link"}, "body":{"type":"richtext","label":"Body"}, "cta_text":{"type":"text","label":"CTA text"}, "cta_link":{"type":"text","label":"CTA link"} } -->
+<!-- SCHEMA: { "sponsor_name":{"type":"text","label":"Sponsor name"}, "headline":{"type":"text","label":"Headline"}, "image_url":{"type":"image","label":"Image"}, "image_alt":{"type":"text","label":"Image alt text (accessibility)","default":"Sponsored content"}, "image_link":{"type":"text","label":"Image click link"}, "body":{"type":"richtext","label":"Body"}, "cta_text":{"type":"text","label":"CTA text"}, "cta_link":{"type":"text","label":"CTA link"} } -->
 <Section class="card">
   <div style="padding:15px 15px 5px">
     <Text class="eyebrow" style="text-transform:uppercase">PRESENTED BY {{sponsor_name}}</Text>
     <Heading if="headline" style="margin:0 0 10px;font-size:23px;font-weight:bold;color:#555;line-height:1.2">{{headline}}</Heading>
-    <Link if="image_url" href="{{image_link}}"><Img src="{{image_url}}" alt="" style="display:block;width:100%;max-width:100%;height:auto;border:0" /></Link>
+    <Link if="image_url" href="{{image_link}}"><Img src="{{image_url}}" alt="{{image_alt}}" style="display:block;width:100%;max-width:100%;height:auto;border:0" /></Link>
     <richtext field="body" class="body" />
     <Text if="cta_text" class="body" style="margin-top:12px"><strong><Link href="{{cta_link}}" class="link">{{cta_text}}</Link></strong></Text>
   </div>

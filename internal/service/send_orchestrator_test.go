@@ -1404,6 +1404,136 @@ func TestSendNewsletterLayoutReRendersFooterAtSendTime(t *testing.T) {
 	}
 }
 
+// TestSendNewsletterRefusesCorruptLayoutWhenUnsubscribeEnabled is the
+// compliance guard's negative case: when a layout newsletter's stored
+// BodyLayout can no longer be re-rendered (here: corrupt JSON) AND unsubscribe
+// is ENABLED, the send must REFUSE rather than fall back to the persisted
+// body_html. That persisted body may predate the unsubscribe requirement and
+// carry no opt-out row — the exact CAN-SPAM gap the send-time re-render exists
+// to close. The row must stay a draft and NO email may be dispatched.
+func TestSendNewsletterRefusesCorruptLayoutWhenUnsubscribeEnabled(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	if !unsub.Enabled() {
+		t.Fatalf("precondition: unsubscribe service should be enabled")
+	}
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := &model.Newsletter{
+		ID:         uuid.New(),
+		ProjectUID: "p1",
+		Subject:    "Compliance",
+		// A persisted body_html that would send WITHOUT an opt-out row if the
+		// send ever fell back to it — the compliance gap we must not ship.
+		BodyHTML: `<!DOCTYPE html><html><body>STALE_NO_OPTOUT</body></html>`,
+		// Corrupt stored layout: json.Unmarshal fails inside reRenderLayoutBody,
+		// so the re-render returns ok=false and the caller must refuse.
+		BodyLayout:    json.RawMessage(`{"blocks": [ this is not valid json`),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		Status:        model.StatusDraft,
+		Version:       1,
+	}
+	repo.drafts[draft.ID] = draft
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if err == nil {
+		t.Fatalf("expected SendNewsletter to refuse a corrupt layout while unsubscribe is enabled, got nil error")
+	}
+	orch.Drain(ctx)
+
+	if len(email.sends) != 0 {
+		t.Fatalf("refused send dispatched %d emails, want 0", len(email.sends))
+	}
+	// The row stays a draft for retry — never advanced to sending/sent.
+	if got := repo.get(draft.ID); got.Status != model.StatusDraft {
+		t.Fatalf("refused send left status %q, want %q (must stay a draft for retry)", got.Status, model.StatusDraft)
+	}
+}
+
+// TestSendNewsletterFallsBackOnCorruptLayoutWhenUnsubscribeDisabled is the
+// companion to the refusal case: with unsubscribe DISABLED the persisted body
+// carries no opt-out row to go stale, so a re-render failure is non-fatal — the
+// send falls back to the persisted body_html rather than stranding a deliverable
+// newsletter with no self-service recovery.
+func TestSendNewsletterFallsBackOnCorruptLayoutWhenUnsubscribeDisabled(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	// Unsubscribe DISABLED: empty secret and baseURL → Enabled() == false.
+	unsub := NewUnsubscribeService(repo, nil, "")
+	if unsub.Enabled() {
+		t.Fatalf("precondition: unsubscribe service should be disabled")
+	}
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := &model.Newsletter{
+		ID:            uuid.New(),
+		ProjectUID:    "p1",
+		Subject:       "Fallback",
+		BodyHTML:      `<!DOCTYPE html><html><body>PERSISTED_FALLBACK_BODY</body></html>`,
+		BodyLayout:    json.RawMessage(`{"blocks": [ still not valid json`),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		Status:        model.StatusDraft,
+		Version:       1,
+	}
+	repo.drafts[draft.ID] = draft
+
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter should fall back (not refuse) with unsubscribe disabled: %v", err)
+	}
+	orch.Drain(ctx)
+
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1 (fallback to persisted body)", len(email.sends))
+	}
+	if !strings.Contains(email.sends[0].HTML, "PERSISTED_FALLBACK_BODY") {
+		t.Errorf("fallback send did not dispatch the persisted body_html: %s", email.sends[0].HTML)
+	}
+}
+
+// TestTestSendRejectsIsLayoutWithoutBodyLayout proves a layout test send must
+// carry the structured body_layout. Accepting is_layout + a precompiled
+// body_html would dispatch it verbatim and, after substituting the per-recipient
+// unsubscribe sentinel to empty (a test send mints no real token), leave a
+// visible dangling <a href="">Unsubscribe</a>. The request is rejected with
+// ErrInvalidRequest and no email is dispatched.
+func TestTestSendRejectsIsLayoutWithoutBodyLayout(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		ToEmail:    "tester@example.com",
+		IsLayout:   true,
+		BodyHTML:   `<a href="%%UNSUBSCRIBE_URL%%">Unsubscribe</a>`,
+		// BodyLayout deliberately nil — the unsupported precompiled mode.
+	})
+	if err == nil {
+		t.Fatalf("expected TestSend to reject is_layout without body_layout")
+	}
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Errorf("expected ErrInvalidRequest, got %v", err)
+	}
+	if len(email.sends) != 0 {
+		t.Fatalf("rejected test send dispatched %d emails, want 0", len(email.sends))
+	}
+}
+
 // TestSendNewsletterLegacyStillUsesChrome asserts the legacy (no-layout) path is
 // unchanged: the body is wrapped in the email_chrome envelope, complete with
 // the header eyebrow and compliance footer.
@@ -1446,57 +1576,12 @@ func TestSendNewsletterLegacyStillUsesChrome(t *testing.T) {
 	}
 }
 
-// TestTestSendLayoutNotDoubleWrapped asserts the test-send path honours the
-// same layout branch: IsLayout=true dispatches body_html directly (no chrome)
-// with the placeholders bound for the single test recipient.
-func TestTestSendLayoutNotDoubleWrapped(t *testing.T) {
-	ctx := context.Background()
-	repo := newFakeRepo()
-	committee := &fakeCommitteeClient{}
-	email := &fakeEmailDispatcher{}
-	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
-	orch := newTestOrchestrator(repo, committee, email, unsub)
-
-	layoutHTML := `<!DOCTYPE html><html><body>` +
-		`<div id="emitter-content">Emitter body</div>` +
-		`<a href="` + UnsubscribeURLPlaceholder + `">Unsubscribe</a>` +
-		`<a href="` + ManageSubscriptionsURLPlaceholder + `">Manage</a>` +
-		`<a href="` + ViewOnlineURLPlaceholder + `">View Online</a>` +
-		`</body></html>`
-
-	if err := orch.TestSend(ctx, TestSendInput{
-		ProjectUID: "p1",
-		Subject:    "Hello",
-		BodyHTML:   layoutHTML,
-		ToEmail:    "tester@example.com",
-		IsLayout:   true,
-	}); err != nil {
-		t.Fatalf("TestSend: %v", err)
-	}
-	if len(email.sends) != 1 {
-		t.Fatalf("got %d sends, want 1", len(email.sends))
-	}
-	s := email.sends[0]
-	if !strings.Contains(s.HTML, "Emitter body") {
-		t.Errorf("test-send layout missing emitter content: %s", s.HTML)
-	}
-	for _, marker := range chromeEnvelopeMarkers {
-		if strings.Contains(s.HTML, marker) {
-			t.Errorf("test-send layout double-wrapped: chrome marker %q present: %s", marker, s.HTML)
-		}
-	}
-	// A test send never mints a real signed unsubscribe token (BodyHTML and
-	// ToEmail are caller-supplied): all runtime sentinels resolve empty.
-	notWanted := unsub.BuildURL("p1", "tester@example.com")
-	if strings.Contains(s.HTML, notWanted) {
-		t.Errorf("test-send must not embed a real unsubscribe token: %s", s.HTML)
-	}
-	for _, ph := range []string{UnsubscribeURLPlaceholder, ManageSubscriptionsURLPlaceholder, ViewOnlineURLPlaceholder} {
-		if strings.Contains(s.HTML, ph) {
-			t.Errorf("test-send: sentinel %q not substituted: %s", ph, s.HTML)
-		}
-	}
-}
+// The precompiled is_layout + body_html test-send mode (no structured
+// body_layout) is no longer supported — it is rejected by TestSend, covered by
+// TestTestSendRejectsIsLayoutWithoutBodyLayout, because binding its per-recipient
+// unsubscribe sentinel to empty left a visible dangling <a href="">Unsubscribe</a>.
+// The not-double-wrapped guarantee for the supported (body_layout) path is
+// covered by TestTestSendLayoutSuppressesUnsubscribeFooter below.
 
 // TestTestSendLayoutSuppressesUnsubscribeFooter asserts that a layout test send
 // driven by a structured BodyLayout recompiles server-side with the unsubscribe

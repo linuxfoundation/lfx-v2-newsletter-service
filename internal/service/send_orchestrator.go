@@ -339,21 +339,28 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 //
 // FALLBACK (ok=false): on any failure — an unparseable stored layout, a block
 // type no longer present in the template set, or an MJML compile error — it
-// logs a warning and returns ok=false so the caller dispatches the persisted
-// draft.BodyHTML instead of hard-failing the send. Rationale: the persisted
-// body already passed validation at write time and IS deliverable, so refusing
-// to send a newsletter whose layout later became unrenderable (e.g. a template
-// library changed under it) would strand an otherwise valid send with no
-// self-service recovery. The stale-footer risk this guards against only
-// materializes in the rarer compound case — a re-render failure AND an
-// unsubscribe-config flip in the same window — and the warning log surfaces it
-// for operators. This mirrors the orchestrator's other non-fatal degradations
-// (resolveFromAddress logs and uses the default From rather than blocking the
-// send).
+// logs a warning and returns ok=false. What the CALLER does with ok=false is
+// unsubscribe-config-dependent (see SendNewsletter):
+//
+//   - Unsubscribe DISABLED: the caller dispatches the persisted draft.BodyHTML.
+//     That body already passed validation at write time and IS deliverable, and
+//     with unsubscribe off it carries no opt-out row to go stale, so refusing to
+//     send a newsletter whose layout later became unrenderable (e.g. a template
+//     library changed under it) would strand an otherwise valid send with no
+//     self-service recovery.
+//   - Unsubscribe ENABLED: the caller REFUSES the send (returns an error) rather
+//     than fall back. The persisted body may predate the unsubscribe requirement
+//     (rendered with no opt-out row), so dispatching it would risk the exact
+//     CAN-SPAM gap the send-time re-render exists to close. The row reverts to
+//     draft for retry once the stored layout is renderable again.
+//
+// Either way this helper only logs and signals ok=false; the compliance decision
+// lives at the call site. The warning surfaces the degradation for operators,
+// mirroring the orchestrator's other non-fatal signals (e.g. resolveFromAddress).
 func (o *SendOrchestrator) reRenderLayoutBody(ctx context.Context, draft *model.Newsletter) (string, bool) {
 	var layout declarative.Layout
 	if err := json.Unmarshal(draft.BodyLayout, &layout); err != nil {
-		slog.WarnContext(ctx, "newsletter send: stored body_layout unparseable; dispatching persisted body_html, whose compliance footer may reflect write-time config",
+		slog.WarnContext(ctx, "newsletter send: stored body_layout unparseable; caller refuses the send when unsubscribe is enabled, else dispatches persisted body_html whose compliance footer may reflect write-time config",
 			"newsletter_id", draft.ID,
 			"project_uid", draft.ProjectUID,
 			"error", err,
@@ -366,7 +373,7 @@ func (o *SendOrchestrator) reRenderLayoutBody(ctx context.Context, draft *model.
 	// this same HTML, so the two stay consistent.
 	html, _, err := renderLayout(ctx, &layout, draft.EDReplyEmail, o.unsub.Enabled())
 	if err != nil {
-		slog.WarnContext(ctx, "newsletter send: body_layout re-render failed; dispatching persisted body_html, whose compliance footer may reflect write-time config",
+		slog.WarnContext(ctx, "newsletter send: body_layout re-render failed; caller refuses the send when unsubscribe is enabled, else dispatches persisted body_html whose compliance footer may reflect write-time config",
 			"newsletter_id", draft.ID,
 			"project_uid", draft.ProjectUID,
 			"error", err,
@@ -514,6 +521,16 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	}
 	if _, err := mail.ParseAddress(strings.TrimSpace(in.ToEmail)); err != nil {
 		return fmt.Errorf("%w: to_email is not a valid email: %v", domain.ErrInvalidRequest, err)
+	}
+
+	// A layout test send MUST supply the structured body_layout so the server can
+	// recompile with the compliance/unsubscribe footer suppressed. Accepting a
+	// pre-compiled is_layout body_html instead would dispatch it verbatim, and
+	// substituting its per-recipient unsubscribe sentinel to empty (a test send
+	// mints no real token) would leave a visible dangling <a href="">Unsubscribe</a>.
+	// Reject that mode rather than ship a broken opt-out row to the tester.
+	if in.IsLayout && in.BodyLayout == nil {
+		return fmt.Errorf("%w: a layout test send requires body_layout so the compliance footer can be recompiled and suppressed; is_layout with only body_html is not supported", domain.ErrInvalidRequest)
 	}
 
 	// A layout test send recompiles server-side from the structured layout with

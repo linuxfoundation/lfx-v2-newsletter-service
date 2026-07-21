@@ -1,9 +1,6 @@
 <!-- Copyright The Linux Foundation and each contributor to LFX. -->
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SCHEMA: { "header_title":{"type":"text","label":"Header"}, "jobs":{"type":"array","label":"Jobs","fields":{"job_title":{"type":"text"},"company":{"type":"text"},"location":{"type":"text"},"apply_link":{"type":"text"},"description":{"type":"richtext"}}}, "jobs_board_url":{"type":"text","label":"Jobs board URL"} } -->
-<!-- TODO(LFXV2-2760): the schema advertises jobs_board_url but this template
-     never renders it (no "View all jobs" link/button). Wiring it up is a
-     template-structure change deferred to AAIF template finalization. -->
 <Section style="background-color:#d7d7d7;border-collapse:separate;border-radius:15px;width:650px;max-width:650px;margin:0 auto 20px;color:#000">
   <div style="padding:15px">
     <Text class="eyebrow">{{header_title}}</Text>
@@ -11,5 +8,6 @@
       <Text style="margin:0 0 10px 0;font-size:18px;font-weight:bold;color:#000"><Link href="{{apply_link}}" class="link">{{job_title}}</Link> // {{company}} // {{location}}</Text>
       <richtext field="description" class="body" />
     </div>
+    <Text if="jobs_board_url" style="margin:4px 0 0 0;font-weight:bold"><Link href="{{jobs_board_url}}" class="link">View all jobs</Link></Text>
   </div>
 </Section>
