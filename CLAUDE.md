@@ -77,7 +77,7 @@ cmd/newsletter-api/
 internal/domain/
 ├── model/                    # Pure data: Newsletter, Status, CommitteeMember, Unsubscribe
 ├── port/                     # Interfaces: NewsletterRepository, CommitteeClient, ProjectMetadataClient, EmailDispatcher, UserMetadataReader
-└── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent, ErrSendInProgress
+└── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent, ErrSendInProgress, ErrEmailNotDispatched, ErrEmailServiceUnreachable
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
@@ -215,8 +215,8 @@ All `os.Getenv` calls belong in `cmd/newsletter-api/service/config.go` →
 4. Register the route in `internal/handler/http.go`.
 
 ### Error handling
-- Domain errors live in `internal/domain/errors.go` (`ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrSendInProgress`).
-- Map domain errors to HTTP status codes in `internal/handler/http.go`.
+- Domain errors live in `internal/domain/errors.go` (`ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrSendInProgress`, `ErrEmailNotDispatched`, `ErrEmailServiceUnreachable`).
+- Map domain errors to HTTP status codes in `internal/handler/http.go`. `ErrEmailNotDispatched` and `ErrEmailServiceUnreachable` are different in kind: they exist to drive fan-out policy (retry-safety and the outage fail-fast), not transport mapping, so `classifyError` does not switch on them. They can still reach it — `/test-send` dispatches inline and returns the dispatcher error — but the status comes from the typed `pkgerrors.ServiceUnavailable` preserved in the same chain, which maps to 503.
 - Always pass `ctx` for OTel trace correlation.
 
 ### Logging

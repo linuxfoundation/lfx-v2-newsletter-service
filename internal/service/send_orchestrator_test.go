@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -1192,5 +1193,603 @@ func TestDraftGuardsWhileSending(t *testing.T) {
 
 	if err := svc.DeleteDraft(ctx, "p1", draft.ID); !errors.Is(err, domain.ErrSendInProgress) {
 		t.Fatalf("DeleteDraft while sending: got err=%v, want ErrSendInProgress", err)
+	}
+}
+
+// ---- dispatch retry ----------------------------------------------------------
+
+// scriptedEmailDispatcher fails SendEmail with the queued errs in order (one
+// per attempt); once they run out it fails with alwaysErr when set, otherwise
+// it delegates to the embedded fake (success). It counts every attempt so
+// retry tests can assert exactly how many dispatches were issued. onFail, when
+// set, runs after each scripted failure — used to cancel the context between
+// an attempt and its backoff wait.
+type scriptedEmailDispatcher struct {
+	fakeEmailDispatcher
+	scriptMu  sync.Mutex
+	errs      []error
+	alwaysErr error
+	attempts  int
+	onFail    func(attempt int)
+}
+
+func (s *scriptedEmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
+	s.scriptMu.Lock()
+	s.attempts++
+	attempt := s.attempts
+	err := s.alwaysErr
+	if len(s.errs) > 0 {
+		err = s.errs[0]
+		s.errs = s.errs[1:]
+	}
+	hook := s.onFail
+	s.scriptMu.Unlock()
+	if err != nil {
+		if hook != nil {
+			hook(attempt)
+		}
+		return "", err
+	}
+	return s.fakeEmailDispatcher.SendEmail(ctx, in)
+}
+
+func (s *scriptedEmailDispatcher) attemptCount() int {
+	s.scriptMu.Lock()
+	defer s.scriptMu.Unlock()
+	return s.attempts
+}
+
+// retryableDispatchErr builds a failure tagged retry-safe, mirroring the shape
+// the NATS dispatcher produces for explicit error replies and no-responders.
+func retryableDispatchErr(msg string) error {
+	return fmt.Errorf("%s: %w", msg, domain.ErrEmailNotDispatched)
+}
+
+// newRetryOrchestrator wires an orchestrator with a millisecond retry backoff
+// so retry-path tests stay fast.
+func newRetryOrchestrator(email port.EmailDispatcher) *SendOrchestrator {
+	o := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          newFakeRepo(),
+		Committee:     &fakeCommitteeClient{},
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		Concurrency:   2,
+		FanoutEnabled: true,
+	})
+	o.retryBackoff = time.Millisecond
+	return o
+}
+
+func testSendInput(to string) port.SendEmailInput {
+	return port.SendEmailInput{To: to, Subject: "s", HTML: "<p>b</p>", Text: "b", GroupID: "g1"}
+}
+
+// TestDispatchWithRetrySucceedsAfterRetryableFailures asserts a recipient that
+// fails retry-safely twice is delivered on the third (final) attempt.
+func TestDispatchWithRetrySucceedsAfterRetryableFailures(t *testing.T) {
+	email := &scriptedEmailDispatcher{errs: []error{
+		retryableDispatchErr("first"),
+		retryableDispatchErr("second"),
+	}}
+	orch := newRetryOrchestrator(email)
+
+	exhausted, err := orch.dispatchWithRetry(context.Background(), testSendInput("alice@example.com"))
+	if err != nil {
+		t.Fatalf("dispatchWithRetry: %v, want success on final attempt", err)
+	}
+	if exhausted {
+		t.Fatalf("exhausted=true on success, want false")
+	}
+	if got := email.attemptCount(); got != 3 {
+		t.Fatalf("attempts=%d, want 3", got)
+	}
+}
+
+// TestDispatchWithRetryDoesNotRetryAmbiguousFailures asserts the retry-safety
+// boundary: failures that do not prove the email was never dispatched (request
+// timeout, cancelled context, generic transport errors) are terminal on the
+// first attempt — email-service has no idempotency key, so retrying them could
+// double-send.
+func TestDispatchWithRetryDoesNotRetryAmbiguousFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"request timeout", pkgerrors.NewServiceUnavailable("NATS request failed", context.DeadlineExceeded)},
+		{"cancelled context", pkgerrors.NewServiceUnavailable("NATS request failed", context.Canceled)},
+		{"generic transport error", errors.New("email-service unreachable")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			email := &scriptedEmailDispatcher{errs: []error{tc.err, tc.err, tc.err}}
+			orch := newRetryOrchestrator(email)
+
+			exhausted, err := orch.dispatchWithRetry(context.Background(), testSendInput("alice@example.com"))
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("dispatchWithRetry err=%v, want the original dispatch error", err)
+			}
+			if exhausted {
+				t.Fatalf("exhausted=true for a terminal-on-first-failure error, want false")
+			}
+			if got := email.attemptCount(); got != 1 {
+				t.Fatalf("attempts=%d, want 1 (ambiguous failures must not be retried)", got)
+			}
+		})
+	}
+}
+
+// TestDispatchWithRetryExhaustionReturnsLastError asserts a recipient failing
+// retry-safely on every attempt is dispatched exactly dispatchMaxAttempts
+// times and surfaces the final attempt's error.
+func TestDispatchWithRetryExhaustionReturnsLastError(t *testing.T) {
+	email := &scriptedEmailDispatcher{errs: []error{
+		retryableDispatchErr("first"),
+		retryableDispatchErr("second"),
+		retryableDispatchErr("third"),
+	}}
+	orch := newRetryOrchestrator(email)
+
+	exhausted, err := orch.dispatchWithRetry(context.Background(), testSendInput("alice@example.com"))
+	if err == nil {
+		t.Fatalf("dispatchWithRetry succeeded, want exhaustion")
+	}
+	if !exhausted {
+		t.Fatalf("exhausted=false after spending every attempt, want true")
+	}
+	if got := email.attemptCount(); got != dispatchMaxAttempts {
+		t.Fatalf("attempts=%d, want %d", got, dispatchMaxAttempts)
+	}
+	if !strings.Contains(err.Error(), "third") {
+		t.Fatalf("err=%q, want the last attempt's error", err)
+	}
+}
+
+// TestDispatchWithRetryCtxCancelledMidBackoff asserts a context cancelled
+// during the backoff wait aborts the remaining retries promptly and surfaces
+// the last dispatch error (not the winding-down context) to failure
+// accounting.
+func TestDispatchWithRetryCtxCancelledMidBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	email := &scriptedEmailDispatcher{
+		errs:   []error{retryableDispatchErr("email-service rejected")},
+		onFail: func(int) { cancel() },
+	}
+	orch := newRetryOrchestrator(email)
+	orch.retryBackoff = 30 * time.Second // cancellation must win, not the timer
+
+	start := time.Now()
+	exhausted, err := orch.dispatchWithRetry(ctx, testSendInput("alice@example.com"))
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("dispatchWithRetry blocked %v in backoff after cancel", elapsed)
+	}
+	if !errors.Is(err, domain.ErrEmailNotDispatched) || !strings.Contains(err.Error(), "email-service rejected") {
+		t.Fatalf("err=%v, want the last dispatch error", err)
+	}
+	if exhausted {
+		t.Fatalf("exhausted=true after ctx cancellation cut retries short, want false")
+	}
+	if got := email.attemptCount(); got != 1 {
+		t.Fatalf("attempts=%d, want 1 (no retry after cancellation)", got)
+	}
+}
+
+// perRecipientDispatcher fails every attempt for failAddr and succeeds for all
+// other recipients, tracking attempts per address. failErr overrides the
+// failure; it defaults to a retry-safe rejection.
+type perRecipientDispatcher struct {
+	fakeEmailDispatcher
+	failAddr string
+	failErr  error
+	countMu  sync.Mutex
+	perAddr  map[string]int
+}
+
+func (p *perRecipientDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
+	p.countMu.Lock()
+	if p.perAddr == nil {
+		p.perAddr = make(map[string]int)
+	}
+	p.perAddr[in.To]++
+	p.countMu.Unlock()
+	if in.To == p.failAddr {
+		if p.failErr != nil {
+			return "", p.failErr
+		}
+		return "", retryableDispatchErr("email-service rejected")
+	}
+	return p.fakeEmailDispatcher.SendEmail(ctx, in)
+}
+
+func (p *perRecipientDispatcher) attemptsFor(addr string) int {
+	p.countMu.Lock()
+	defer p.countMu.Unlock()
+	return p.perAddr[addr]
+}
+
+// TestFanOutRetryAccounting asserts failure accounting is unchanged by the
+// retry loop: an exhausted recipient counts as failed exactly once with the
+// last error, a first-attempt success is dispatched exactly once, and the
+// concurrency-capped worker owns all attempts for its recipient.
+func TestFanOutRetryAccounting(t *testing.T) {
+	email := &perRecipientDispatcher{failAddr: "alice@example.com"}
+	orch := newRetryOrchestrator(email)
+
+	sent, failed, failures := orch.fanOut(context.Background(), "p1", []model.CommitteeMember{
+		{Email: "alice@example.com"},
+		{Email: "bob@example.com"},
+	}, emailEnvelope{Subject: "s", HTML: "<p>b</p>", Text: "b", GroupID: "g1"})
+
+	if sent != 1 || failed != 1 {
+		t.Fatalf("sent=%d failed=%d, want 1/1", sent, failed)
+	}
+	if len(failures) != 1 || failures[0].Email != "alice@example.com" {
+		t.Fatalf("failures=%v, want exactly one entry for alice (failed recipients count once, after the final attempt)", failures)
+	}
+	if !strings.Contains(failures[0].Error, "email-service rejected") {
+		t.Fatalf("failure error=%q, want the last dispatch error", failures[0].Error)
+	}
+	if got := email.attemptsFor("alice@example.com"); got != dispatchMaxAttempts {
+		t.Fatalf("alice attempts=%d, want %d", got, dispatchMaxAttempts)
+	}
+	if got := email.attemptsFor("bob@example.com"); got != 1 {
+		t.Fatalf("bob attempts=%d, want 1 (no retry on success)", got)
+	}
+}
+
+// ---- systemic outage fail-fast ----------------------------------------------
+
+// unreachableDispatchErr builds a failure carrying both sentinels the NATS
+// dispatcher attaches to a no-responders condition: retry-safe, and
+// authoritative proof email-service is not subscribed to the send subject.
+// That the real dispatcher emits both is pinned by TestClassifySendRequestError
+// in the nats package — this helper only mirrors the shape.
+func unreachableDispatchErr(msg string) error {
+	return fmt.Errorf("%s: %w: %w", msg, domain.ErrEmailNotDispatched, domain.ErrEmailServiceUnreachable)
+}
+
+// waitFor receives from ch with a deadline, so a behavioral regression surfaces
+// as a named failure rather than a package-wide hang.
+func waitFor(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// TestFanOutOutageSkipsRecipientsNotYetDispatched asserts the fail-fast: the
+// first recipient spends its full attempt budget proving email-service has no
+// responders, and every recipient after it is skipped without a single
+// dispatch attempt — the whole point being not to burn the job timeout
+// delivering nothing.
+func TestFanOutOutageSkipsRecipientsNotYetDispatched(t *testing.T) {
+	email := &scriptedEmailDispatcher{alwaysErr: unreachableDispatchErr("no responders")}
+	orch := newRetryOrchestrator(email)
+	orch.concurrency = 1 // serialize so the trip provably precedes the rest
+
+	sent, failed, failures := orch.fanOut(context.Background(), "p1", []model.CommitteeMember{
+		{Email: "alice@example.com"},
+		{Email: "bob@example.com"},
+		{Email: "carol@example.com"},
+	}, emailEnvelope{Subject: "s", HTML: "<p>b</p>", Text: "b", GroupID: "g1"})
+
+	if sent != 0 || failed != 3 {
+		t.Fatalf("sent=%d failed=%d, want 0/3", sent, failed)
+	}
+	// Only the recipient that tripped the outage may spend attempts.
+	if got := email.attemptCount(); got != dispatchMaxAttempts {
+		t.Fatalf("total attempts=%d, want %d (only the tripping recipient dispatches)", got, dispatchMaxAttempts)
+	}
+	if len(failures) != 3 {
+		t.Fatalf("failures=%d, want 3", len(failures))
+	}
+	if failures[0].Email != "alice@example.com" || failures[0].Error == outageSkipReason {
+		t.Fatalf("failures[0]=%+v, want the tripping recipient recorded with its dispatch error", failures[0])
+	}
+	for _, f := range failures[1:] {
+		if f.Error != outageSkipReason {
+			t.Fatalf("failure for %s recorded %q, want %q", f.Email, f.Error, outageSkipReason)
+		}
+	}
+}
+
+// TestFanOutOutageDoesNotTripOnRecoveredBlip asserts a no-responders blip that
+// the retry rides out leaves the rest of the list dispatching normally — the
+// outage must follow from a subject that stays dead, not from one failure.
+//
+// Scope, honestly stated: a ridden-out blip ends in err == nil, so it is the
+// error check alone that rejects the trip here — this test does not exercise
+// the `exhausted` guard. That guard is pinned by
+// TestFanOutOutageRequiresExhaustionNotMerelyUnreachable at this level, and by
+// TestDispatchWithRetryCtxCancelledOnUnreachableReportsNotExhausted one level
+// down.
+func TestFanOutOutageDoesNotTripOnRecoveredBlip(t *testing.T) {
+	email := &scriptedEmailDispatcher{errs: []error{unreachableDispatchErr("momentary blip")}}
+	orch := newRetryOrchestrator(email)
+	orch.concurrency = 1
+
+	sent, failed, failures := orch.fanOut(context.Background(), "p1", []model.CommitteeMember{
+		{Email: "alice@example.com"},
+		{Email: "bob@example.com"},
+	}, emailEnvelope{Subject: "s", HTML: "<p>b</p>", Text: "b", GroupID: "g1"})
+
+	if sent != 2 || failed != 0 {
+		t.Fatalf("sent=%d failed=%d failures=%v, want 2/0 (a ridden-out blip must not trip the outage)", sent, failed, failures)
+	}
+	// alice: 1 failed attempt + 1 success; bob: 1 success.
+	if got := email.attemptCount(); got != 3 {
+		t.Fatalf("attempts=%d, want 3", got)
+	}
+}
+
+// outageMixDispatcher parks the "inflight" recipient inside SendEmail until
+// released, while every other recipient fails with no-responders. It lets a
+// test hold one dispatch in flight across the moment the outage trips.
+type outageMixDispatcher struct {
+	fakeEmailDispatcher
+	inflightAddr string
+	release      chan struct{}
+	started      chan struct{}
+	countMu      sync.Mutex
+	perAddr      map[string]int
+}
+
+func (d *outageMixDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
+	d.countMu.Lock()
+	if d.perAddr == nil {
+		d.perAddr = make(map[string]int)
+	}
+	d.perAddr[in.To]++
+	d.countMu.Unlock()
+	if in.To == d.inflightAddr {
+		select {
+		case d.started <- struct{}{}:
+		default:
+		}
+		<-d.release
+		return d.fakeEmailDispatcher.SendEmail(ctx, in)
+	}
+	return "", unreachableDispatchErr("no responders")
+}
+
+func (d *outageMixDispatcher) attemptsFor(addr string) int {
+	d.countMu.Lock()
+	defer d.countMu.Unlock()
+	return d.perAddr[addr]
+}
+
+// TestFanOutOutageLeavesInFlightDispatchUntouched asserts an outage declared
+// while another dispatch is parked mid-flight neither cancels, retries, nor
+// fails that dispatch: it completes on its own terms and counts as sent. The
+// fan-out has no mechanism to interrupt a running worker, and this pins that.
+//
+// Determinism rests on the onOutageTripped seam, which fires after the trip is
+// committed: the parked dispatch is released only once the outage provably
+// exists, so it is proven to have spanned the trip.
+//
+// Scope, honestly stated: with both recipients slotted from the start there is
+// no queued worker here, so this test does not exercise the skip branch — that
+// is covered by TestFanOutOutageSkipsRecipientsNotYetDispatched (skip when
+// nothing has been delivered) and TestFanOutOutageDoesNotSkipAfterAnyDelivery-
+// Succeeded (no skip once a delivery has landed). Adding a queued recipient
+// here would race: whether it skips legitimately depends on whether the parked
+// success has landed first.
+func TestFanOutOutageLeavesInFlightDispatchUntouched(t *testing.T) {
+	email := &outageMixDispatcher{
+		inflightAddr: "inflight@example.com",
+		release:      make(chan struct{}),
+		started:      make(chan struct{}, 1),
+	}
+	orch := newRetryOrchestrator(email)
+	orch.concurrency = 2 // one slot each: neither waits on the other
+	tripped := make(chan struct{})
+	orch.onOutageTripped = func() { close(tripped) }
+
+	type result struct {
+		sent, failed int
+		failures     []SendFailure
+	}
+	done := make(chan result, 1)
+	go func() {
+		s, f, fs := orch.fanOut(context.Background(), "p1", []model.CommitteeMember{
+			{Email: "dead@example.com"},
+			{Email: "inflight@example.com"},
+		}, emailEnvelope{Subject: "s", HTML: "<p>b</p>", Text: "b", GroupID: "g1"})
+		done <- result{s, f, fs}
+	}()
+
+	// Bounded waits: a regression in the trip must fail this test by name, not
+	// hang until the package-wide timeout buries the signal in a goroutine dump.
+	waitFor(t, email.started, "the in-flight dispatch to park")
+	waitFor(t, tripped, "the outage to trip")
+	close(email.release) // only now can it finish, provably after the trip
+	got := <-done
+
+	if got.sent != 1 || got.failed != 1 {
+		t.Fatalf("sent=%d failed=%d, want 1/1 (the in-flight dispatch must still land)", got.sent, got.failed)
+	}
+	if n := email.attemptsFor("inflight@example.com"); n != 1 {
+		t.Fatalf("in-flight recipient attempts=%d, want 1 (the outage must not retry, cancel, or re-drive it)", n)
+	}
+	if n := email.attemptsFor("dead@example.com"); n != dispatchMaxAttempts {
+		t.Fatalf("tripping recipient attempts=%d, want %d", n, dispatchMaxAttempts)
+	}
+	if len(got.failures) != 1 || got.failures[0].Email != "dead@example.com" {
+		t.Fatalf("failures=%+v, want only the tripping recipient (the parked dispatch must not be failed or skipped by the trip)", got.failures)
+	}
+}
+
+// TestSendNewsletterOutageRevertsToDraft asserts the settle logic is untouched
+// by the fail-fast: an outage that skips every recipient is still a total
+// failure, so the row reverts to draft — the cleanly re-sendable state, and
+// the reason stopping early beats dribbling out partial deliveries.
+func TestSendNewsletterOutageRevertsToDraft(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}, {Email: "carol@example.com"}},
+	}}
+	email := &scriptedEmailDispatcher{alwaysErr: unreachableDispatchErr("no responders")}
+	orch := newGatedOrchestrator(repo, committee, email)
+	orch.retryBackoff = time.Millisecond
+	orch.concurrency = 1
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+
+	got := repo.get(draft.ID)
+	if got.Status != model.StatusDraft {
+		t.Fatalf("outage send settled to %q, want %q (retry path)", got.Status, model.StatusDraft)
+	}
+	if got.GroupID != nil || got.TotalRecipients != 0 || got.SentAt != nil {
+		t.Fatalf("revert did not clear send-time fields: group_id=%v total=%d sent_at=%v", got.GroupID, got.TotalRecipients, got.SentAt)
+	}
+	// Only the tripping recipient dispatched; the rest were skipped.
+	if n := email.attemptCount(); n != dispatchMaxAttempts {
+		t.Fatalf("attempts=%d, want %d (outage must skip the undispatched recipients)", n, dispatchMaxAttempts)
+	}
+}
+
+// TestDispatchWithRetryCtxCancelledOnUnreachableReportsNotExhausted pins the
+// producer side of the `exhausted` signal for the cancellation route: a
+// no-responders failure whose retries ctx cancellation cut short must not
+// report exhaustion, since fanOut would otherwise be free to read it as proof
+// of a systemic outage.
+//
+// This route is not reachable through fanOut deterministically (a cancelled
+// ctx also stops the parent loop acquiring slots), so it is pinned here. The
+// guard's effect at fan-out level is covered by
+// TestFanOutOutageRequiresExhaustionNotMerelyUnreachable.
+func TestDispatchWithRetryCtxCancelledOnUnreachableReportsNotExhausted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	email := &scriptedEmailDispatcher{
+		alwaysErr: unreachableDispatchErr("no responders"),
+		onFail:    func(int) { cancel() },
+	}
+	orch := newRetryOrchestrator(email)
+	orch.retryBackoff = 30 * time.Second // cancellation must win, not the timer
+
+	exhausted, err := orch.dispatchWithRetry(ctx, testSendInput("alice@example.com"))
+	if !errors.Is(err, domain.ErrEmailServiceUnreachable) {
+		t.Fatalf("err=%v, want the no-responders dispatch error", err)
+	}
+	if exhausted {
+		t.Fatalf("exhausted=true after cancellation cut the retries short, want false (would trip the outage off one attempt)")
+	}
+	if got := email.attemptCount(); got != 1 {
+		t.Fatalf("attempts=%d, want 1", got)
+	}
+}
+
+// unreachableOnlyDispatcher fails failAddr with an error carrying
+// ErrEmailServiceUnreachable but NOT ErrEmailNotDispatched — violating the
+// "always accompanies" invariant documented on the sentinel. That combination
+// is precisely what the fan-out's `exhausted` guard defends against: the retry
+// gate returns such an error immediately (not retry-safe, so not exhausted),
+// and without the guard the errors.Is check alone would declare a systemic
+// outage off a single attempt.
+type unreachableOnlyDispatcher struct {
+	fakeEmailDispatcher
+	failAddr string
+	countMu  sync.Mutex
+	perAddr  map[string]int
+}
+
+func (d *unreachableOnlyDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
+	d.countMu.Lock()
+	if d.perAddr == nil {
+		d.perAddr = make(map[string]int)
+	}
+	d.perAddr[in.To]++
+	d.countMu.Unlock()
+	if in.To == d.failAddr {
+		return "", fmt.Errorf("unreachable but not tagged undispatched: %w", domain.ErrEmailServiceUnreachable)
+	}
+	return d.fakeEmailDispatcher.SendEmail(ctx, in)
+}
+
+func (d *unreachableOnlyDispatcher) attemptsFor(addr string) int {
+	d.countMu.Lock()
+	defer d.countMu.Unlock()
+	return d.perAddr[addr]
+}
+
+// TestFanOutOutageRequiresExhaustionNotMerelyUnreachable pins the `exhausted`
+// guard at the fan-out level: an unreachable-tagged failure that never spent
+// its attempt budget must not declare an outage. Without the guard, one
+// non-retry-safe failure would skip every remaining recipient of a send that
+// email-service is answering perfectly well.
+func TestFanOutOutageRequiresExhaustionNotMerelyUnreachable(t *testing.T) {
+	email := &unreachableOnlyDispatcher{failAddr: "bad@example.com"}
+	orch := newRetryOrchestrator(email)
+	orch.concurrency = 1 // serialize: "later" is dispatched strictly after "bad"
+
+	sent, failed, failures := orch.fanOut(context.Background(), "p1", []model.CommitteeMember{
+		{Email: "bad@example.com"},
+		{Email: "later@example.com"},
+	}, emailEnvelope{Subject: "s", HTML: "<p>b</p>", Text: "b", GroupID: "g1"})
+
+	// Not retry-safe, so it fails on the first attempt and never exhausts.
+	if n := email.attemptsFor("bad@example.com"); n != 1 {
+		t.Fatalf("failing recipient attempts=%d, want 1", n)
+	}
+	// The load-bearing assertion: the guard rejects the trip, so the next
+	// recipient is still dispatched rather than skipped.
+	if n := email.attemptsFor("later@example.com"); n != 1 {
+		t.Fatalf("later recipient attempts=%d, want 1 (a non-exhausted unreachable failure must not trip the outage)", n)
+	}
+	if sent != 1 || failed != 1 {
+		t.Fatalf("sent=%d failed=%d, want 1/1", sent, failed)
+	}
+	for _, f := range failures {
+		if f.Error == outageSkipReason {
+			t.Fatalf("recipient %s was skipped for an outage that must not have tripped", f.Email)
+		}
+	}
+}
+
+// TestFanOutOutageDoesNotSkipAfterAnyDeliverySucceeded pins the boundary the
+// outage skip must not cross. Once a recipient has been delivered to,
+// runSendJob will mark the row sent (sent > 0), so a skip from that point
+// strands the remaining recipients on a newsletter permanently recorded as
+// sent — the unrecoverable outcome the fail-fast exists to avoid. Since
+// no-responders is only a point-in-time fact, those recipients are dispatched
+// instead.
+//
+// Ordering is deterministic at concurrency 1: "good" is delivered, then "dead"
+// trips the outage, then "later" is dispatched — not skipped — because a
+// delivery has already landed.
+func TestFanOutOutageDoesNotSkipAfterAnyDeliverySucceeded(t *testing.T) {
+	email := &perRecipientDispatcher{failAddr: "dead@example.com", failErr: unreachableDispatchErr("no responders")}
+	orch := newRetryOrchestrator(email)
+	orch.concurrency = 1
+
+	sent, failed, failures := orch.fanOut(context.Background(), "p1", []model.CommitteeMember{
+		{Email: "good@example.com"},
+		{Email: "dead@example.com"},
+		{Email: "later@example.com"},
+	}, emailEnvelope{Subject: "s", HTML: "<p>b</p>", Text: "b", GroupID: "g1"})
+
+	if n := email.attemptsFor("dead@example.com"); n != dispatchMaxAttempts {
+		t.Fatalf("tripping recipient attempts=%d, want %d", n, dispatchMaxAttempts)
+	}
+	// The load-bearing assertion: the outage tripped, but a delivery had
+	// already landed, so the queued recipient must still be dispatched.
+	if n := email.attemptsFor("later@example.com"); n != 1 {
+		t.Fatalf("later recipient attempts=%d, want 1 (must not be skipped once a delivery has landed — the row will be marked sent regardless)", n)
+	}
+	if sent != 2 || failed != 1 {
+		t.Fatalf("sent=%d failed=%d, want 2/1", sent, failed)
+	}
+	for _, f := range failures {
+		if f.Error == outageSkipReason {
+			t.Fatalf("recipient %s skipped after a delivery had already succeeded", f.Email)
+		}
 	}
 }

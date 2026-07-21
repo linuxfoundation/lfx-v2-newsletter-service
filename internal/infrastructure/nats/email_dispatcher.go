@@ -11,7 +11,9 @@ import (
 	"time"
 
 	emailapi "github.com/linuxfoundation/lfx-v2-email-service/pkg/api"
+	"github.com/nats-io/nats.go"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
@@ -129,7 +131,7 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 	}
 	reply, err := d.client.Request(ctx, EmailServiceSendEmailSubject, data)
 	if err != nil {
-		return "", err
+		return "", classifySendRequestError(err)
 	}
 	if len(reply) == 0 {
 		// Email-service convention: empty reply means accepted with no
@@ -145,9 +147,58 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 		return "", pkgerrors.NewUnexpected("malformed email-service reply", jsonErr)
 	}
 	if errResp.Error != "" {
-		return "", pkgerrors.NewServiceUnavailable("email-service returned error", errors.New(errResp.Error))
+		return "", classifyErrorReply(errResp.Error)
 	}
 	return "", nil
+}
+
+// sendRejectedBeforeAcceptance lists the send_email error replies that the
+// email-service contract documents as pre-acceptance rejections: the request
+// was validated and refused before any SMTP work, so the email definitively
+// did not go out and a retry is safe. Deliberately absent is
+// "email delivery failed", which the contract documents as SMTP failure
+// *after* the service accepted the request — the same post-acceptance
+// ambiguity as a transport timeout (the remote MTA may already have accepted
+// the message), so it must not be tagged retry-safe. Unrecognized error
+// strings default to ambiguous for the same reason.
+// Source: lfx-v2-email-service/docs/email-service-contract.md § send_email
+// error reply.
+var sendRejectedBeforeAcceptance = map[string]struct{}{
+	"invalid request payload":                  {},
+	"to, subject, html, and text are required": {},
+	"invalid from address":                     {},
+	"from address domain not allowed":          {},
+	"invalid reply_to address":                 {},
+	"reply_to address domain not allowed":      {},
+}
+
+// classifyErrorReply wraps an explicit send_email error reply, tagging it
+// domain.ErrEmailNotDispatched (retry-safe) only when the error string is a
+// documented pre-acceptance rejection. See sendRejectedBeforeAcceptance for
+// why post-acceptance and unrecognized errors stay untagged.
+func classifyErrorReply(errMsg string) error {
+	svcErr := pkgerrors.NewServiceUnavailable("email-service returned error", errors.New(errMsg))
+	if _, preAcceptance := sendRejectedBeforeAcceptance[errMsg]; preAcceptance {
+		return fmt.Errorf("%w: %w", svcErr, domain.ErrEmailNotDispatched)
+	}
+	return svcErr
+}
+
+// classifySendRequestError tags send_email transport failures that prove the
+// request never reached email-service. NATS no-responders is the only such
+// condition today: the server reported that nothing is subscribed to the
+// subject, so the message was dropped before any service saw it. It carries
+// both sentinels — ErrEmailNotDispatched (retry-safe) and the stronger
+// ErrEmailServiceUnreachable, which the orchestrator reads as authoritative
+// proof of a systemic outage. Every other transport failure (request timeout,
+// cancelled context, connection loss mid-flight) is ambiguous — email-service
+// may already have accepted the message — and is passed through untagged so
+// the orchestrator neither retries nor trips an outage on it.
+func classifySendRequestError(err error) error {
+	if errors.Is(err, nats.ErrNoResponders) {
+		return fmt.Errorf("%w: %w: %w", err, domain.ErrEmailNotDispatched, domain.ErrEmailServiceUnreachable)
+	}
+	return err
 }
 
 // GetEngagement fetches per-group engagement totals from email-service.
