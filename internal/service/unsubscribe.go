@@ -143,6 +143,10 @@ func (s *UnsubscribeService) ListOptOuts(ctx context.Context, projectUID string)
 // delegates to the repository; UUID format is validated by the caller.
 // Returns domain.ErrInvalidRequest for blank projectUID, domain.ErrNotFound
 // if the id does not exist or belongs to a different project.
+//
+// The blank-projectUID guard is defense-in-depth only: an empty path
+// segment never matches the route (mux wildcards require a non-empty
+// segment), so HTTP traffic cannot reach it. It protects direct callers.
 func (s *UnsubscribeService) DeleteOptOut(ctx context.Context, projectUID string, id uuid.UUID) error {
 	if strings.TrimSpace(projectUID) == "" {
 		return fmt.Errorf("%w: project_uid is required", domain.ErrInvalidRequest)

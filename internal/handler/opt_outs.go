@@ -39,7 +39,7 @@ func (h *Handler) ListOptOuts(w http.ResponseWriter, r *http.Request) {
 // DeleteOptOut handles DELETE /projects/{project_uid}/newsletter-opt-outs/{opt_out_id}.
 //
 // Deletes a single opt-out entry. Returns 204 No Content on success.
-// Returns 404 for unknown id or project mismatch, 400 for malformed UUID or blank project_uid.
+// Returns 404 for unknown id or project mismatch, 400 for a malformed UUID.
 func (h *Handler) DeleteOptOut(w http.ResponseWriter, r *http.Request) {
 	projectUID := r.PathValue("project_uid")
 	id, err := parseUUID(r.PathValue("opt_out_id"))

@@ -398,7 +398,10 @@ func TestDeleteOptOutMalformedUUID(t *testing.T) {
 	}
 }
 
-// TestDeleteOptOutBlankProjectUID tests that a blank project_uid returns 400.
+// TestDeleteOptOutBlankProjectUID exercises the service's defense-in-depth
+// blank-projectUID guard by bypassing routing via SetPathValue. An empty
+// path segment never matches the route in real traffic; this pins the
+// guard's behavior for direct callers.
 func TestDeleteOptOutBlankProjectUID(t *testing.T) {
 	repo := &testOptOutRepo{}
 	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
