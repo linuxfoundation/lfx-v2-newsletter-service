@@ -30,10 +30,12 @@ func NewCommitteeClient(client *Client) *CommitteeClient {
 }
 
 // committeeMemberDTO mirrors the relevant subset of the committee-service
-// list_members reply. Fields are loose because we only consume two of them.
+// list_members reply. Fields are loose because we only consume some of them.
+// Username is optional and may be populated with the user/member ID.
 type committeeMemberDTO struct {
 	Email     string `json:"email"`
 	FirstName string `json:"first_name"`
+	Username  string `json:"username,omitempty"`
 }
 
 // ListMembers fetches all members of a single committee. An empty reply (or
@@ -58,6 +60,7 @@ func (c *CommitteeClient) ListMembers(ctx context.Context, committeeUID string) 
 		out = append(out, model.CommitteeMember{
 			Email:     m.Email,
 			FirstName: m.FirstName,
+			Username:  m.Username,
 		})
 	}
 	return out, nil

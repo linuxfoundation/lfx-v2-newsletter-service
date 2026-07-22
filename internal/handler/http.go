@@ -28,6 +28,7 @@ type Handler struct {
 	send            *service.SendOrchestrator
 	analytics       *service.AnalyticsService
 	unsub           *service.UnsubscribeService
+	archive         *service.ArchiveService
 	project         port.ProjectMetadataClient
 	db              *sql.DB
 	auth            *AuthValidator
@@ -40,6 +41,7 @@ type Config struct {
 	Send            *service.SendOrchestrator
 	Analytics       *service.AnalyticsService
 	Unsubscribe     *service.UnsubscribeService
+	Archive         *service.ArchiveService
 	Project         port.ProjectMetadataClient
 	DB              *sql.DB
 	Auth            *AuthValidator
@@ -53,6 +55,7 @@ func New(cfg Config) *Handler {
 		send:            cfg.Send,
 		analytics:       cfg.Analytics,
 		unsub:           cfg.Unsubscribe,
+		archive:         cfg.Archive,
 		project:         cfg.Project,
 		db:              cfg.DB,
 		auth:            cfg.Auth,
@@ -120,6 +123,11 @@ func (h *Handler) Routes() http.Handler {
 	// recipient clicking the footer link. Authorization comes from the
 	// HMAC-signed token in the query string.
 	mux.HandleFunc("GET /newsletters/unsubscribe", h.Unsubscribe)
+
+	// Recipient-facing archive — JWT auth required. Authorization is
+	// service-layer: membership verified against claimed committee UIDs.
+	mux.Handle("GET /newsletters/archive", h.withAuth(http.HandlerFunc(h.ArchiveNewsletters)))
+	mux.Handle("GET /newsletters/archive/{newsletter_uid}", h.withAuth(http.HandlerFunc(h.GetArchiveNewsletter)))
 
 	// Outermost middleware first: otelhttp creates a span per request (health
 	// probes excluded), then request ID so it appears on every log line,
@@ -212,6 +220,8 @@ func classifyError(err error) (int, string) {
 		// Distinct code from already_sent so clients can poll the newsletter
 		// until the in-flight send settles instead of giving up.
 		return http.StatusConflict, "send_in_progress"
+	case errors.Is(err, domain.ErrForbidden):
+		return http.StatusForbidden, "forbidden"
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest, "invalid_request"
 	case errors.As(err, &svcUnavailable):

@@ -28,4 +28,9 @@ var (
 	// edited, or deleted until the send settles (sent, or reverted to draft on
 	// total failure).
 	ErrSendInProgress = errors.New("newsletter send in progress")
+
+	// ErrForbidden indicates the caller does not have permission to access
+	// the requested resource (e.g., not a member of any committee the newsletter
+	// was sent to).
+	ErrForbidden = errors.New("forbidden")
 )

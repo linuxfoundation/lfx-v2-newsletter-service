@@ -28,6 +28,18 @@ type ListFilters struct {
 	Limit      int
 }
 
+// ArchiveListFilters narrows a recipient-facing archive listing query.
+//
+// CommitteeUIDs must be non-empty and are verified against the caller's
+// verified committee membership. Returns only sent newsletters whose
+// committee_uids overlap with the provided set. PageToken is the opaque
+// cursor returned in the previous page's response.
+type ArchiveListFilters struct {
+	CommitteeUIDs []string
+	PageToken     string
+	Limit         int
+}
+
 // ListPage is one page of newsletters plus an optional NextPageToken for
 // continuation.
 type ListPage struct {
@@ -77,6 +89,11 @@ type NewsletterRepository interface {
 	// Open tracking
 	RecordOpen(ctx context.Context, newsletterID uuid.UUID, recipientHash string) error
 	Analytics(ctx context.Context, newsletterID uuid.UUID) (*model.Analytics, error)
+
+	// ListSentByCommitteeUIDs returns a page of sent newsletters whose
+	// committee_uids overlap with the provided set, keyset-paginated by
+	// sent_at DESC, id DESC.
+	ListSentByCommitteeUIDs(ctx context.Context, filters ArchiveListFilters) (*ListPage, error)
 }
 
 // UnsubscribeRepository persists project-scoped opt-outs.

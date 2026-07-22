@@ -232,6 +232,9 @@ func (r *fakeNewsletterRepo) RecordOpen(_ context.Context, _ uuid.UUID, _ string
 func (r *fakeNewsletterRepo) Analytics(_ context.Context, _ uuid.UUID) (*model.Analytics, error) {
 	return &model.Analytics{}, nil
 }
+func (r *fakeNewsletterRepo) ListSentByCommitteeUIDs(_ context.Context, _ port.ArchiveListFilters) (*port.ListPage, error) {
+	return &port.ListPage{}, nil
+}
 
 func (r *fakeNewsletterRepo) CreateUnsubscribe(_ context.Context, projectUID, email string) error {
 	r.mu.Lock()

@@ -506,6 +506,60 @@ func (r *PostgresNewsletterRepo) classifySendTransitionMiss(ctx context.Context,
 	return domain.ErrVersionMismatch
 }
 
+// ListSentByCommitteeUIDs returns a page of sent newsletters whose
+// committee_uids overlap with the provided set, keyset-paginated by
+// sent_at DESC, id DESC (so the most recently sent newsletter appears first).
+// The cursor encodes (sent_at, id) for deterministic pagination across
+// concurrent updates.
+func (r *PostgresNewsletterRepo) ListSentByCommitteeUIDs(ctx context.Context, filters port.ArchiveListFilters) (*port.ListPage, error) {
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	if limit > maxListLimit {
+		limit = maxListLimit
+	}
+
+	// Use Postgres array overlap operator (&&) to find newsletters whose
+	// committee_uids contain at least one of the caller's verified committees.
+	q := r.db.NewSelect().
+		Model((*model.Newsletter)(nil)).
+		Where("status = ?", model.StatusSent).
+		Where("committee_uids && ?", pgdialect.Array(filters.CommitteeUIDs)).
+		Order("sent_at DESC").
+		Order("id DESC").
+		Limit(limit + 1)
+
+	if filters.PageToken != "" {
+		cursor, err := decodeCursor(filters.PageToken)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid pageToken", domain.ErrInvalidRequest)
+		}
+		// Keyset pagination: continue from the (sent_at, id) tuple of the last
+		// row of the previous page. Tuple comparison handles ties on sent_at.
+		q = q.Where("(sent_at, id) < (?, ?)", cursor.UpdatedAt, cursor.ID)
+	}
+
+	var rows []*model.Newsletter
+	if err := q.Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list sent by committee uids: %w", err)
+	}
+
+	page := &port.ListPage{Newsletters: rows}
+	if len(rows) > limit {
+		// Trim the lookahead row and emit its cursor as the next page token.
+		last := rows[limit-1]
+		page.Newsletters = rows[:limit]
+		sentAt := last.SentAt
+		if sentAt == nil {
+			// Safe: status='sent' guarantees SentAt is set, but be defensive.
+			sentAt = &time.Time{}
+		}
+		page.NextPageToken = encodeCursor(listCursor{UpdatedAt: *sentAt, ID: last.ID})
+	}
+	return page, nil
+}
+
 // listCursor is the keyset cursor encoded into NextPageToken for ListAll.
 type listCursor struct {
 	UpdatedAt time.Time `json:"u"`

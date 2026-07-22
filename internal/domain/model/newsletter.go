@@ -94,9 +94,11 @@ type Analytics struct {
 }
 
 // CommitteeMember is the slice of a committee member the newsletter needs for personalization.
+// Username is optional and populated from the committee-service list_members response if present.
 type CommitteeMember struct {
 	Email     string
 	FirstName string
+	Username  string // optional, used for identity matching in membership verification
 }
 
 // ProjectBranding is the slice of a project used to brand newsletter emails.

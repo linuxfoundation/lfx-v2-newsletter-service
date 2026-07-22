@@ -74,6 +74,17 @@ func (a *analyticsRepoFake) Analytics(_ context.Context, _ uuid.UUID) (*model.An
 	cp := *a.base
 	return &cp, nil
 }
+func (a *analyticsRepoFake) ListSentByCommitteeUIDs(_ context.Context, _ port.ArchiveListFilters) (*port.ListPage, error) {
+	return nil, nil
+}
+func (a *analyticsRepoFake) CreateUnsubscribe(_ context.Context, _ string, _ string) error { return nil }
+func (a *analyticsRepoFake) ListUnsubscribedEmails(_ context.Context, _ string) (map[string]struct{}, error) {
+	return nil, nil
+}
+func (a *analyticsRepoFake) ListUnsubscribes(_ context.Context, _ string) ([]*model.NewsletterUnsubscribe, error) {
+	return nil, nil
+}
+func (a *analyticsRepoFake) DeleteUnsubscribe(_ context.Context, _ string, _ uuid.UUID) error { return nil }
 
 // TestAnalyticsGet_DailyOpensFromGroupStatus verifies the analytics service
 // derives DailyOpens and UniqueOpens from the per-recipient email-service

@@ -133,6 +133,12 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		SendJobTimeout:        cfg.SendJobTimeout,
 	})
 	analyticsSvc := service.NewAnalyticsService(repo, emailDispatcher)
+	archiveSvc := service.NewArchiveService(service.ArchiveServiceConfig{
+		Repo:        repo,
+		Committee:   committeeClient,
+		UserEmail:   userMetadataClient,
+		Concurrency: cfg.SendConcurrency,
+	})
 
 	// Step 6: recovery sweep for newsletters stranded in 'sending' by a pod
 	// crash mid-fan-out. Runs once at startup (catches strands from previous
@@ -144,6 +150,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		Send:            sendSvc,
 		Analytics:       analyticsSvc,
 		Unsubscribe:     unsubSvc,
+		Archive:         archiveSvc,
 		Project:         projectClient,
 		DB:              sqlDB,
 		Auth:            authImpl,

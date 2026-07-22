@@ -179,3 +179,33 @@ type OptOut struct {
 type OptOutListResponse struct {
 	OptOuts []OptOut `json:"opt_outs"`
 }
+
+// ArchiveNewsletterListItem is one row in the recipient-facing archive list.
+// Includes essential metadata but omits body_html to keep the list response
+// lightweight.
+type ArchiveNewsletterListItem struct {
+	ID            string    `json:"id"`
+	ProjectUID    string    `json:"project_uid"`
+	Subject       string    `json:"subject"`
+	SentAt        time.Time `json:"sent_at"`
+	CommitteeUIDs []string  `json:"committee_uids"`
+	Status        Status    `json:"status"`
+}
+
+// ArchiveNewsletterListResponse is the body of GET /newsletters/archive.
+type ArchiveNewsletterListResponse struct {
+	Newsletters   []ArchiveNewsletterListItem `json:"newsletters"`
+	NextPageToken string                      `json:"next_page_token,omitempty"`
+}
+
+// ArchiveNewsletter is the body of GET /newsletters/archive/{newsletter_uid}.
+// Returns the full newsletter including body_html.
+type ArchiveNewsletter struct {
+	ID            string    `json:"id"`
+	ProjectUID    string    `json:"project_uid"`
+	Subject       string    `json:"subject"`
+	BodyHTML      string    `json:"body_html"`
+	SentAt        time.Time `json:"sent_at"`
+	CommitteeUIDs []string  `json:"committee_uids"`
+	Status        Status    `json:"status"`
+}
