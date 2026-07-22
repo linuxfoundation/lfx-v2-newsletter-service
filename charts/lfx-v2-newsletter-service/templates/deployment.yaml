@@ -105,6 +105,10 @@ spec:
             - name: EMAIL_FROM_ADDRESS_OVERRIDES
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.app.send.replyToAllowedDomains }}
+            - name: EMAIL_REPLY_TO_ALLOWED_DOMAINS
+              value: {{ . | quote }}
+            {{- end }}
             - name: NEWSLETTER_PUBLIC_BASE_URL
               value: {{ default (printf "https://lfx-api.%s" .Values.lfx.domain) .Values.app.unsubscribe.publicBaseURL | quote }}
             {{- if .Values.app.unsubscribe.secretRef.name }}

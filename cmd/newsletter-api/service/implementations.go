@@ -118,17 +118,19 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	unsubSvc := service.NewUnsubscribeService(repo, []byte(cfg.UnsubscribeSecret), cfg.PublicBaseURL)
 	newsletterSvc := service.NewNewsletterService(repo, unsubSvc.Enabled())
 	sendSvc = service.NewSendOrchestrator(service.SendOrchestratorConfig{
-		Repo:                 repo,
-		Committee:            committeeClient,
-		Project:              projectClient,
-		Email:                emailDispatcher,
-		UserMetadata:         userMetadataClient,
-		Unsubscribe:          unsubSvc,
-		Concurrency:          cfg.SendConcurrency,
-		FanoutEnabled:        cfg.SendFanoutEnabled,
-		FromAddress:          cfg.EmailFromAddress,
-		FromAddressOverrides: cfg.EmailFromAddressOverrides,
-		SendJobTimeout:       cfg.SendJobTimeout,
+		Repo:                  repo,
+		Committee:             committeeClient,
+		Project:               projectClient,
+		Email:                 emailDispatcher,
+		UserMetadata:          userMetadataClient,
+		UserEmail:             userMetadataClient,
+		Unsubscribe:           unsubSvc,
+		Concurrency:           cfg.SendConcurrency,
+		FanoutEnabled:         cfg.SendFanoutEnabled,
+		FromAddress:           cfg.EmailFromAddress,
+		FromAddressOverrides:  cfg.EmailFromAddressOverrides,
+		ReplyToAllowedDomains: cfg.EmailReplyToAllowedDomains,
+		SendJobTimeout:        cfg.SendJobTimeout,
 	})
 	analyticsSvc := service.NewAnalyticsService(repo, emailDispatcher)
 
