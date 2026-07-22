@@ -18,6 +18,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 - Per-recipient HMAC-signed, project-scoped unsubscribe opt-outs.
 - Newsletter list and analytics reads (local opens overlaid with email-service engagement totals).
 - Local open tracking through the tracking-pixel endpoint.
+- Recipient-facing archive access: authenticated users see sent newsletters targeted to committees they belong to.
 - The public Go DTOs in `pkg/api/newsletter.go`.
 
 ## Routes
@@ -40,6 +41,8 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `GET` | `/newsletters/unsubscribe` | no | One-click unsubscribe via HMAC-signed `t` token. Returns HTML. A direct-service HEAD is a no-op so link previews don't unsubscribe; the gateway ruleset allows only `GET`, so HEAD is blocked at the gateway. |
 | `GET` | `/projects/{project_uid}/newsletter-opt-outs` | yes | List all unsubscribes for the project — `id`, `email`, and `unsubscribed_at`, ordered by `unsubscribed_at` descending. No pagination (opt-out volumes are small). |
 | `DELETE` | `/projects/{project_uid}/newsletter-opt-outs/{opt_out_id}` | yes | Delete an opt-out entry. Returns `204 No Content` on success, `400` for a malformed `opt_out_id` UUID, `404` for unknown `opt_out_id` or project mismatch. |
+| `GET` | `/newsletters/archive` | yes | Recipient-facing archive list. Accepts `committee_uids` (comma-separated CSV) and `page_token` query params. Server-side membership verification: caller identity is resolved via `lfx.auth-service.user_emails.read` and verified against each claimed committee via `lfx.committee-api.list_members`. Unverifiable/unreachable committees are dropped (logged). Returns sent-only newsletters whose `committee_uids` overlap with the verified set, keyset-paginated by `sent_at DESC, id DESC`. Empty verified set returns `200` with empty list (no DB query). |
+| `GET` | `/newsletters/archive/{newsletter_uid}` | yes | Recipient-facing archive detail. Returns `200` with full newsletter (including `body_html`). Returns `404` if the newsletter does not exist or `status != 'sent'` (prevents draft enumeration). Returns `403` if the caller is not verified as a member of any of the newsletter's `committee_uids`. Membership verification uses the same identity resolution and committee lookup as the list endpoint. |
 
 Auth routes expect a Heimdall-issued JWT. `REQUIRE_USER_AUTH=false` is only for local development; startup refuses auth-disabled mode outside local/dev `LFX_ENVIRONMENT` values.
 
@@ -125,6 +128,7 @@ The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sen
 | Draft already sent | 409 | `already_sent` |
 | Send fan-out still in flight | 409 | `send_in_progress` |
 | Invalid request | 400 | `invalid_request` |
+| Non-member accessing archive newsletter | 403 | `forbidden` |
 | Upstream conflict (typed `pkgerrors.Conflict`) | 409 | `conflict` |
 | Upstream dependency unavailable | 503 | `service_unavailable` |
 | Unexpected server error | 500 | `internal_error` |

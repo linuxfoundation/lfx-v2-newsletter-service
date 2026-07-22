@@ -105,7 +105,7 @@ func (s *ArchiveService) VerifyMemberships(ctx context.Context, in VerifyMembers
 			if isMember, err := s.verifyCommitteeMembership(egCtx, committeeUID, callerEmail, in.Principal); err != nil {
 				slog.WarnContext(egCtx, "committee membership verification failed",
 					"committee_uid", committeeUID,
-					"caller_email", callerEmail,
+					"principal", in.Principal,
 					"error", err)
 				// Drop the committee; don't propagate the error.
 				return nil
