@@ -806,21 +806,31 @@ func (o *SendOrchestrator) resolveSenderEmail(ctx context.Context, principal str
 }
 
 // domainOf returns the lowercased domain portion of an email address, or ""
-// if the address has no "@". The domain is everything after the LAST "@":
-// a quoted local-part may itself contain "@" (e.g. `"a@b"@example.com`), but
-// RFC 5322 never allows an unescaped "@" in the domain part, so splitting on
-// the last occurrence is the only correct way to isolate it.
+// if the address doesn't parse or has no "@". This must derive the domain
+// EXACTLY the way lfx-v2-email-service's send_email_handler.go does: parse
+// via net/mail, then split the re-serialized Address on the FIRST "@" via
+// strings.SplitN(_, "@", 2) — not the original input, and not the last "@".
+// A quoted local-part containing "@" (e.g. `"a@b"@example.com`) re-serializes
+// to a@b@example.com, and the peer treats everything after the first "@"
+// ("b@example.com") as the domain, not "example.com". Splitting differently
+// here would let this guard approve a Reply-To that email-service still
+// rejects, failing the entire fan-out downstream.
 func domainOf(email string) string {
-	i := strings.LastIndex(email, "@")
-	if i < 0 {
+	parsed, err := mail.ParseAddress(email)
+	if err != nil {
 		return ""
 	}
-	return strings.ToLower(email[i+1:])
+	parts := strings.SplitN(parsed.Address, "@", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.ToLower(parts[1])
 }
 
 // domainAllowed reports whether email's domain is in allowed, either exactly
 // or as a subdomain (suffix match), mirroring lfx-v2-email-service's
-// SMTP_ALLOWED_REPLY_TO_DOMAINS matching.
+// SMTP_ALLOWED_REPLY_TO_DOMAINS matching. See domainOf for why the domain
+// must be derived from the peer's exact parse-then-split behavior.
 func domainAllowed(email string, allowed []string) bool {
 	domain := domainOf(email)
 	if domain == "" {

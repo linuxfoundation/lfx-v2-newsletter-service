@@ -749,10 +749,12 @@ func TestSendNewsletterReplyToFallsBackOnDisallowedDomain(t *testing.T) {
 	}
 }
 
-// TestDomainOf asserts the domain is isolated from the LAST "@", not the
-// first: a quoted local-part may itself contain "@" (RFC 5322 permits this),
-// but the domain part never does, so splitting on the last occurrence is the
-// only form that stays correct for such addresses.
+// TestDomainOf asserts domainOf derives the domain the same way
+// lfx-v2-email-service's send_email_handler.go does: parse via net/mail,
+// then split the re-serialized Address on the FIRST "@". A quoted
+// local-part containing "@" re-serializes with the quotes stripped, so the
+// peer (and this helper) treats everything after the first "@" as the
+// domain — that's "b@example.com" for `"a@b"@example.com`, not "example.com".
 func TestDomainOf(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -761,7 +763,8 @@ func TestDomainOf(t *testing.T) {
 	}{
 		{name: "simple address", email: "jzemlin@LinuxFoundation.org", want: "linuxfoundation.org"},
 		{name: "no at sign", email: "not-an-email", want: ""},
-		{name: "quoted local part containing at sign", email: `"a@b"@example.com`, want: "example.com"},
+		{name: "unparseable address", email: "@@@", want: ""},
+		{name: "quoted local part containing at sign matches peer's split", email: `"a@b"@example.com`, want: "b@example.com"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -772,8 +775,12 @@ func TestDomainOf(t *testing.T) {
 	}
 }
 
-// TestDomainAllowed covers exact and subdomain-suffix matching, plus the
-// quoted-local-part edge case that a first-"@" split would misparse.
+// TestDomainAllowed covers exact and subdomain-suffix matching. The
+// quoted-local-part case must NOT be allowed even against an otherwise
+// allowed domain: matching domainOf's peer-aligned derivation, its "domain"
+// is "b@linuxfoundation.org", which is neither an exact nor suffix match for
+// "linuxfoundation.org" — so this guard rejects it exactly as email-service
+// would, rather than approving a Reply-To the peer would still bounce.
 func TestDomainAllowed(t *testing.T) {
 	allowed := []string{"linuxfoundation.org", "aaif.io"}
 	tests := []struct {
@@ -784,7 +791,7 @@ func TestDomainAllowed(t *testing.T) {
 		{name: "exact domain match", email: "jzemlin@linuxfoundation.org", want: true},
 		{name: "subdomain match", email: "jzemlin@lfx.linuxfoundation.org", want: true},
 		{name: "disallowed domain", email: "jzemlin@gmail.com", want: false},
-		{name: "quoted local part still resolves real domain", email: `"a@b"@linuxfoundation.org`, want: true},
+		{name: "quoted local part does not falsely match real domain", email: `"a@b"@linuxfoundation.org`, want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
