@@ -64,12 +64,20 @@ type userEmailsNATSResponse struct {
 	Data    *userEmailsNATSDTO `json:"data,omitempty"`
 }
 
+// alternateEmail is an item in the auth-service user_emails.read response's
+// alternate_emails array. Only emails with verified=true are considered confirmed
+// user identities per auth-service contract (docs/subjects/user_emails.md).
+type alternateEmail struct {
+	Email    string `json:"email"`
+	Verified bool   `json:"verified"`
+}
+
 // userEmailsNATSDTO is the subset of the auth-service user_emails payload we
-// consume. VerifiedEmails includes primary and alternate addresses for identity
-// matching when committee records may reference an older email address.
+// consume. VerifiedEmails includes primary and verified alternate addresses for
+// identity matching when committee records may reference an older email address.
 type userEmailsNATSDTO struct {
-	PrimaryEmail   string   `json:"primary_email"`
-	VerifiedEmails []string `json:"verified_emails"`
+	PrimaryEmail    string           `json:"primary_email"`
+	AlternateEmails []alternateEmail `json:"alternate_emails"`
 }
 
 // Name resolves the user's display name. Prefers the `name` claim; falls back
@@ -178,28 +186,29 @@ func (u *UserMetadataClient) VerifiedEmails(ctx context.Context, principal strin
 		return nil, pkgerrors.NewNotFound("user emails response has no data")
 	}
 
-	// Collect verified emails: if VerifiedEmails is populated, use it;
-	// otherwise fall back to primary email as the sole verified address.
+	// Collect verified emails: primary (always) + verified alternate emails.
+	// Per auth-service contract, only verified alternate emails should be included.
 	var emails []string
-	if len(response.Data.VerifiedEmails) > 0 {
-		for _, e := range response.Data.VerifiedEmails {
-			if trimmed := strings.TrimSpace(e); trimmed != "" {
-				emails = append(emails, strings.ToLower(trimmed))
-			}
-		}
-	}
+	seen := make(map[string]bool)
+
+	// Primary email is always included.
 	if primary := strings.TrimSpace(response.Data.PrimaryEmail); primary != "" {
 		primaryLower := strings.ToLower(primary)
-		// Avoid duplicates if primary is already in verified set.
-		found := false
-		for _, e := range emails {
-			if e == primaryLower {
-				found = true
-				break
-			}
+		emails = append(emails, primaryLower)
+		seen[primaryLower] = true
+	}
+
+	// Include alternate emails only if verified=true.
+	for _, alt := range response.Data.AlternateEmails {
+		if !alt.Verified {
+			continue
 		}
-		if !found {
-			emails = append(emails, primaryLower)
+		if trimmed := strings.TrimSpace(alt.Email); trimmed != "" {
+			trimmedLower := strings.ToLower(trimmed)
+			if !seen[trimmedLower] {
+				emails = append(emails, trimmedLower)
+				seen[trimmedLower] = true
+			}
 		}
 	}
 

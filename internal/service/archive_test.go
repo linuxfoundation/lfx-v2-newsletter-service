@@ -108,8 +108,12 @@ func (m *mockCommitteeClient) ListMembers(ctx context.Context, committeeUID stri
 
 // mockUserEmailReader implements port.UserEmailReader for testing.
 type mockUserEmailReader struct {
-	emails map[string]string // principal → email(s, space-separated for multiple)
-	err    error
+	emails          map[string]string // principal → primary email
+	alternateEmails map[string][]struct {
+		email    string
+		verified bool
+	} // principal → alternate emails with verified flag
+	err error
 }
 
 func (m *mockUserEmailReader) PrimaryEmail(ctx context.Context, principal string) (string, error) {
@@ -127,21 +131,36 @@ func (m *mockUserEmailReader) VerifiedEmails(ctx context.Context, principal stri
 	if m.err != nil {
 		return nil, m.err
 	}
+	var results []string
 	email, ok := m.emails[principal]
-	if !ok || email == "" {
+	if ok && email != "" {
+		results = append(results, email)
+	}
+	// Include verified alternates if provided.
+	if alts, ok := m.alternateEmails[principal]; ok {
+		for _, alt := range alts {
+			if alt.verified {
+				results = append(results, alt.email)
+			}
+		}
+	}
+	if len(results) == 0 {
 		return []string{}, nil
 	}
-	// For simplicity, return just the single email; tests can extend this if needed.
-	return []string{email}, nil
+	return results, nil
 }
 
 func TestVerifyMemberships(t *testing.T) {
 	tests := []struct {
-		name         string
-		principal    string
-		claimedUIDs  []string
-		committees   map[string][]model.CommitteeMember
-		emails       map[string]string
+		name            string
+		principal       string
+		claimedUIDs     []string
+		committees      map[string][]model.CommitteeMember
+		emails          map[string]string
+		alternateEmails map[string][]struct {
+			email    string
+			verified bool
+		}
 		expectedUIDs []string
 		expectErr    bool
 		emailErr     error // optional error to inject into mockUserEmailReader
@@ -233,6 +252,48 @@ func TestVerifyMemberships(t *testing.T) {
 			},
 			expectedUIDs: []string{"committee-1"}, // unreachable dropped, committee-1 verified
 		},
+		{
+			name:        "verified alternate email matches when primary does not",
+			principal:   "user1",
+			claimedUIDs: []string{"committee-1"},
+			committees: map[string][]model.CommitteeMember{
+				"committee-1": {{Email: "old.email@example.com"}},
+			},
+			emails: map[string]string{
+				"user1": "primary@example.com",
+			},
+			alternateEmails: map[string][]struct {
+				email    string
+				verified bool
+			}{
+				"user1": {
+					{email: "old.email@example.com", verified: true},
+					{email: "other@example.com", verified: true},
+				},
+			},
+			expectedUIDs: []string{"committee-1"}, // verified alternate matches
+		},
+		{
+			name:        "unverified alternate emails excluded",
+			principal:   "user2",
+			claimedUIDs: []string{"committee-1"},
+			committees: map[string][]model.CommitteeMember{
+				"committee-1": {{Email: "unverified@example.com"}},
+			},
+			emails: map[string]string{
+				"user2": "primary@example.com",
+			},
+			alternateEmails: map[string][]struct {
+				email    string
+				verified bool
+			}{
+				"user2": {
+					{email: "unverified@example.com", verified: false},
+					{email: "other@example.com", verified: true},
+				},
+			},
+			expectedUIDs: []string{}, // unverified alternate not included, primary doesn't match
+		},
 	}
 
 	for _, tt := range tests {
@@ -246,7 +307,7 @@ func TestVerifyMemberships(t *testing.T) {
 			svc := NewArchiveService(ArchiveServiceConfig{
 				Repo:      &mockNewsletterRepo{},
 				Committee: &mockCommitteeClient{members: tt.committees, errors: committeeErrors},
-				UserEmail: &mockUserEmailReader{emails: tt.emails, err: tt.emailErr},
+				UserEmail: &mockUserEmailReader{emails: tt.emails, alternateEmails: tt.alternateEmails, err: tt.emailErr},
 			})
 			out, err := svc.VerifyMemberships(context.Background(), VerifyMembershipsInput{
 				Principal:     tt.principal,
