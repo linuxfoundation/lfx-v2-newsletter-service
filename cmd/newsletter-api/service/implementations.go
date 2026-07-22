@@ -249,13 +249,19 @@ func newEmailDispatcher(ctx context.Context, cfg AppConfig, nc *natsinfra.Client
 			APIKey:      cfg.SendGridAPIKey,
 			DefaultFrom: cfg.EmailFromAddress,
 			SandboxMode: cfg.SendGridSandboxMode,
+			Store:       repository.NewSendGridEngagementStore(bunDB),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("sendgrid dispatcher: %w", err)
 		}
-		slog.WarnContext(ctx, "email provider: SendGrid — send path active; engagement/analytics reads are NOT yet wired (event webhook pending, LFXV2-2388)",
+		slog.InfoContext(ctx, "email provider: SendGrid — send + engagement store active; engagement is populated by the SendGrid event webhook (register + configure it for analytics, LFXV2-2388)",
 			"sandbox", cfg.SendGridSandboxMode)
 		return sg, nil
 	}
 	return natsinfra.NewEmailDispatcher(nc), nil
 }
+
+// Compile-time assertion that the repository store satisfies the SendGrid
+// dispatcher's EngagementStore, kept here so the repository package stays free
+// of an infrastructure import.
+var _ sendgridinfra.EngagementStore = (*repository.SendGridEngagementStore)(nil)

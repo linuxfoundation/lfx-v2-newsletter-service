@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -73,6 +74,11 @@ type Config struct {
 	// SandboxMode, when true, sets mail_settings.sandbox_mode so SendGrid
 	// validates the request without delivering. Useful against a test account.
 	SandboxMode bool
+	// Store persists per-recipient engagement. When nil the dispatcher is
+	// send-only: it records nothing and the engagement reads return
+	// errReadNotWired. When set, SendEmail records the send and the reads are
+	// served from it (populated by the event webhook).
+	Store EngagementStore
 }
 
 // Dispatcher implements port.EmailDispatcher over the SendGrid v3 mail/send API.
@@ -83,6 +89,7 @@ type Dispatcher struct {
 	baseURL         string
 	httpClient      *http.Client
 	sandboxMode     bool
+	store           EngagementStore
 }
 
 // Compile-time assertion that Dispatcher satisfies the port.
@@ -111,6 +118,7 @@ func NewDispatcher(cfg Config) (*Dispatcher, error) {
 		baseURL:         baseURL,
 		httpClient:      httpClient,
 		sandboxMode:     cfg.SandboxMode,
+		store:           cfg.Store,
 	}, nil
 }
 
@@ -186,6 +194,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 
 	// A successful send is 202 Accepted with an empty body.
 	if resp.StatusCode == http.StatusAccepted {
+		d.recordSent(ctx, emailID, groupID, in.To)
 		return emailID, nil
 	}
 
@@ -197,19 +206,42 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 	)
 }
 
-// GetEngagement is not yet implemented on the SendGrid provider — see errReadNotWired.
-func (d *Dispatcher) GetEngagement(_ context.Context, _ string) (*port.EmailEngagement, error) {
-	return nil, pkgerrors.NewUnexpected("sendgrid: GetEngagement not implemented", errReadNotWired)
+// recordSent persists the initial engagement row for an accepted send. It is
+// best-effort: the email is already sent, so a store failure degrades tracking
+// but must not fail the send. A no-op when no store is wired (send-only mode).
+func (d *Dispatcher) recordSent(ctx context.Context, emailID, groupID, to string) {
+	if d.store == nil {
+		return
+	}
+	if err := d.store.RecordSent(ctx, emailID, groupID, to, time.Now().UTC()); err != nil {
+		slog.WarnContext(ctx, "sendgrid: failed to record send for engagement tracking",
+			"email_id", emailID, "error", err)
+	}
 }
 
-// GetStatusByEmailID is not yet implemented on the SendGrid provider — see errReadNotWired.
-func (d *Dispatcher) GetStatusByEmailID(_ context.Context, _ string) (*port.EmailRecipientRecord, error) {
-	return nil, pkgerrors.NewUnexpected("sendgrid: GetStatusByEmailID not implemented", errReadNotWired)
+// GetEngagement returns the per-group engagement rollup from the store. Returns
+// errReadNotWired when the dispatcher is send-only (no store).
+func (d *Dispatcher) GetEngagement(ctx context.Context, groupID string) (*port.EmailEngagement, error) {
+	if d.store == nil {
+		return nil, pkgerrors.NewUnexpected("sendgrid: GetEngagement unavailable", errReadNotWired)
+	}
+	return d.store.Engagement(ctx, groupID)
 }
 
-// GetStatusByGroupID is not yet implemented on the SendGrid provider — see errReadNotWired.
-func (d *Dispatcher) GetStatusByGroupID(_ context.Context, _ string) ([]port.EmailRecipientRecord, error) {
-	return nil, pkgerrors.NewUnexpected("sendgrid: GetStatusByGroupID not implemented", errReadNotWired)
+// GetStatusByEmailID returns one recipient's engagement record from the store.
+func (d *Dispatcher) GetStatusByEmailID(ctx context.Context, emailID string) (*port.EmailRecipientRecord, error) {
+	if d.store == nil {
+		return nil, pkgerrors.NewUnexpected("sendgrid: GetStatusByEmailID unavailable", errReadNotWired)
+	}
+	return d.store.RecipientByEmailID(ctx, emailID)
+}
+
+// GetStatusByGroupID returns every recipient record for a group from the store.
+func (d *Dispatcher) GetStatusByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
+	if d.store == nil {
+		return nil, pkgerrors.NewUnexpected("sendgrid: GetStatusByGroupID unavailable", errReadNotWired)
+	}
+	return d.store.RecipientsByGroupID(ctx, groupID)
 }
 
 // summarizeError renders SendGrid's error body into a single readable string,

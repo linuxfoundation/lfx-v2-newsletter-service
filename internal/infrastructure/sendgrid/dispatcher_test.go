@@ -11,9 +11,41 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 )
+
+// recordSentArgs captures a RecordSent call for assertions.
+type recordSentArgs struct {
+	emailID, groupID, to string
+	sentAt               time.Time
+}
+
+// fakeStore is an in-memory EngagementStore for dispatcher tests.
+type fakeStore struct {
+	sent       []recordSentArgs
+	engagement *port.EmailEngagement
+	byEmailID  *port.EmailRecipientRecord
+	byGroupID  []port.EmailRecipientRecord
+}
+
+func (f *fakeStore) RecordSent(_ context.Context, emailID, groupID, to string, sentAt time.Time) error {
+	f.sent = append(f.sent, recordSentArgs{emailID, groupID, to, sentAt})
+	return nil
+}
+func (f *fakeStore) ApplyDelivered(context.Context, string, time.Time) error    { return nil }
+func (f *fakeStore) ApplyOpen(context.Context, string, string, time.Time) error { return nil }
+func (f *fakeStore) ApplyFailed(context.Context, string, time.Time) error       { return nil }
+func (f *fakeStore) Engagement(context.Context, string) (*port.EmailEngagement, error) {
+	return f.engagement, nil
+}
+func (f *fakeStore) RecipientByEmailID(context.Context, string) (*port.EmailRecipientRecord, error) {
+	return f.byEmailID, nil
+}
+func (f *fakeStore) RecipientsByGroupID(context.Context, string) ([]port.EmailRecipientRecord, error) {
+	return f.byGroupID, nil
+}
 
 func newTestDispatcher(t *testing.T, handler http.HandlerFunc) *Dispatcher {
 	t.Helper()
@@ -180,6 +212,58 @@ func TestNewDispatcher_RequiredConfig(t *testing.T) {
 	}
 	if _, err := NewDispatcher(Config{APIKey: "k"}); err == nil {
 		t.Errorf("expected an error when DefaultFrom is missing")
+	}
+}
+
+func TestSendEmail_RecordsSentToStore(t *testing.T) {
+	store := &fakeStore{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	d, err := NewDispatcher(Config{
+		APIKey: "k", DefaultFrom: "f@lfx.aaif.io",
+		BaseURL: srv.URL, HTTPClient: srv.Client(), Store: store,
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	emailID, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To: "a@example.com", Subject: "s", Text: "t", GroupID: "grp-9",
+	})
+	if err != nil {
+		t.Fatalf("SendEmail: %v", err)
+	}
+	if len(store.sent) != 1 {
+		t.Fatalf("RecordSent calls = %d, want 1", len(store.sent))
+	}
+	got := store.sent[0]
+	if got.emailID != emailID || got.groupID != "grp-9" || got.to != "a@example.com" {
+		t.Errorf("RecordSent args = %+v, want emailID=%s group=grp-9 to=a@example.com", got, emailID)
+	}
+	if got.sentAt.IsZero() {
+		t.Errorf("RecordSent sentAt should be set")
+	}
+}
+
+func TestReadsDelegateToStore(t *testing.T) {
+	store := &fakeStore{
+		engagement: &port.EmailEngagement{GroupID: "g", TotalSent: 3, Delivered: 2, Opened: 1},
+		byEmailID:  &port.EmailRecipientRecord{EmailID: "e", Delivered: true},
+		byGroupID:  []port.EmailRecipientRecord{{EmailID: "e1"}, {EmailID: "e2"}},
+	}
+	d, err := NewDispatcher(Config{APIKey: "k", DefaultFrom: "f@lfx.aaif.io", Store: store})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	if eng, err := d.GetEngagement(context.Background(), "g"); err != nil || eng == nil || eng.TotalSent != 3 {
+		t.Errorf("GetEngagement = %+v, %v; want TotalSent=3", eng, err)
+	}
+	if rec, err := d.GetStatusByEmailID(context.Background(), "e"); err != nil || rec == nil || !rec.Delivered {
+		t.Errorf("GetStatusByEmailID = %+v, %v; want Delivered record", rec, err)
+	}
+	if recs, err := d.GetStatusByGroupID(context.Background(), "g"); err != nil || len(recs) != 2 {
+		t.Errorf("GetStatusByGroupID len = %d, %v; want 2", len(recs), err)
 	}
 }
 

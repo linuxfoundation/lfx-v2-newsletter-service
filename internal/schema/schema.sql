@@ -165,3 +165,39 @@ CREATE TABLE IF NOT EXISTS newsletter_unsubscribes (
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_unsubscribes_project_email
     ON newsletter_unsubscribes (project_uid, email);
+
+-- ---------------------------------------------------------------------------
+-- SendGrid engagement (LFXV2-2388)
+--
+-- With SendGrid the newsletter service brokers sends directly and therefore
+-- owns engagement (the SES path reads it back from email-service over NATS).
+-- The SendGrid dispatcher records one row per send below; the SendGrid event
+-- webhook applies delivered / open / failed events. Rows are keyed by the
+-- email_id minted into custom_args on mail/send, which the webhook echoes back.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sendgrid_recipient_engagement (
+    email_id       TEXT        PRIMARY KEY,
+    group_id       TEXT        NOT NULL,
+    to_email       TEXT        NOT NULL DEFAULT '',
+    sent_at        TIMESTAMPTZ,
+    delivered      BOOLEAN     NOT NULL DEFAULT FALSE,
+    delivered_at   TIMESTAMPTZ,
+    opened         BOOLEAN     NOT NULL DEFAULT FALSE,
+    open_count     INTEGER     NOT NULL DEFAULT 0,
+    last_opened_at TIMESTAMPTZ,
+    failed         BOOLEAN     NOT NULL DEFAULT FALSE,
+    failed_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_sg_engagement_group ON sendgrid_recipient_engagement (group_id);
+
+-- Individual open events, for unique opens and the daily-opens series.
+-- Deduplicated by SendGrid's sg_event_id so a webhook redelivery is a no-op;
+-- group_id is derived by joining to sendgrid_recipient_engagement on email_id.
+CREATE TABLE IF NOT EXISTS sendgrid_open_events (
+    sg_event_id TEXT        PRIMARY KEY,
+    email_id    TEXT        NOT NULL,
+    opened_at   TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sg_open_events_email ON sendgrid_open_events (email_id);
