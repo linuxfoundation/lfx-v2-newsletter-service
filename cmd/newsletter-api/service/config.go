@@ -76,6 +76,21 @@ type AppConfig struct {
 	// email-service's allowlist manually; update both when either changes.
 	EmailReplyToAllowedDomains []string
 
+	// EmailProvider selects the outbound send provider: "email-service" (default;
+	// NATS request/reply to lfx-v2-email-service -> SES, kept for transactional)
+	// or "sendgrid" (newsletter-service brokers SendGrid directly for
+	// newsletter/marketing sends, LFXV2-2388). Engagement analytics for SendGrid
+	// sends are not wired until the event-webhook slice lands.
+	EmailProvider string
+
+	// SendGridAPIKey is the SendGrid API key (subuser-scoped in production).
+	// Required when EmailProvider="sendgrid".
+	SendGridAPIKey string
+
+	// SendGridSandboxMode, when true, sets SendGrid mail_settings.sandbox_mode so
+	// sends are validated but not delivered — for test-account shake-out.
+	SendGridSandboxMode bool
+
 	// UnsubscribeSecret is the HMAC key signing per-recipient unsubscribe
 	// tokens. When empty, the footer falls back to the legacy "reply with
 	// UNSUBSCRIBE" copy and the public endpoint rejects all requests.
@@ -131,12 +146,15 @@ func AppConfigFromEnv() (AppConfig, error) {
 		EmailReplyToAllowedDomains: parseAllowedDomains(
 			os.Getenv("EMAIL_REPLY_TO_ALLOWED_DOMAINS"), defaultEmailReplyToDomain,
 		),
-		UnsubscribeSecret: os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
-		PublicBaseURL:     strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
-		JWKSURL:           os.Getenv("JWKS_URL"),
-		ExpectedAudience:  os.Getenv("JWT_AUDIENCE"),
-		RequireUserAuth:   boolOr("REQUIRE_USER_AUTH", true),
-		LFXEnvironment:    os.Getenv("LFX_ENVIRONMENT"),
+		EmailProvider:       strings.ToLower(envOr("EMAIL_PROVIDER", "email-service")),
+		SendGridAPIKey:      strings.TrimSpace(os.Getenv("SENDGRID_API_KEY")),
+		SendGridSandboxMode: boolOr("SENDGRID_SANDBOX_MODE", false),
+		UnsubscribeSecret:   os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
+		PublicBaseURL:       strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
+		JWKSURL:             os.Getenv("JWKS_URL"),
+		ExpectedAudience:    os.Getenv("JWT_AUDIENCE"),
+		RequireUserAuth:     boolOr("REQUIRE_USER_AUTH", true),
+		LFXEnvironment:      os.Getenv("LFX_ENVIRONMENT"),
 	}
 
 	// If DATABASE_URL is not set, compose it from PG* env vars in-process so
@@ -163,6 +181,9 @@ func AppConfigFromEnv() (AppConfig, error) {
 	}
 	if cfg.SendFanoutEnabled && cfg.PublicBaseURL == "" {
 		missing = append(missing, "NEWSLETTER_PUBLIC_BASE_URL (required when SEND_FANOUT_ENABLED=true)")
+	}
+	if cfg.EmailProvider == "sendgrid" && cfg.SendGridAPIKey == "" {
+		missing = append(missing, "SENDGRID_API_KEY (required when EMAIL_PROVIDER=sendgrid)")
 	}
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))

@@ -18,8 +18,10 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/handler"
 	natsinfra "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/nats"
+	sendgridinfra "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/sendgrid"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/repository"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/schema"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
@@ -90,7 +92,10 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	natsClient = nc
 	committeeClient := natsinfra.NewCommitteeClient(nc)
 	projectClient := natsinfra.NewProjectClient(nc)
-	emailDispatcher := natsinfra.NewEmailDispatcher(nc)
+	emailDispatcher, err := newEmailDispatcher(ctx, cfg, nc)
+	if err != nil {
+		return err
+	}
 	userMetadataClient := natsinfra.NewUserMetadataClient(nc)
 
 	// Step 4: auth.
@@ -231,4 +236,26 @@ func Shutdown() {
 	if pgPool != nil {
 		pgPool.Close()
 	}
+}
+
+// newEmailDispatcher selects the outbound send provider from cfg.EmailProvider.
+// "sendgrid" brokers SendGrid directly (newsletter/marketing, LFXV2-2388); any
+// other value keeps the NATS request/reply path to lfx-v2-email-service (SES,
+// transactional). The SendGrid provider does not serve engagement reads until
+// the event-webhook store lands, so selecting it logs a warning.
+func newEmailDispatcher(ctx context.Context, cfg AppConfig, nc *natsinfra.Client) (port.EmailDispatcher, error) {
+	if cfg.EmailProvider == "sendgrid" {
+		sg, err := sendgridinfra.NewDispatcher(sendgridinfra.Config{
+			APIKey:      cfg.SendGridAPIKey,
+			DefaultFrom: cfg.EmailFromAddress,
+			SandboxMode: cfg.SendGridSandboxMode,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("sendgrid dispatcher: %w", err)
+		}
+		slog.WarnContext(ctx, "email provider: SendGrid — send path active; engagement/analytics reads are NOT yet wired (event webhook pending, LFXV2-2388)",
+			"sandbox", cfg.SendGridSandboxMode)
+		return sg, nil
+	}
+	return natsinfra.NewEmailDispatcher(nc), nil
 }
