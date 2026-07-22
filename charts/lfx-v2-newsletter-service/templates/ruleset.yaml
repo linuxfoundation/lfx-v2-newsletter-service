@@ -379,4 +379,47 @@ spec:
           - path: /newsletters/unsubscribe
       execute:
         - authorizer: allow_all
+
+    # Recipient-facing newsletter archive list. Authenticated only (no anonymous
+    # fallback). Authorization is service-layer: membership is verified against
+    # claimed committee UIDs via committee-service.
+    # -----
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:archive_list"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /newsletters/archive
+      execute:
+        - authenticator: oidc
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # Recipient-facing newsletter archive detail. Authenticated only (no anonymous
+    # fallback). Authorization is service-layer: membership verified via committee-service.
+    # -----
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:archive_detail"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /newsletters/archive/:newsletter_uid
+      execute:
+        - authenticator: oidc
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: allow_all
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
 {{- end }}
