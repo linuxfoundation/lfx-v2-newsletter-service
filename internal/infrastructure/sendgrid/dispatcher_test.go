@@ -22,9 +22,13 @@ type recordSentArgs struct {
 	sentAt               time.Time
 }
 
-// fakeStore is an in-memory EngagementStore for dispatcher tests.
+// fakeStore is an in-memory EngagementStore for dispatcher and webhook tests.
 type fakeStore struct {
 	sent       []recordSentArgs
+	delivered  []string // emailIDs
+	failed     []string // emailIDs
+	opens      []string // "sgEventID|emailID"
+	applyErr   error    // when set, the Apply* methods return it
 	engagement *port.EmailEngagement
 	byEmailID  *port.EmailRecipientRecord
 	byGroupID  []port.EmailRecipientRecord
@@ -34,9 +38,18 @@ func (f *fakeStore) RecordSent(_ context.Context, emailID, groupID, to string, s
 	f.sent = append(f.sent, recordSentArgs{emailID, groupID, to, sentAt})
 	return nil
 }
-func (f *fakeStore) ApplyDelivered(context.Context, string, time.Time) error    { return nil }
-func (f *fakeStore) ApplyOpen(context.Context, string, string, time.Time) error { return nil }
-func (f *fakeStore) ApplyFailed(context.Context, string, time.Time) error       { return nil }
+func (f *fakeStore) ApplyDelivered(_ context.Context, emailID string, _ time.Time) error {
+	f.delivered = append(f.delivered, emailID)
+	return f.applyErr
+}
+func (f *fakeStore) ApplyOpen(_ context.Context, sgEventID, emailID string, _ time.Time) error {
+	f.opens = append(f.opens, sgEventID+"|"+emailID)
+	return f.applyErr
+}
+func (f *fakeStore) ApplyFailed(_ context.Context, emailID string, _ time.Time) error {
+	f.failed = append(f.failed, emailID)
+	return f.applyErr
+}
 func (f *fakeStore) Engagement(context.Context, string) (*port.EmailEngagement, error) {
 	return f.engagement, nil
 }

@@ -32,6 +32,10 @@ type Handler struct {
 	db              *sql.DB
 	auth            *AuthValidator
 	requireUserAuth bool
+	// sendgridWebhook is the SendGrid event-webhook handler, registered on a
+	// public route when configured (nil otherwise). It self-authenticates via
+	// its ECDSA signature check.
+	sendgridWebhook http.Handler
 }
 
 // Config wires a Handler.
@@ -44,6 +48,9 @@ type Config struct {
 	DB              *sql.DB
 	Auth            *AuthValidator
 	RequireUserAuth bool
+	// SendGridWebhook, when non-nil, is registered at POST
+	// /newsletters/sendgrid/events (unauthenticated; signature-verified).
+	SendGridWebhook http.Handler
 }
 
 // New wires a Handler with the given dependencies.
@@ -57,6 +64,7 @@ func New(cfg Config) *Handler {
 		db:              cfg.DB,
 		auth:            cfg.Auth,
 		requireUserAuth: cfg.RequireUserAuth,
+		sendgridWebhook: cfg.SendGridWebhook,
 	}
 }
 
@@ -120,6 +128,13 @@ func (h *Handler) Routes() http.Handler {
 	// recipient clicking the footer link. Authorization comes from the
 	// HMAC-signed token in the query string.
 	mux.HandleFunc("GET /newsletters/unsubscribe", h.Unsubscribe)
+
+	// SendGrid event webhook — intentionally unauthenticated; SendGrid POSTs
+	// engagement events with no session. Authenticity comes from the ECDSA
+	// signature the handler verifies. Registered only when configured.
+	if h.sendgridWebhook != nil {
+		mux.Handle("POST /newsletters/sendgrid/events", h.sendgridWebhook)
+	}
 
 	// Outermost middleware first: otelhttp creates a span per request (health
 	// probes excluded), then request ID so it appears on every log line,

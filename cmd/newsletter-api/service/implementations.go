@@ -144,6 +144,11 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	// pods immediately) and then on a ticker.
 	startStuckSendRecovery(repo, cfg.StuckSendTTL)
 
+	sendgridWebhook, err := newSendGridWebhook(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
 	handlerImpl = handler.New(handler.Config{
 		Newsletter:      newsletterSvc,
 		Send:            sendSvc,
@@ -153,6 +158,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		DB:              sqlDB,
 		Auth:            authImpl,
 		RequireUserAuth: cfg.RequireUserAuth,
+		SendGridWebhook: sendgridWebhook,
 	})
 	httpHandler = handlerImpl.Routes()
 
@@ -265,3 +271,23 @@ func newEmailDispatcher(ctx context.Context, cfg AppConfig, nc *natsinfra.Client
 // dispatcher's EngagementStore, kept here so the repository package stays free
 // of an infrastructure import.
 var _ sendgridinfra.EngagementStore = (*repository.SendGridEngagementStore)(nil)
+
+// newSendGridWebhook builds the SendGrid event-webhook handler when the SendGrid
+// provider is selected and a verification key is configured. Returns nil (no
+// route) when the provider isn't SendGrid, and nil with a warning when the
+// provider is SendGrid but no key is set (engagement then stays unpopulated).
+func newSendGridWebhook(ctx context.Context, cfg AppConfig) (http.Handler, error) {
+	if cfg.EmailProvider != "sendgrid" {
+		return nil, nil
+	}
+	if cfg.SendGridWebhookPublicKey == "" {
+		slog.WarnContext(ctx, "EMAIL_PROVIDER=sendgrid but SENDGRID_WEBHOOK_PUBLIC_KEY is unset — the event webhook is not registered and engagement/analytics will stay empty")
+		return nil, nil
+	}
+	verifier, err := sendgridinfra.NewVerifier(cfg.SendGridWebhookPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("sendgrid webhook verifier: %w", err)
+	}
+	slog.InfoContext(ctx, "SendGrid event webhook registered at POST /newsletters/sendgrid/events")
+	return sendgridinfra.NewWebhook(verifier, repository.NewSendGridEngagementStore(bunDB)), nil
+}

@@ -91,6 +91,12 @@ type AppConfig struct {
 	// sends are validated but not delivered — for test-account shake-out.
 	SendGridSandboxMode bool
 
+	// SendGridWebhookPublicKey is the base64 PKIX ECDSA public key from the
+	// SendGrid signed-event-webhook settings, used to verify inbound event
+	// batches. Optional; when unset with EMAIL_PROVIDER=sendgrid the webhook
+	// route is not registered and engagement analytics stay empty.
+	SendGridWebhookPublicKey string
+
 	// UnsubscribeSecret is the HMAC key signing per-recipient unsubscribe
 	// tokens. When empty, the footer falls back to the legacy "reply with
 	// UNSUBSCRIBE" copy and the public endpoint rejects all requests.
@@ -146,15 +152,16 @@ func AppConfigFromEnv() (AppConfig, error) {
 		EmailReplyToAllowedDomains: parseAllowedDomains(
 			os.Getenv("EMAIL_REPLY_TO_ALLOWED_DOMAINS"), defaultEmailReplyToDomain,
 		),
-		EmailProvider:       strings.ToLower(envOr("EMAIL_PROVIDER", "email-service")),
-		SendGridAPIKey:      strings.TrimSpace(os.Getenv("SENDGRID_API_KEY")),
-		SendGridSandboxMode: boolOr("SENDGRID_SANDBOX_MODE", false),
-		UnsubscribeSecret:   os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
-		PublicBaseURL:       strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
-		JWKSURL:             os.Getenv("JWKS_URL"),
-		ExpectedAudience:    os.Getenv("JWT_AUDIENCE"),
-		RequireUserAuth:     boolOr("REQUIRE_USER_AUTH", true),
-		LFXEnvironment:      os.Getenv("LFX_ENVIRONMENT"),
+		EmailProvider:            strings.ToLower(envOr("EMAIL_PROVIDER", "email-service")),
+		SendGridAPIKey:           strings.TrimSpace(os.Getenv("SENDGRID_API_KEY")),
+		SendGridSandboxMode:      boolOr("SENDGRID_SANDBOX_MODE", false),
+		SendGridWebhookPublicKey: strings.TrimSpace(os.Getenv("SENDGRID_WEBHOOK_PUBLIC_KEY")),
+		UnsubscribeSecret:        os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
+		PublicBaseURL:            strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
+		JWKSURL:                  os.Getenv("JWKS_URL"),
+		ExpectedAudience:         os.Getenv("JWT_AUDIENCE"),
+		RequireUserAuth:          boolOr("REQUIRE_USER_AUTH", true),
+		LFXEnvironment:           os.Getenv("LFX_ENVIRONMENT"),
 	}
 
 	// If DATABASE_URL is not set, compose it from PG* env vars in-process so
