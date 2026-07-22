@@ -238,7 +238,7 @@ func (s *SendGridEngagementStore) openTimesForGroup(ctx context.Context, groupID
 	if err := s.db.NewSelect().
 		ColumnExpr("soe.email_id").
 		ColumnExpr("soe.opened_at").
-		Table("sendgrid_open_events AS soe").
+		TableExpr("sendgrid_open_events AS soe").
 		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = soe.email_id").
 		Where("sre.group_id = ?", groupID).
 		OrderExpr("soe.opened_at ASC").
