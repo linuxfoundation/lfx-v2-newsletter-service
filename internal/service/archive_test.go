@@ -80,14 +80,18 @@ func (m *mockNewsletterRepo) RecordOpen(ctx context.Context, newsletterID uuid.U
 func (m *mockNewsletterRepo) Analytics(ctx context.Context, newsletterID uuid.UUID) (*model.Analytics, error) {
 	return nil, nil
 }
-func (m *mockNewsletterRepo) CreateUnsubscribe(ctx context.Context, projectUID, email string) error { return nil }
+func (m *mockNewsletterRepo) CreateUnsubscribe(ctx context.Context, projectUID, email string) error {
+	return nil
+}
 func (m *mockNewsletterRepo) ListUnsubscribedEmails(ctx context.Context, projectUID string) (map[string]struct{}, error) {
 	return nil, nil
 }
 func (m *mockNewsletterRepo) ListUnsubscribes(ctx context.Context, projectUID string) ([]*model.NewsletterUnsubscribe, error) {
 	return nil, nil
 }
-func (m *mockNewsletterRepo) DeleteUnsubscribe(ctx context.Context, projectUID string, id uuid.UUID) error { return nil }
+func (m *mockNewsletterRepo) DeleteUnsubscribe(ctx context.Context, projectUID string, id uuid.UUID) error {
+	return nil
+}
 
 // mockCommitteeClient implements port.CommitteeClient for testing.
 type mockCommitteeClient struct {
