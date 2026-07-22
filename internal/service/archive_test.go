@@ -137,14 +137,14 @@ func (m *mockUserEmailReader) VerifiedEmails(ctx context.Context, principal stri
 
 func TestVerifyMemberships(t *testing.T) {
 	tests := []struct {
-		name           string
-		principal      string
-		claimedUIDs    []string
-		committees     map[string][]model.CommitteeMember
-		emails         map[string]string
-		expectedUIDs   []string
-		expectErr      bool
-		emailErr       error // optional error to inject into mockUserEmailReader
+		name         string
+		principal    string
+		claimedUIDs  []string
+		committees   map[string][]model.CommitteeMember
+		emails       map[string]string
+		expectedUIDs []string
+		expectErr    bool
+		emailErr     error // optional error to inject into mockUserEmailReader
 	}{
 		{
 			name:         "empty claimed UIDs",
@@ -203,22 +203,22 @@ func TestVerifyMemberships(t *testing.T) {
 			expectedUIDs: []string{"committee-1"},
 		},
 		{
-			name:        "email resolution returns empty",
-			principal:   "user1",
-			claimedUIDs: []string{"committee-1"},
-			committees:  map[string][]model.CommitteeMember{},
-			emails:      map[string]string{}, // no email for user1
+			name:         "email resolution returns empty",
+			principal:    "user1",
+			claimedUIDs:  []string{"committee-1"},
+			committees:   map[string][]model.CommitteeMember{},
+			emails:       map[string]string{}, // no email for user1
 			expectedUIDs: []string{},
 		},
 		{
-			name:        "email resolution fails with error",
-			principal:   "user1",
-			claimedUIDs: []string{"committee-1"},
-			committees:  map[string][]model.CommitteeMember{},
-			emails:      map[string]string{},
+			name:         "email resolution fails with error",
+			principal:    "user1",
+			claimedUIDs:  []string{"committee-1"},
+			committees:   map[string][]model.CommitteeMember{},
+			emails:       map[string]string{},
 			expectedUIDs: []string{},
-			expectErr:   true,                                              // email resolution error should propagate
-			emailErr:    errors.New("auth service unavailable"),            // explicit error
+			expectErr:    true,                                   // email resolution error should propagate
+			emailErr:     errors.New("auth service unavailable"), // explicit error
 		},
 		{
 			name:        "partial failure: committee lookup fails for one committee",
