@@ -58,7 +58,9 @@ func (m *handlerMockNewsletterRepo) ListSentByCommitteeUIDs(ctx context.Context,
 }
 
 // Stub out unused methods.
-func (m *handlerMockNewsletterRepo) Create(ctx context.Context, n *model.Newsletter) error { return nil }
+func (m *handlerMockNewsletterRepo) Create(ctx context.Context, n *model.Newsletter) error {
+	return nil
+}
 func (m *handlerMockNewsletterRepo) List(ctx context.Context, projectUID string) ([]*model.Newsletter, error) {
 	return nil, nil
 }
@@ -75,7 +77,9 @@ func (m *handlerMockNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUI
 func (m *handlerMockNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, expectedVersion int64) (*model.Newsletter, error) {
 	return nil, nil
 }
-func (m *handlerMockNewsletterRepo) RevertSending(ctx context.Context, id uuid.UUID) error { return nil }
+func (m *handlerMockNewsletterRepo) RevertSending(ctx context.Context, id uuid.UUID) error {
+	return nil
+}
 func (m *handlerMockNewsletterRepo) RecoverStuckSending(ctx context.Context, olderThan time.Duration) (int64, error) {
 	return 0, nil
 }
@@ -85,14 +89,18 @@ func (m *handlerMockNewsletterRepo) RecordOpen(ctx context.Context, newsletterID
 func (m *handlerMockNewsletterRepo) Analytics(ctx context.Context, newsletterID uuid.UUID) (*model.Analytics, error) {
 	return nil, nil
 }
-func (m *handlerMockNewsletterRepo) CreateUnsubscribe(ctx context.Context, projectUID, email string) error { return nil }
+func (m *handlerMockNewsletterRepo) CreateUnsubscribe(ctx context.Context, projectUID, email string) error {
+	return nil
+}
 func (m *handlerMockNewsletterRepo) ListUnsubscribedEmails(ctx context.Context, projectUID string) (map[string]struct{}, error) {
 	return nil, nil
 }
 func (m *handlerMockNewsletterRepo) ListUnsubscribes(ctx context.Context, projectUID string) ([]*model.NewsletterUnsubscribe, error) {
 	return nil, nil
 }
-func (m *handlerMockNewsletterRepo) DeleteUnsubscribe(ctx context.Context, projectUID string, id uuid.UUID) error { return nil }
+func (m *handlerMockNewsletterRepo) DeleteUnsubscribe(ctx context.Context, projectUID string, id uuid.UUID) error {
+	return nil
+}
 
 // mockCommitteeClient for handler tests
 type handlerMockCommitteeClient struct {
@@ -179,11 +187,11 @@ func TestArchiveNewslettersHandler(t *testing.T) {
 			expectStatus:  http.StatusUnauthorized,
 		},
 		{
-			name:          "valid request → 200 with list",
-			principal:     "user1",
-			committeeUIDs: "committee-1",
-			expectStatus:  http.StatusOK,
-			expectCount:   1,
+			name:           "valid request → 200 with list",
+			principal:      "user1",
+			committeeUIDs:  "committee-1",
+			expectStatus:   http.StatusOK,
+			expectCount:    1,
 			checkDTOFields: true,
 		},
 		{

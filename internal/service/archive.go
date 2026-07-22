@@ -27,17 +27,17 @@ const defaultMembershipConcurrency = 5
 // including membership verification to ensure callers only see newsletters
 // sent to committees they belong to.
 type ArchiveService struct {
-	repo          port.NewsletterRepository
-	committee     port.CommitteeClient
-	userEmail     port.UserEmailReader
-	concurrency   int
+	repo        port.NewsletterRepository
+	committee   port.CommitteeClient
+	userEmail   port.UserEmailReader
+	concurrency int
 }
 
 // ArchiveServiceConfig configures an ArchiveService.
 type ArchiveServiceConfig struct {
-	Repo       port.NewsletterRepository
-	Committee  port.CommitteeClient
-	UserEmail  port.UserEmailReader
+	Repo        port.NewsletterRepository
+	Committee   port.CommitteeClient
+	UserEmail   port.UserEmailReader
 	Concurrency int
 }
 
@@ -203,7 +203,7 @@ func (s *ArchiveService) ListArchive(ctx context.Context, in ListArchiveInput) (
 
 // GetArchiveInput holds the parameters for GetArchive.
 type GetArchiveInput struct {
-	Principal    string    // The authenticated user's principal (from JWT)
+	Principal    string // The authenticated user's principal (from JWT)
 	NewsletterID uuid.UUID
 }
 
