@@ -174,33 +174,41 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 		reqBody.MailSettings = &mailSettings{SandboxMode: &toggle{Enable: true}}
 	}
 
+	if err := d.postMailSend(ctx, reqBody); err != nil {
+		return "", err
+	}
+	d.recordSent(ctx, emailID, groupID, in.To)
+	return emailID, nil
+}
+
+// postMailSend marshals and POSTs a mail/send request, returning nil on the 202
+// Accepted success and a classified error otherwise. Shared by the single-send
+// SendEmail and the batched SendBatch.
+func (d *Dispatcher) postMailSend(ctx context.Context, reqBody mailSendRequest) error {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", pkgerrors.NewUnexpected("sendgrid: marshal mail/send request", err)
+		return pkgerrors.NewUnexpected("sendgrid: marshal mail/send request", err)
 	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+mailSendPath, bytes.NewReader(payload))
 	if err != nil {
-		return "", pkgerrors.NewUnexpected("sendgrid: build mail/send request", err)
+		return pkgerrors.NewUnexpected("sendgrid: build mail/send request", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+d.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
-		return "", pkgerrors.NewServiceUnavailable("sendgrid: mail/send request failed", err)
+		return pkgerrors.NewServiceUnavailable("sendgrid: mail/send request failed", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// A successful send is 202 Accepted with an empty body.
 	if resp.StatusCode == http.StatusAccepted {
-		d.recordSent(ctx, emailID, groupID, in.To)
-		return emailID, nil
+		return nil
 	}
-
 	// SendGrid reports failures as { "errors": [ { "message", "field", "help" } ] }.
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	return "", pkgerrors.NewServiceUnavailable(
+	return pkgerrors.NewServiceUnavailable(
 		fmt.Sprintf("sendgrid: mail/send returned %d", resp.StatusCode),
 		errors.New(summarizeError(resp.StatusCode, body)),
 	)
@@ -280,11 +288,18 @@ type mailSendRequest struct {
 	Subject          string            `json:"subject"`
 	Content          []content         `json:"content"`
 	CustomArgs       map[string]string `json:"custom_args,omitempty"`
+	BatchID          string            `json:"batch_id,omitempty"`
 	MailSettings     *mailSettings     `json:"mail_settings,omitempty"`
 }
 
 type personalization struct {
 	To []address `json:"to"`
+	// SendAt is a Unix timestamp (<=72h out) for a scheduled per-recipient send;
+	// 0 (omitted) sends immediately. CustomArgs carry the per-recipient email_id
+	// + group_id in a batch; Substitutions fill merge tokens in subject/content.
+	SendAt        int64             `json:"send_at,omitempty"`
+	CustomArgs    map[string]string `json:"custom_args,omitempty"`
+	Substitutions map[string]string `json:"substitutions,omitempty"`
 }
 
 type address struct {
