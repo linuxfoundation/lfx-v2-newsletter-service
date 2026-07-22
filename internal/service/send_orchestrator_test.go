@@ -282,6 +282,20 @@ func (f *fakeUserMetadataReader) Name(_ context.Context, _ string) (string, erro
 	return f.name, f.err
 }
 
+// fakeUserEmailReader stands in for the auth-service user_emails.read NATS
+// client. Mirrors fakeUserMetadataReader's shape: the orchestrator only calls
+// it when a Principal is provided, so existing tests that leave Principal
+// empty (or never wire UserEmail at all) exercise the ed_reply_email fallback
+// path without ever touching this fake.
+type fakeUserEmailReader struct {
+	email string
+	err   error
+}
+
+func (f *fakeUserEmailReader) PrimaryEmail(_ context.Context, _ string) (string, error) {
+	return f.email, f.err
+}
+
 // ---- helpers --------------------------------------------------------------
 
 func newTestOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService) *SendOrchestrator {
@@ -305,6 +319,23 @@ func newTestOrchestratorWithUser(repo *fakeNewsletterRepo, committee *fakeCommit
 		Project:       &fakeProjectClient{},
 		Email:         email,
 		UserMetadata:  user,
+		Unsubscribe:   unsub,
+		Concurrency:   2,
+		FanoutEnabled: true,
+	})
+}
+
+// newTestOrchestratorWithUserEmail wires a fake UserMetadataReader and a fake
+// UserEmailReader so tests can drive both the sender-name and sender-email
+// auth-service lookups deterministically.
+func newTestOrchestratorWithUserEmail(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService, user port.UserMetadataReader, userEmail port.UserEmailReader) *SendOrchestrator {
+	return NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Committee:     committee,
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		UserMetadata:  user,
+		UserEmail:     userEmail,
 		Unsubscribe:   unsub,
 		Concurrency:   2,
 		FanoutEnabled: true,
@@ -550,6 +581,227 @@ func TestSendNewsletterUsesAuthServiceName(t *testing.T) {
 	}
 }
 
+// TestSendNewsletterReplyToUsesSenderEmail asserts that when a Principal
+// resolves to a primary email via UserEmailReader, that address — not the
+// drafter's stored ed_reply_email — is stamped as ReplyTo on every
+// per-recipient envelope.
+func TestSendNewsletterReplyToUsesSenderEmail(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{name: "Jim Zemlin"}
+	userEmail := &fakeUserEmailReader{email: "jzemlin@linuxfoundation.org"}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
+
+	// draft.EDReplyEmail defaults to "ed@example.com" (the drafter's stored
+	// value) — distinct from the sender's resolved email below, so the
+	// assertion below only passes if ReplyTo genuinely tracks the sender.
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+		Principal:    "auth0|jzemlin",
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 2 {
+		t.Fatalf("got %d sends, want 2", len(email.sends))
+	}
+	for _, s := range email.sends {
+		if s.ReplyTo != "jzemlin@linuxfoundation.org" {
+			t.Errorf("send to %s: ReplyTo=%q, want %q (sender), not drafter", s.To, s.ReplyTo, "jzemlin@linuxfoundation.org")
+		}
+	}
+}
+
+// TestSendNewsletterReplyToFallsBackOnEmptyPrincipal asserts that with no
+// Principal (dev mode / auth disabled), ReplyTo falls back to the draft's
+// stored ed_reply_email exactly as before this fix.
+func TestSendNewsletterReplyToFallsBackOnEmptyPrincipal(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	userEmail := &fakeUserEmailReader{email: "jzemlin@linuxfoundation.org"}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, nil, userEmail)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if email.sends[0].ReplyTo != draft.EDReplyEmail {
+		t.Errorf("ReplyTo=%q, want fallback %q", email.sends[0].ReplyTo, draft.EDReplyEmail)
+	}
+}
+
+// TestSendNewsletterReplyToFallsBackOnResolverError asserts that a
+// UserEmailReader failure is non-fatal: the send proceeds and ReplyTo falls
+// back to the draft's stored ed_reply_email rather than blocking the send
+// (unlike sender-name resolution, which does block).
+func TestSendNewsletterReplyToFallsBackOnResolverError(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{name: "Jim Zemlin"}
+	userEmail := &fakeUserEmailReader{err: errors.New("auth-service unavailable")}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+		Principal:    "auth0|jzemlin",
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if email.sends[0].ReplyTo != draft.EDReplyEmail {
+		t.Errorf("ReplyTo=%q, want fallback %q", email.sends[0].ReplyTo, draft.EDReplyEmail)
+	}
+}
+
+// TestSendNewsletterReplyToFallsBackOnInvalidEmail asserts that an
+// unparseable address from UserEmailReader is treated the same as a resolver
+// error: fall back to ed_reply_email rather than propagating a malformed
+// Reply-To header.
+func TestSendNewsletterReplyToFallsBackOnInvalidEmail(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{name: "Jim Zemlin"}
+	userEmail := &fakeUserEmailReader{email: "not-an-email"}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+		Principal:    "auth0|jzemlin",
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if email.sends[0].ReplyTo != draft.EDReplyEmail {
+		t.Errorf("ReplyTo=%q, want fallback %q", email.sends[0].ReplyTo, draft.EDReplyEmail)
+	}
+}
+
+// TestSendNewsletterReplyToFallsBackOnDisallowedDomain asserts that a
+// well-formed sender email whose domain is outside the Reply-To allowlist
+// (default: linuxfoundation.org) falls back to draft.EDReplyEmail instead of
+// being used verbatim — email-service would otherwise reject the entire
+// fan-out with "reply_to address domain not allowed".
+func TestSendNewsletterReplyToFallsBackOnDisallowedDomain(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{name: "Jim Zemlin"}
+	userEmail := &fakeUserEmailReader{email: "jzemlin@gmail.com"}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+		Principal:    "auth0|jzemlin",
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if email.sends[0].ReplyTo != draft.EDReplyEmail {
+		t.Errorf("ReplyTo=%q, want fallback %q", email.sends[0].ReplyTo, draft.EDReplyEmail)
+	}
+}
+
+// TestDomainOf asserts domainOf derives the domain the same way
+// lfx-v2-email-service's send_email_handler.go does: parse via net/mail,
+// then split the re-serialized Address on the FIRST "@". A quoted
+// local-part containing "@" re-serializes with the quotes stripped, so the
+// peer (and this helper) treats everything after the first "@" as the
+// domain — that's "b@example.com" for `"a@b"@example.com`, not "example.com".
+func TestDomainOf(t *testing.T) {
+	tests := []struct {
+		name  string
+		email string
+		want  string
+	}{
+		{name: "simple address", email: "jzemlin@LinuxFoundation.org", want: "linuxfoundation.org"},
+		{name: "no at sign", email: "not-an-email", want: ""},
+		{name: "unparseable address", email: "@@@", want: ""},
+		{name: "quoted local part containing at sign matches peer's split", email: `"a@b"@example.com`, want: "b@example.com"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := domainOf(tc.email); got != tc.want {
+				t.Errorf("domainOf(%q) = %q, want %q", tc.email, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDomainAllowed covers exact and subdomain-suffix matching. The
+// quoted-local-part case must NOT be allowed even against an otherwise
+// allowed domain: matching domainOf's peer-aligned derivation, its "domain"
+// is "b@linuxfoundation.org", which is neither an exact nor suffix match for
+// "linuxfoundation.org" — so this guard rejects it exactly as email-service
+// would, rather than approving a Reply-To the peer would still bounce.
+func TestDomainAllowed(t *testing.T) {
+	allowed := []string{"linuxfoundation.org", "aaif.io"}
+	tests := []struct {
+		name  string
+		email string
+		want  bool
+	}{
+		{name: "exact domain match", email: "jzemlin@linuxfoundation.org", want: true},
+		{name: "subdomain match", email: "jzemlin@lfx.linuxfoundation.org", want: true},
+		{name: "disallowed domain", email: "jzemlin@gmail.com", want: false},
+		{name: "quoted local part does not falsely match real domain", email: `"a@b"@linuxfoundation.org`, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := domainAllowed(tc.email, allowed); got != tc.want {
+				t.Errorf("domainAllowed(%q, %v) = %v, want %v", tc.email, allowed, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestSendNewsletterValidatesAuthServiceName asserts the orchestrator delegates
 // safety of the resolved sender name to net/mail.ParseAddress: well-formed
 // names are accepted (whitespace trimmed), an all-whitespace value falls back
@@ -765,6 +1017,70 @@ func TestTestSendUsesAuthServiceName(t *testing.T) {
 	}
 	if got := email.sends[0].FromDisplayName; got != "Jane Doe" {
 		t.Errorf("FromDisplayName=%q, want %q", got, "Jane Doe")
+	}
+}
+
+// TestTestSendReplyToUsesSenderEmail asserts TestSend resolves Reply-To the
+// same way SendNewsletter does: when the Principal resolves to a sender email,
+// that email is used even though the request also carries an EDReplyEmail —
+// a test-send should preview the real production envelope, not the drafter's
+// stored EDReplyEmail unconditionally.
+func TestTestSendReplyToUsesSenderEmail(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{name: "Jim Zemlin"}
+	userEmail := &fakeUserEmailReader{email: "jzemlin@linuxfoundation.org"}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
+
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID:   "p1",
+		Subject:      "Hello",
+		BodyHTML:     "<p>Body</p>",
+		ToEmail:      "tester@example.com",
+		EDReplyEmail: "drafter@example.com",
+		Principal:    "auth0|jzemlin",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if got := email.sends[0].ReplyTo; got != "jzemlin@linuxfoundation.org" {
+		t.Errorf("ReplyTo=%q, want %q (sender), not drafter", got, "jzemlin@linuxfoundation.org")
+	}
+}
+
+// TestTestSendReplyToFallsBackOnDisallowedDomain asserts TestSend falls back
+// to EDReplyEmail when the resolved sender email's domain isn't in the
+// Reply-To allowlist, mirroring SendNewsletter's fallback behavior.
+func TestTestSendReplyToFallsBackOnDisallowedDomain(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	users := &fakeUserMetadataReader{name: "Jim Zemlin"}
+	userEmail := &fakeUserEmailReader{email: "jzemlin@gmail.com"}
+	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
+
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID:   "p1",
+		Subject:      "Hello",
+		BodyHTML:     "<p>Body</p>",
+		ToEmail:      "tester@example.com",
+		EDReplyEmail: "drafter@example.com",
+		Principal:    "auth0|jzemlin",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if got := email.sends[0].ReplyTo; got != "drafter@example.com" {
+		t.Errorf("ReplyTo=%q, want fallback %q", got, "drafter@example.com")
 	}
 }
 

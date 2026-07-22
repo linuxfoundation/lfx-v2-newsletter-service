@@ -5,6 +5,7 @@ package service
 
 import (
 	"maps"
+	"slices"
 	"testing"
 )
 
@@ -46,6 +47,61 @@ func TestParseFromAddressOverrides(t *testing.T) {
 			got := parseFromAddressOverrides(tc.raw)
 			if !maps.Equal(got, tc.want) {
 				t.Errorf("parseFromAddressOverrides(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseAllowedDomains(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      string
+		fallback string
+		want     []string
+	}{
+		{
+			name:     "empty string falls back",
+			raw:      "",
+			fallback: "linuxfoundation.org",
+			want:     []string{"linuxfoundation.org"},
+		},
+		{
+			name:     "all-blank entries fall back",
+			raw:      " , , ",
+			fallback: "linuxfoundation.org",
+			want:     []string{"linuxfoundation.org"},
+		},
+		{
+			name:     "single domain",
+			raw:      "linuxfoundation.org",
+			fallback: "linuxfoundation.org",
+			want:     []string{"linuxfoundation.org"},
+		},
+		{
+			name:     "multiple domains",
+			raw:      "linuxfoundation.org,aaif.io",
+			fallback: "linuxfoundation.org",
+			want:     []string{"linuxfoundation.org", "aaif.io"},
+		},
+		{
+			name:     "whitespace trimmed and lowercased",
+			raw:      "  LinuxFoundation.org , AAIF.io ",
+			fallback: "linuxfoundation.org",
+			want:     []string{"linuxfoundation.org", "aaif.io"},
+		},
+		{
+			name:     "blank entries between valid ones skipped",
+			raw:      "linuxfoundation.org,,aaif.io",
+			fallback: "linuxfoundation.org",
+			want:     []string{"linuxfoundation.org", "aaif.io"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseAllowedDomains(tc.raw, tc.fallback)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("parseAllowedDomains(%q, %q) = %v, want %v", tc.raw, tc.fallback, got, tc.want)
 			}
 		})
 	}

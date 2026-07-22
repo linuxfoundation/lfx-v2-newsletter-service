@@ -41,6 +41,12 @@ const persistTimeout = 30 * time.Second
 // always sets one through SendOrchestratorConfig.
 const defaultFromAddress = "newsletter@lfx.linuxfoundation.org"
 
+// defaultReplyToAllowedDomains mirrors lfx-v2-email-service's default
+// SMTP_ALLOWED_REPLY_TO_DOMAINS, used when the orchestrator is constructed
+// without an explicit ReplyToAllowedDomains (e.g. tests). Production wiring
+// always sets this through SendOrchestratorConfig from AppConfig.
+var defaultReplyToAllowedDomains = []string{"linuxfoundation.org"}
+
 // fromDisplayNameSuffix is appended to the project name to build the From
 // display name, yielding e.g. "Kubernetes Newsletter".
 const fromDisplayNameSuffix = " Newsletter"
@@ -55,12 +61,18 @@ type SendOrchestrator struct {
 	project       port.ProjectMetadataClient
 	email         port.EmailDispatcher
 	userMetadata  port.UserMetadataReader
+	userEmail     port.UserEmailReader
 	unsub         *UnsubscribeService
 	concurrency   int
 	fanoutEnabled bool
 	fromAddress   string
 	fromOverrides map[string]string
-	jobTimeout    time.Duration
+	// replyToAllowedDomains gates resolveSenderEmail's output: a resolved
+	// address outside these domains (suffix-matched) is dropped in favor of
+	// the draft.EDReplyEmail fallback, so we never hand email-service a
+	// reply_to it will reject outright (see ReplyToAllowedDomains doc).
+	replyToAllowedDomains []string
+	jobTimeout            time.Duration
 	// jobs tracks detached background send goroutines so graceful shutdown
 	// (and tests) can wait for in-flight fan-outs via Drain.
 	jobs sync.WaitGroup
@@ -73,8 +85,12 @@ type SendOrchestratorConfig struct {
 	Project      port.ProjectMetadataClient
 	Email        port.EmailDispatcher
 	UserMetadata port.UserMetadataReader
-	Unsubscribe  *UnsubscribeService
-	Concurrency  int
+	// UserEmail resolves the sender's primary email by principal, used to
+	// derive the send-time Reply-To address. Nil is tolerated (e.g. tests) —
+	// resolveSenderEmail falls back to the draft's stored ed_reply_email.
+	UserEmail   port.UserEmailReader
+	Unsubscribe *UnsubscribeService
+	Concurrency int
 	// FanoutEnabled is the feature toggle for the per-recipient send loop.
 	// Defaults to true; flip false in environments where we want to validate
 	// the recipient-resolution path without sending real mail.
@@ -86,6 +102,11 @@ type SendOrchestratorConfig struct {
 	// From address used for that project, overriding FromAddress. Nil/empty
 	// means every project uses FromAddress.
 	FromAddressOverrides map[string]string
+	// ReplyToAllowedDomains lists the domains a resolved sender email may use
+	// as Reply-To; a resolved address outside this list falls back to
+	// draft.EDReplyEmail (see resolveSenderEmail). Empty defaults to
+	// defaultReplyToAllowedDomains ("linuxfoundation.org").
+	ReplyToAllowedDomains []string
 	// SendJobTimeout bounds the detached background fan-out that runs after a
 	// send is accepted. Zero falls back to defaultSendJobTimeout.
 	//
@@ -117,22 +138,38 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		}
 		overrides[slug] = addr
 	}
+	// Normalize the reply-to allowlist the same way; empty config falls back
+	// to the email-service default rather than an empty (reject-everything)
+	// list.
+	var replyToDomains []string
+	for _, domain := range cfg.ReplyToAllowedDomains {
+		domain = strings.ToLower(strings.TrimSpace(domain))
+		if domain == "" {
+			continue
+		}
+		replyToDomains = append(replyToDomains, domain)
+	}
+	if len(replyToDomains) == 0 {
+		replyToDomains = defaultReplyToAllowedDomains
+	}
 	jobTimeout := cfg.SendJobTimeout
 	if jobTimeout <= 0 {
 		jobTimeout = defaultSendJobTimeout
 	}
 	return &SendOrchestrator{
-		repo:          cfg.Repo,
-		committee:     cfg.Committee,
-		project:       cfg.Project,
-		email:         cfg.Email,
-		userMetadata:  cfg.UserMetadata,
-		unsub:         cfg.Unsubscribe,
-		concurrency:   c,
-		fanoutEnabled: cfg.FanoutEnabled,
-		fromAddress:   from,
-		fromOverrides: overrides,
-		jobTimeout:    jobTimeout,
+		repo:                  cfg.Repo,
+		committee:             cfg.Committee,
+		project:               cfg.Project,
+		email:                 cfg.Email,
+		userMetadata:          cfg.UserMetadata,
+		userEmail:             cfg.UserEmail,
+		unsub:                 cfg.Unsubscribe,
+		concurrency:           c,
+		fanoutEnabled:         cfg.FanoutEnabled,
+		fromAddress:           from,
+		fromOverrides:         overrides,
+		replyToAllowedDomains: replyToDomains,
+		jobTimeout:            jobTimeout,
 	}
 }
 
@@ -217,6 +254,12 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	if fromDisplayName == "" {
 		fromDisplayName = projectName + fromDisplayNameSuffix
 	}
+	// Reply-To tracks whoever is sending, not whoever last saved the draft:
+	// the same principal drives both the From display name and the Reply-To
+	// address, so a recipient's reply always reaches the actual sender.
+	// draft.EDReplyEmail (the drafter's address, captured at save time) is
+	// only a fallback for dev mode or a resolution failure.
+	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), draft.EDReplyEmail)
 
 	chrome := render.Chrome{
 		Subject:                 draft.Subject,
@@ -224,7 +267,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		DisplayName:             projectName,
 		IncludeComplianceFooter: true,
 		EDName:                  fallbackString(senderName, "Executive Director"),
-		EDReplyEmail:            draft.EDReplyEmail,
+		EDReplyEmail:            replyTo,
 	}
 	if o.unsub.Enabled() {
 		chrome.UnsubscribeURL = UnsubscribeURLPlaceholder
@@ -240,7 +283,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		Text:            textBody,
 		From:            o.resolveFromAddress(ctx, draft.ProjectUID),
 		FromDisplayName: fromDisplayName,
-		ReplyTo:         draft.EDReplyEmail,
+		ReplyTo:         replyTo,
 		GroupID:         groupID,
 	}
 
@@ -440,6 +483,10 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	if fromDisplayName == "" {
 		fromDisplayName = projectName + fromDisplayNameSuffix
 	}
+	// Mirror SendNewsletter's Reply-To resolution so a test-send previews the
+	// same envelope a real send would produce, not the drafter's stored
+	// EDReplyEmail unconditionally.
+	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), strings.TrimSpace(in.EDReplyEmail))
 
 	chrome := render.Chrome{
 		Subject:                 in.Subject,
@@ -464,7 +511,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		Text:            textBody,
 		From:            o.resolveFromAddress(ctx, in.ProjectUID),
 		FromDisplayName: fromDisplayName,
-		ReplyTo:         strings.TrimSpace(in.EDReplyEmail),
+		ReplyTo:         replyTo,
 	}); dispatchErr != nil {
 		return fmt.Errorf("dispatch test-send: %w", dispatchErr)
 	}
@@ -715,6 +762,86 @@ func (o *SendOrchestrator) resolveSenderName(ctx context.Context, principal stri
 		return "", pkgerrors.NewUnexpected(fmt.Sprintf("invalid sender display name from auth-service: %v", err))
 	}
 	return parsed.Name, nil
+}
+
+// resolveSenderEmail looks up the sender's primary email from auth-service
+// using the validated JWT principal, so Reply-To can track whoever is
+// actually sending rather than the drafter recorded in
+// draft.EDReplyEmail. Unlike resolveSenderName, failure here is
+// non-fatal: an empty principal (dev mode), an unconfigured UserEmail
+// client, an auth-service error, or an unparseable address all fall back
+// to "" so the caller substitutes draft.EDReplyEmail — a newsletter should
+// still send even if the sender's own email can't be resolved.
+func (o *SendOrchestrator) resolveSenderEmail(ctx context.Context, principal string) string {
+	if strings.TrimSpace(principal) == "" {
+		return ""
+	}
+	if o.userEmail == nil {
+		return ""
+	}
+	email, err := o.userEmail.PrimaryEmail(ctx, principal)
+	if err != nil {
+		slog.WarnContext(ctx, "reply-to: sender email resolution failed, falling back to stored ed_reply_email",
+			"error", err,
+		)
+		return ""
+	}
+	trimmed := strings.TrimSpace(email)
+	if trimmed == "" {
+		return ""
+	}
+	if _, err := mail.ParseAddress(trimmed); err != nil {
+		slog.WarnContext(ctx, "reply-to: sender email from auth-service failed RFC 5322 validation, falling back to stored ed_reply_email",
+			"error", err,
+		)
+		return ""
+	}
+	if !domainAllowed(trimmed, o.replyToAllowedDomains) {
+		slog.WarnContext(ctx, "reply-to: sender email domain not in allowed reply-to domains, falling back to stored ed_reply_email",
+			"domain", domainOf(trimmed),
+		)
+		return ""
+	}
+	return trimmed
+}
+
+// domainOf returns the lowercased domain portion of an email address, or ""
+// if the address doesn't parse or has no "@". This must derive the domain
+// EXACTLY the way lfx-v2-email-service's send_email_handler.go does: parse
+// via net/mail, then split the re-serialized Address on the FIRST "@" via
+// strings.SplitN(_, "@", 2) — not the original input, and not the last "@".
+// A quoted local-part containing "@" (e.g. `"a@b"@example.com`) re-serializes
+// to a@b@example.com, and the peer treats everything after the first "@"
+// ("b@example.com") as the domain, not "example.com". Splitting differently
+// here would let this guard approve a Reply-To that email-service still
+// rejects, failing the entire fan-out downstream.
+func domainOf(email string) string {
+	parsed, err := mail.ParseAddress(email)
+	if err != nil {
+		return ""
+	}
+	parts := strings.SplitN(parsed.Address, "@", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.ToLower(parts[1])
+}
+
+// domainAllowed reports whether email's domain is in allowed, either exactly
+// or as a subdomain (suffix match), mirroring lfx-v2-email-service's
+// SMTP_ALLOWED_REPLY_TO_DOMAINS matching. See domainOf for why the domain
+// must be derived from the peer's exact parse-then-split behavior.
+func domainAllowed(email string, allowed []string) bool {
+	domain := domainOf(email)
+	if domain == "" {
+		return false
+	}
+	for _, a := range allowed {
+		if domain == a || strings.HasSuffix(domain, "."+a) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveFromAddress returns the project-specific From override keyed by the

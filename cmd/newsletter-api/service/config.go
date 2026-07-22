@@ -67,6 +67,15 @@ type AppConfig struct {
 	// domain must be in the email-service allowlist or send_email rejects it.
 	EmailFromAddressOverrides map[string]string
 
+	// EmailReplyToAllowedDomains lists the domains a resolved sender email is
+	// allowed to use as Reply-To, mirroring lfx-v2-email-service's
+	// SMTP_ALLOWED_REPLY_TO_DOMAINS (subdomain suffix matching applies, so the
+	// default also permits lfx.linuxfoundation.org). Validating locally lets a
+	// disallowed sender domain fall back to the draft's stored ed_reply_email
+	// instead of email-service rejecting the entire fan-out. Kept in sync with
+	// email-service's allowlist manually; update both when either changes.
+	EmailReplyToAllowedDomains []string
+
 	// UnsubscribeSecret is the HMAC key signing per-recipient unsubscribe
 	// tokens. When empty, the footer falls back to the legacy "reply with
 	// UNSUBSCRIBE" copy and the public endpoint rejects all requests.
@@ -93,6 +102,7 @@ const (
 	defaultNATSURL               = "nats://nats:4222"
 	defaultSendConcurrency       = 5
 	defaultEmailFromAddress      = "newsletter@lfx.linuxfoundation.org"
+	defaultEmailReplyToDomain    = "linuxfoundation.org"
 	defaultSendJobTimeout        = 30 * time.Minute
 	defaultStuckSendTTL          = 45 * time.Minute
 	// minStuckSendSlack is the minimum margin enforced between SendJobTimeout
@@ -118,12 +128,15 @@ func AppConfigFromEnv() (AppConfig, error) {
 		StuckSendTTL:              durationOr("STUCK_SEND_TTL", defaultStuckSendTTL),
 		EmailFromAddress:          envOr("EMAIL_FROM_ADDRESS", defaultEmailFromAddress),
 		EmailFromAddressOverrides: parseFromAddressOverrides(os.Getenv("EMAIL_FROM_ADDRESS_OVERRIDES")),
-		UnsubscribeSecret:         os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
-		PublicBaseURL:             strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
-		JWKSURL:                   os.Getenv("JWKS_URL"),
-		ExpectedAudience:          os.Getenv("JWT_AUDIENCE"),
-		RequireUserAuth:           boolOr("REQUIRE_USER_AUTH", true),
-		LFXEnvironment:            os.Getenv("LFX_ENVIRONMENT"),
+		EmailReplyToAllowedDomains: parseAllowedDomains(
+			os.Getenv("EMAIL_REPLY_TO_ALLOWED_DOMAINS"), defaultEmailReplyToDomain,
+		),
+		UnsubscribeSecret: os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
+		PublicBaseURL:     strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
+		JWKSURL:           os.Getenv("JWKS_URL"),
+		ExpectedAudience:  os.Getenv("JWT_AUDIENCE"),
+		RequireUserAuth:   boolOr("REQUIRE_USER_AUTH", true),
+		LFXEnvironment:    os.Getenv("LFX_ENVIRONMENT"),
 	}
 
 	// If DATABASE_URL is not set, compose it from PG* env vars in-process so
@@ -211,6 +224,25 @@ func parseFromAddressOverrides(raw string) map[string]string {
 			continue
 		}
 		out[slug] = addr
+	}
+	return out
+}
+
+// parseAllowedDomains parses a comma-separated list of domains into a
+// normalized (trimmed, lowercased) slice. An empty or all-blank raw value
+// falls back to []string{fallback} so the allowlist is never accidentally
+// empty (which would reject every sender email).
+func parseAllowedDomains(raw, fallback string) []string {
+	var out []string
+	for domain := range strings.SplitSeq(raw, ",") {
+		domain = strings.ToLower(strings.TrimSpace(domain))
+		if domain == "" {
+			continue
+		}
+		out = append(out, domain)
+	}
+	if len(out) == 0 {
+		return []string{fallback}
 	}
 	return out
 }
