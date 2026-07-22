@@ -21,6 +21,11 @@ type userContextKey struct{}
 // is stored after JWT validation. Use UserFromContext to read it.
 var userContextKeyValue = userContextKey{}
 
+// ContextWithUser returns a context with the given principal set (used for testing).
+func ContextWithUser(ctx context.Context, principal string) context.Context {
+	return context.WithValue(ctx, userContextKeyValue, principal)
+}
+
 // AuthValidator validates inbound Heimdall-issued JWTs via a JWKS endpoint.
 //
 // A nil receiver represents "auth disabled" mode for local development; callers

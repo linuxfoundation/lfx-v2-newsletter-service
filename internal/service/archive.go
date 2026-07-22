@@ -80,15 +80,15 @@ func (s *ArchiveService) VerifyMemberships(ctx context.Context, in VerifyMembers
 		return &VerifyMembershipsOutput{VerifiedUIDs: []string{}}, nil
 	}
 
-	// Resolve the caller's email once; reuse for all committee membership checks.
-	callerEmail, err := s.userEmail.PrimaryEmail(ctx, in.Principal)
+	// Resolve all verified email addresses for the caller; reuse for committee membership checks.
+	// Multiple addresses are matched because committee records may retain a previously primary email.
+	callerEmails, err := s.userEmail.VerifiedEmails(ctx, in.Principal)
 	if err != nil {
-		return nil, fmt.Errorf("resolve caller email: %w", err)
+		return nil, fmt.Errorf("resolve caller emails: %w", err)
 	}
-	callerEmail = strings.ToLower(strings.TrimSpace(callerEmail))
-	if callerEmail == "" {
-		// No email means no membership anywhere. Return empty rather than error.
-		slog.WarnContext(ctx, "caller email resolution returned empty", "principal", in.Principal)
+	if len(callerEmails) == 0 {
+		// No emails means no membership anywhere. Return empty rather than error.
+		slog.WarnContext(ctx, "caller emails resolution returned empty", "principal", in.Principal)
 		return &VerifyMembershipsOutput{VerifiedUIDs: []string{}}, nil
 	}
 
@@ -102,7 +102,7 @@ func (s *ArchiveService) VerifyMemberships(ctx context.Context, in VerifyMembers
 	for _, committeeUID := range in.CommitteeUIDs {
 		committeeUID := committeeUID // Capture for the closure.
 		eg.Go(func() error {
-			if isMember, err := s.verifyCommitteeMembership(egCtx, committeeUID, callerEmail, in.Principal); err != nil {
+			if isMember, err := s.verifyCommitteeMembership(egCtx, committeeUID, callerEmails, in.Principal); err != nil {
 				slog.WarnContext(egCtx, "committee membership verification failed",
 					"committee_uid", committeeUID,
 					"principal", in.Principal,
@@ -122,23 +122,27 @@ func (s *ArchiveService) VerifyMemberships(ctx context.Context, in VerifyMembers
 	return &VerifyMembershipsOutput{VerifiedUIDs: verified}, nil
 }
 
-// verifyCommitteeMembership checks whether callerEmail is a member of the
-// given committee. Returns true if found in the member list, false if not
-// found, and an error if the lookup fails.
-func (s *ArchiveService) verifyCommitteeMembership(ctx context.Context, committeeUID string, callerEmail string, principal string) (bool, error) {
+// verifyCommitteeMembership checks whether any of the caller's verified emails
+// or username is a member of the given committee. Returns true if found in the
+// member list, false if not found, and an error if the lookup fails.
+func (s *ArchiveService) verifyCommitteeMembership(ctx context.Context, committeeUID string, callerEmails []string, principal string) (bool, error) {
 	members, err := s.committee.ListMembers(ctx, committeeUID)
 	if err != nil {
 		return false, err
 	}
 
+	principalLower := strings.ToLower(strings.TrimSpace(principal))
+
 	for _, member := range members {
+		// Match against any of the caller's verified emails (all lowercased).
 		memberEmail := strings.ToLower(strings.TrimSpace(member.Email))
-		if memberEmail == callerEmail {
-			return true, nil
+		for _, callerEmail := range callerEmails {
+			if memberEmail == callerEmail {
+				return true, nil
+			}
 		}
 		// Also match against username if present.
 		memberUsername := strings.ToLower(strings.TrimSpace(member.Username))
-		principalLower := strings.ToLower(strings.TrimSpace(principal))
 		if memberUsername != "" && memberUsername == principalLower {
 			return true, nil
 		}

@@ -65,10 +65,11 @@ type userEmailsNATSResponse struct {
 }
 
 // userEmailsNATSDTO is the subset of the auth-service user_emails payload we
-// consume. AlternateEmails is not needed here — only the primary address is
-// used to derive a newsletter's send-time Reply-To.
+// consume. VerifiedEmails includes primary and alternate addresses for identity
+// matching when committee records may reference an older email address.
 type userEmailsNATSDTO struct {
-	PrimaryEmail string `json:"primary_email"`
+	PrimaryEmail   string   `json:"primary_email"`
+	VerifiedEmails []string `json:"verified_emails"`
 }
 
 // Name resolves the user's display name. Prefers the `name` claim; falls back
@@ -144,4 +145,66 @@ func (u *UserMetadataClient) PrimaryEmail(ctx context.Context, principal string)
 		return "", pkgerrors.NewNotFound("user emails response has no primary_email")
 	}
 	return primaryEmail, nil
+}
+
+// VerifiedEmails resolves all verified email addresses for a user (primary and
+// alternate). Used for identity matching in membership verification when
+// committee records may retain an older email address after the user changed
+// their primary email.
+func (u *UserMetadataClient) VerifiedEmails(ctx context.Context, principal string) ([]string, error) {
+	if strings.TrimSpace(principal) == "" {
+		return nil, pkgerrors.NewValidation("principal is required")
+	}
+	payload, err := json.Marshal(userEmailsNATSRequest{User: userEmailsNATSRequestUser{AuthToken: principal}})
+	if err != nil {
+		return nil, pkgerrors.NewUnexpected("marshal user_emails.read request", err)
+	}
+	reply, err := u.client.Request(ctx, AuthUserEmailsReadSubject, payload)
+	if err != nil {
+		return nil, err
+	}
+	var response userEmailsNATSResponse
+	if jsonErr := json.Unmarshal(reply, &response); jsonErr != nil {
+		return nil, pkgerrors.NewUnexpected("malformed user_emails.read reply", jsonErr)
+	}
+	if !response.Success {
+		msg := response.Error
+		if msg == "" {
+			msg = "user not found"
+		}
+		return nil, pkgerrors.NewNotFound(fmt.Sprintf("user emails lookup rejected by auth-service: %s", msg))
+	}
+	if response.Data == nil {
+		return nil, pkgerrors.NewNotFound("user emails response has no data")
+	}
+
+	// Collect verified emails: if VerifiedEmails is populated, use it;
+	// otherwise fall back to primary email as the sole verified address.
+	var emails []string
+	if len(response.Data.VerifiedEmails) > 0 {
+		for _, e := range response.Data.VerifiedEmails {
+			if trimmed := strings.TrimSpace(e); trimmed != "" {
+				emails = append(emails, strings.ToLower(trimmed))
+			}
+		}
+	}
+	if primary := strings.TrimSpace(response.Data.PrimaryEmail); primary != "" {
+		primaryLower := strings.ToLower(primary)
+		// Avoid duplicates if primary is already in verified set.
+		found := false
+		for _, e := range emails {
+			if e == primaryLower {
+				found = true
+				break
+			}
+		}
+		if !found {
+			emails = append(emails, primaryLower)
+		}
+	}
+
+	if len(emails) == 0 {
+		return nil, pkgerrors.NewNotFound("user has no verified emails")
+	}
+	return emails, nil
 }

@@ -101,6 +101,15 @@ CREATE INDEX IF NOT EXISTS idx_newsletters_status  ON newsletters (status);
 CREATE INDEX IF NOT EXISTS idx_newsletters_list
     ON newsletters (project_uid, updated_at DESC, id DESC);
 
+-- Archive endpoints query sent newsletters by array overlap on committee_uids
+-- and paginate by (sent_at DESC, id DESC). GIN index accelerates the overlap
+-- operator (&&); partial index optimizes the sent-only predicate.
+CREATE INDEX IF NOT EXISTS idx_newsletters_committee_uids_gin
+    ON newsletters USING GIN (committee_uids);
+CREATE INDEX IF NOT EXISTS idx_newsletters_archive
+    ON newsletters (sent_at DESC, id DESC)
+    WHERE status = 'sent';
+
 -- newsletter_opens captures one row per open event. recipient_hash is a SHA-256
 -- of the lowercased recipient email so we can compute unique opens without
 -- persisting PII in this table beyond what the newsletters table already holds.

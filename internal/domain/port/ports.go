@@ -138,7 +138,7 @@ type UserMetadataReader interface {
 	Name(ctx context.Context, principal string) (string, error)
 }
 
-// UserEmailReader resolves the authenticated user's primary email address by
+// UserEmailReader resolves the authenticated user's email addresses by
 // their JWT principal. Backed by the NATS subject
 // `lfx.auth-service.user_emails.read` (lfx-v2-auth-service). Used to prefer
 // the send-time sender's own address as Reply-To, from the same principal
@@ -148,6 +148,11 @@ type UserMetadataReader interface {
 // not unconditionally track the sender.
 type UserEmailReader interface {
 	PrimaryEmail(ctx context.Context, principal string) (string, error)
+	// VerifiedEmails returns all verified email addresses for a principal,
+	// including primary and alternate addresses. Used for identity matching
+	// when callers may have changed their primary email but committee records
+	// still reference an older address.
+	VerifiedEmails(ctx context.Context, principal string) ([]string, error)
 }
 
 // SendEmailInput is one per-recipient send envelope dispatched to email-service.

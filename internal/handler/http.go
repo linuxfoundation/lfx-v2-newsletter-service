@@ -63,6 +63,11 @@ func New(cfg Config) *Handler {
 	}
 }
 
+// SetArchiveService sets the archive service (used for testing).
+func (h *Handler) SetArchiveService(svc *service.ArchiveService) {
+	h.archive = svc
+}
+
 // projectDisplayName resolves a human-readable project name for use in
 // recipient-facing pages, falling back to a generic label when the lookup
 // fails so the page always renders.

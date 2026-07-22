@@ -299,6 +299,16 @@ func (f *fakeUserEmailReader) PrimaryEmail(_ context.Context, _ string) (string,
 	return f.email, f.err
 }
 
+func (f *fakeUserEmailReader) VerifiedEmails(_ context.Context, _ string) ([]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.email == "" {
+		return []string{}, nil
+	}
+	return []string{f.email}, nil
+}
+
 // ---- helpers --------------------------------------------------------------
 
 func newTestOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService) *SendOrchestrator {

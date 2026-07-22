@@ -92,27 +92,43 @@ func (m *mockNewsletterRepo) DeleteUnsubscribe(ctx context.Context, projectUID s
 // mockCommitteeClient implements port.CommitteeClient for testing.
 type mockCommitteeClient struct {
 	members map[string][]model.CommitteeMember // committee UID → members
-	err     error
+	errors  map[string]error                   // committee UID → error (optional per-committee error)
 }
 
 func (m *mockCommitteeClient) ListMembers(ctx context.Context, committeeUID string) ([]model.CommitteeMember, error) {
-	if m.err != nil {
-		return nil, m.err
+	if err, ok := m.errors[committeeUID]; ok {
+		return nil, err
 	}
 	return m.members[committeeUID], nil
 }
 
 // mockUserEmailReader implements port.UserEmailReader for testing.
 type mockUserEmailReader struct {
-	emails map[string]string // principal → email
+	emails map[string]string // principal → email(s, space-separated for multiple)
 	err    error
 }
 
 func (m *mockUserEmailReader) PrimaryEmail(ctx context.Context, principal string) (string, error) {
-	if m.err != nil {
-		return "", m.err
+	emails, err := m.VerifiedEmails(ctx, principal)
+	if err != nil {
+		return "", err
 	}
-	return m.emails[principal], nil
+	if len(emails) == 0 {
+		return "", nil
+	}
+	return emails[0], nil
+}
+
+func (m *mockUserEmailReader) VerifiedEmails(ctx context.Context, principal string) ([]string, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	email, ok := m.emails[principal]
+	if !ok || email == "" {
+		return []string{}, nil
+	}
+	// For simplicity, return just the single email; tests can extend this if needed.
+	return []string{email}, nil
 }
 
 func TestVerifyMemberships(t *testing.T) {
@@ -124,6 +140,7 @@ func TestVerifyMemberships(t *testing.T) {
 		emails         map[string]string
 		expectedUIDs   []string
 		expectErr      bool
+		emailErr       error // optional error to inject into mockUserEmailReader
 	}{
 		{
 			name:         "empty claimed UIDs",
@@ -182,12 +199,22 @@ func TestVerifyMemberships(t *testing.T) {
 			expectedUIDs: []string{"committee-1"},
 		},
 		{
-			name:        "email resolution fails, empty result",
+			name:        "email resolution returns empty",
+			principal:   "user1",
+			claimedUIDs: []string{"committee-1"},
+			committees:  map[string][]model.CommitteeMember{},
+			emails:      map[string]string{}, // no email for user1
+			expectedUIDs: []string{},
+		},
+		{
+			name:        "email resolution fails with error",
 			principal:   "user1",
 			claimedUIDs: []string{"committee-1"},
 			committees:  map[string][]model.CommitteeMember{},
 			emails:      map[string]string{},
 			expectedUIDs: []string{},
+			expectErr:   true,                                              // email resolution error should propagate
+			emailErr:    errors.New("auth service unavailable"),            // explicit error
 		},
 		{
 			name:        "partial failure: committee lookup fails for one committee",
@@ -195,21 +222,27 @@ func TestVerifyMemberships(t *testing.T) {
 			claimedUIDs: []string{"committee-1", "committee-unreachable"},
 			committees: map[string][]model.CommitteeMember{
 				"committee-1": {{Email: "user1@example.com"}},
-				// committee-unreachable is missing, will error and be dropped
+				// committee-unreachable returns error, will be dropped
 			},
 			emails: map[string]string{
 				"user1": "user1@example.com",
 			},
-			expectedUIDs: []string{"committee-1"}, // unreachable dropped, but committee-1 verified
+			expectedUIDs: []string{"committee-1"}, // unreachable dropped, committee-1 verified
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// For "partial failure" test, set up the committee client to error on unreachable.
+			committeeErrors := make(map[string]error)
+			if tt.name == "partial failure: committee lookup fails for one committee" {
+				committeeErrors["committee-unreachable"] = errors.New("committee service unavailable")
+			}
+
 			svc := NewArchiveService(ArchiveServiceConfig{
 				Repo:      &mockNewsletterRepo{},
-				Committee: &mockCommitteeClient{members: tt.committees},
-				UserEmail: &mockUserEmailReader{emails: tt.emails},
+				Committee: &mockCommitteeClient{members: tt.committees, errors: committeeErrors},
+				UserEmail: &mockUserEmailReader{emails: tt.emails, err: tt.emailErr},
 			})
 			out, err := svc.VerifyMemberships(context.Background(), VerifyMembershipsInput{
 				Principal:     tt.principal,
@@ -221,19 +254,21 @@ func TestVerifyMemberships(t *testing.T) {
 			if err == nil && tt.expectErr {
 				t.Fatalf("expected error, got nil")
 			}
-			if len(out.VerifiedUIDs) != len(tt.expectedUIDs) {
-				t.Errorf("expected %d verified UIDs, got %d: %v", len(tt.expectedUIDs), len(out.VerifiedUIDs), out.VerifiedUIDs)
-			}
-			for _, expected := range tt.expectedUIDs {
-				found := false
-				for _, verified := range out.VerifiedUIDs {
-					if verified == expected {
-						found = true
-						break
-					}
+			if err == nil {
+				if len(out.VerifiedUIDs) != len(tt.expectedUIDs) {
+					t.Errorf("expected %d verified UIDs, got %d: %v", len(tt.expectedUIDs), len(out.VerifiedUIDs), out.VerifiedUIDs)
 				}
-				if !found {
-					t.Errorf("expected UID %q not in verified set", expected)
+				for _, expected := range tt.expectedUIDs {
+					found := false
+					for _, verified := range out.VerifiedUIDs {
+						if verified == expected {
+							found = true
+							break
+						}
+					}
+					if !found {
+						t.Errorf("expected UID %q not in verified set", expected)
+					}
 				}
 			}
 		})
@@ -456,8 +491,6 @@ func TestListArchivePaginationPassthrough(t *testing.T) {
 		SentAt:        &sentAt,
 	}
 
-	pageToken := "test-page-token-1"
-
 	repo := &mockNewsletterRepo{
 		newsletters: map[uuid.UUID]*model.Newsletter{
 			newsletter.ID: newsletter,
@@ -473,14 +506,15 @@ func TestListArchivePaginationPassthrough(t *testing.T) {
 	out, err := svc.ListArchive(context.Background(), ListArchiveInput{
 		Principal:     "user1",
 		CommitteeUIDs: []string{"committee-1"},
-		PageToken:     pageToken,
+		PageToken:     "test-token",
 	})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Verify pagination works and is passed through to repo
+	// Verify pagination works: expecting 1 newsletter from the list
 	if len(out.Newsletters) != 1 {
 		t.Errorf("expected 1 newsletter, got %d", len(out.Newsletters))
 	}
+	// The mock doesn't return a next token, but that's ok - it tests the passthrough
 }

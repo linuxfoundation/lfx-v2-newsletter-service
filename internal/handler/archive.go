@@ -4,11 +4,12 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
-	"github.com/google/uuid"
-
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
@@ -26,8 +27,17 @@ func (h *Handler) ArchiveNewsletters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse committee_uids CSV from query string.
-	committeeUIDs := parseCommitteeUIDs(r.URL.Query().Get("committee_uids"))
+	// Parse and normalize committee_uids CSV from query string.
+	raw := parseCommitteeUIDs(r.URL.Query().Get("committee_uids"))
+	committeeUIDs := normalizeCommitteeUIDs(raw)
+
+	// Check bounds: max 50 committees per request (mirrors draft audience limit).
+	const maxCommitteesPerRequest = 50
+	if len(committeeUIDs) > maxCommitteesPerRequest {
+		writeError(r.Context(), w, fmt.Errorf("%w: at most %d committee_uids allowed", domain.ErrInvalidRequest, maxCommitteesPerRequest))
+		return
+	}
+
 	pageToken := r.URL.Query().Get("page_token")
 
 	out, err := h.archive.ListArchive(r.Context(), service.ListArchiveInput{
@@ -45,11 +55,15 @@ func (h *Handler) ArchiveNewsletters(w http.ResponseWriter, r *http.Request) {
 		NextPageToken: out.NextPageToken,
 	}
 	for _, n := range out.Newsletters {
+		sentAt := time.Time{}
+		if n.SentAt != nil {
+			sentAt = *n.SentAt
+		}
 		resp.Newsletters = append(resp.Newsletters, publicapi.ArchiveNewsletterListItem{
 			ID:            n.ID.String(),
 			ProjectUID:    n.ProjectUID,
 			Subject:       n.Subject,
-			SentAt:        *n.SentAt, // Safe: status='sent' guarantees SentAt is set
+			SentAt:        sentAt,
 			CommitteeUIDs: n.CommitteeUIDs,
 			Status:        publicapi.Status(n.Status),
 		})
@@ -72,10 +86,9 @@ func (h *Handler) GetArchiveNewsletter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse newsletter_uid from path.
-	newsletterUIDStr := r.PathValue("newsletter_uid")
-	newsletterUID, err := uuid.Parse(newsletterUIDStr)
+	newsletterUID, err := parseUUID(r.PathValue("newsletter_uid"))
 	if err != nil {
-		writeError(r.Context(), w, &authError{msg: "invalid newsletter_uid", status: http.StatusBadRequest})
+		writeError(r.Context(), w, err)
 		return
 	}
 
@@ -88,16 +101,43 @@ func (h *Handler) GetArchiveNewsletter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sentAt := time.Time{}
+	if n.SentAt != nil {
+		sentAt = *n.SentAt
+	}
+
 	resp := publicapi.ArchiveNewsletter{
 		ID:            n.ID.String(),
 		ProjectUID:    n.ProjectUID,
 		Subject:       n.Subject,
 		BodyHTML:      n.BodyHTML,
-		SentAt:        *n.SentAt, // Safe: status='sent' guarantees SentAt is set
+		SentAt:        sentAt,
 		CommitteeUIDs: n.CommitteeUIDs,
 		Status:        publicapi.Status(n.Status),
 	}
 	writeJSON(r.Context(), w, http.StatusOK, resp)
+}
+
+// normalizeCommitteeUIDs deduplicates and trims committee UIDs, preserving first-seen order.
+// Empty values (after trimming) are dropped.
+func normalizeCommitteeUIDs(in []string) []string {
+	if len(in) == 0 {
+		return in
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		trimmed := strings.TrimSpace(s)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 // parseCommitteeUIDs parses a comma-separated string of committee UIDs.
