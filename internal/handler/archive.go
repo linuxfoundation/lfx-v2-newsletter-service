@@ -79,13 +79,9 @@ func (h *Handler) GetArchiveNewsletter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse committee_uids CSV from query string for verification.
-	committeeUIDs := parseCommitteeUIDs(r.URL.Query().Get("committee_uids"))
-
 	n, err := h.archive.GetArchive(r.Context(), service.GetArchiveInput{
-		Principal:     principal,
-		CommitteeUIDs: committeeUIDs,
-		NewsletterID:  newsletterUID,
+		Principal:    principal,
+		NewsletterID: newsletterUID,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)

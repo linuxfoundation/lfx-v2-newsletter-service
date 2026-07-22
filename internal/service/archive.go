@@ -199,9 +199,8 @@ func (s *ArchiveService) ListArchive(ctx context.Context, in ListArchiveInput) (
 
 // GetArchiveInput holds the parameters for GetArchive.
 type GetArchiveInput struct {
-	Principal     string   // The authenticated user's principal (from JWT)
-	CommitteeUIDs []string // The claimed committee UIDs (from query param) to verify against
-	NewsletterID  uuid.UUID
+	Principal    string    // The authenticated user's principal (from JWT)
+	NewsletterID uuid.UUID
 }
 
 // GetArchive returns a single sent newsletter iff the caller is a member of

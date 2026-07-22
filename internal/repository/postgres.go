@@ -114,7 +114,7 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 		}
 		// Keyset pagination: continue from the (updated_at, id) tuple of the last
 		// row of the previous page. Tuple comparison handles ties on updated_at.
-		q = q.Where("(updated_at, id) < (?, ?)", cursor.UpdatedAt, cursor.ID)
+		q = q.Where("(updated_at, id) < (?, ?)", cursor.Timestamp, cursor.ID)
 	}
 
 	var rows []*model.Newsletter
@@ -127,7 +127,7 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 		// Trim the lookahead row and emit its cursor as the next page token.
 		last := rows[limit-1]
 		page.Newsletters = rows[:limit]
-		page.NextPageToken = encodeCursor(listCursor{UpdatedAt: last.UpdatedAt, ID: last.ID})
+		page.NextPageToken = encodeCursor(listCursor{Timestamp: last.UpdatedAt, ID: last.ID})
 	}
 	return page, nil
 }
@@ -537,7 +537,7 @@ func (r *PostgresNewsletterRepo) ListSentByCommitteeUIDs(ctx context.Context, fi
 		}
 		// Keyset pagination: continue from the (sent_at, id) tuple of the last
 		// row of the previous page. Tuple comparison handles ties on sent_at.
-		q = q.Where("(sent_at, id) < (?, ?)", cursor.UpdatedAt, cursor.ID)
+		q = q.Where("(sent_at, id) < (?, ?)", cursor.Timestamp, cursor.ID)
 	}
 
 	var rows []*model.Newsletter
@@ -555,14 +555,17 @@ func (r *PostgresNewsletterRepo) ListSentByCommitteeUIDs(ctx context.Context, fi
 			// Safe: status='sent' guarantees SentAt is set, but be defensive.
 			sentAt = &time.Time{}
 		}
-		page.NextPageToken = encodeCursor(listCursor{UpdatedAt: *sentAt, ID: last.ID})
+		page.NextPageToken = encodeCursor(listCursor{Timestamp: *sentAt, ID: last.ID})
 	}
 	return page, nil
 }
 
-// listCursor is the keyset cursor encoded into NextPageToken for ListAll.
+// listCursor is the keyset cursor encoded into NextPageToken.
+// Used by both ListAll (keyed by updated_at) and ListSentByCommitteeUIDs
+// (keyed by sent_at). The Timestamp field holds whichever column is used
+// for ordering in the corresponding query.
 type listCursor struct {
-	UpdatedAt time.Time `json:"u"`
+	Timestamp time.Time `json:"u"`
 	ID        uuid.UUID `json:"i"`
 }
 
