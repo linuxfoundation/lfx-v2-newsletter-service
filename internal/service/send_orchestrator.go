@@ -806,13 +806,16 @@ func (o *SendOrchestrator) resolveSenderEmail(ctx context.Context, principal str
 }
 
 // domainOf returns the lowercased domain portion of an email address, or ""
-// if the address has no "@".
+// if the address has no "@". The domain is everything after the LAST "@":
+// a quoted local-part may itself contain "@" (e.g. `"a@b"@example.com`), but
+// RFC 5322 never allows an unescaped "@" in the domain part, so splitting on
+// the last occurrence is the only correct way to isolate it.
 func domainOf(email string) string {
-	_, domain, ok := strings.Cut(email, "@")
-	if !ok {
+	i := strings.LastIndex(email, "@")
+	if i < 0 {
 		return ""
 	}
-	return strings.ToLower(domain)
+	return strings.ToLower(email[i+1:])
 }
 
 // domainAllowed reports whether email's domain is in allowed, either exactly

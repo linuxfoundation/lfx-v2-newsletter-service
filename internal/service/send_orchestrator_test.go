@@ -749,6 +749,52 @@ func TestSendNewsletterReplyToFallsBackOnDisallowedDomain(t *testing.T) {
 	}
 }
 
+// TestDomainOf asserts the domain is isolated from the LAST "@", not the
+// first: a quoted local-part may itself contain "@" (RFC 5322 permits this),
+// but the domain part never does, so splitting on the last occurrence is the
+// only form that stays correct for such addresses.
+func TestDomainOf(t *testing.T) {
+	tests := []struct {
+		name  string
+		email string
+		want  string
+	}{
+		{name: "simple address", email: "jzemlin@LinuxFoundation.org", want: "linuxfoundation.org"},
+		{name: "no at sign", email: "not-an-email", want: ""},
+		{name: "quoted local part containing at sign", email: `"a@b"@example.com`, want: "example.com"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := domainOf(tc.email); got != tc.want {
+				t.Errorf("domainOf(%q) = %q, want %q", tc.email, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDomainAllowed covers exact and subdomain-suffix matching, plus the
+// quoted-local-part edge case that a first-"@" split would misparse.
+func TestDomainAllowed(t *testing.T) {
+	allowed := []string{"linuxfoundation.org", "aaif.io"}
+	tests := []struct {
+		name  string
+		email string
+		want  bool
+	}{
+		{name: "exact domain match", email: "jzemlin@linuxfoundation.org", want: true},
+		{name: "subdomain match", email: "jzemlin@lfx.linuxfoundation.org", want: true},
+		{name: "disallowed domain", email: "jzemlin@gmail.com", want: false},
+		{name: "quoted local part still resolves real domain", email: `"a@b"@linuxfoundation.org`, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := domainAllowed(tc.email, allowed); got != tc.want {
+				t.Errorf("domainAllowed(%q, %v) = %v, want %v", tc.email, allowed, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestSendNewsletterValidatesAuthServiceName asserts the orchestrator delegates
 // safety of the resolved sender name to net/mail.ParseAddress: well-formed
 // names are accepted (whitespace trimmed), an all-whitespace value falls back
