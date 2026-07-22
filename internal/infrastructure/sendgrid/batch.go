@@ -5,6 +5,7 @@ package sendgrid
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -80,6 +81,9 @@ func (d *Dispatcher) SendBatch(ctx context.Context, in BatchInput) ([]BatchResul
 	from := address{Email: in.From, Name: in.FromDisplayName}
 	if strings.TrimSpace(from.Email) == "" {
 		from = address{Email: d.defaultFrom, Name: d.defaultFromName}
+	}
+	if !d.fromDomainAllowed(from.Email) {
+		return nil, pkgerrors.NewValidation(fmt.Sprintf("sendgrid: From domain %q is not an authenticated sending domain", domainOf(from.Email)))
 	}
 
 	var contents []content

@@ -79,6 +79,11 @@ type Config struct {
 	// errReadNotWired. When set, SendEmail records the send and the reads are
 	// served from it (populated by the event webhook).
 	Store EngagementStore
+	// AuthenticatedDomains lists the domains authenticated for this dispatcher's
+	// subuser. A send whose From domain is not one of these (or a subdomain of
+	// one) is rejected before hitting SendGrid, since an unauthenticated From
+	// wrecks DKIM/SPF/DMARC alignment. Empty permits any From (dev/test default).
+	AuthenticatedDomains []string
 }
 
 // Dispatcher implements port.EmailDispatcher over the SendGrid v3 mail/send API.
@@ -90,6 +95,8 @@ type Dispatcher struct {
 	httpClient      *http.Client
 	sandboxMode     bool
 	store           EngagementStore
+
+	authenticatedDomains []string
 }
 
 // Compile-time assertion that Dispatcher satisfies the port.
@@ -112,14 +119,54 @@ func NewDispatcher(cfg Config) (*Dispatcher, error) {
 		httpClient = &http.Client{Timeout: defaultTimeout}
 	}
 	return &Dispatcher{
-		apiKey:          cfg.APIKey,
-		defaultFrom:     cfg.DefaultFrom,
-		defaultFromName: cfg.DefaultFromName,
-		baseURL:         baseURL,
-		httpClient:      httpClient,
-		sandboxMode:     cfg.SandboxMode,
-		store:           cfg.Store,
+		apiKey:               cfg.APIKey,
+		defaultFrom:          cfg.DefaultFrom,
+		defaultFromName:      cfg.DefaultFromName,
+		baseURL:              baseURL,
+		httpClient:           httpClient,
+		sandboxMode:          cfg.SandboxMode,
+		store:                cfg.Store,
+		authenticatedDomains: normalizeDomains(cfg.AuthenticatedDomains),
 	}, nil
+}
+
+// normalizeDomains lowercases and trims a domain allowlist, dropping blanks.
+func normalizeDomains(domains []string) []string {
+	out := make([]string, 0, len(domains))
+	for _, d := range domains {
+		if d = strings.ToLower(strings.TrimSpace(d)); d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// domainOf returns the lowercased domain part of an email address, or "".
+func domainOf(email string) string {
+	at := strings.LastIndex(email, "@")
+	if at < 0 {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(email[at+1:]))
+}
+
+// fromDomainAllowed reports whether a From address may be used: its domain must
+// equal an authenticated domain or be a subdomain of one. An empty allowlist
+// permits any From (dev/test), matching email-service's permissive default.
+func (d *Dispatcher) fromDomainAllowed(email string) bool {
+	if len(d.authenticatedDomains) == 0 {
+		return true
+	}
+	dom := domainOf(email)
+	if dom == "" {
+		return false
+	}
+	for _, a := range d.authenticatedDomains {
+		if dom == a || strings.HasSuffix(dom, "."+a) {
+			return true
+		}
+	}
+	return false
 }
 
 // SendEmail delivers one email via SendGrid mail/send. It mints an email_id and
@@ -145,6 +192,9 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 	from := address{Email: in.From, Name: in.FromDisplayName}
 	if strings.TrimSpace(from.Email) == "" {
 		from = address{Email: d.defaultFrom, Name: d.defaultFromName}
+	}
+	if !d.fromDomainAllowed(from.Email) {
+		return "", pkgerrors.NewValidation(fmt.Sprintf("sendgrid: From domain %q is not an authenticated sending domain", domainOf(from.Email)))
 	}
 
 	// SendGrid orders content text/plain before text/html. Include only the

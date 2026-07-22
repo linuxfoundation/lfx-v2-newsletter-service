@@ -280,6 +280,58 @@ func TestReadsDelegateToStore(t *testing.T) {
 	}
 }
 
+func TestSendEmail_AuthenticatedDomainValidation(t *testing.T) {
+	posted := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		posted = true
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	d, err := NewDispatcher(Config{
+		APIKey: "k", DefaultFrom: "newsletter@lfx.aaif.io",
+		BaseURL: srv.URL, HTTPClient: srv.Client(),
+		AuthenticatedDomains: []string{"lfx.aaif.io"},
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+
+	// From on the authenticated domain: allowed.
+	if _, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To: "a@x.io", Subject: "s", Text: "t", From: "ed@lfx.aaif.io",
+	}); err != nil {
+		t.Errorf("authenticated From should be allowed, got: %v", err)
+	}
+	// From on a subdomain of an authenticated domain: allowed.
+	if _, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To: "a@x.io", Subject: "s", Text: "t", From: "ed@mail.lfx.aaif.io",
+	}); err != nil {
+		t.Errorf("subdomain From should be allowed, got: %v", err)
+	}
+	// From on an unauthenticated domain: rejected before any POST.
+	posted = false
+	if _, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To: "a@x.io", Subject: "s", Text: "t", From: "ed@evil.example",
+	}); err == nil {
+		t.Errorf("unauthenticated From must be rejected")
+	}
+	if posted {
+		t.Errorf("an unauthenticated From must not reach SendGrid")
+	}
+}
+
+func TestSendEmail_EmptyAuthenticatedDomainsPermitsAny(t *testing.T) {
+	d := newTestDispatcher(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+	// No AuthenticatedDomains configured -> any From is permitted.
+	if _, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To: "a@x.io", Subject: "s", Text: "t", From: "ed@anything.example",
+	}); err != nil {
+		t.Errorf("empty allowlist should permit any From, got: %v", err)
+	}
+}
+
 func TestEngagementReadsNotWired(t *testing.T) {
 	d, err := NewDispatcher(Config{APIKey: "k", DefaultFrom: "f@lfx.aaif.io"})
 	if err != nil {

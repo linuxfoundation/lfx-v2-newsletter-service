@@ -97,6 +97,12 @@ type AppConfig struct {
 	// route is not registered and engagement analytics stay empty.
 	SendGridWebhookPublicKey string
 
+	// SendGridAuthenticatedDomains lists the SendGrid-authenticated sending
+	// domains for the configured subuser. A send whose From domain is not one of
+	// these (or a subdomain) is rejected before hitting SendGrid. Empty permits
+	// any From (dev/test).
+	SendGridAuthenticatedDomains []string
+
 	// UnsubscribeSecret is the HMAC key signing per-recipient unsubscribe
 	// tokens. When empty, the footer falls back to the legacy "reply with
 	// UNSUBSCRIBE" copy and the public endpoint rejects all requests.
@@ -152,16 +158,17 @@ func AppConfigFromEnv() (AppConfig, error) {
 		EmailReplyToAllowedDomains: parseAllowedDomains(
 			os.Getenv("EMAIL_REPLY_TO_ALLOWED_DOMAINS"), defaultEmailReplyToDomain,
 		),
-		EmailProvider:            strings.ToLower(envOr("EMAIL_PROVIDER", "email-service")),
-		SendGridAPIKey:           strings.TrimSpace(os.Getenv("SENDGRID_API_KEY")),
-		SendGridSandboxMode:      boolOr("SENDGRID_SANDBOX_MODE", false),
-		SendGridWebhookPublicKey: strings.TrimSpace(os.Getenv("SENDGRID_WEBHOOK_PUBLIC_KEY")),
-		UnsubscribeSecret:        os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
-		PublicBaseURL:            strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
-		JWKSURL:                  os.Getenv("JWKS_URL"),
-		ExpectedAudience:         os.Getenv("JWT_AUDIENCE"),
-		RequireUserAuth:          boolOr("REQUIRE_USER_AUTH", true),
-		LFXEnvironment:           os.Getenv("LFX_ENVIRONMENT"),
+		EmailProvider:                strings.ToLower(envOr("EMAIL_PROVIDER", "email-service")),
+		SendGridAPIKey:               strings.TrimSpace(os.Getenv("SENDGRID_API_KEY")),
+		SendGridSandboxMode:          boolOr("SENDGRID_SANDBOX_MODE", false),
+		SendGridWebhookPublicKey:     strings.TrimSpace(os.Getenv("SENDGRID_WEBHOOK_PUBLIC_KEY")),
+		SendGridAuthenticatedDomains: splitCSV(os.Getenv("SENDGRID_AUTHENTICATED_DOMAINS")),
+		UnsubscribeSecret:            os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
+		PublicBaseURL:                strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
+		JWKSURL:                      os.Getenv("JWKS_URL"),
+		ExpectedAudience:             os.Getenv("JWT_AUDIENCE"),
+		RequireUserAuth:              boolOr("REQUIRE_USER_AUTH", true),
+		LFXEnvironment:               os.Getenv("LFX_ENVIRONMENT"),
 	}
 
 	// If DATABASE_URL is not set, compose it from PG* env vars in-process so
@@ -271,6 +278,22 @@ func parseAllowedDomains(raw, fallback string) []string {
 	}
 	if len(out) == 0 {
 		return []string{fallback}
+	}
+	return out
+}
+
+// splitCSV parses a comma-separated env value into a trimmed, blank-free slice,
+// returning nil (not a one-element blank slice) when the value is empty.
+func splitCSV(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
 	}
 	return out
 }

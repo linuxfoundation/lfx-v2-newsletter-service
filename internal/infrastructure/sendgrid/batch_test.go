@@ -141,6 +141,33 @@ func TestSendBatch_Validation(t *testing.T) {
 	}
 }
 
+func TestSendBatch_RejectsUnauthenticatedFrom(t *testing.T) {
+	posted := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		posted = true
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	d, err := NewDispatcher(Config{
+		APIKey: "k", DefaultFrom: "newsletter@lfx.aaif.io",
+		BaseURL: srv.URL, HTTPClient: srv.Client(),
+		AuthenticatedDomains: []string{"lfx.aaif.io"},
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	_, err = d.SendBatch(context.Background(), BatchInput{
+		Subject: "s", Text: "t", From: "ed@evil.example",
+		Recipients: []BatchRecipient{{To: "a@x.io"}},
+	})
+	if err == nil {
+		t.Errorf("SendBatch must reject an unauthenticated From")
+	}
+	if posted {
+		t.Errorf("an unauthenticated From must not reach SendGrid")
+	}
+}
+
 func TestSendBatch_ErrorPerChunk(t *testing.T) {
 	store := &fakeStore{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
