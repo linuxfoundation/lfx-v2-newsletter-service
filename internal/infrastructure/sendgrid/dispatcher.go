@@ -252,8 +252,9 @@ func (d *Dispatcher) postMailSend(ctx context.Context, reqBody mailSendRequest) 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// A successful send is 202 Accepted with an empty body.
-	if resp.StatusCode == http.StatusAccepted {
+	// A successful real send is 202 Accepted; a sandbox-mode validation returns
+	// 200 OK. Both have an empty body and mean SendGrid accepted the request.
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusAccepted {
 		return nil
 	}
 	// SendGrid reports failures as { "errors": [ { "message", "field", "help" } ] }.
