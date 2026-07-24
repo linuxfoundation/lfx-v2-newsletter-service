@@ -146,16 +146,21 @@ func (s *SendGridEngagementStore) ApplyOpen(ctx context.Context, sgEventID, emai
 // engagement row is per-recipient (one row can be opened at most once as a bool).
 func (s *SendGridEngagementStore) Engagement(ctx context.Context, groupID string) (*port.EmailEngagement, error) {
 	type aggRow struct {
-		TotalSent int `bun:"total_sent"`
-		Delivered int `bun:"delivered"`
-		Opened    int `bun:"opened"`
-		Failed    int `bun:"failed"`
+		TotalSent   int `bun:"total_sent"`
+		Delivered   int `bun:"delivered"`
+		Opened      int `bun:"opened"`
+		UniqueOpens int `bun:"unique_opens"`
+		Failed      int `bun:"failed"`
 	}
 	agg := &aggRow{}
 	if err := s.db.NewSelect().
 		ColumnExpr("COUNT(*) AS total_sent").
 		ColumnExpr("COUNT(*) FILTER (WHERE delivered) AS delivered").
-		ColumnExpr("COUNT(*) FILTER (WHERE opened) AS opened").
+		// Opened is the raw open total (feeds analytics TotalOpens, matching the
+		// email-service dispatcher); UniqueOpens counts recipients who opened at
+		// least once. Keeping them distinct avoids sum(DailyOpens) > TotalOpens.
+		ColumnExpr("COALESCE(SUM(open_count), 0) AS opened").
+		ColumnExpr("COUNT(*) FILTER (WHERE opened) AS unique_opens").
 		ColumnExpr("COUNT(*) FILTER (WHERE failed) AS failed").
 		Table("sendgrid_recipient_engagement").
 		Where("group_id = ?", groupID).
@@ -167,7 +172,7 @@ func (s *SendGridEngagementStore) Engagement(ctx context.Context, groupID string
 		TotalSent:   agg.TotalSent,
 		Delivered:   agg.Delivered,
 		Opened:      agg.Opened,
-		UniqueOpens: agg.Opened,
+		UniqueOpens: agg.UniqueOpens,
 		Failed:      agg.Failed,
 	}, nil
 }

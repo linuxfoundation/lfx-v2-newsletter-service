@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,6 +30,13 @@ const (
 	// around a few hundred KB; 5 MB is comfortable headroom without being an
 	// unbounded-read DoS.
 	maxWebhookBytes = 5 << 20
+
+	// webhookTimestampTolerance bounds how far the signed timestamp may drift
+	// from now. The signature alone does not prevent replay of a captured
+	// (body, signature, timestamp) triple on this public route, so we also
+	// reject a stale timestamp. Wide enough to absorb clock skew and delivery
+	// latency.
+	webhookTimestampTolerance = 10 * time.Minute
 )
 
 // Verifier checks SendGrid Signed Event Webhook signatures with the ECDSA
@@ -72,6 +80,21 @@ func (v *Verifier) Verify(payload []byte, signatureB64, timestamp string) bool {
 	return ecdsa.VerifyASN1(v.pub, h.Sum(nil), sig)
 }
 
+// freshTimestamp reports whether the SendGrid signed-webhook timestamp (Unix
+// seconds) is within webhookTimestampTolerance of now. A malformed timestamp is
+// treated as not fresh.
+func freshTimestamp(ts string, now time.Time) bool {
+	secs, err := strconv.ParseInt(strings.TrimSpace(ts), 10, 64)
+	if err != nil {
+		return false
+	}
+	delta := now.Sub(time.Unix(secs, 0))
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= webhookTimestampTolerance
+}
+
 // event is one entry in a SendGrid event-webhook batch. email_id / group_id are
 // the custom_args set at send time, echoed back at the top level of each event.
 type event struct {
@@ -107,9 +130,17 @@ func (wh *Webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read error", http.StatusBadRequest)
 		return
 	}
-	if !wh.verifier.Verify(body, r.Header.Get(signatureHeader), r.Header.Get(timestampHeader)) {
+	timestamp := r.Header.Get(timestampHeader)
+	if !wh.verifier.Verify(body, r.Header.Get(signatureHeader), timestamp) {
 		slog.WarnContext(ctx, "sendgrid webhook: signature verification failed")
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	// The signature is authentic, but a captured triple could be replayed on
+	// this public route; reject a timestamp outside the tolerance window.
+	if !freshTimestamp(timestamp, time.Now()) {
+		slog.WarnContext(ctx, "sendgrid webhook: signed timestamp is stale or invalid, rejecting")
+		http.Error(w, "stale timestamp", http.StatusUnauthorized)
 		return
 	}
 

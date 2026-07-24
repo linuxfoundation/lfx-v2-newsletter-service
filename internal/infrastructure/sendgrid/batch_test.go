@@ -195,3 +195,54 @@ func TestSendBatch_ErrorPerChunk(t *testing.T) {
 		t.Errorf("a failed chunk must not record sends, got %d", len(store.sent))
 	}
 }
+
+func TestSendBatch_RejectsOutOfWindowSendAt(t *testing.T) {
+	var gotBody mailSendRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	d, err := NewDispatcher(Config{
+		APIKey: "k", DefaultFrom: "newsletter@lfx.aaif.io",
+		BaseURL: srv.URL, HTTPClient: srv.Client(), Store: &fakeStore{},
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+
+	results, err := d.SendBatch(context.Background(), BatchInput{
+		Subject: "S", Text: "hi",
+		Recipients: []BatchRecipient{
+			{To: "good@x.io"}, // send now -> valid
+			{To: "bad@x.io", SendAt: time.Now().Add(96 * time.Hour)}, // >72h out -> rejected
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendBatch: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %d, want 2", len(results))
+	}
+	// Only the valid recipient is dispatched; the out-of-window one is failed
+	// individually rather than sinking the whole chunk.
+	if len(gotBody.Personalizations) != 1 || gotBody.Personalizations[0].To[0].Email != "good@x.io" {
+		t.Errorf("dispatched personalizations = %+v, want just good@x.io", gotBody.Personalizations)
+	}
+	var good, bad *BatchResult
+	for i := range results {
+		switch results[i].To {
+		case "good@x.io":
+			good = &results[i]
+		case "bad@x.io":
+			bad = &results[i]
+		}
+	}
+	if good == nil || good.Err != nil {
+		t.Errorf("good recipient result = %+v, want no error", good)
+	}
+	if bad == nil || bad.Err == nil {
+		t.Errorf("bad recipient result = %+v, want a send_at validation error", bad)
+	}
+}

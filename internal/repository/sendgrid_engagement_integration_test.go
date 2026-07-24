@@ -68,8 +68,10 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Engagement: %v", err)
 	}
-	if eng.TotalSent != 2 || eng.Delivered != 1 || eng.Opened != 1 || eng.Failed != 1 {
-		t.Errorf("Engagement = %+v; want TotalSent=2 Delivered=1 Opened=1 Failed=1", eng)
+	// Opened is the raw open total (m1's open_count of 2: ev1 deduped, ev1+ev2
+	// counted); UniqueOpens is the one recipient (m1) who opened.
+	if eng.TotalSent != 2 || eng.Delivered != 1 || eng.Opened != 2 || eng.UniqueOpens != 1 || eng.Failed != 1 {
+		t.Errorf("Engagement = %+v; want TotalSent=2 Delivered=1 Opened=2 UniqueOpens=1 Failed=1", eng)
 	}
 
 	rec, err := store.RecipientByEmailID(ctx, m1)

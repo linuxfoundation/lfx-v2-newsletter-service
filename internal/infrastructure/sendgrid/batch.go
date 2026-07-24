@@ -21,6 +21,11 @@ import (
 // Activity API query URL used by the reconcile worker, not here.)
 const maxPersonalizationsPerCall = 1000
 
+// maxSendAtWindow is SendGrid's cap on how far ahead a personalization's
+// send_at may be scheduled. A send_at beyond this is rejected per-recipient
+// before dispatch.
+const maxSendAtWindow = 72 * time.Hour
+
 // BatchRecipient is one recipient in a batched send.
 type BatchRecipient struct {
 	To string
@@ -94,10 +99,28 @@ func (d *Dispatcher) SendBatch(ctx context.Context, in BatchInput) ([]BatchResul
 		contents = append(contents, content{Type: "text/html", Value: in.HTML})
 	}
 
+	// Validate send_at up front. SendGrid rejects an entire mail/send call with
+	// 400 if any personalization's send_at is beyond its 72h window, which would
+	// fail every recipient in the chunk. Reject an out-of-window recipient
+	// individually instead, so one bad timestamp can't sink a 1000-recipient
+	// chunk. A past/zero send_at is fine (SendGrid sends immediately).
+	now := time.Now()
+	recipients := make([]BatchRecipient, 0, len(in.Recipients))
 	results := make([]BatchResult, 0, len(in.Recipients))
-	for start := 0; start < len(in.Recipients); start += maxPersonalizationsPerCall {
-		end := min(start+maxPersonalizationsPerCall, len(in.Recipients))
-		chunk := in.Recipients[start:end]
+	for _, r := range in.Recipients {
+		if !r.SendAt.IsZero() && r.SendAt.After(now.Add(maxSendAtWindow)) {
+			results = append(results, BatchResult{
+				To:  r.To,
+				Err: pkgerrors.NewValidation(fmt.Sprintf("sendgrid: send_at %s is more than 72h out", r.SendAt.UTC().Format(time.RFC3339))),
+			})
+			continue
+		}
+		recipients = append(recipients, r)
+	}
+
+	for start := 0; start < len(recipients); start += maxPersonalizationsPerCall {
+		end := min(start+maxPersonalizationsPerCall, len(recipients))
+		chunk := recipients[start:end]
 
 		persons := make([]personalization, 0, len(chunk))
 		emailIDs := make([]string, len(chunk))

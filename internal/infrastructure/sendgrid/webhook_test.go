@@ -14,8 +14,16 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 )
+
+// nowTS returns the current Unix time as the string the SendGrid signed webhook
+// sends in its timestamp header, so ServeHTTP's freshness check passes.
+func nowTS() string {
+	return strconv.FormatInt(time.Now().Unix(), 10)
+}
 
 func newTestVerifier(t *testing.T) (*Verifier, *ecdsa.PrivateKey) {
 	t.Helper()
@@ -78,7 +86,7 @@ func TestWebhook_AppliesVerifiedEvents(t *testing.T) {
 	  {"event":"processed","email":"c@x.io","timestamp":1700000300,"sg_event_id":"e4","email_id":"m3","group_id":"g"},
 	  {"event":"open","email":"d@x.io","timestamp":1700000400,"sg_event_id":"e5","group_id":"g"}
 	]`)
-	ts := "1700000500"
+	ts := nowTS()
 	req := httptest.NewRequest(http.MethodPost, "/newsletters/sendgrid/events", bytes.NewReader(body))
 	req.Header.Set(signatureHeader, signPayload(t, priv, ts, body))
 	req.Header.Set(timestampHeader, ts)
@@ -118,12 +126,35 @@ func TestWebhook_InvalidSignatureIs401(t *testing.T) {
 	}
 }
 
+func TestWebhook_StaleTimestampIs401(t *testing.T) {
+	v, priv := newTestVerifier(t)
+	store := &fakeStore{}
+	wh := NewWebhook(v, store)
+	body := []byte(`[{"event":"delivered","email_id":"m1","timestamp":1700000000}]`)
+	// Correctly signed, but the timestamp is an hour old: the signature verifies
+	// yet the freshness check must reject it (replay protection).
+	ts := strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10)
+	req := httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader(body))
+	req.Header.Set(signatureHeader, signPayload(t, priv, ts, body))
+	req.Header.Set(timestampHeader, ts)
+	rec := httptest.NewRecorder()
+
+	wh.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 for a stale timestamp", rec.Code)
+	}
+	if len(store.delivered) != 0 {
+		t.Errorf("no events should apply for a stale timestamp; got delivered=%v", store.delivered)
+	}
+}
+
 func TestWebhook_StoreErrorRequestsRedelivery(t *testing.T) {
 	v, priv := newTestVerifier(t)
 	store := &fakeStore{applyErr: errors.New("db down")}
 	wh := NewWebhook(v, store)
 	body := []byte(`[{"event":"delivered","email_id":"m1","timestamp":1700000000}]`)
-	ts := "1700000001"
+	ts := nowTS()
 	req := httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader(body))
 	req.Header.Set(signatureHeader, signPayload(t, priv, ts, body))
 	req.Header.Set(timestampHeader, ts)
