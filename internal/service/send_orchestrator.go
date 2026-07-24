@@ -301,10 +301,10 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	}
 
 	htmlBody, textBody := o.renderBody(isLayout, bodyRenderInput{
-		subject:      draft.Subject,
-		bodyHTML:     sendBodyHTML,
-		displayName:  projectName,
-		senderName:   senderName,
+		subject:     draft.Subject,
+		bodyHTML:    sendBodyHTML,
+		displayName: projectName,
+		senderName:  senderName,
 		// Reply-To tracks the resolved sender (main's change), not the drafter's
 		// saved address — matching the envelope ReplyTo and the layout re-render.
 		edReplyEmail: replyTo,
