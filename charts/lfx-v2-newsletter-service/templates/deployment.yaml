@@ -126,6 +126,9 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.app.send.sendgrid.apiKeySecretRef.name }}
                   key: {{ .Values.app.send.sendgrid.apiKeySecretRef.key }}
+            {{- else }}
+            {{/* Fail the install rather than let every pod CrashLoop in AppConfigFromEnv on a missing key. */}}
+            {{- required "app.send.sendgrid.apiKeySecretRef.name is required when app.send.provider=sendgrid" "" }}
             {{- end }}
             {{- end }}
             {{- if .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}

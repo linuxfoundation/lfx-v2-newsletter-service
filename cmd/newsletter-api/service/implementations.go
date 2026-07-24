@@ -265,10 +265,11 @@ func Shutdown() {
 func newEmailDispatcher(ctx context.Context, cfg AppConfig, nc *natsinfra.Client) (port.EmailDispatcher, error) {
 	if cfg.EmailProvider == "sendgrid" {
 		sg, err := sendgridinfra.NewDispatcher(sendgridinfra.Config{
-			APIKey:               cfg.SendGridAPIKey,
-			DefaultFrom:          cfg.EmailFromAddress,
-			Store:                repository.NewSendGridEngagementStore(bunDB),
-			AuthenticatedDomains: cfg.SendGridAuthenticatedDomains,
+			APIKey:                cfg.SendGridAPIKey,
+			DefaultFrom:           cfg.EmailFromAddress,
+			Store:                 repository.NewSendGridEngagementStore(bunDB),
+			AuthenticatedDomains:  cfg.SendGridAuthenticatedDomains,
+			ReplyToAllowedDomains: cfg.EmailReplyToAllowedDomains,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("sendgrid dispatcher: %w", err)

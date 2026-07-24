@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
@@ -168,20 +169,25 @@ func (d *Dispatcher) SendBatch(ctx context.Context, in BatchInput) ([]BatchResul
 			Content:          contents,
 			BatchID:          in.BatchID,
 		}
-		if strings.TrimSpace(in.ReplyTo) != "" {
-			reqBody.ReplyTo = &address{Email: in.ReplyTo}
-		}
+		reqBody.ReplyTo = d.allowedReplyTo(ctx, in.ReplyTo)
 		if d.sandboxMode {
 			reqBody.MailSettings = &mailSettings{SandboxMode: &toggle{Enable: true}}
 		}
 
 		err := d.postMailSend(ctx, reqBody)
+		var sent []port.SentRow
+		if err == nil {
+			sent = make([]port.SentRow, 0, len(chunk))
+		}
+		now := time.Now().UTC()
 		for i, r := range chunk {
 			results = append(results, BatchResult{To: r.To, EmailID: emailIDs[i], Err: err})
 			if err == nil {
-				d.recordSent(ctx, emailIDs[i], groupID, r.To)
+				sent = append(sent, port.SentRow{EmailID: emailIDs[i], GroupID: groupID, To: r.To, SentAt: now})
 			}
 		}
+		// One bulk insert per accepted chunk instead of a round trip per recipient.
+		d.recordSentBatch(ctx, sent)
 	}
 	return results, nil
 }

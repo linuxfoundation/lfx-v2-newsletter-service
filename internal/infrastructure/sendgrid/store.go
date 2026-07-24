@@ -28,6 +28,11 @@ type EngagementStore interface {
 	// Best-effort at the call site: if it fails, the Apply* methods below still
 	// recover the row from the first webhook event, so engagement is not lost.
 	RecordSent(ctx context.Context, emailID, groupID, to string, sentAt time.Time) error
+	// RecordSentBatch inserts the initial engagement rows for a whole accepted
+	// mail/send chunk in one statement, so a 1000-recipient batch does not incur
+	// 1000 round trips. Idempotent on emailID like RecordSent. A nil/empty slice
+	// is a no-op.
+	RecordSentBatch(ctx context.Context, rows []port.SentRow) error
 	// ApplyDelivered marks the recipient delivered (first delivery wins). It
 	// upserts on emailID from the event's groupID / to so a missing row (failed
 	// RecordSent) is created rather than dropped.

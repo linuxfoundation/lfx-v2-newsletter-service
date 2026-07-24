@@ -84,6 +84,12 @@ type Config struct {
 	// one) is rejected before hitting SendGrid, since an unauthenticated From
 	// wrecks DKIM/SPF/DMARC alignment. Empty permits any From (dev/test default).
 	AuthenticatedDomains []string
+	// ReplyToAllowedDomains lists the domains a Reply-To may use. Since this
+	// provider bypasses email-service, it must enforce the same Reply-To policy
+	// email-service does: a Reply-To outside these domains (or a subdomain) is
+	// dropped from the send (reply then defaults to From) rather than forwarded.
+	// Empty permits any Reply-To (dev/test default).
+	ReplyToAllowedDomains []string
 }
 
 // Dispatcher implements port.EmailDispatcher over the SendGrid v3 mail/send API.
@@ -96,7 +102,8 @@ type Dispatcher struct {
 	sandboxMode     bool
 	store           EngagementStore
 
-	authenticatedDomains []string
+	authenticatedDomains  []string
+	replyToAllowedDomains []string
 }
 
 // Compile-time assertion that Dispatcher satisfies the port.
@@ -119,14 +126,15 @@ func NewDispatcher(cfg Config) (*Dispatcher, error) {
 		httpClient = &http.Client{Timeout: defaultTimeout}
 	}
 	return &Dispatcher{
-		apiKey:               cfg.APIKey,
-		defaultFrom:          cfg.DefaultFrom,
-		defaultFromName:      cfg.DefaultFromName,
-		baseURL:              baseURL,
-		httpClient:           httpClient,
-		sandboxMode:          cfg.SandboxMode,
-		store:                cfg.Store,
-		authenticatedDomains: normalizeDomains(cfg.AuthenticatedDomains),
+		apiKey:                cfg.APIKey,
+		defaultFrom:           cfg.DefaultFrom,
+		defaultFromName:       cfg.DefaultFromName,
+		baseURL:               baseURL,
+		httpClient:            httpClient,
+		sandboxMode:           cfg.SandboxMode,
+		store:                 cfg.Store,
+		authenticatedDomains:  normalizeDomains(cfg.AuthenticatedDomains),
+		replyToAllowedDomains: normalizeDomains(cfg.ReplyToAllowedDomains),
 	}, nil
 }
 
@@ -150,23 +158,48 @@ func domainOf(email string) string {
 	return strings.ToLower(strings.TrimSpace(email[at+1:]))
 }
 
-// fromDomainAllowed reports whether a From address may be used: its domain must
-// equal an authenticated domain or be a subdomain of one. An empty allowlist
-// permits any From (dev/test), matching email-service's permissive default.
-func (d *Dispatcher) fromDomainAllowed(email string) bool {
-	if len(d.authenticatedDomains) == 0 {
+// domainAllowed reports whether email's domain equals a listed domain or is a
+// subdomain of one. An empty list permits any address (dev/test), matching
+// email-service's permissive default.
+func domainAllowed(email string, allowed []string) bool {
+	if len(allowed) == 0 {
 		return true
 	}
 	dom := domainOf(email)
 	if dom == "" {
 		return false
 	}
-	for _, a := range d.authenticatedDomains {
+	for _, a := range allowed {
 		if dom == a || strings.HasSuffix(dom, "."+a) {
 			return true
 		}
 	}
 	return false
+}
+
+// fromDomainAllowed reports whether a From address may be used: its domain must
+// be in the authenticated-domain allowlist (an unauthenticated From wrecks
+// DKIM/SPF/DMARC alignment).
+func (d *Dispatcher) fromDomainAllowed(email string) bool {
+	return domainAllowed(email, d.authenticatedDomains)
+}
+
+// allowedReplyTo returns the Reply-To address to set on a send, or nil to omit
+// it. A Reply-To whose domain is outside the allowlist is dropped (with a
+// warning) rather than forwarded, mirroring the policy email-service enforces on
+// the SES path — this provider bypasses email-service, so it must enforce it
+// here. A blank Reply-To is simply omitted.
+func (d *Dispatcher) allowedReplyTo(ctx context.Context, replyTo string) *address {
+	replyTo = strings.TrimSpace(replyTo)
+	if replyTo == "" {
+		return nil
+	}
+	if !domainAllowed(replyTo, d.replyToAllowedDomains) {
+		slog.WarnContext(ctx, "sendgrid: dropping reply_to outside the allowed domains",
+			"reply_to_domain", domainOf(replyTo))
+		return nil
+	}
+	return &address{Email: replyTo}
 }
 
 // SendEmail delivers one email via SendGrid mail/send. It mints an email_id and
@@ -217,9 +250,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 			customArgGroupID: groupID,
 		},
 	}
-	if strings.TrimSpace(in.ReplyTo) != "" {
-		reqBody.ReplyTo = &address{Email: in.ReplyTo}
-	}
+	reqBody.ReplyTo = d.allowedReplyTo(ctx, in.ReplyTo)
 	if d.sandboxMode {
 		reqBody.MailSettings = &mailSettings{SandboxMode: &toggle{Enable: true}}
 	}
@@ -281,6 +312,19 @@ func (d *Dispatcher) recordSent(ctx context.Context, emailID, groupID, to string
 	if err := d.store.RecordSent(ctx, emailID, groupID, to, time.Now().UTC()); err != nil {
 		slog.WarnContext(ctx, "sendgrid: failed to record send for engagement tracking (recoverable via the event webhook)",
 			"email_id", emailID, "error", err)
+	}
+}
+
+// recordSentBatch persists a whole accepted chunk's engagement rows in one
+// statement (SendBatch's per-recipient equivalent of recordSent). Best-effort
+// for the same reason: a failure is recoverable via the event webhook.
+func (d *Dispatcher) recordSentBatch(ctx context.Context, rows []port.SentRow) {
+	if d.store == nil || len(rows) == 0 {
+		return
+	}
+	if err := d.store.RecordSentBatch(ctx, rows); err != nil {
+		slog.WarnContext(ctx, "sendgrid: failed to bulk-record sends for engagement tracking (recoverable via the event webhook)",
+			"count", len(rows), "error", err)
 	}
 }
 

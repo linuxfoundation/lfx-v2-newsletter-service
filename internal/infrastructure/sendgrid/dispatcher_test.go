@@ -38,6 +38,12 @@ func (f *fakeStore) RecordSent(_ context.Context, emailID, groupID, to string, s
 	f.sent = append(f.sent, recordSentArgs{emailID, groupID, to, sentAt})
 	return nil
 }
+func (f *fakeStore) RecordSentBatch(_ context.Context, rows []port.SentRow) error {
+	for _, r := range rows {
+		f.sent = append(f.sent, recordSentArgs{r.EmailID, r.GroupID, r.To, r.SentAt})
+	}
+	return nil
+}
 func (f *fakeStore) ApplyDelivered(_ context.Context, emailID, _, _ string, _ time.Time) error {
 	f.delivered = append(f.delivered, emailID)
 	return f.applyErr
@@ -345,5 +351,43 @@ func TestEngagementReadsNotWired(t *testing.T) {
 	}
 	if _, err := d.GetStatusByGroupID(context.Background(), "g"); err == nil {
 		t.Errorf("GetStatusByGroupID should report not-wired until the webhook store lands")
+	}
+}
+
+func TestSendEmail_ReplyToAllowlist(t *testing.T) {
+	var gotBody mailSendRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	d, err := NewDispatcher(Config{
+		APIKey: "k", DefaultFrom: "newsletter@lfx.aaif.io",
+		BaseURL: srv.URL, HTTPClient: srv.Client(),
+		ReplyToAllowedDomains: []string{"linuxfoundation.org"},
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+
+	// A reply-to outside the allowlist is dropped, not forwarded to SendGrid.
+	if _, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To: "a@x.io", Text: "hi", ReplyTo: "someone@evil.example",
+	}); err != nil {
+		t.Fatalf("SendEmail: %v", err)
+	}
+	if gotBody.ReplyTo != nil {
+		t.Errorf("reply_to = %+v, want nil (dropped, outside allowlist)", gotBody.ReplyTo)
+	}
+
+	// An allowed reply-to (including a subdomain) is kept.
+	if _, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To: "a@x.io", Text: "hi", ReplyTo: "ed@lists.linuxfoundation.org",
+	}); err != nil {
+		t.Fatalf("SendEmail: %v", err)
+	}
+	if gotBody.ReplyTo == nil || gotBody.ReplyTo.Email != "ed@lists.linuxfoundation.org" {
+		t.Errorf("reply_to = %+v, want kept", gotBody.ReplyTo)
 	}
 }

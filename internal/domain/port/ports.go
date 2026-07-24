@@ -172,6 +172,15 @@ type EmailRecipientRecord struct {
 	Failed       bool
 }
 
+// SentRow is one recipient's initial send record, used to persist a whole
+// accepted SendGrid mail/send chunk in a single statement.
+type SentRow struct {
+	EmailID string
+	GroupID string
+	To      string
+	SentAt  time.Time
+}
+
 // EmailEngagement is the per-group rollup returned by email-service.
 type EmailEngagement struct {
 	GroupID     string
