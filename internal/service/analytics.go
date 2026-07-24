@@ -46,15 +46,25 @@ func NewAnalyticsService(repo port.NewsletterRepository, readers map[string]port
 	return &AnalyticsService{repo: repo, readers: readers, defaultProvider: defaultProvider}
 }
 
-// readerFor resolves the engagement reader for a newsletter's send_provider,
-// falling back to the default provider's reader when the value is empty or
-// unrecognized. Returns nil when no usable reader is registered, which the
-// caller treats as an engagement-fetch failure (local-only analytics).
+// readerFor resolves the engagement reader for a newsletter's send_provider.
+//
+// A recognized provider must resolve to its OWN reader and never fall back to
+// another store's: reading SendGrid engagement from the email-service reader (or
+// vice versa) would query a store that never holds that newsletter's data. So for
+// a known provider whose reader is missing or nil (a misconfiguration), this
+// returns nil, which the caller treats as an engagement-fetch failure and
+// degrades to local-only analytics rather than reading the wrong store.
+//
+// Fallback to the default provider's reader applies only when the persisted
+// provider is empty or unrecognized — historical rows predate send_provider and
+// are all email-service.
 func (a *AnalyticsService) readerFor(provider string) port.EngagementReader {
-	if r, ok := a.readers[provider]; ok && r != nil {
-		return r
+	switch provider {
+	case model.SendProviderEmailService, model.SendProviderSendGrid:
+		return a.readers[provider] // nil if that provider's reader isn't wired
+	default:
+		return a.readers[a.defaultProvider]
 	}
-	return a.readers[a.defaultProvider]
 }
 
 // Get returns aggregated analytics for the given newsletter, gated on project

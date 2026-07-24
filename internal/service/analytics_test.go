@@ -427,3 +427,44 @@ func TestAnalyticsGet_RoutesByProvider(t *testing.T) {
 		})
 	}
 }
+
+// TestAnalyticsGet_KnownProviderMissingReaderIsLocalOnly verifies that a known
+// provider whose reader is not wired (a misconfiguration) degrades to local-only
+// analytics rather than falling back to another store's reader — reading SendGrid
+// engagement from the email-service reader would report another store's data for
+// this newsletter.
+func TestAnalyticsGet_KnownProviderMissingReaderIsLocalOnly(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	groupID := "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+	sentAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+
+	// Only the email-service reader is wired; the SendGrid reader is missing. Its
+	// data would be visibly wrong (99 opens) if the fallback served it.
+	emailReader := &statusByGroupFake{
+		engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: 5, Delivered: 5, Opened: 99},
+	}
+	readers := map[string]port.EngagementReader{model.SendProviderEmailService: emailReader}
+
+	newsletterID := uuid.New()
+	repo := &analyticsRepoFake{
+		newsletter: &model.Newsletter{
+			ID:              newsletterID,
+			ProjectUID:      projectUID,
+			Status:          model.StatusSent,
+			GroupID:         &groupID,
+			SendProvider:    model.SendProviderSendGrid, // known provider, reader missing
+			SentAt:          &sentAt,
+			TotalRecipients: 5,
+		},
+		base: &model.Analytics{NewsletterID: newsletterID, Status: model.StatusSent, SentAt: &sentAt, TotalRecipients: 5, Delivered: 5},
+	}
+	svc := NewAnalyticsService(repo, readers, model.SendProviderEmailService)
+	got, err := svc.Get(context.Background(), projectUID, newsletterID)
+	if err != nil {
+		t.Fatalf("Get: unexpected error: %v", err)
+	}
+	// Must not read the email-service reader's 99 opens for a SendGrid newsletter.
+	if got.TotalOpens != 0 {
+		t.Errorf("TotalOpens = %d; want 0 (a known provider with a missing reader must degrade to local-only, not fall back to another store)", got.TotalOpens)
+	}
+}
