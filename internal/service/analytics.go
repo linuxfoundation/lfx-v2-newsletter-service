@@ -114,11 +114,16 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 		return local, nil
 	}
 
-	// Email-service-derived fields overlay the local analytics.
-	if engagement.TotalSent > 0 {
+	// Provider engagement overlays the local analytics. total_recipients stays the
+	// send-time snapshot (the authoritative audience) unless engagement reports a
+	// larger count: the SendGrid store holds only a row per recorded send, and
+	// SendEmail intentionally records no row for ambiguous transport/5xx outcomes,
+	// so engagement.TotalSent can undercount the audience and must never lower the
+	// snapshot (which would inflate open rate and misreport how many were sent).
+	if engagement.TotalSent > local.TotalRecipients {
 		local.TotalRecipients = engagement.TotalSent
-		local.Delivered = engagement.Delivered
 	}
+	local.Delivered = engagement.Delivered
 	local.Failed = engagement.Failed
 	// Seed UniqueOpens (and thus OpenRate) from the scalar summary so they survive
 	// a per-recipient status-fetch failure below; a successful fetch replaces this

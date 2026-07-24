@@ -43,12 +43,6 @@ func (f *fakeStore) RecordSent(_ context.Context, emailID, groupID, to string, s
 	f.sent = append(f.sent, recordSentArgs{emailID, groupID, to, sentAt})
 	return nil
 }
-func (f *fakeStore) RecordSentBatch(_ context.Context, rows []port.SentRow) error {
-	for _, r := range rows {
-		f.sent = append(f.sent, recordSentArgs{r.EmailID, r.GroupID, r.To, r.SentAt})
-	}
-	return nil
-}
 func (f *fakeStore) ApplyDelivered(_ context.Context, emailID, _, _ string, _ time.Time) error {
 	f.delivered = append(f.delivered, emailID)
 	return f.applyErr

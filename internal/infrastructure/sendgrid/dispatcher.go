@@ -7,7 +7,7 @@
 // brokers SendGrid directly for newsletter/marketing sends, while
 // lfx-v2-email-service stays SES for transactional email (LFXV2-2388).
 //
-// SendEmail and SendBatch dispatch mail. Engagement reads (GetEngagement,
+// SendEmail dispatches mail. Engagement reads (GetEngagement,
 // GetStatusByEmailID, GetStatusByGroupID) are served from a newsletter-service
 // store populated by the SendGrid event webhook (see webhook.go and the
 // repository store). A dispatcher configured without a Store is send-only, and
@@ -273,8 +273,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 }
 
 // postMailSend marshals and POSTs a mail/send request, returning nil on the 202
-// Accepted success and a classified error otherwise. Shared by the single-send
-// SendEmail and the batched SendBatch.
+// Accepted success and a classified error otherwise.
 func (d *Dispatcher) postMailSend(ctx context.Context, reqBody mailSendRequest) error {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
@@ -300,13 +299,15 @@ func (d *Dispatcher) postMailSend(ctx context.Context, reqBody mailSendRequest) 
 	}
 	// SendGrid reports failures as { "errors": [ { "message", "field", "help" } ] }.
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	// Distinguish a definitive rejection from an ambiguous outcome. A 4xx means
-	// SendGrid did not accept the message (bad request, auth, rate limit), so no
-	// delivery webhook will follow — callers may safely record the recipient as
-	// failed. A 5xx (or the transport error above) is ambiguous: SendGrid may
-	// have accepted it and failed to respond, so the caller must NOT record a
-	// failure that a later delivered/bounce webhook would then contradict.
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+	// Distinguish a definitive rejection from an ambiguous/transient outcome. A
+	// 4xx other than 429 means SendGrid did not accept the message (bad request,
+	// auth), so no delivery webhook will follow — callers may safely record the
+	// recipient as failed. A 429 (rate limit) is transient, and a 5xx (or the
+	// transport error above) is ambiguous: SendGrid may have accepted it, or the
+	// send should be retried, so the caller must NOT record a permanent failure
+	// that a later delivered/bounce webhook would contradict or that strands a
+	// retryable recipient.
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
 		return pkgerrors.NewValidation(fmt.Sprintf("sendgrid: mail/send rejected (%d): %s", resp.StatusCode, summarizeError(resp.StatusCode, body)))
 	}
 	return pkgerrors.NewServiceUnavailable(
@@ -356,19 +357,6 @@ func (d *Dispatcher) recordFailed(ctx context.Context, emailID, groupID, to stri
 	if err := d.store.ApplyFailed(ctx, emailID, groupID, to, time.Now().UTC()); err != nil {
 		slog.WarnContext(ctx, "sendgrid: failed to record a synchronous send failure for engagement tracking",
 			"email_id", emailID, "error", err)
-	}
-}
-
-// recordSentBatch persists a whole accepted chunk's engagement rows in one
-// statement (SendBatch's per-recipient equivalent of recordSent). Best-effort
-// for the same reason: a failure is recoverable via the event webhook.
-func (d *Dispatcher) recordSentBatch(ctx context.Context, rows []port.SentRow) {
-	if d.store == nil || len(rows) == 0 {
-		return
-	}
-	if err := d.store.RecordSentBatch(ctx, rows); err != nil {
-		slog.WarnContext(ctx, "sendgrid: failed to bulk-record sends for engagement tracking (recoverable via the event webhook)",
-			"count", len(rows), "error", err)
 	}
 }
 

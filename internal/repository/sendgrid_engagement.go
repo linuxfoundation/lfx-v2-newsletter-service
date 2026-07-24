@@ -85,27 +85,6 @@ func (s *SendGridEngagementStore) RecordSent(ctx context.Context, emailID, group
 	return nil
 }
 
-// RecordSentBatch inserts the initial engagement rows for a whole accepted chunk
-// in one statement. Idempotent on email_id (ON CONFLICT DO NOTHING), so a
-// redelivery or overlap leaves existing rows intact. A nil/empty slice is a no-op.
-func (s *SendGridEngagementStore) RecordSentBatch(ctx context.Context, sents []port.SentRow) error {
-	if len(sents) == 0 {
-		return nil
-	}
-	rows := make([]sendgridEngagementRow, len(sents))
-	for i, r := range sents {
-		at := r.SentAt
-		rows[i] = sendgridEngagementRow{EmailID: r.EmailID, GroupID: r.GroupID, ToEmail: r.To, SentAt: &at}
-	}
-	if _, err := s.db.NewInsert().
-		Model(&rows).
-		On("CONFLICT (email_id) DO NOTHING").
-		Exec(ctx); err != nil {
-		return fmt.Errorf("sendgrid record sent batch: %w", err)
-	}
-	return nil
-}
-
 // DeleteByGroupID removes a group's open events and engagement rows. Open events
 // reference email_id, so they are deleted first (by joining through the group's
 // engagement rows), then the engagement rows themselves.

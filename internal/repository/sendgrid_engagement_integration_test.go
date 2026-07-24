@@ -178,6 +178,11 @@ func TestSchemaMigration_SendProviderUpgradePath(t *testing.T) {
 	if def != "email-service" {
 		t.Errorf("default send_provider = %q, want email-service", def)
 	}
+	// The CHECK constraint rejects an unknown provider value, so a bad
+	// EMAIL_PROVIDER can never be stamped onto a row.
+	if err := exec(ctx, db, `INSERT INTO newsletters (project_uid, subject, body_html, ed_reply_email, created_by, send_provider) VALUES ('p','s','b','e@x',?,'bogus-provider')`, id); err == nil {
+		t.Error("expected a CHECK violation inserting an invalid send_provider value")
+	}
 	// A third apply is a no-op (idempotent).
 	must(t, schema.Apply(ctx, pool))
 }

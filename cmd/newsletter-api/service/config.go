@@ -208,10 +208,12 @@ func AppConfigFromEnv() (AppConfig, error) {
 	// Require the authenticated-domain allowlist for real SendGrid sends. An empty
 	// list makes fromDomainAllowed permit every From, which disables the guard in
 	// exactly the production misconfiguration it exists to catch. The empty-list
-	// escape hatch is limited to local/dev, matching the auth-disable gate.
+	// escape hatch requires an EXPLICIT local/dev LFX_ENVIRONMENT: the chart does
+	// not set LFX_ENVIRONMENT, so an unset value is treated as production and
+	// fails closed rather than silently disabling the guard in a real deployment.
 	if cfg.EmailProvider == "sendgrid" && len(cfg.SendGridAuthenticatedDomains) == 0 {
-		if env := strings.ToLower(strings.TrimSpace(cfg.LFXEnvironment)); env != "" && env != "local" && env != "development" && env != "dev" {
-			return cfg, fmt.Errorf("SENDGRID_AUTHENTICATED_DOMAINS is required when EMAIL_PROVIDER=sendgrid outside local/dev (LFX_ENVIRONMENT=%q); an empty allowlist disables the authenticated-domain guard", cfg.LFXEnvironment)
+		if env := strings.ToLower(strings.TrimSpace(cfg.LFXEnvironment)); env != "local" && env != "development" && env != "dev" {
+			return cfg, fmt.Errorf("SENDGRID_AUTHENTICATED_DOMAINS is required when EMAIL_PROVIDER=sendgrid outside an explicit local/dev LFX_ENVIRONMENT (LFX_ENVIRONMENT=%q); an empty allowlist disables the authenticated-domain guard", cfg.LFXEnvironment)
 		}
 	}
 
