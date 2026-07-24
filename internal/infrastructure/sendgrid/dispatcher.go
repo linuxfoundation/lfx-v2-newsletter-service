@@ -202,10 +202,12 @@ func (d *Dispatcher) allowedReplyTo(ctx context.Context, replyTo string) *addres
 	return &address{Email: replyTo}
 }
 
-// SendEmail delivers one email via SendGrid mail/send. It mints an email_id and
-// carries it plus the group_id in custom_args so the event webhook can map
-// delivery/open/bounce events back to this send. The minted email_id is
-// returned as the tracking handle.
+// SendEmail delivers one email via SendGrid mail/send. A tracked send (the
+// caller supplies a group_id) mints an email_id and carries it plus the group_id
+// in custom_args so the event webhook can map delivery/open/bounce events back,
+// and returns the email_id as the tracking handle. An omitted group_id marks an
+// untracked send (the documented no-persistence / no-analytics test-send path):
+// it carries no custom_args, records no engagement, and returns an empty handle.
 func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
 	if strings.TrimSpace(in.To) == "" {
 		return "", pkgerrors.NewValidation("sendgrid: recipient (To) is required")
@@ -214,12 +216,15 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 		return "", pkgerrors.NewValidation("sendgrid: at least one of HTML or Text body is required")
 	}
 
-	emailID := uuid.NewString()
-	groupID := in.GroupID
-	if strings.TrimSpace(groupID) == "" {
-		// Mirror email-service: mint a group_id when the caller omits one so
-		// analytics can always aggregate by group.
-		groupID = uuid.NewString()
+	// An omitted group_id marks an untracked send: the orchestrator's real
+	// fan-out always supplies one, and only the test-send path leaves it empty.
+	// A tracked send mints an email_id and persists engagement; an untracked send
+	// does neither, so it never surfaces in analytics.
+	tracked := strings.TrimSpace(in.GroupID) != ""
+	var emailID, groupID string
+	if tracked {
+		emailID = uuid.NewString()
+		groupID = in.GroupID
 	}
 
 	from := address{Email: in.From, Name: in.FromDisplayName}
@@ -245,10 +250,12 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 		From:             from,
 		Subject:          in.Subject,
 		Content:          contents,
-		CustomArgs: map[string]string{
+	}
+	if tracked {
+		reqBody.CustomArgs = map[string]string{
 			customArgEmailID: emailID,
 			customArgGroupID: groupID,
-		},
+		}
 	}
 	reqBody.ReplyTo = d.allowedReplyTo(ctx, in.ReplyTo)
 	if d.sandboxMode {
@@ -262,13 +269,18 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 		// and the newsletter is marked sent. An ambiguous transport/5xx error is
 		// NOT recorded — SendGrid may have accepted it, and recording failed would
 		// contradict a later delivered webhook (and could double-count a retry).
-		var rejected pkgerrors.Validation
-		if errors.As(err, &rejected) {
-			d.recordFailed(ctx, emailID, groupID, in.To)
+		// An untracked send records nothing at all.
+		if tracked {
+			var rejected pkgerrors.Validation
+			if errors.As(err, &rejected) {
+				d.recordFailed(ctx, emailID, groupID, in.To)
+			}
 		}
 		return "", err
 	}
-	d.recordSent(ctx, emailID, groupID, in.To)
+	if tracked {
+		d.recordSent(ctx, emailID, groupID, in.To)
+	}
 	return emailID, nil
 }
 

@@ -264,6 +264,42 @@ func TestSendEmail_RecordsSentToStore(t *testing.T) {
 	}
 }
 
+func TestSendEmail_UntrackedWhenNoGroupID(t *testing.T) {
+	// A test-send omits GroupID. The dispatcher must send the mail but carry no
+	// tracking custom_args, record no engagement, and return an empty handle, so
+	// the documented no-persistence / no-analytics contract holds.
+	store := &fakeStore{}
+	var gotBody mailSendRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	d, err := NewDispatcher(Config{
+		APIKey: "k", DefaultFrom: "f@lfx.aaif.io",
+		BaseURL: srv.URL, HTTPClient: srv.Client(), Store: store,
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	handle, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To: "a@example.com", Subject: "s", Text: "t", // no GroupID
+	})
+	if err != nil {
+		t.Fatalf("SendEmail: %v", err)
+	}
+	if handle != "" {
+		t.Errorf("untracked send handle = %q, want empty", handle)
+	}
+	if len(store.sent) != 0 {
+		t.Errorf("untracked send must record no engagement, got %d RecordSent calls", len(store.sent))
+	}
+	if len(gotBody.CustomArgs) != 0 {
+		t.Errorf("untracked send must carry no custom_args, got %v", gotBody.CustomArgs)
+	}
+}
+
 func TestReadsDelegateToStore(t *testing.T) {
 	store := &fakeStore{
 		engagement: &port.EmailEngagement{GroupID: "g", TotalSent: 3, Delivered: 2, Opened: 1},
