@@ -428,23 +428,29 @@ func TestSendEmail_ReplyToAllowlist(t *testing.T) {
 }
 
 func TestSendEmail_RecordsFailureOnlyOnDefinitiveRejection(t *testing.T) {
-	// A 4xx means SendGrid did not accept the message (no webhook follows), so the
-	// failure is persisted. A 5xx is ambiguous — SendGrid may have accepted it —
-	// so it must NOT be recorded, or a later delivered webhook would contradict it.
+	// A definitive rejection (SendGrid did not accept the message, no webhook
+	// follows) is persisted; an ambiguous 429/5xx is not, or a later delivered
+	// webhook would contradict it. Definitiveness is decoupled from the outward
+	// error type: a client-input 4xx (Validation, detail surfaced) and a provider
+	// auth 401/403 (redacted ServiceUnavailable) are both definitive.
 	cases := []struct {
-		name       string
-		status     int
-		wantFailed int
+		name         string
+		status       int
+		wantFailed   int
+		redactedAuth bool
 	}{
-		{"definitive 400 records failure", http.StatusBadRequest, 1},
-		{"ambiguous 503 does not record", http.StatusServiceUnavailable, 0},
+		{"definitive 400 records failure and surfaces detail", http.StatusBadRequest, 1, false},
+		{"provider 401 records failure, redacted", http.StatusUnauthorized, 1, true},
+		{"provider 403 records failure, redacted", http.StatusForbidden, 1, true},
+		{"transient 429 does not record", http.StatusTooManyRequests, 0, false},
+		{"ambiguous 503 does not record", http.StatusServiceUnavailable, 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &fakeStore{}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.status)
-				_, _ = w.Write([]byte(`{"errors":[{"message":"x"}]}`))
+				_, _ = w.Write([]byte(`{"errors":[{"message":"upstream-secret-detail"}]}`))
 			}))
 			t.Cleanup(srv.Close)
 			d, err := NewDispatcher(Config{
@@ -454,7 +460,8 @@ func TestSendEmail_RecordsFailureOnlyOnDefinitiveRejection(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewDispatcher: %v", err)
 			}
-			if _, err := d.SendEmail(context.Background(), port.SendEmailInput{To: "a@x.io", Text: "hi", GroupID: "g"}); err == nil {
+			_, sendErr := d.SendEmail(context.Background(), port.SendEmailInput{To: "a@x.io", Text: "hi", GroupID: "g"})
+			if sendErr == nil {
 				t.Fatalf("expected an error from a %d send", tc.status)
 			}
 			if len(store.failed) != tc.wantFailed {
@@ -462,6 +469,19 @@ func TestSendEmail_RecordsFailureOnlyOnDefinitiveRejection(t *testing.T) {
 			}
 			if len(store.sent) != 0 {
 				t.Errorf("a failed send must not be recorded as sent, got %d", len(store.sent))
+			}
+			// A provider auth/config failure must not surface SendGrid's body as if
+			// it were the caller's input; a client-input 400 should surface detail.
+			if tc.redactedAuth {
+				if strings.Contains(sendErr.Error(), "upstream-secret-detail") {
+					t.Errorf("provider auth error must not surface the upstream body, got: %v", sendErr)
+				}
+				if !strings.Contains(sendErr.Error(), "authorization or configuration") {
+					t.Errorf("provider auth error should be the redacted class, got: %v", sendErr)
+				}
+			}
+			if tc.status == http.StatusBadRequest && !strings.Contains(sendErr.Error(), "upstream-secret-detail") {
+				t.Errorf("a client-input 400 should surface SendGrid detail, got: %v", sendErr)
 			}
 		})
 	}

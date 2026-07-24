@@ -262,19 +262,19 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 		reqBody.MailSettings = &mailSettings{SandboxMode: &toggle{Enable: true}}
 	}
 
-	if err := d.postMailSend(ctx, reqBody); err != nil {
-		// Only persist a failure on a definitive rejection (4xx → Validation):
-		// SendGrid did not accept the message, so no webhook will arrive, and
-		// analytics would otherwise omit this recipient when a sibling succeeds
-		// and the newsletter is marked sent. An ambiguous transport/5xx error is
-		// NOT recorded — SendGrid may have accepted it, and recording failed would
-		// contradict a later delivered webhook (and could double-count a retry).
-		// An untracked send records nothing at all.
-		if tracked {
-			var rejected pkgerrors.Validation
-			if errors.As(err, &rejected) {
-				d.recordFailed(ctx, emailID, groupID, in.To)
-			}
+	if definitive, err := d.postMailSend(ctx, reqBody); err != nil {
+		// Persist a failure only for a tracked send AND only on a definitive
+		// rejection — SendGrid did not accept the message, so no webhook will
+		// arrive, and analytics would otherwise omit this recipient when a sibling
+		// succeeds and the newsletter is marked sent. Definitiveness is decoupled
+		// from the outward error type: a client-input rejection (Validation) and a
+		// provider auth/config rejection (a redacted ServiceUnavailable) are both
+		// definitive, while an ambiguous 429/5xx/transport error is not recorded —
+		// SendGrid may have accepted it, and recording failed would contradict a
+		// later delivered webhook (and could double-count a retry). An untracked
+		// send records nothing at all.
+		if tracked && definitive {
+			d.recordFailed(ctx, emailID, groupID, in.To)
 		}
 		return "", err
 	}
@@ -284,48 +284,65 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 	return emailID, nil
 }
 
-// postMailSend marshals and POSTs a mail/send request, returning nil on the 202
-// Accepted success and a classified error otherwise.
-func (d *Dispatcher) postMailSend(ctx context.Context, reqBody mailSendRequest) error {
+// postMailSend marshals and POSTs a mail/send request. On success it returns
+// (false, nil). On failure it returns the outward classified error and whether
+// the failure is a DEFINITIVE rejection — SendGrid did not accept the message, so
+// no delivery webhook will follow and the caller may record the recipient failed.
+//
+// The outward error type is decoupled from definitiveness:
+//   - Client-input / request-content rejection (a 4xx other than 401/402/403/429):
+//     a definitive Validation carrying SendGrid's detail — it is the caller's
+//     content that was rejected, so surfacing it is useful.
+//   - Provider auth / billing / config rejection (401/402/403): definitive, but
+//     returned as a REDACTED ServiceUnavailable — this is our SendGrid credential
+//     or account problem, not the API caller's input, so it must not surface as a
+//     client 400 with upstream detail.
+//   - 429, 5xx, or a transport error: ambiguous, NOT definitive — SendGrid may
+//     have accepted it, or a retry may succeed, so the caller must not record a
+//     permanent failure that a later delivered/bounce webhook would contradict.
+func (d *Dispatcher) postMailSend(ctx context.Context, reqBody mailSendRequest) (bool, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
-		return pkgerrors.NewUnexpected("sendgrid: marshal mail/send request", err)
+		return false, pkgerrors.NewUnexpected("sendgrid: marshal mail/send request", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+mailSendPath, bytes.NewReader(payload))
 	if err != nil {
-		return pkgerrors.NewUnexpected("sendgrid: build mail/send request", err)
+		return false, pkgerrors.NewUnexpected("sendgrid: build mail/send request", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+d.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
-		return pkgerrors.NewServiceUnavailable("sendgrid: mail/send request failed", err)
+		return false, pkgerrors.NewServiceUnavailable("sendgrid: mail/send request failed", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// A successful real send is 202 Accepted; a sandbox-mode validation returns
 	// 200 OK. Both have an empty body and mean SendGrid accepted the request.
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusAccepted {
-		return nil
+		return false, nil
 	}
 	// SendGrid reports failures as { "errors": [ { "message", "field", "help" } ] }.
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	// Distinguish a definitive rejection from an ambiguous/transient outcome. A
-	// 4xx other than 429 means SendGrid did not accept the message (bad request,
-	// auth), so no delivery webhook will follow — callers may safely record the
-	// recipient as failed. A 429 (rate limit) is transient, and a 5xx (or the
-	// transport error above) is ambiguous: SendGrid may have accepted it, or the
-	// send should be retried, so the caller must NOT record a permanent failure
-	// that a later delivered/bounce webhook would contradict or that strands a
-	// retryable recipient.
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
-		return pkgerrors.NewValidation(fmt.Sprintf("sendgrid: mail/send rejected (%d): %s", resp.StatusCode, summarizeError(resp.StatusCode, body)))
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized ||
+		resp.StatusCode == http.StatusPaymentRequired ||
+		resp.StatusCode == http.StatusForbidden:
+		// Our credentials / account are the problem, not the caller's request.
+		// Redact SendGrid's body so it is not surfaced as if it were client input.
+		return true, pkgerrors.NewServiceUnavailable(
+			fmt.Sprintf("sendgrid: mail/send provider authorization or configuration error (%d)", resp.StatusCode),
+			errors.New("sendgrid rejected the API credentials or account configuration"),
+		)
+	case resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests:
+		return true, pkgerrors.NewValidation(fmt.Sprintf("sendgrid: mail/send rejected (%d): %s", resp.StatusCode, summarizeError(resp.StatusCode, body)))
+	default:
+		return false, pkgerrors.NewServiceUnavailable(
+			fmt.Sprintf("sendgrid: mail/send returned %d", resp.StatusCode),
+			errors.New(summarizeError(resp.StatusCode, body)),
+		)
 	}
-	return pkgerrors.NewServiceUnavailable(
-		fmt.Sprintf("sendgrid: mail/send returned %d", resp.StatusCode),
-		errors.New(summarizeError(resp.StatusCode, body)),
-	)
 }
 
 // recordSent persists the initial engagement row for an accepted send. It is
