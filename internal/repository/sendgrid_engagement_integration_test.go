@@ -8,6 +8,7 @@ package repository_test
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,12 +36,15 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pgxpool: %v", err)
 	}
-	defer pool.Close()
+	// Register the closes as cleanups (not defers) so they run AFTER the row
+	// cleanups below: t.Cleanup is LIFO, and the closes registered first run last,
+	// keeping the handles open while the row deletes execute.
+	t.Cleanup(pool.Close)
 	if err := schema.Apply(ctx, pool); err != nil {
 		t.Fatalf("schema apply: %v", err)
 	}
 	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
-	defer func() { _ = db.Close() }()
+	t.Cleanup(func() { _ = db.Close() })
 
 	store := repository.NewSendGridEngagementStore(db)
 	// Everything is namespaced under a per-run group so the test is hermetic —
@@ -49,8 +53,12 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	m1, m2 := group+"-m1", group+"-m2"
 	ev1, ev2 := group+"-ev1", group+"-ev2"
 	t.Cleanup(func() {
-		_, _ = db.NewRaw("DELETE FROM sendgrid_open_events WHERE email_id IN (?, ?)", m1, m2).Exec(ctx)
-		_, _ = db.NewRaw("DELETE FROM sendgrid_recipient_engagement WHERE group_id = ?", group).Exec(ctx)
+		if _, err := db.NewRaw("DELETE FROM sendgrid_open_events WHERE email_id IN (?, ?)", m1, m2).Exec(ctx); err != nil {
+			t.Errorf("cleanup open_events: %v", err)
+		}
+		if _, err := db.NewRaw("DELETE FROM sendgrid_recipient_engagement WHERE group_id = ?", group).Exec(ctx); err != nil {
+			t.Errorf("cleanup engagement: %v", err)
+		}
 	})
 
 	now := time.Now().UTC()
@@ -91,8 +99,12 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	healGroup := group + "-heal"
 	m3, ev3 := healGroup+"-m3", healGroup+"-ev3"
 	t.Cleanup(func() {
-		_, _ = db.NewRaw("DELETE FROM sendgrid_open_events WHERE email_id = ?", m3).Exec(ctx)
-		_, _ = db.NewRaw("DELETE FROM sendgrid_recipient_engagement WHERE group_id = ?", healGroup).Exec(ctx)
+		if _, err := db.NewRaw("DELETE FROM sendgrid_open_events WHERE email_id = ?", m3).Exec(ctx); err != nil {
+			t.Errorf("cleanup heal open_events: %v", err)
+		}
+		if _, err := db.NewRaw("DELETE FROM sendgrid_recipient_engagement WHERE group_id = ?", healGroup).Exec(ctx); err != nil {
+			t.Errorf("cleanup heal engagement: %v", err)
+		}
 	})
 	must(t, store.ApplyOpen(ctx, ev3, m3, healGroup, "c@x.io", now))
 	rec3, err := store.RecipientByEmailID(ctx, m3)
@@ -133,23 +145,61 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 // migration repairs an EXISTING database, not just a fresh one: a column left
 // nullable with a NULL row by a prior partial run must be backfilled and made
 // NOT NULL with a default, idempotently.
+//
+// The simulation drops constraints/defaults on the newsletters table, so it runs
+// against a throwaway DATABASE created for this test alone, never the shared one
+// named in DATABASE_URL. A separate database (rather than a schema) gives
+// schema.Apply a pristine public schema, matching how it runs in production and
+// avoiding its conname-only constraint idempotency matching a same-named
+// constraint in another schema. The database is dropped in cleanup even if the
+// test aborts mid-way.
 func TestSchemaMigration_SendProviderUpgradePath(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		t.Skip("DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+
+	// dbName is digits + an underscore prefix (from the clock), so it is a safe
+	// identifier to interpolate into the CREATE/DROP DATABASE statements.
+	dbName := "mig_test_" + strings.ReplaceAll(time.Now().UTC().Format("150405.000000000"), ".", "")
+
+	// admin pool connects to the database named in DATABASE_URL and owns the
+	// throwaway database's lifecycle (CREATE/DROP DATABASE cannot run in a tx, so
+	// these single Execs run in autocommit).
+	admin, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		t.Fatalf("pgxpool: %v", err)
+		t.Fatalf("pgxpool (admin): %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(admin.Close) // registered first -> runs last
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+dbName); err != nil {
+		t.Fatalf("create test database: %v", err)
+	}
+	t.Cleanup(func() {
+		// WITH (FORCE) terminates any lingering connection so the drop cannot hang
+		// (Postgres 13+); the working pool is already closed by the cleanup below.
+		if _, err := admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+dbName+" WITH (FORCE)"); err != nil {
+			t.Errorf("drop test database: %v", err)
+		}
+	})
+
+	// The working pool targets the throwaway database. schema.Apply builds a fresh
+	// schema there and the migration's ALTERs hit that isolated copy.
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	cfg.ConnConfig.Database = dbName
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("pgxpool (isolated): %v", err)
+	}
+	t.Cleanup(pool.Close) // runs before the database drop, after the row work
 	must(t, schema.Apply(ctx, pool))
 	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
-	defer func() { _ = db.Close() }()
+	t.Cleanup(func() { _ = db.Close() })
 
-	id := "mig-" + time.Now().UTC().Format("150405.000000000")
-	t.Cleanup(func() { _, _ = db.NewRaw("DELETE FROM newsletters WHERE created_by = ?", id).Exec(ctx) })
+	id := "mig-row"
 
 	// Simulate a prior partial run: column nullable, no default, no CHECK, plus a
 	// legacy row with a NULL provider.

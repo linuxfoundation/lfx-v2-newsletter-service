@@ -421,18 +421,11 @@ type mailSendRequest struct {
 	Subject          string            `json:"subject"`
 	Content          []content         `json:"content"`
 	CustomArgs       map[string]string `json:"custom_args,omitempty"`
-	BatchID          string            `json:"batch_id,omitempty"`
 	MailSettings     *mailSettings     `json:"mail_settings,omitempty"`
 }
 
 type personalization struct {
 	To []address `json:"to"`
-	// SendAt is a Unix timestamp (<=72h out) for a scheduled per-recipient send;
-	// 0 (omitted) sends immediately. CustomArgs carry the per-recipient email_id
-	// + group_id in a batch; Substitutions fill merge tokens in subject/content.
-	SendAt        int64             `json:"send_at,omitempty"`
-	CustomArgs    map[string]string `json:"custom_args,omitempty"`
-	Substitutions map[string]string `json:"substitutions,omitempty"`
 }
 
 type address struct {
