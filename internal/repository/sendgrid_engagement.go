@@ -103,6 +103,14 @@ func (s *SendGridEngagementStore) RecordSent(ctx context.Context, emailID, group
 // PII. Used after a fully-failed send reverts to draft and clears its group_id.
 func (s *SendGridEngagementStore) RevertGroup(ctx context.Context, groupID string) error {
 	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Take the same per-group advisory lock the engagement insert trigger takes,
+		// so this revert and any concurrent webhook write for the group are ordered
+		// rather than racing under READ COMMITTED. Held until this tx commits.
+		if _, err := tx.NewRaw(
+			"SELECT pg_advisory_xact_lock(hashtextextended('sendgrid_group:' || ?, 0))", groupID,
+		).Exec(ctx); err != nil {
+			return fmt.Errorf("sendgrid lock reverted group: %w", err)
+		}
 		if _, err := tx.NewInsert().
 			Model(&sendgridRevertedGroupRow{GroupID: groupID}).
 			On("CONFLICT (group_id) DO NOTHING").

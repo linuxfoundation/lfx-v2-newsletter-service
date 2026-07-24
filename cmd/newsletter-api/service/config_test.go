@@ -38,7 +38,7 @@ func TestAppConfigFromEnv_SendGridProvider(t *testing.T) {
 	}
 }
 
-func TestAppConfigFromEnv_SendGridRequiresAuthenticatedDomains(t *testing.T) {
+func TestAppConfigFromEnv_SendGridRequiresDomainsAndWebhookKey(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://u:p@h:5432/db")
 	t.Setenv("REQUIRE_USER_AUTH", "false")
 	t.Setenv("SEND_FANOUT_ENABLED", "false")
@@ -52,9 +52,16 @@ func TestAppConfigFromEnv_SendGridRequiresAuthenticatedDomains(t *testing.T) {
 		t.Fatalf("expected a SENDGRID_AUTHENTICATED_DOMAINS error, got: %v", err)
 	}
 
+	// With the allowlist set, the webhook public key is still required outside
+	// local/dev — without it no events arrive and engagement analytics stays empty.
 	t.Setenv("SENDGRID_AUTHENTICATED_DOMAINS", "lfx.aaif.io")
+	if _, err := AppConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "SENDGRID_WEBHOOK_PUBLIC_KEY") {
+		t.Fatalf("expected a SENDGRID_WEBHOOK_PUBLIC_KEY error, got: %v", err)
+	}
+
+	t.Setenv("SENDGRID_WEBHOOK_PUBLIC_KEY", "base64-pkix-key")
 	if _, err := AppConfigFromEnv(); err != nil {
-		t.Fatalf("with an allowlist set, expected no error, got: %v", err)
+		t.Fatalf("with allowlist + webhook key set, expected no error, got: %v", err)
 	}
 }
 

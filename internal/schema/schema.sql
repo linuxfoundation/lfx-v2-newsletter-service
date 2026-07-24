@@ -253,11 +253,19 @@ CREATE TABLE IF NOT EXISTS sendgrid_reverted_groups (
 -- INSERT and returns NULL to skip the row, so a delayed webhook's self-healing
 -- upsert cannot recreate purged PII: a reverted group's rows were already
 -- deleted, so every webhook write for it is a fresh INSERT that this stops. Rows
--- for a live (non-reverted) group are unaffected. The guard is at the DB layer
--- so it holds atomically against a webhook racing the revert, and durably across
--- restarts. CREATE OR REPLACE + DROP/CREATE keep re-running schema.sql a no-op.
+-- for a live (non-reverted) group are unaffected.
+--
+-- It first takes a transaction-scoped advisory lock keyed by the group, the same
+-- lock RevertGroup takes, so the tombstone check and this insert are serialized
+-- against a concurrent revert rather than racing under READ COMMITTED. Ordering:
+-- if the revert commits first the webhook then sees the tombstone and skips; if
+-- the webhook inserts first the revert blocks on the lock, then deletes the
+-- just-inserted row. Either way no engagement row survives a revert. The lock is
+-- released on commit/rollback. CREATE OR REPLACE + DROP/CREATE keep re-running
+-- schema.sql a no-op.
 CREATE OR REPLACE FUNCTION sendgrid_reject_reverted_engagement() RETURNS trigger AS $$
 BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended('sendgrid_group:' || NEW.group_id, 0));
     IF EXISTS (SELECT 1 FROM sendgrid_reverted_groups g WHERE g.group_id = NEW.group_id) THEN
         RETURN NULL;
     END IF;

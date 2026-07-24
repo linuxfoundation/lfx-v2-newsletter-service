@@ -205,15 +205,24 @@ func AppConfigFromEnv() (AppConfig, error) {
 	if cfg.EmailProvider != "email-service" && cfg.EmailProvider != "sendgrid" {
 		return cfg, fmt.Errorf("EMAIL_PROVIDER must be \"email-service\" or \"sendgrid\", got %q", cfg.EmailProvider)
 	}
-	// Require the authenticated-domain allowlist for real SendGrid sends. An empty
-	// list makes fromDomainAllowed permit every From, which disables the guard in
-	// exactly the production misconfiguration it exists to catch. The empty-list
-	// escape hatch requires an EXPLICIT local/dev LFX_ENVIRONMENT: the chart does
-	// not set LFX_ENVIRONMENT, so an unset value is treated as production and
-	// fails closed rather than silently disabling the guard in a real deployment.
-	if cfg.EmailProvider == "sendgrid" && len(cfg.SendGridAuthenticatedDomains) == 0 {
+	// For a deployed SendGrid provider — any LFX_ENVIRONMENT other than an
+	// explicit local/dev value; the chart does not set it, so an unset value is
+	// treated as production and fails closed — require the two settings that would
+	// otherwise silently degrade in exactly the misconfiguration each guard exists
+	// to catch:
+	//   - the authenticated-domain allowlist: an empty list makes fromDomainAllowed
+	//     permit every From, disabling the authenticated-domain guard.
+	//   - the event-webhook public key: without it the webhook route is never
+	//     registered, so no delivery/open/bounce events arrive and engagement
+	//     analytics stays empty for every SendGrid send.
+	if cfg.EmailProvider == "sendgrid" {
 		if env := strings.ToLower(strings.TrimSpace(cfg.LFXEnvironment)); env != "local" && env != "development" && env != "dev" {
-			return cfg, fmt.Errorf("SENDGRID_AUTHENTICATED_DOMAINS is required when EMAIL_PROVIDER=sendgrid outside an explicit local/dev LFX_ENVIRONMENT (LFX_ENVIRONMENT=%q); an empty allowlist disables the authenticated-domain guard", cfg.LFXEnvironment)
+			if len(cfg.SendGridAuthenticatedDomains) == 0 {
+				return cfg, fmt.Errorf("SENDGRID_AUTHENTICATED_DOMAINS is required when EMAIL_PROVIDER=sendgrid outside an explicit local/dev LFX_ENVIRONMENT (LFX_ENVIRONMENT=%q); an empty allowlist disables the authenticated-domain guard", cfg.LFXEnvironment)
+			}
+			if cfg.SendGridWebhookPublicKey == "" {
+				return cfg, fmt.Errorf("SENDGRID_WEBHOOK_PUBLIC_KEY is required when EMAIL_PROVIDER=sendgrid outside an explicit local/dev LFX_ENVIRONMENT (LFX_ENVIRONMENT=%q); without it no delivery/open/bounce events arrive and engagement analytics stays empty", cfg.LFXEnvironment)
+			}
 		}
 	}
 

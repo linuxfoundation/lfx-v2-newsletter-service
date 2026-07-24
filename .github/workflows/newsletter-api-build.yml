@@ -19,7 +19,11 @@ jobs:
       # Postgres for the tag-gated integration tests (the SendGrid engagement
       # store's schema DDL, upserts, transactions, and open-event dedup).
       postgres:
-        image: postgres:16-alpine
+        # Pinned by digest: a service container starts before the harden-runner
+        # step can constrain it, so a mutable tag would be an unpinned image
+        # running early. The tag is kept for readability; the digest is the
+        # multi-arch index for postgres:16-alpine.
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: newsletter_test
