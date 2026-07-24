@@ -109,10 +109,11 @@ spec:
             - name: EMAIL_REPLY_TO_ALLOWED_DOMAINS
               value: {{ . | quote }}
             {{- end }}
+            {{- if and (ne .Values.app.send.provider "email-service") (ne .Values.app.send.provider "sendgrid") }}
+            {{- fail (printf "app.send.provider must be \"email-service\" or \"sendgrid\", got %q" .Values.app.send.provider) }}
+            {{- end }}
             {{- if eq .Values.app.send.provider "sendgrid" }}
-            # SendGrid direct provider. Enabling it here (not via extraEnv) also
-            # wires the event-webhook HTTPRoute + RuleSet below, so engagement
-            # events can reach the handler.
+            # Outbound SendGrid send settings, gated on the active provider.
             - name: EMAIL_PROVIDER
               value: "sendgrid"
             {{- with .Values.app.send.sendgrid.authenticatedDomains }}
@@ -126,14 +127,19 @@ spec:
                   name: {{ .Values.app.send.sendgrid.apiKeySecretRef.name }}
                   key: {{ .Values.app.send.sendgrid.apiKeySecretRef.key }}
             {{- end }}
+            {{- end }}
             {{- if .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+            # Webhook ingestion is independent of the active outbound provider: the
+            # handler registers whenever this key exists, so historical/scheduled
+            # SendGrid events keep updating analytics even after a flip back to
+            # email-service. The event-webhook HTTPRoute + RuleSet are gated on the
+            # same key ref.
             - name: SENDGRID_WEBHOOK_PUBLIC_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
                   key: {{ .Values.app.send.sendgrid.webhookPublicKeySecretRef.key }}
                   optional: true
-            {{- end }}
             {{- end }}
             - name: NEWSLETTER_PUBLIC_BASE_URL
               value: {{ default (printf "https://lfx-api.%s" .Values.lfx.domain) .Values.app.unsubscribe.publicBaseURL | quote }}

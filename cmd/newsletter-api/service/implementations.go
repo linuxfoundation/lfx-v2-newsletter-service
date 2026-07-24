@@ -284,10 +284,12 @@ func newEmailDispatcher(ctx context.Context, cfg AppConfig, nc *natsinfra.Client
 // of an infrastructure import.
 var _ sendgridinfra.EngagementStore = (*repository.SendGridEngagementStore)(nil)
 
-// newSendGridWebhook builds the SendGrid event-webhook handler when the SendGrid
-// provider is selected and a verification key is configured. Returns nil (no
-// route) when the provider isn't SendGrid, and nil with a warning when the
-// provider is SendGrid but no key is set (engagement then stays unpopulated).
+// newSendGridWebhook builds the SendGrid event-webhook handler whenever a
+// verification key is configured, independent of the active EMAIL_PROVIDER, so
+// engagement for historical and scheduled SendGrid sends keeps flowing after a
+// flip back to email-service. Returns nil (no route) when no key is set — with a
+// warning only when the provider is SendGrid, since that is the case where the
+// missing key silently leaves engagement unpopulated.
 func newSendGridWebhook(ctx context.Context, cfg AppConfig) (http.Handler, error) {
 	// Register the webhook whenever a verification key is configured, independent
 	// of the active EMAIL_PROVIDER. SendGrid keeps delivering events for

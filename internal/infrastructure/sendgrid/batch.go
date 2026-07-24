@@ -70,7 +70,10 @@ type BatchResult struct {
 //
 // A partial failure is not fatal: the returned slice has a per-recipient outcome
 // (Err set for a failed chunk), so a caller can retry only the failed recipients.
-// Only an up-front validation problem (empty body) returns a non-nil error.
+// A batch-level validation problem returns a non-nil top-level error and no
+// results: an empty body (no HTML or Text) or a From whose domain is not
+// authenticated. Per-recipient validation (empty To, out-of-window send_at) is
+// reported on that recipient's result instead, not as a top-level error.
 func (d *Dispatcher) SendBatch(ctx context.Context, in BatchInput) ([]BatchResult, error) {
 	if strings.TrimSpace(in.HTML) == "" && strings.TrimSpace(in.Text) == "" {
 		return nil, pkgerrors.NewValidation("sendgrid: at least one of HTML or Text body is required")
