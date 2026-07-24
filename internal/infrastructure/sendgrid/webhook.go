@@ -169,11 +169,17 @@ func (wh *Webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// apply maps one SendGrid event to the engagement store. Events without our
-// email_id custom_arg, or of a type we don't track, are skipped.
+// apply maps one SendGrid event to the engagement store. Events of a type we
+// don't track are skipped, as are events missing the identity a tracked event
+// must carry.
 func (wh *Webhook) apply(ctx context.Context, ev event) error {
-	if ev.EmailID == "" {
-		slog.DebugContext(ctx, "sendgrid webhook: event without email_id custom_arg, skipping", "event", ev.Event)
+	// A tracked event carries both custom_args (email_id + group_id) set at send
+	// time. Require both: the store's Apply* methods self-heal by upserting from
+	// these values, so an empty group_id would create an engagement row under a
+	// blank group that no newsletter references and analytics can never read back.
+	if ev.EmailID == "" || ev.GroupID == "" {
+		slog.DebugContext(ctx, "sendgrid webhook: event missing email_id/group_id custom_arg, skipping",
+			"event", ev.Event, "has_email_id", ev.EmailID != "", "has_group_id", ev.GroupID != "")
 		return nil
 	}
 	at := time.Unix(ev.Timestamp, 0).UTC()
@@ -181,6 +187,14 @@ func (wh *Webhook) apply(ctx context.Context, ev event) error {
 	case "delivered":
 		return wh.store.ApplyDelivered(ctx, ev.EmailID, ev.GroupID, ev.Email, at)
 	case "open":
+		// sg_event_id is the open-event primary key and the dedup key. An empty
+		// value would collide across every open on the blank key (the first would
+		// insert, the rest would be swallowed by ON CONFLICT DO NOTHING), so skip
+		// an open that lacks it rather than mis-record it.
+		if ev.SGEventID == "" {
+			slog.DebugContext(ctx, "sendgrid webhook: open event without sg_event_id, skipping", "email_id", ev.EmailID)
+			return nil
+		}
 		return wh.store.ApplyOpen(ctx, ev.SGEventID, ev.EmailID, ev.GroupID, ev.Email, at)
 	case "bounce", "dropped", "spamreport", "blocked":
 		return wh.store.ApplyFailed(ctx, ev.EmailID, ev.GroupID, ev.Email, at)

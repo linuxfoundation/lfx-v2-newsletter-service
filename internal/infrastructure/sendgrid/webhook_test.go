@@ -110,6 +110,45 @@ func TestWebhook_AppliesVerifiedEvents(t *testing.T) {
 	}
 }
 
+func TestWebhook_SkipsIncompleteTrackedEvents(t *testing.T) {
+	v, priv := newTestVerifier(t)
+	store := &fakeStore{}
+	wh := NewWebhook(v, store)
+
+	// A delivered/failed event with an empty group_id must not reach the store
+	// (its self-heal would create a blank-group row); an open with an empty
+	// sg_event_id must not reach the store (it would collide on the blank PK). A
+	// complete event in the same batch still applies.
+	body := []byte(`[
+	  {"event":"delivered","email":"a@x.io","timestamp":1700000000,"sg_event_id":"e1","email_id":"m1","group_id":""},
+	  {"event":"bounce","email":"b@x.io","timestamp":1700000100,"sg_event_id":"e2","email_id":"m2","group_id":""},
+	  {"event":"open","email":"c@x.io","timestamp":1700000200,"sg_event_id":"","email_id":"m3","group_id":"g"},
+	  {"event":"delivered","email":"d@x.io","timestamp":1700000300,"sg_event_id":"e4","email_id":"m4","group_id":"g"}
+	]`)
+	ts := nowTS()
+	req := httptest.NewRequest(http.MethodPost, "/newsletters/sendgrid/events", bytes.NewReader(body))
+	req.Header.Set(signatureHeader, signPayload(t, priv, ts, body))
+	req.Header.Set(timestampHeader, ts)
+	rec := httptest.NewRecorder()
+
+	wh.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	// Only the complete delivered (m4) applies; the empty-group_id delivered/bounce
+	// and the empty-sg_event_id open are skipped.
+	if len(store.delivered) != 1 || store.delivered[0] != "m4" {
+		t.Errorf("delivered = %v, want [m4]", store.delivered)
+	}
+	if len(store.failed) != 0 {
+		t.Errorf("failed = %v, want [] (empty group_id must be skipped)", store.failed)
+	}
+	if len(store.opens) != 0 {
+		t.Errorf("opens = %v, want [] (empty sg_event_id must be skipped)", store.opens)
+	}
+}
+
 func TestWebhook_InvalidSignatureIs401(t *testing.T) {
 	v, _ := newTestVerifier(t)
 	wh := NewWebhook(v, &fakeStore{})
@@ -130,7 +169,7 @@ func TestWebhook_StaleTimestampIs401(t *testing.T) {
 	v, priv := newTestVerifier(t)
 	store := &fakeStore{}
 	wh := NewWebhook(v, store)
-	body := []byte(`[{"event":"delivered","email_id":"m1","timestamp":1700000000}]`)
+	body := []byte(`[{"event":"delivered","email_id":"m1","group_id":"g","timestamp":1700000000}]`)
 	// Correctly signed, but the timestamp is an hour old: the signature verifies
 	// yet the freshness check must reject it (replay protection).
 	ts := strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10)
@@ -153,7 +192,7 @@ func TestWebhook_StoreErrorRequestsRedelivery(t *testing.T) {
 	v, priv := newTestVerifier(t)
 	store := &fakeStore{applyErr: errors.New("db down")}
 	wh := NewWebhook(v, store)
-	body := []byte(`[{"event":"delivered","email_id":"m1","timestamp":1700000000}]`)
+	body := []byte(`[{"event":"delivered","email_id":"m1","group_id":"g","timestamp":1700000000}]`)
 	ts := nowTS()
 	req := httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader(body))
 	req.Header.Set(signatureHeader, signPayload(t, priv, ts, body))
