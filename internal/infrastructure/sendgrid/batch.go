@@ -109,10 +109,18 @@ func (d *Dispatcher) SendBatch(ctx context.Context, in BatchInput) ([]BatchResul
 	// fail every recipient in the chunk. Reject an out-of-window recipient
 	// individually instead, so one bad timestamp can't sink a 1000-recipient
 	// chunk. A past/zero send_at is fine (SendGrid sends immediately).
+	// Validate each recipient up front, keeping its input position so the returned
+	// results are index-aligned with in.Recipients (a caller can pair every
+	// outcome to its input even when some are rejected, addresses are normalized,
+	// or the list has duplicates).
 	now := time.Now()
-	recipients := make([]BatchRecipient, 0, len(in.Recipients))
-	results := make([]BatchResult, 0, len(in.Recipients))
-	for _, r := range in.Recipients {
+	type validRecipient struct {
+		r   BatchRecipient
+		idx int
+	}
+	results := make([]BatchResult, len(in.Recipients))
+	valid := make([]validRecipient, 0, len(in.Recipients))
+	for i, r := range in.Recipients {
 		// A syntactically invalid To (empty, blank, or e.g. "a@") makes SendGrid
 		// reject the whole mail/send chunk, so validate each address here and fail
 		// only the bad recipient rather than sink up to 999 valid ones with it.
@@ -121,20 +129,14 @@ func (d *Dispatcher) SendBatch(ctx context.Context, in BatchInput) ([]BatchResul
 		// only the addr-spec, so the display-name form would otherwise be rejected.
 		parsed, err := mail.ParseAddress(strings.TrimSpace(r.To))
 		if err != nil {
-			results = append(results, BatchResult{
-				To:  r.To,
-				Err: pkgerrors.NewValidation(fmt.Sprintf("sendgrid: invalid recipient address %q", r.To)),
-			})
+			results[i] = BatchResult{To: r.To, Err: pkgerrors.NewValidation(fmt.Sprintf("sendgrid: invalid recipient address %q", r.To))}
 			continue
 		}
 		r.To = parsed.Address
 		if !r.SendAt.IsZero() {
 			switch {
 			case r.SendAt.After(now.Add(maxSendAtWindow)):
-				results = append(results, BatchResult{
-					To:  r.To,
-					Err: pkgerrors.NewValidation(fmt.Sprintf("sendgrid: send_at %s is more than 72h out", r.SendAt.UTC().Format(time.RFC3339))),
-				})
+				results[i] = BatchResult{To: r.To, Err: pkgerrors.NewValidation(fmt.Sprintf("sendgrid: send_at %s is more than 72h out", r.SendAt.UTC().Format(time.RFC3339)))}
 				continue
 			case r.SendAt.Before(now):
 				// SendGrid rejects a chunk whose send_at is in the past; a schedule
@@ -142,27 +144,27 @@ func (d *Dispatcher) SendBatch(ctx context.Context, in BatchInput) ([]BatchResul
 				r.SendAt = time.Time{}
 			}
 		}
-		recipients = append(recipients, r)
+		valid = append(valid, validRecipient{r: r, idx: i})
 	}
 
-	for start := 0; start < len(recipients); start += maxPersonalizationsPerCall {
-		end := min(start+maxPersonalizationsPerCall, len(recipients))
-		chunk := recipients[start:end]
+	for start := 0; start < len(valid); start += maxPersonalizationsPerCall {
+		end := min(start+maxPersonalizationsPerCall, len(valid))
+		chunk := valid[start:end]
 
 		persons := make([]personalization, 0, len(chunk))
 		emailIDs := make([]string, len(chunk))
-		for i, r := range chunk {
+		for i, vr := range chunk {
 			eid := uuid.NewString()
 			emailIDs[i] = eid
 			p := personalization{
-				To:         []address{{Email: r.To}},
+				To:         []address{{Email: vr.r.To}},
 				CustomArgs: map[string]string{customArgEmailID: eid, customArgGroupID: groupID},
 			}
-			if !r.SendAt.IsZero() {
-				p.SendAt = r.SendAt.Unix()
+			if !vr.r.SendAt.IsZero() {
+				p.SendAt = vr.r.SendAt.Unix()
 			}
-			if len(r.Substitutions) > 0 {
-				p.Substitutions = r.Substitutions
+			if len(vr.r.Substitutions) > 0 {
+				p.Substitutions = vr.r.Substitutions
 			}
 			persons = append(persons, p)
 		}
@@ -184,11 +186,11 @@ func (d *Dispatcher) SendBatch(ctx context.Context, in BatchInput) ([]BatchResul
 		if err == nil {
 			sent = make([]port.SentRow, 0, len(chunk))
 		}
-		now := time.Now().UTC()
-		for i, r := range chunk {
-			results = append(results, BatchResult{To: r.To, EmailID: emailIDs[i], Err: err})
+		sentAt := time.Now().UTC()
+		for i, vr := range chunk {
+			results[vr.idx] = BatchResult{To: vr.r.To, EmailID: emailIDs[i], Err: err}
 			if err == nil {
-				sent = append(sent, port.SentRow{EmailID: emailIDs[i], GroupID: groupID, To: r.To, SentAt: now})
+				sent = append(sent, port.SentRow{EmailID: emailIDs[i], GroupID: groupID, To: vr.r.To, SentAt: sentAt})
 			}
 		}
 		// One bulk insert per accepted chunk instead of a round trip per recipient.

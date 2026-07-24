@@ -391,3 +391,31 @@ func TestSendEmail_ReplyToAllowlist(t *testing.T) {
 		t.Errorf("reply_to = %+v, want kept", gotBody.ReplyTo)
 	}
 }
+
+func TestSendEmail_RecordsSynchronousFailure(t *testing.T) {
+	store := &fakeStore{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"bad"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	d, err := NewDispatcher(Config{
+		APIKey: "k", DefaultFrom: "newsletter@lfx.aaif.io",
+		BaseURL: srv.URL, HTTPClient: srv.Client(), Store: store,
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+
+	// A synchronous SendGrid rejection has no follow-up webhook, so the failure
+	// must be persisted or analytics would silently omit the recipient.
+	if _, err := d.SendEmail(context.Background(), port.SendEmailInput{To: "a@x.io", Text: "hi", GroupID: "g"}); err == nil {
+		t.Fatal("expected an error from a 400 send")
+	}
+	if len(store.failed) != 1 || store.failed[0] == "" {
+		t.Errorf("failed recorded = %v, want one synchronous failure persisted", store.failed)
+	}
+	if len(store.sent) != 0 {
+		t.Errorf("a failed send must not be recorded as sent, got %d", len(store.sent))
+	}
+}

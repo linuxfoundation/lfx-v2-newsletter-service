@@ -256,6 +256,12 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 	}
 
 	if err := d.postMailSend(ctx, reqBody); err != nil {
+		// SendGrid rejected the send synchronously, so no webhook event will ever
+		// arrive for it. Persist the failure so provider-routed analytics counts
+		// this recipient in TotalSent / Failed / failed_recipients instead of
+		// silently omitting it when a sibling recipient in the same newsletter
+		// succeeds and the newsletter is marked sent.
+		d.recordFailed(ctx, emailID, groupID, in.To)
 		return "", err
 	}
 	d.recordSent(ctx, emailID, groupID, in.To)
@@ -311,6 +317,20 @@ func (d *Dispatcher) recordSent(ctx context.Context, emailID, groupID, to string
 	}
 	if err := d.store.RecordSent(ctx, emailID, groupID, to, time.Now().UTC()); err != nil {
 		slog.WarnContext(ctx, "sendgrid: failed to record send for engagement tracking (recoverable via the event webhook)",
+			"email_id", emailID, "error", err)
+	}
+}
+
+// recordFailed persists a synchronous send failure as a failed engagement row
+// (upsert on email_id, so it also creates the row) so analytics counts the
+// recipient. Best-effort like recordSent: a store error is logged, not returned,
+// since the send already failed and the caller returns that error.
+func (d *Dispatcher) recordFailed(ctx context.Context, emailID, groupID, to string) {
+	if d.store == nil {
+		return
+	}
+	if err := d.store.ApplyFailed(ctx, emailID, groupID, to, time.Now().UTC()); err != nil {
+		slog.WarnContext(ctx, "sendgrid: failed to record a synchronous send failure for engagement tracking",
 			"email_id", emailID, "error", err)
 	}
 }
