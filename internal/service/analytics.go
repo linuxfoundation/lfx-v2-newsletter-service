@@ -135,21 +135,25 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 	}
 	local.Delivered = engagement.Delivered
 	local.Failed = engagement.Failed
-	// Seed UniqueOpens (and thus OpenRate) from the scalar summary so they survive
-	// a per-recipient status-fetch failure below; a successful fetch replaces this
-	// with the detailed count.
-	local.UniqueOpens = engagement.UniqueOpens
+	// Seed UniqueOpens (and thus OpenRate) from the scalar summary so it survives
+	// a per-recipient status-fetch failure below. Keep the larger of the local
+	// pixel count and the provider's, matching the TotalOpens overlay — never
+	// lower a local open count the provider's scalar happens to trail.
+	if engagement.UniqueOpens > local.UniqueOpens {
+		local.UniqueOpens = engagement.UniqueOpens
+	}
 	if engagement.Opened > local.TotalOpens {
 		// If the provider is tracking more raw opens than our local pixel
 		// observed, surface the bigger number.
 		local.TotalOpens = engagement.Opened
 	}
 
-	// The engagement summary is scalar-only. Fetch the per-recipient records
-	// to derive UniqueOpens and the DailyOpens time series. We replace (not
-	// merge) the local-table values because the local tracking pixel is not
-	// embedded in outgoing emails today, so newsletter_opens is effectively
-	// always empty — the provider's records are the authoritative source.
+	// The engagement summary is scalar-only. Fetch the per-recipient records to
+	// derive the detailed UniqueOpens and the DailyOpens time series. DailyOpens
+	// is replaced from the provider records (the local tracking pixel is not
+	// embedded in outgoing emails today, so newsletter_opens is effectively always
+	// empty); UniqueOpens still keeps the larger so a non-empty local count is not
+	// lowered by the provider's.
 	records, recErr := reader.GetStatusByGroupID(ctx, *n.GroupID)
 	if recErr != nil {
 		slog.WarnContext(ctx, "analytics: group status fetch failed, keeping engagement-only rollup",
@@ -159,7 +163,9 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 		)
 	} else if len(records) > 0 {
 		uniqueOpens, daily, lastEvent := aggregatePerRecipient(records)
-		local.UniqueOpens = uniqueOpens
+		if uniqueOpens > local.UniqueOpens {
+			local.UniqueOpens = uniqueOpens
+		}
 		local.DailyOpens = daily
 		if lastEvent != nil && (local.LastEventAt == nil || lastEvent.After(*local.LastEventAt)) {
 			local.LastEventAt = lastEvent
