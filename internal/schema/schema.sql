@@ -91,6 +91,33 @@ BEGIN
     END IF;
 END$$;
 
+-- send_provider records which provider actually dispatched each newsletter, so
+-- analytics can route engagement reads to the store that holds the data:
+-- 'email-service' (SES engagement read back over NATS) or 'sendgrid' (the local
+-- engagement store populated by the SendGrid event webhook). Every historical
+-- row predates SendGrid, so the column defaults to 'email-service' and the
+-- backfill below stamps any pre-existing rows; the SendOrchestrator stamps the
+-- active provider on every new send.
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS send_provider TEXT NOT NULL DEFAULT 'email-service';
+
+-- Defensive backfill for a DB where an earlier partial run added the column
+-- nullable (a first-time ADD COLUMN ... DEFAULT already backfills existing rows).
+UPDATE newsletters SET send_provider = 'email-service'
+    WHERE send_provider IS NULL OR send_provider = '';
+
+-- Constrain to the known providers (mirrors the model.SendProvider* constants).
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_send_provider_check'
+    ) THEN
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_send_provider_check
+            CHECK (send_provider IN ('email-service','sendgrid'));
+    END IF;
+END$$;
+
 -- Replace the old (context_type, context_uid) indexes with project-scoped
 -- equivalents. The composite list index supports the (project_uid, updated_at
 -- DESC, id DESC) keyset pagination used by ListAll.
