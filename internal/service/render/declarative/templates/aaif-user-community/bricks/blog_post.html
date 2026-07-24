@@ -1,0 +1,16 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: {
+  "title": {"type":"text","label":"Title"},
+  "description": {"type":"richtext","label":"Description"},
+  "blog_link": {"type":"text","label":"Blog link"},
+  "link_text": {"type":"text","label":"Link text","default":"Read the blog"}
+} -->
+<Section style="padding:0 15px">
+  <Heading if="title" class="brick-title">{{title}}</Heading>
+  <richtext field="description" class="body" />
+  <Text if="blog_link" class="body" style="margin-top:8px">
+    <strong><Link href="{{blog_link}}" class="link">{{link_text}}</Link></strong>
+  </Text>
+  <Hr class="divider" />
+</Section>

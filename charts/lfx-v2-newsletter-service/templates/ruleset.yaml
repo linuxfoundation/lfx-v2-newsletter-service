@@ -70,6 +70,68 @@ spec:
             values:
               aud: {{ .Values.app.audience }}
 
+    # ---------------------------------------------------------------------
+    # Editor template sets: the compiled-in template catalog and per-key
+    # editor manifests. Read actions scoped like the sibling GETs (viewer).
+    # Declared BEFORE the :newsletter_uid GET rule: Heimdall is first-match-wins,
+    # and the list path (/newsletters/templates) would otherwise be swallowed by
+    # that rule (newsletter_uid=templates). The 6-segment manifest path matches no
+    # other rule, so it is declared explicitly too.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletter_templates:list"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /projects/:project_uid/newsletters/templates
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: viewer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletter_templates:manifest"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /projects/:project_uid/newsletters/templates/:template_key/manifest
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: viewer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:get"
       allow_encoded_slashes: 'off'
       match:
@@ -263,6 +325,35 @@ spec:
             values:
               aud: {{ .Values.app.audience }}
 
+    # render-preview compiles a draft layout to email HTML; it is a write-scoped
+    # authoring action (writer), mirroring test-send.
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:render_preview"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/render-preview
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
     # ---------------------------------------------------------------------
     # Newsletter opt-outs list (project-scoped). Returns PII (email addresses).
     # Requires `auditor` role. Does NOT fall back to allow_all — OpenFGA must be
@@ -314,6 +405,7 @@ spec:
             values:
               aud: {{ .Values.app.audience }}
 
+    # ---------------------------------------------------------------------
     # Per-newsletter analytics.
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:analytics"

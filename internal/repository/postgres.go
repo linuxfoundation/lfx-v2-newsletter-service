@@ -98,6 +98,11 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 
 	q := r.db.NewSelect().
 		Model((*model.Newsletter)(nil)).
+		// body_layout can approach the 1 MiB request cap; list rows discard it
+		// (see toAPIListItem), so never materialize it here — a 100-row page would
+		// otherwise fetch up to ~100 MiB of JSON only to throw it away. Get/single
+		// -row paths still SELECT it (they need the layout).
+		ExcludeColumn("body_layout").
 		Where("project_uid = ?", filters.ProjectUID).
 		Order("updated_at DESC").
 		Order("id DESC").
@@ -141,6 +146,9 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		Model(n).
 		Set("subject = ?", n.Subject).
 		Set("body_html = ?", n.BodyHTML).
+		// body_layout is the editor's structured layout; nil persists SQL NULL so
+		// updating a layout-less draft doesn't write an empty JSONB value.
+		Set("body_layout = ?", nullableJSONB(n.BodyLayout)).
 		Set("ed_reply_email = ?", n.EDReplyEmail).
 		// pgdialect.Array forces a Postgres text[] literal; without it bun
 		// json-encodes the slice and PG raises a "malformed array literal".
@@ -504,6 +512,17 @@ func (r *PostgresNewsletterRepo) classifySendTransitionMiss(ctx context.Context,
 	}
 	// Unreachable in practice — fall back to version mismatch.
 	return domain.ErrVersionMismatch
+}
+
+// nullableJSONB normalizes a raw JSON value for a nullable JSONB column. An
+// empty or nil payload becomes an untyped nil so the driver writes SQL NULL —
+// a zero-length []byte would otherwise be sent as an empty string, which JSONB
+// rejects.
+func nullableJSONB(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	return raw
 }
 
 // listCursor is the keyset cursor encoded into NextPageToken for ListAll.

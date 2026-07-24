@@ -1,0 +1,11 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: { "title":{"type":"text","label":"Title"}, "story":{"type":"richtext","label":"Story"}, "confess_link":{"type":"text","label":"Confession form link"} } -->
+<Section class="card">
+  <div style="padding:15px 15px 5px">
+    <Text class="eyebrow">ML CONFESSIONS</Text>
+    <Heading if="title" class="title">{{title}}</Heading>
+    <richtext field="story" class="body" />
+    <Text class="body" style="margin-top:12px">Share your confession <strong><Link href="{{confess_link}}" class="link">here</Link></strong>.</Text>
+  </div>
+</Section>

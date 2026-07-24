@@ -28,4 +28,9 @@ var (
 	// edited, or deleted until the send settles (sent, or reverted to draft on
 	// total failure).
 	ErrSendInProgress = errors.New("newsletter send in progress")
+
+	// ErrUnprocessable indicates the request was well-formed (parsed fine) but
+	// could not be processed — e.g. a newsletter layout that the renderer cannot
+	// bind or compile. It maps to HTTP 422 Unprocessable Entity.
+	ErrUnprocessable = errors.New("unprocessable entity")
 )
