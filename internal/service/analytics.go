@@ -120,6 +120,10 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 		local.Delivered = engagement.Delivered
 	}
 	local.Failed = engagement.Failed
+	// Seed UniqueOpens (and thus OpenRate) from the scalar summary so they survive
+	// a per-recipient status-fetch failure below; a successful fetch replaces this
+	// with the detailed count.
+	local.UniqueOpens = engagement.UniqueOpens
 	if engagement.Opened > local.TotalOpens {
 		// If the provider is tracking more raw opens than our local pixel
 		// observed, surface the bigger number.

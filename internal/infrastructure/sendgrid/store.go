@@ -52,4 +52,9 @@ type EngagementStore interface {
 	// RecipientsByGroupID returns every recipient record for a group, carrying
 	// per-open timestamps so analytics can build the daily-opens series.
 	RecipientsByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error)
+
+	// DeleteByGroupID removes every engagement row and its open events for a
+	// group. Used to clean up after a fully-failed send reverts to draft and
+	// clears its group_id, so the recorded rows are not orphaned.
+	DeleteByGroupID(ctx context.Context, groupID string) error
 }

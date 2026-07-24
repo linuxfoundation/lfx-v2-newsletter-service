@@ -334,6 +334,17 @@ func (d *Dispatcher) recordSent(ctx context.Context, emailID, groupID, to string
 	}
 }
 
+// PurgeEngagement deletes the engagement rows this dispatcher persisted for a
+// group_id. The orchestrator calls it (via port.EngagementPurger) after a fully
+// failed send reverts to draft and clears its group_id, so the recorded failures
+// — which hold recipient emails — are not left orphaned under a dead group.
+func (d *Dispatcher) PurgeEngagement(ctx context.Context, groupID string) error {
+	if d.store == nil {
+		return nil
+	}
+	return d.store.DeleteByGroupID(ctx, groupID)
+}
+
 // recordFailed persists a synchronous send failure as a failed engagement row
 // (upsert on email_id, so it also creates the row) so analytics counts the
 // recipient. Best-effort like recordSent: a store error is logged, not returned,

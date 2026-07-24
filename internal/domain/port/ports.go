@@ -204,6 +204,16 @@ type EmailDispatcher interface {
 	EngagementReader
 }
 
+// EngagementPurger optionally lets a dispatcher delete the engagement rows it
+// persisted for a group_id. The orchestrator calls it after a full fan-out
+// failure reverts a newsletter to draft and clears its group_id, so the
+// provider's now-orphaned per-recipient rows (which hold recipient emails) are
+// not leaked. Dispatchers whose engagement lives elsewhere (email-service) need
+// not implement it; the orchestrator type-asserts for it.
+type EngagementPurger interface {
+	PurgeEngagement(ctx context.Context, groupID string) error
+}
+
 // EngagementReader reads per-newsletter engagement for analytics, keyed by the
 // send group_id. Both the email-service (NATS) dispatcher and the SendGrid
 // store-backed reader implement it, so the analytics service can resolve a

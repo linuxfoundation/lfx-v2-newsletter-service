@@ -110,6 +110,81 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	if len(recs) != 2 {
 		t.Errorf("group records = %d; want 2", len(recs))
 	}
+
+	// DeleteByGroupID removes the group's engagement rows and their open events
+	// (cleanup after a fully-failed send reverts), leaving other groups intact.
+	must(t, store.DeleteByGroupID(ctx, group))
+	recs, err = store.RecipientsByGroupID(ctx, group)
+	if err != nil {
+		t.Fatalf("RecipientsByGroupID after delete: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Errorf("group records after delete = %d; want 0", len(recs))
+	}
+	if opens, err := store.RecipientByEmailID(ctx, m1); err == nil {
+		t.Errorf("m1 should be gone after group delete, got %+v", opens)
+	}
+	if rec3b, err := store.RecipientByEmailID(ctx, m3); err != nil || rec3b == nil {
+		t.Errorf("the other group (healGroup) must survive the delete: %v", err)
+	}
+}
+
+// TestSchemaMigration_SendProviderUpgradePath verifies the send_provider
+// migration repairs an EXISTING database, not just a fresh one: a column left
+// nullable with a NULL row by a prior partial run must be backfilled and made
+// NOT NULL with a default, idempotently.
+func TestSchemaMigration_SendProviderUpgradePath(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	defer pool.Close()
+	must(t, schema.Apply(ctx, pool))
+	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
+	defer func() { _ = db.Close() }()
+
+	id := "mig-" + time.Now().UTC().Format("150405.000000000")
+	t.Cleanup(func() { _, _ = db.NewRaw("DELETE FROM newsletters WHERE created_by = ?", id).Exec(ctx) })
+
+	// Simulate a prior partial run: column nullable, no default, no CHECK, plus a
+	// legacy row with a NULL provider.
+	must(t, exec(ctx, db, `ALTER TABLE newsletters DROP CONSTRAINT IF EXISTS newsletters_send_provider_check`))
+	must(t, exec(ctx, db, `ALTER TABLE newsletters ALTER COLUMN send_provider DROP NOT NULL`))
+	must(t, exec(ctx, db, `ALTER TABLE newsletters ALTER COLUMN send_provider DROP DEFAULT`))
+	must(t, exec(ctx, db,
+		`INSERT INTO newsletters (project_uid, subject, body_html, ed_reply_email, created_by, send_provider) VALUES ('p', 's', 'b', 'e@x', ?, NULL)`, id))
+
+	// Re-apply: the upgrade path must backfill the NULL and re-assert NOT NULL/default.
+	must(t, schema.Apply(ctx, pool))
+
+	var got string
+	must(t, db.NewRaw(`SELECT send_provider FROM newsletters WHERE created_by = ?`, id).Scan(ctx, &got))
+	if got != "email-service" {
+		t.Errorf("legacy NULL row send_provider = %q, want backfilled to email-service", got)
+	}
+	// NOT NULL is enforced now.
+	if err := exec(ctx, db, `INSERT INTO newsletters (project_uid, subject, body_html, ed_reply_email, created_by, send_provider) VALUES ('p','s','b','e@x',?,NULL)`, id); err == nil {
+		t.Error("expected a NOT NULL violation inserting a NULL send_provider after the migration")
+	}
+	// Default applies when omitted, and the CHECK is present.
+	must(t, exec(ctx, db, `INSERT INTO newsletters (project_uid, subject, body_html, ed_reply_email, created_by) VALUES ('p','s','b','e@x',?)`, id))
+	var def string
+	must(t, db.NewRaw(`SELECT send_provider FROM newsletters WHERE created_by = ? AND send_provider IS NOT NULL ORDER BY created_at DESC LIMIT 1`, id).Scan(ctx, &def))
+	if def != "email-service" {
+		t.Errorf("default send_provider = %q, want email-service", def)
+	}
+	// A third apply is a no-op (idempotent).
+	must(t, schema.Apply(ctx, pool))
+}
+
+func exec(ctx context.Context, db *bun.DB, q string, args ...any) error {
+	_, err := db.NewRaw(q, args...).Exec(ctx)
+	return err
 }
 
 func must(t *testing.T, err error) {

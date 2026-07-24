@@ -106,6 +106,25 @@ func (s *SendGridEngagementStore) RecordSentBatch(ctx context.Context, sents []p
 	return nil
 }
 
+// DeleteByGroupID removes a group's open events and engagement rows. Open events
+// reference email_id, so they are deleted first (by joining through the group's
+// engagement rows), then the engagement rows themselves.
+func (s *SendGridEngagementStore) DeleteByGroupID(ctx context.Context, groupID string) error {
+	if _, err := s.db.NewDelete().
+		Table("sendgrid_open_events").
+		Where("email_id IN (SELECT email_id FROM sendgrid_recipient_engagement WHERE group_id = ?)", groupID).
+		Exec(ctx); err != nil {
+		return fmt.Errorf("sendgrid delete open events by group: %w", err)
+	}
+	if _, err := s.db.NewDelete().
+		Table("sendgrid_recipient_engagement").
+		Where("group_id = ?", groupID).
+		Exec(ctx); err != nil {
+		return fmt.Errorf("sendgrid delete engagement by group: %w", err)
+	}
+	return nil
+}
+
 // ApplyDelivered marks the recipient delivered (first delivery wins). It upserts
 // on email_id, so a delivered event still lands its engagement even if RecordSent
 // never persisted the row (e.g. the post-send record write failed) — the row is

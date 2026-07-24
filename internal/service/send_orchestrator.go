@@ -387,6 +387,17 @@ func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsle
 				"newsletter_id", sending.ID,
 				"error", err,
 			)
+		} else if purger, ok := o.email.(port.EngagementPurger); ok {
+			// The revert cleared group_id, so any engagement rows the provider
+			// recorded for this fully-failed send (with recipient emails) are now
+			// orphaned. Purge them; best-effort, so a failure only logs.
+			if err := purger.PurgeEngagement(persistCtx, envelope.GroupID); err != nil {
+				slog.WarnContext(persistCtx, "newsletter send: failed to purge provider engagement after revert",
+					"newsletter_id", sending.ID,
+					"group_id", envelope.GroupID,
+					"error", err,
+				)
+			}
 		}
 		return
 	}

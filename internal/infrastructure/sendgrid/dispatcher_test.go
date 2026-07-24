@@ -28,12 +28,17 @@ type fakeStore struct {
 	delivered  []string // emailIDs
 	failed     []string // emailIDs
 	opens      []string // "sgEventID|emailID"
+	deleted    []string // groupIDs passed to DeleteByGroupID
 	applyErr   error    // when set, the Apply* methods return it
 	engagement *port.EmailEngagement
 	byEmailID  *port.EmailRecipientRecord
 	byGroupID  []port.EmailRecipientRecord
 }
 
+func (f *fakeStore) DeleteByGroupID(_ context.Context, groupID string) error {
+	f.deleted = append(f.deleted, groupID)
+	return nil
+}
 func (f *fakeStore) RecordSent(_ context.Context, emailID, groupID, to string, sentAt time.Time) error {
 	f.sent = append(f.sent, recordSentArgs{emailID, groupID, to, sentAt})
 	return nil
@@ -429,5 +434,24 @@ func TestSendEmail_RecordsFailureOnlyOnDefinitiveRejection(t *testing.T) {
 				t.Errorf("a failed send must not be recorded as sent, got %d", len(store.sent))
 			}
 		})
+	}
+}
+
+func TestDispatcher_PurgeEngagement(t *testing.T) {
+	store := &fakeStore{}
+	d, err := NewDispatcher(Config{APIKey: "k", DefaultFrom: "f@lfx.aaif.io", Store: store})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	if err := d.PurgeEngagement(context.Background(), "grp-1"); err != nil {
+		t.Fatalf("PurgeEngagement: %v", err)
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != "grp-1" {
+		t.Errorf("deleted = %v, want [grp-1]", store.deleted)
+	}
+	// A store-less dispatcher is a no-op.
+	d2, _ := NewDispatcher(Config{APIKey: "k", DefaultFrom: "f@lfx.aaif.io"})
+	if err := d2.PurgeEngagement(context.Background(), "x"); err != nil {
+		t.Errorf("store-less PurgeEngagement should be a no-op, got %v", err)
 	}
 }
