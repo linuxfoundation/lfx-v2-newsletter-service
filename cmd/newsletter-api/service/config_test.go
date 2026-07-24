@@ -23,9 +23,9 @@ func TestAppConfigFromEnv_SendGridProvider(t *testing.T) {
 		t.Fatalf("expected a missing SENDGRID_API_KEY error, got: %v", err)
 	}
 
-	// With the key, the provider is selected and lowercased.
+	// With the key, the provider is selected and lowercased. (local env exempts
+	// the authenticated-domains requirement.)
 	t.Setenv("SENDGRID_API_KEY", "SG.key")
-	t.Setenv("SENDGRID_SANDBOX_MODE", "true")
 	cfg, err := AppConfigFromEnv()
 	if err != nil {
 		t.Fatalf("AppConfigFromEnv: %v", err)
@@ -36,8 +36,25 @@ func TestAppConfigFromEnv_SendGridProvider(t *testing.T) {
 	if cfg.SendGridAPIKey != "SG.key" {
 		t.Errorf("SendGridAPIKey = %q, want SG.key", cfg.SendGridAPIKey)
 	}
-	if !cfg.SendGridSandboxMode {
-		t.Errorf("SendGridSandboxMode = false, want true")
+}
+
+func TestAppConfigFromEnv_SendGridRequiresAuthenticatedDomains(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@h:5432/db")
+	t.Setenv("REQUIRE_USER_AUTH", "false")
+	t.Setenv("SEND_FANOUT_ENABLED", "false")
+	t.Setenv("LFX_ENVIRONMENT", "production")
+	t.Setenv("EMAIL_PROVIDER", "sendgrid")
+	t.Setenv("SENDGRID_API_KEY", "SG.key")
+
+	// Outside local/dev, an empty allowlist must fail — it would disable the
+	// authenticated-domain guard.
+	if _, err := AppConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "SENDGRID_AUTHENTICATED_DOMAINS") {
+		t.Fatalf("expected a SENDGRID_AUTHENTICATED_DOMAINS error, got: %v", err)
+	}
+
+	t.Setenv("SENDGRID_AUTHENTICATED_DOMAINS", "lfx.aaif.io")
+	if _, err := AppConfigFromEnv(); err != nil {
+		t.Fatalf("with an allowlist set, expected no error, got: %v", err)
 	}
 }
 

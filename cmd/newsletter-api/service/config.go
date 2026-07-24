@@ -79,22 +79,19 @@ type AppConfig struct {
 	// EmailProvider selects the outbound send provider: "email-service" (default;
 	// NATS request/reply to lfx-v2-email-service -> SES, kept for transactional)
 	// or "sendgrid" (newsletter-service brokers SendGrid directly for
-	// newsletter/marketing sends, LFXV2-2388). Engagement analytics for SendGrid
-	// sends are not wired until the event-webhook slice lands.
+	// newsletter/marketing sends, LFXV2-2388). SendGrid engagement analytics are
+	// served from a local store the signed event webhook populates, routed per
+	// newsletter by send_provider.
 	EmailProvider string
 
 	// SendGridAPIKey is the SendGrid API key (subuser-scoped in production).
 	// Required when EmailProvider="sendgrid".
 	SendGridAPIKey string
 
-	// SendGridSandboxMode, when true, sets SendGrid mail_settings.sandbox_mode so
-	// sends are validated but not delivered — for test-account shake-out.
-	SendGridSandboxMode bool
-
 	// SendGridWebhookPublicKey is the base64 PKIX ECDSA public key from the
 	// SendGrid signed-event-webhook settings, used to verify inbound event
-	// batches. Optional; when unset with EMAIL_PROVIDER=sendgrid the webhook
-	// route is not registered and engagement analytics stay empty.
+	// batches. Optional; when unset the webhook route is not registered and
+	// engagement analytics stay empty for SendGrid-sent newsletters.
 	SendGridWebhookPublicKey string
 
 	// SendGridAuthenticatedDomains lists the SendGrid-authenticated sending
@@ -160,7 +157,6 @@ func AppConfigFromEnv() (AppConfig, error) {
 		),
 		EmailProvider:                strings.ToLower(envOr("EMAIL_PROVIDER", "email-service")),
 		SendGridAPIKey:               strings.TrimSpace(os.Getenv("SENDGRID_API_KEY")),
-		SendGridSandboxMode:          boolOr("SENDGRID_SANDBOX_MODE", false),
 		SendGridWebhookPublicKey:     strings.TrimSpace(os.Getenv("SENDGRID_WEBHOOK_PUBLIC_KEY")),
 		SendGridAuthenticatedDomains: splitCSV(os.Getenv("SENDGRID_AUTHENTICATED_DOMAINS")),
 		UnsubscribeSecret:            os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
@@ -208,6 +204,15 @@ func AppConfigFromEnv() (AppConfig, error) {
 	// send at MarkSending — so a typo must fail fast at startup, not per send.
 	if cfg.EmailProvider != "email-service" && cfg.EmailProvider != "sendgrid" {
 		return cfg, fmt.Errorf("EMAIL_PROVIDER must be \"email-service\" or \"sendgrid\", got %q", cfg.EmailProvider)
+	}
+	// Require the authenticated-domain allowlist for real SendGrid sends. An empty
+	// list makes fromDomainAllowed permit every From, which disables the guard in
+	// exactly the production misconfiguration it exists to catch. The empty-list
+	// escape hatch is limited to local/dev, matching the auth-disable gate.
+	if cfg.EmailProvider == "sendgrid" && len(cfg.SendGridAuthenticatedDomains) == 0 {
+		if env := strings.ToLower(strings.TrimSpace(cfg.LFXEnvironment)); env != "" && env != "local" && env != "development" && env != "dev" {
+			return cfg, fmt.Errorf("SENDGRID_AUTHENTICATED_DOMAINS is required when EMAIL_PROVIDER=sendgrid outside local/dev (LFX_ENVIRONMENT=%q); an empty allowlist disables the authenticated-domain guard", cfg.LFXEnvironment)
+		}
 	}
 
 	// Keep the stuck-send sweep strictly behind the job timeout so it can

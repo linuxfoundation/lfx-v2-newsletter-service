@@ -1515,3 +1515,41 @@ func TestDraftGuardsWhileSending(t *testing.T) {
 		t.Fatalf("DeleteDraft while sending: got err=%v, want ErrSendInProgress", err)
 	}
 }
+
+// TestSendNewsletter_StampsSendProvider verifies the orchestrator threads its
+// configured provider into MarkSending so the sent newsletter records the
+// provider that dispatched it (which analytics later routes on). Without this a
+// regression could stamp every send as email-service and silently route SendGrid
+// newsletters to the wrong engagement reader.
+func TestSendNewsletter_StampsSendProvider(t *testing.T) {
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Committee:     committee,
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		Unsubscribe:   unsub,
+		Concurrency:   2,
+		FanoutEnabled: true,
+		SendProvider:  model.SendProviderSendGrid,
+	})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(context.Background(), SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(context.Background())
+
+	got, err := repo.Get(context.Background(), draft.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.SendProvider != model.SendProviderSendGrid {
+		t.Errorf("send_provider = %q, want %q", got.SendProvider, model.SendProviderSendGrid)
+	}
+}

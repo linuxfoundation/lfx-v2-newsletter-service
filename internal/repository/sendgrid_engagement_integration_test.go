@@ -87,15 +87,20 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 
 	// Self-heal: an event for an email_id that RecordSent never persisted still
 	// lands its engagement — the row is created from the event's group_id / to.
-	m3, ev3 := group+"-m3", group+"-ev3"
-	t.Cleanup(func() { _, _ = db.NewRaw("DELETE FROM sendgrid_open_events WHERE email_id = ?", m3).Exec(ctx) })
-	must(t, store.ApplyOpen(ctx, ev3, m3, group, "c@x.io", now))
+	// Uses its own group so it does not perturb the group-of-two assertions above.
+	healGroup := group + "-heal"
+	m3, ev3 := healGroup+"-m3", healGroup+"-ev3"
+	t.Cleanup(func() {
+		_, _ = db.NewRaw("DELETE FROM sendgrid_open_events WHERE email_id = ?", m3).Exec(ctx)
+		_, _ = db.NewRaw("DELETE FROM sendgrid_recipient_engagement WHERE group_id = ?", healGroup).Exec(ctx)
+	})
+	must(t, store.ApplyOpen(ctx, ev3, m3, healGroup, "c@x.io", now))
 	rec3, err := store.RecipientByEmailID(ctx, m3)
 	if err != nil {
 		t.Fatalf("RecipientByEmailID(self-healed m3): %v", err)
 	}
-	if !rec3.Opened || rec3.OpenCount != 1 || rec3.To != "c@x.io" || rec3.GroupID != group {
-		t.Errorf("self-healed m3 = %+v; want opened, count 1, to c@x.io, group %s", rec3, group)
+	if !rec3.Opened || rec3.OpenCount != 1 || rec3.To != "c@x.io" || rec3.GroupID != healGroup {
+		t.Errorf("self-healed m3 = %+v; want opened, count 1, to c@x.io, group %s", rec3, healGroup)
 	}
 
 	recs, err := store.RecipientsByGroupID(ctx, group)

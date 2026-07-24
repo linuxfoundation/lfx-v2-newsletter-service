@@ -145,8 +145,10 @@ func (s *SendGridEngagementStore) ApplyOpen(ctx context.Context, sgEventID, emai
 	})
 }
 
-// Engagement returns the per-group rollup. UniqueOpens equals Opened because the
-// engagement row is per-recipient (one row can be opened at most once as a bool).
+// Engagement returns the per-group rollup. Opened is the raw open total
+// (SUM(open_count)); UniqueOpens counts recipient rows whose boolean opened is
+// true. Keeping them distinct matches the email-service dispatcher and avoids
+// sum(DailyOpens) exceeding TotalOpens for a newsletter with repeat opens.
 func (s *SendGridEngagementStore) Engagement(ctx context.Context, groupID string) (*port.EmailEngagement, error) {
 	type aggRow struct {
 		TotalSent   int `bun:"total_sent"`

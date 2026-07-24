@@ -258,24 +258,22 @@ func Shutdown() {
 }
 
 // newEmailDispatcher selects the outbound send provider from cfg.EmailProvider.
-// "sendgrid" brokers SendGrid directly (newsletter/marketing, LFXV2-2388); any
-// other value keeps the NATS request/reply path to lfx-v2-email-service (SES,
-// transactional). The SendGrid provider does not serve engagement reads until
-// the event-webhook store lands, so selecting it logs a warning.
+// "sendgrid" brokers SendGrid directly (newsletter/marketing, LFXV2-2388) with a
+// store-backed engagement path populated by the signed event webhook; any other
+// value keeps the NATS request/reply path to lfx-v2-email-service (SES,
+// transactional).
 func newEmailDispatcher(ctx context.Context, cfg AppConfig, nc *natsinfra.Client) (port.EmailDispatcher, error) {
 	if cfg.EmailProvider == "sendgrid" {
 		sg, err := sendgridinfra.NewDispatcher(sendgridinfra.Config{
 			APIKey:               cfg.SendGridAPIKey,
 			DefaultFrom:          cfg.EmailFromAddress,
-			SandboxMode:          cfg.SendGridSandboxMode,
 			Store:                repository.NewSendGridEngagementStore(bunDB),
 			AuthenticatedDomains: cfg.SendGridAuthenticatedDomains,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("sendgrid dispatcher: %w", err)
 		}
-		slog.InfoContext(ctx, "email provider: SendGrid — send + engagement store active; engagement is populated by the SendGrid event webhook (register + configure it for analytics, LFXV2-2388)",
-			"sandbox", cfg.SendGridSandboxMode)
+		slog.InfoContext(ctx, "email provider: SendGrid — direct send + engagement store active; engagement is populated by the SendGrid event webhook")
 		return sg, nil
 	}
 	return natsinfra.NewEmailDispatcher(nc), nil
