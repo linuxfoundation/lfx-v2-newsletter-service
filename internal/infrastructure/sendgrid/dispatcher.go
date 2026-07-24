@@ -347,15 +347,18 @@ func (d *Dispatcher) recordSent(ctx context.Context, emailID, groupID, to string
 	}
 }
 
-// PurgeEngagement deletes the engagement rows this dispatcher persisted for a
-// group_id. The orchestrator calls it (via port.EngagementPurger) after a fully
-// failed send reverts to draft and clears its group_id, so the recorded failures
-// — which hold recipient emails — are not left orphaned under a dead group.
+// PurgeEngagement tombstones a group and purges the engagement rows this
+// dispatcher persisted for it. The orchestrator calls it (via
+// port.EngagementPurger) after a fully failed send reverts to draft and clears
+// its group_id, so the recorded failures — which hold recipient emails — are not
+// left orphaned under a dead group. The tombstone durably stops a delayed webhook
+// (for an ambiguous send SendGrid may still have accepted) from re-persisting
+// that PII after the purge.
 func (d *Dispatcher) PurgeEngagement(ctx context.Context, groupID string) error {
 	if d.store == nil {
 		return nil
 	}
-	return d.store.DeleteByGroupID(ctx, groupID)
+	return d.store.RevertGroup(ctx, groupID)
 }
 
 // recordFailed persists a synchronous send failure as a failed engagement row

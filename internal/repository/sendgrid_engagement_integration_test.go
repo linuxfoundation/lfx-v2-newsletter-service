@@ -59,6 +59,9 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 		if _, err := db.NewRaw("DELETE FROM sendgrid_recipient_engagement WHERE group_id = ?", group).Exec(ctx); err != nil {
 			t.Errorf("cleanup engagement: %v", err)
 		}
+		if _, err := db.NewRaw("DELETE FROM sendgrid_reverted_groups WHERE group_id = ?", group).Exec(ctx); err != nil {
+			t.Errorf("cleanup tombstone: %v", err)
+		}
 	})
 
 	now := time.Now().UTC()
@@ -123,21 +126,47 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 		t.Errorf("group records = %d; want 2", len(recs))
 	}
 
-	// DeleteByGroupID removes the group's engagement rows and their open events
-	// (cleanup after a fully-failed send reverts), leaving other groups intact.
-	must(t, store.DeleteByGroupID(ctx, group))
+	// RevertGroup tombstones the group and purges its engagement rows and open
+	// events (cleanup after a fully-failed send reverts), leaving other groups
+	// intact.
+	must(t, store.RevertGroup(ctx, group))
 	recs, err = store.RecipientsByGroupID(ctx, group)
 	if err != nil {
-		t.Fatalf("RecipientsByGroupID after delete: %v", err)
+		t.Fatalf("RecipientsByGroupID after revert: %v", err)
 	}
 	if len(recs) != 0 {
-		t.Errorf("group records after delete = %d; want 0", len(recs))
+		t.Errorf("group records after revert = %d; want 0", len(recs))
 	}
 	if opens, err := store.RecipientByEmailID(ctx, m1); err == nil {
-		t.Errorf("m1 should be gone after group delete, got %+v", opens)
+		t.Errorf("m1 should be gone after group revert, got %+v", opens)
 	}
 	if rec3b, err := store.RecipientByEmailID(ctx, m3); err != nil || rec3b == nil {
-		t.Errorf("the other group (healGroup) must survive the delete: %v", err)
+		t.Errorf("the other group (healGroup) must survive the revert: %v", err)
+	}
+
+	// Tombstone durability: a delayed webhook for the reverted group must NOT
+	// recreate a row (its self-healing upsert is rejected by the BEFORE INSERT
+	// trigger), so purged recipient PII stays purged.
+	must(t, store.ApplyDelivered(ctx, m1, group, "a@x.io", now))
+	must(t, store.ApplyOpen(ctx, group+"-late-ev", m1, group, "a@x.io", now))
+	must(t, store.ApplyFailed(ctx, m2, group, "b@x.io", now))
+	if recs, err := store.RecipientsByGroupID(ctx, group); err != nil {
+		t.Fatalf("RecipientsByGroupID after late webhooks: %v", err)
+	} else if len(recs) != 0 {
+		t.Errorf("late webhooks recreated %d row(s) for a reverted group; want 0 (tombstone must reject them)", len(recs))
+	}
+
+	// A brand-new (non-reverted) group is unaffected by the tombstone.
+	liveGroup := group + "-live"
+	mLive := liveGroup + "-m"
+	t.Cleanup(func() {
+		if _, err := db.NewRaw("DELETE FROM sendgrid_recipient_engagement WHERE group_id = ?", liveGroup).Exec(ctx); err != nil {
+			t.Errorf("cleanup live engagement: %v", err)
+		}
+	})
+	must(t, store.ApplyDelivered(ctx, mLive, liveGroup, "d@x.io", now))
+	if rec, err := store.RecipientByEmailID(ctx, mLive); err != nil || rec == nil || !rec.Delivered {
+		t.Errorf("a live group's webhook must still self-heal a row: %+v, %v", rec, err)
 	}
 }
 

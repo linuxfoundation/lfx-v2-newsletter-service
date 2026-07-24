@@ -48,8 +48,10 @@ type EngagementStore interface {
 	// per-open timestamps so analytics can build the daily-opens series.
 	RecipientsByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error)
 
-	// DeleteByGroupID removes every engagement row and its open events for a
-	// group. Used to clean up after a fully-failed send reverts to draft and
-	// clears its group_id, so the recorded rows are not orphaned.
-	DeleteByGroupID(ctx context.Context, groupID string) error
+	// RevertGroup tombstones a group and purges its engagement rows and open
+	// events, atomically. Used after a fully-failed send reverts to draft and
+	// clears its group_id, so the recorded rows are not orphaned. The tombstone
+	// durably rejects any delayed webhook that would otherwise self-heal a purged
+	// row and re-persist recipient PII under a group no newsletter references.
+	RevertGroup(ctx context.Context, groupID string) error
 }

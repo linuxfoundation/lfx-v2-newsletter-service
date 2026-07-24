@@ -60,6 +60,14 @@ type sendgridOpenEventRow struct {
 	OpenedAt  time.Time `bun:"opened_at"`
 }
 
+// sendgridRevertedGroupRow is the tombstone for a reverted send group. reverted_at
+// defaults at the DB layer, so only group_id is written on insert.
+type sendgridRevertedGroupRow struct {
+	bun.BaseModel `bun:"table:sendgrid_reverted_groups,alias:srg"`
+
+	GroupID string `bun:"group_id,pk"`
+}
+
 // SendGridEngagementStore implements sendgrid.EngagementStore over PostgreSQL.
 // The compile-time interface assertion lives at the wiring site (the service
 // package) to keep this package free of an infrastructure import.
@@ -85,23 +93,36 @@ func (s *SendGridEngagementStore) RecordSent(ctx context.Context, emailID, group
 	return nil
 }
 
-// DeleteByGroupID removes a group's open events and engagement rows. Open events
-// reference email_id, so they are deleted first (by joining through the group's
-// engagement rows), then the engagement rows themselves.
-func (s *SendGridEngagementStore) DeleteByGroupID(ctx context.Context, groupID string) error {
-	if _, err := s.db.NewDelete().
-		Table("sendgrid_open_events").
-		Where("email_id IN (SELECT email_id FROM sendgrid_recipient_engagement WHERE group_id = ?)", groupID).
-		Exec(ctx); err != nil {
-		return fmt.Errorf("sendgrid delete open events by group: %w", err)
-	}
-	if _, err := s.db.NewDelete().
-		Table("sendgrid_recipient_engagement").
-		Where("group_id = ?", groupID).
-		Exec(ctx); err != nil {
-		return fmt.Errorf("sendgrid delete engagement by group: %w", err)
-	}
-	return nil
+// RevertGroup tombstones a group and purges its engagement, atomically. It runs
+// in one transaction so the tombstone and the deletes commit together: it first
+// records the group in sendgrid_reverted_groups (idempotent), then deletes the
+// group's open events (joined through its engagement rows on email_id) and the
+// engagement rows themselves. The tombstone durably marks the group reverted so
+// the BEFORE INSERT trigger on sendgrid_recipient_engagement rejects any late
+// webhook that would otherwise self-heal a purged row and re-persist recipient
+// PII. Used after a fully-failed send reverts to draft and clears its group_id.
+func (s *SendGridEngagementStore) RevertGroup(ctx context.Context, groupID string) error {
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewInsert().
+			Model(&sendgridRevertedGroupRow{GroupID: groupID}).
+			On("CONFLICT (group_id) DO NOTHING").
+			Exec(ctx); err != nil {
+			return fmt.Errorf("sendgrid tombstone reverted group: %w", err)
+		}
+		if _, err := tx.NewDelete().
+			Table("sendgrid_open_events").
+			Where("email_id IN (SELECT email_id FROM sendgrid_recipient_engagement WHERE group_id = ?)", groupID).
+			Exec(ctx); err != nil {
+			return fmt.Errorf("sendgrid delete open events by group: %w", err)
+		}
+		if _, err := tx.NewDelete().
+			Table("sendgrid_recipient_engagement").
+			Where("group_id = ?", groupID).
+			Exec(ctx); err != nil {
+			return fmt.Errorf("sendgrid delete engagement by group: %w", err)
+		}
+		return nil
+	})
 }
 
 // ApplyDelivered marks the recipient delivered (first delivery wins). It upserts

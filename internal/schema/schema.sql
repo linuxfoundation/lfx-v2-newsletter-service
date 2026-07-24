@@ -236,3 +236,36 @@ CREATE TABLE IF NOT EXISTS sendgrid_open_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sg_open_events_email ON sendgrid_open_events (email_id);
+
+-- Tombstone of reverted send groups. A fully-failed send reverts to draft,
+-- clears its group_id, and purges the engagement rows above. But an ambiguous
+-- transport/5xx send may still have been accepted by SendGrid, so a delayed
+-- delivered/open/bounce webhook can arrive AFTER the purge. The webhook Apply*
+-- methods upsert (self-heal), which would recreate a row — re-persisting
+-- recipient PII (to_email) under a group_id no newsletter references. A row here
+-- durably marks a group reverted so the trigger below rejects any late write.
+CREATE TABLE IF NOT EXISTS sendgrid_reverted_groups (
+    group_id    TEXT        PRIMARY KEY,
+    reverted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Reject an INSERT of an engagement row for a reverted group. This fires BEFORE
+-- INSERT and returns NULL to skip the row, so a delayed webhook's self-healing
+-- upsert cannot recreate purged PII: a reverted group's rows were already
+-- deleted, so every webhook write for it is a fresh INSERT that this stops. Rows
+-- for a live (non-reverted) group are unaffected. The guard is at the DB layer
+-- so it holds atomically against a webhook racing the revert, and durably across
+-- restarts. CREATE OR REPLACE + DROP/CREATE keep re-running schema.sql a no-op.
+CREATE OR REPLACE FUNCTION sendgrid_reject_reverted_engagement() RETURNS trigger AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM sendgrid_reverted_groups g WHERE g.group_id = NEW.group_id) THEN
+        RETURN NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_sg_reject_reverted_engagement ON sendgrid_recipient_engagement;
+CREATE TRIGGER trg_sg_reject_reverted_engagement
+    BEFORE INSERT ON sendgrid_recipient_engagement
+    FOR EACH ROW EXECUTE FUNCTION sendgrid_reject_reverted_engagement();

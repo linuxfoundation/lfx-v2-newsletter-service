@@ -28,14 +28,14 @@ type fakeStore struct {
 	delivered  []string // emailIDs
 	failed     []string // emailIDs
 	opens      []string // "sgEventID|emailID"
-	deleted    []string // groupIDs passed to DeleteByGroupID
+	deleted    []string // groupIDs passed to RevertGroup
 	applyErr   error    // when set, the Apply* methods return it
 	engagement *port.EmailEngagement
 	byEmailID  *port.EmailRecipientRecord
 	byGroupID  []port.EmailRecipientRecord
 }
 
-func (f *fakeStore) DeleteByGroupID(_ context.Context, groupID string) error {
+func (f *fakeStore) RevertGroup(_ context.Context, groupID string) error {
 	f.deleted = append(f.deleted, groupID)
 	return nil
 }
