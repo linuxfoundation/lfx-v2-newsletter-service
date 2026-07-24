@@ -86,7 +86,8 @@ internal/service/
 ├── analytics.go              # Local opens overlaid with email-service engagement totals
 ├── unsubscribe.go            # HMAC token mint/verify + project-scoped opt-out persistence
 └── render/
-    └── email_chrome.go       # HTML/text email chrome around the draft body
+    ├── email_chrome.go       # HTML/text email chrome around the draft body
+    └── preheader.go          # Hidden inbox-preview (preheader) text derived from the draft body
 
 internal/repository/
 └── postgres.go               # bun-backed NewsletterRepository with optimistic locking
