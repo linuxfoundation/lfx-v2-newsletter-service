@@ -246,3 +246,43 @@ func TestSendBatch_RejectsOutOfWindowSendAt(t *testing.T) {
 		t.Errorf("bad recipient result = %+v, want a send_at validation error", bad)
 	}
 }
+
+func TestSendBatch_RejectsEmptyRecipient(t *testing.T) {
+	var gotBody mailSendRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	d, err := NewDispatcher(Config{
+		APIKey: "k", DefaultFrom: "newsletter@lfx.aaif.io",
+		BaseURL: srv.URL, HTTPClient: srv.Client(), Store: &fakeStore{},
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+
+	results, err := d.SendBatch(context.Background(), BatchInput{
+		Subject: "S", Text: "hi",
+		Recipients: []BatchRecipient{
+			{To: "good@x.io"},
+			{To: "  "}, // blank -> rejected individually, not sent
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendBatch: %v", err)
+	}
+	if len(gotBody.Personalizations) != 1 || gotBody.Personalizations[0].To[0].Email != "good@x.io" {
+		t.Errorf("dispatched personalizations = %+v, want just good@x.io", gotBody.Personalizations)
+	}
+	var bad *BatchResult
+	for i := range results {
+		if results[i].To == "  " {
+			bad = &results[i]
+		}
+	}
+	if bad == nil || bad.Err == nil {
+		t.Errorf("blank recipient result = %+v, want a validation error", bad)
+	}
+}

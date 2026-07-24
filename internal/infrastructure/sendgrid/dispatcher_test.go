@@ -38,15 +38,15 @@ func (f *fakeStore) RecordSent(_ context.Context, emailID, groupID, to string, s
 	f.sent = append(f.sent, recordSentArgs{emailID, groupID, to, sentAt})
 	return nil
 }
-func (f *fakeStore) ApplyDelivered(_ context.Context, emailID string, _ time.Time) error {
+func (f *fakeStore) ApplyDelivered(_ context.Context, emailID, _, _ string, _ time.Time) error {
 	f.delivered = append(f.delivered, emailID)
 	return f.applyErr
 }
-func (f *fakeStore) ApplyOpen(_ context.Context, sgEventID, emailID string, _ time.Time) error {
+func (f *fakeStore) ApplyOpen(_ context.Context, sgEventID, emailID, _, _ string, _ time.Time) error {
 	f.opens = append(f.opens, sgEventID+"|"+emailID)
 	return f.applyErr
 }
-func (f *fakeStore) ApplyFailed(_ context.Context, emailID string, _ time.Time) error {
+func (f *fakeStore) ApplyFailed(_ context.Context, emailID, _, _ string, _ time.Time) error {
 	f.failed = append(f.failed, emailID)
 	return f.applyErr
 }

@@ -202,6 +202,13 @@ func AppConfigFromEnv() (AppConfig, error) {
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
 	}
+	// Reject an unknown EMAIL_PROVIDER up front. newEmailDispatcher treats any
+	// non-"sendgrid" value as email-service, but the raw value is also stamped
+	// onto newsletters.send_provider, whose CHECK constraint would then fail every
+	// send at MarkSending — so a typo must fail fast at startup, not per send.
+	if cfg.EmailProvider != "email-service" && cfg.EmailProvider != "sendgrid" {
+		return cfg, fmt.Errorf("EMAIL_PROVIDER must be \"email-service\" or \"sendgrid\", got %q", cfg.EmailProvider)
+	}
 
 	// Keep the stuck-send sweep strictly behind the job timeout so it can
 	// never mark a row 'sent' while its fan-out is still running.

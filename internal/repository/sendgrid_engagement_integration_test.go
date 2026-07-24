@@ -58,11 +58,11 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	must(t, store.RecordSent(ctx, m2, group, "b@x.io", now))
 	must(t, store.RecordSent(ctx, m1, group, "a@x.io", now)) // idempotent on email_id
 
-	must(t, store.ApplyDelivered(ctx, m1, now))
-	must(t, store.ApplyOpen(ctx, ev1, m1, now))
-	must(t, store.ApplyOpen(ctx, ev1, m1, now)) // dedup on sg_event_id — no double count
-	must(t, store.ApplyOpen(ctx, ev2, m1, now.Add(time.Minute)))
-	must(t, store.ApplyFailed(ctx, m2, now))
+	must(t, store.ApplyDelivered(ctx, m1, group, "a@x.io", now))
+	must(t, store.ApplyOpen(ctx, ev1, m1, group, "a@x.io", now))
+	must(t, store.ApplyOpen(ctx, ev1, m1, group, "a@x.io", now)) // dedup on sg_event_id — no double count
+	must(t, store.ApplyOpen(ctx, ev2, m1, group, "a@x.io", now.Add(time.Minute)))
+	must(t, store.ApplyFailed(ctx, m2, group, "b@x.io", now))
 
 	eng, err := store.Engagement(ctx, group)
 	if err != nil {
@@ -83,6 +83,19 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	}
 	if rec.OpenCount != 2 || len(rec.OpenedAtList) != 2 {
 		t.Errorf("m1 opens = count %d / list %d; want 2 / 2 (ev1 deduped, ev1+ev2 counted)", rec.OpenCount, len(rec.OpenedAtList))
+	}
+
+	// Self-heal: an event for an email_id that RecordSent never persisted still
+	// lands its engagement — the row is created from the event's group_id / to.
+	m3, ev3 := group+"-m3", group+"-ev3"
+	t.Cleanup(func() { _, _ = db.NewRaw("DELETE FROM sendgrid_open_events WHERE email_id = ?", m3).Exec(ctx) })
+	must(t, store.ApplyOpen(ctx, ev3, m3, group, "c@x.io", now))
+	rec3, err := store.RecipientByEmailID(ctx, m3)
+	if err != nil {
+		t.Fatalf("RecipientByEmailID(self-healed m3): %v", err)
+	}
+	if !rec3.Opened || rec3.OpenCount != 1 || rec3.To != "c@x.io" || rec3.GroupID != group {
+		t.Errorf("self-healed m3 = %+v; want opened, count 1, to c@x.io, group %s", rec3, group)
 	}
 
 	recs, err := store.RecipientsByGroupID(ctx, group)

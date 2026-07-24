@@ -291,11 +291,16 @@ var _ sendgridinfra.EngagementStore = (*repository.SendGridEngagementStore)(nil)
 // route) when the provider isn't SendGrid, and nil with a warning when the
 // provider is SendGrid but no key is set (engagement then stays unpopulated).
 func newSendGridWebhook(ctx context.Context, cfg AppConfig) (http.Handler, error) {
-	if cfg.EmailProvider != "sendgrid" {
-		return nil, nil
-	}
+	// Register the webhook whenever a verification key is configured, independent
+	// of the active EMAIL_PROVIDER. SendGrid keeps delivering events for
+	// historical and scheduled SendGrid sends after the outbound provider is
+	// flipped back to email-service, and analytics still routes those newsletters
+	// (by send_provider) to the local SendGrid store — so gating the route on
+	// EMAIL_PROVIDER would silently freeze their engagement.
 	if cfg.SendGridWebhookPublicKey == "" {
-		slog.WarnContext(ctx, "EMAIL_PROVIDER=sendgrid but SENDGRID_WEBHOOK_PUBLIC_KEY is unset — the event webhook is not registered and engagement/analytics will stay empty")
+		if cfg.EmailProvider == model.SendProviderSendGrid {
+			slog.WarnContext(ctx, "EMAIL_PROVIDER=sendgrid but SENDGRID_WEBHOOK_PUBLIC_KEY is unset — the event webhook is not registered and engagement/analytics will stay empty")
+		}
 		return nil, nil
 	}
 	verifier, err := sendgridinfra.NewVerifier(cfg.SendGridWebhookPublicKey)

@@ -25,15 +25,20 @@ import (
 type EngagementStore interface {
 	// RecordSent inserts the initial engagement row when a send is accepted.
 	// Idempotent on emailID (a re-send with the same id leaves the row intact).
+	// Best-effort at the call site: if it fails, the Apply* methods below still
+	// recover the row from the first webhook event, so engagement is not lost.
 	RecordSent(ctx context.Context, emailID, groupID, to string, sentAt time.Time) error
-	// ApplyDelivered marks the recipient delivered (first delivery wins).
-	ApplyDelivered(ctx context.Context, emailID string, at time.Time) error
+	// ApplyDelivered marks the recipient delivered (first delivery wins). It
+	// upserts on emailID from the event's groupID / to so a missing row (failed
+	// RecordSent) is created rather than dropped.
+	ApplyDelivered(ctx context.Context, emailID, groupID, to string, at time.Time) error
 	// ApplyOpen records one open, deduplicated by sgEventID, and bumps the
-	// recipient's open count and last-opened timestamp.
-	ApplyOpen(ctx context.Context, sgEventID, emailID string, at time.Time) error
+	// recipient's open count and last-opened timestamp. Event insert and rollup
+	// are one transaction; the rollup upserts on emailID from groupID / to.
+	ApplyOpen(ctx context.Context, sgEventID, emailID, groupID, to string, at time.Time) error
 	// ApplyFailed marks the recipient failed — bounce / dropped / spamreport
-	// (first failure wins).
-	ApplyFailed(ctx context.Context, emailID string, at time.Time) error
+	// (first failure wins). Upserts on emailID from groupID / to.
+	ApplyFailed(ctx context.Context, emailID, groupID, to string, at time.Time) error
 
 	// Engagement returns the per-group rollup used by the analytics summary.
 	Engagement(ctx context.Context, groupID string) (*port.EmailEngagement, error)

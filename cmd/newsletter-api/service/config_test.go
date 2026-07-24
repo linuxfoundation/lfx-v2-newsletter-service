@@ -41,6 +41,21 @@ func TestAppConfigFromEnv_SendGridProvider(t *testing.T) {
 	}
 }
 
+func TestAppConfigFromEnv_RejectsUnknownProvider(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@h:5432/db")
+	t.Setenv("REQUIRE_USER_AUTH", "false")
+	t.Setenv("SEND_FANOUT_ENABLED", "false")
+	t.Setenv("LFX_ENVIRONMENT", "local")
+	t.Setenv("EMAIL_PROVIDER", "sendgird") // typo
+
+	// An unknown provider must fail fast at startup, naming EMAIL_PROVIDER —
+	// otherwise the raw value is stamped onto send_provider and every send fails
+	// at MarkSending against the schema CHECK.
+	if _, err := AppConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "EMAIL_PROVIDER") {
+		t.Fatalf("expected an EMAIL_PROVIDER validation error, got: %v", err)
+	}
+}
+
 func TestAppConfigFromEnv_DefaultProvider(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://u:p@h:5432/db")
 	t.Setenv("REQUIRE_USER_AUTH", "false")

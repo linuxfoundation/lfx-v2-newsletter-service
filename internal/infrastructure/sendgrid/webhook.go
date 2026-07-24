@@ -179,11 +179,11 @@ func (wh *Webhook) apply(ctx context.Context, ev event) error {
 	at := time.Unix(ev.Timestamp, 0).UTC()
 	switch ev.Event {
 	case "delivered":
-		return wh.store.ApplyDelivered(ctx, ev.EmailID, at)
+		return wh.store.ApplyDelivered(ctx, ev.EmailID, ev.GroupID, ev.Email, at)
 	case "open":
-		return wh.store.ApplyOpen(ctx, ev.SGEventID, ev.EmailID, at)
+		return wh.store.ApplyOpen(ctx, ev.SGEventID, ev.EmailID, ev.GroupID, ev.Email, at)
 	case "bounce", "dropped", "spamreport", "blocked":
-		return wh.store.ApplyFailed(ctx, ev.EmailID, at)
+		return wh.store.ApplyFailed(ctx, ev.EmailID, ev.GroupID, ev.Email, at)
 	default:
 		// processed / deferred / click / unsubscribe / group_* — not tracked here.
 		return nil

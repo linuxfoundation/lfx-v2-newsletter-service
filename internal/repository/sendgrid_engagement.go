@@ -85,15 +85,16 @@ func (s *SendGridEngagementStore) RecordSent(ctx context.Context, emailID, group
 	return nil
 }
 
-// ApplyDelivered marks the recipient delivered (first delivery wins). A no-op
-// when the row is absent or already delivered.
-func (s *SendGridEngagementStore) ApplyDelivered(ctx context.Context, emailID string, at time.Time) error {
-	if _, err := s.db.NewUpdate().
-		Model((*sendgridEngagementRow)(nil)).
-		Set("delivered = TRUE").
-		Set("delivered_at = ?", at).
-		Where("email_id = ?", emailID).
-		Where("delivered = FALSE").
+// ApplyDelivered marks the recipient delivered (first delivery wins). It upserts
+// on email_id, so a delivered event still lands its engagement even if RecordSent
+// never persisted the row (e.g. the post-send record write failed) — the row is
+// created from the event's group_id / to_email rather than lost. group_id and
+// to_email are only set on insert; an existing RecordSent row keeps its values.
+func (s *SendGridEngagementStore) ApplyDelivered(ctx context.Context, emailID, groupID, to string, at time.Time) error {
+	row := &sendgridEngagementRow{EmailID: emailID, GroupID: groupID, ToEmail: to, Delivered: true, DeliveredAt: &at}
+	if _, err := s.db.NewInsert().
+		Model(row).
+		On("CONFLICT (email_id) DO UPDATE SET delivered = TRUE, delivered_at = EXCLUDED.delivered_at WHERE sendgrid_recipient_engagement.delivered = FALSE").
 		Exec(ctx); err != nil {
 		return fmt.Errorf("sendgrid apply delivered: %w", err)
 	}
@@ -101,45 +102,47 @@ func (s *SendGridEngagementStore) ApplyDelivered(ctx context.Context, emailID st
 }
 
 // ApplyFailed marks the recipient failed — bounce / dropped / spamreport (first
-// failure wins). A no-op when the row is absent or already failed.
-func (s *SendGridEngagementStore) ApplyFailed(ctx context.Context, emailID string, at time.Time) error {
-	if _, err := s.db.NewUpdate().
-		Model((*sendgridEngagementRow)(nil)).
-		Set("failed = TRUE").
-		Set("failed_at = ?", at).
-		Where("email_id = ?", emailID).
-		Where("failed = FALSE").
+// failure wins). Upserts on email_id for the same self-healing reason as
+// ApplyDelivered.
+func (s *SendGridEngagementStore) ApplyFailed(ctx context.Context, emailID, groupID, to string, at time.Time) error {
+	row := &sendgridEngagementRow{EmailID: emailID, GroupID: groupID, ToEmail: to, Failed: true, FailedAt: &at}
+	if _, err := s.db.NewInsert().
+		Model(row).
+		On("CONFLICT (email_id) DO UPDATE SET failed = TRUE, failed_at = EXCLUDED.failed_at WHERE sendgrid_recipient_engagement.failed = FALSE").
 		Exec(ctx); err != nil {
 		return fmt.Errorf("sendgrid apply failed: %w", err)
 	}
 	return nil
 }
 
-// ApplyOpen records one open, deduplicated by sgEventID. Only a genuinely new
-// event bumps the recipient's open_count / opened / last_opened_at, so a webhook
-// redelivery does not double-count.
-func (s *SendGridEngagementStore) ApplyOpen(ctx context.Context, sgEventID, emailID string, at time.Time) error {
-	ev := &sendgridOpenEventRow{SGEventID: sgEventID, EmailID: emailID, OpenedAt: at}
-	res, err := s.db.NewInsert().
-		Model(ev).
-		On("CONFLICT (sg_event_id) DO NOTHING").
-		Exec(ctx)
-	if err != nil {
-		return fmt.Errorf("sendgrid apply open (event): %w", err)
-	}
-	if affected, _ := res.RowsAffected(); affected == 0 {
-		return nil // duplicate webhook delivery — already counted
-	}
-	if _, err := s.db.NewUpdate().
-		Model((*sendgridEngagementRow)(nil)).
-		Set("opened = TRUE").
-		Set("open_count = open_count + 1").
-		Set("last_opened_at = GREATEST(last_opened_at, ?)", at).
-		Where("email_id = ?", emailID).
-		Exec(ctx); err != nil {
-		return fmt.Errorf("sendgrid apply open (rollup): %w", err)
-	}
-	return nil
+// ApplyOpen records one open, deduplicated by sgEventID. The event insert and the
+// recipient rollup run in one transaction so they commit together: a redelivery
+// after a partial failure re-runs both rather than leaving the open counted in
+// sendgrid_open_events but never rolled up. The rollup upserts on email_id, so an
+// open still lands even if RecordSent never persisted the row. Only a genuinely
+// new event bumps open_count / opened / last_opened_at.
+func (s *SendGridEngagementStore) ApplyOpen(ctx context.Context, sgEventID, emailID, groupID, to string, at time.Time) error {
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		ev := &sendgridOpenEventRow{SGEventID: sgEventID, EmailID: emailID, OpenedAt: at}
+		res, err := tx.NewInsert().
+			Model(ev).
+			On("CONFLICT (sg_event_id) DO NOTHING").
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("sendgrid apply open (event): %w", err)
+		}
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			return nil // duplicate webhook delivery — already counted
+		}
+		row := &sendgridEngagementRow{EmailID: emailID, GroupID: groupID, ToEmail: to, Opened: true, OpenCount: 1, LastOpenedAt: &at}
+		if _, err := tx.NewInsert().
+			Model(row).
+			On("CONFLICT (email_id) DO UPDATE SET opened = TRUE, open_count = sendgrid_recipient_engagement.open_count + 1, last_opened_at = GREATEST(sendgrid_recipient_engagement.last_opened_at, EXCLUDED.last_opened_at)").
+			Exec(ctx); err != nil {
+			return fmt.Errorf("sendgrid apply open (rollup): %w", err)
+		}
+		return nil
+	})
 }
 
 // Engagement returns the per-group rollup. UniqueOpens equals Opened because the

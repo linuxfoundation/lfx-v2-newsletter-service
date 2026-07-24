@@ -29,7 +29,7 @@ The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It ow
 
 ## Repo Role
 
-This repo owns project-scoped newsletter drafts, sent-state persistence, recipient preview/count behavior, email dispatch and send fan-out, unsubscribe opt-outs, local open tracking, newsletter analytics (local opens overlaid with email-service engagement totals), the newsletter HTTP API, and the service-local Helm chart. It consumes committee-service for committee-member recipient lookup, project-service for project name/slug, auth-service for the sender's display name, and email-service for send fan-out and engagement analytics — all over NATS request/reply. It mints and persists the email-service `group_id` when a draft is marked sent.
+This repo owns project-scoped newsletter drafts, sent-state persistence, recipient preview/count behavior, email dispatch and send fan-out, unsubscribe opt-outs, local open tracking, newsletter analytics (local opens overlaid with email-service engagement totals), the newsletter HTTP API, and the service-local Helm chart. It consumes committee-service for committee-member recipient lookup, project-service for project name/slug, auth-service for the sender's display name, and email-service for send fan-out and engagement analytics — all over NATS request/reply. It mints and persists the email-service `group_id` when a draft is marked sent. Newsletter delivery is provider-selectable via `EMAIL_PROVIDER`: the default fans out to email-service (SES) over NATS, while `sendgrid` brokers SendGrid directly over HTTPS with its own engagement store and signed event webhook; analytics is routed per newsletter by `send_provider`.
 
 It does not render AI content, publish indexer messages, or emit FGA tuples.
 
@@ -58,7 +58,7 @@ Use `lfx-skills:lfx` if an owner repo is missing locally, a path has moved, or t
 
 - **Language**: Go 1.25+
 - **HTTP**: stdlib `net/http` with Go 1.22+ mux pattern
-- **Messaging**: NATS request/reply for all service-to-service calls (committee, project, email, auth) — no upstream HTTP calls
+- **Messaging**: NATS request/reply for service-to-service calls (committee, project, email, auth). Exception: when `EMAIL_PROVIDER=sendgrid`, newsletter delivery and engagement go direct to SendGrid over HTTPS (a signed event webhook feeds a local engagement store); email-service/SES over NATS is the default
 - **Database**: PostgreSQL via [pgx](https://github.com/jackc/pgx) + [bun](https://bun.uptrace.dev), provisioned by [CloudNativePG](https://cloudnative-pg.io)
 - **Schema**: single embedded `schema.sql` applied idempotently on startup (CREATE … IF NOT EXISTS), serialized across pods via a Postgres advisory transaction lock
 - **Auth**: Heimdall-issued JWTs verified via JWKS (`MicahParks/keyfunc`)

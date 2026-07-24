@@ -108,6 +108,16 @@ func (d *Dispatcher) SendBatch(ctx context.Context, in BatchInput) ([]BatchResul
 	recipients := make([]BatchRecipient, 0, len(in.Recipients))
 	results := make([]BatchResult, 0, len(in.Recipients))
 	for _, r := range in.Recipients {
+		// An empty To would make SendGrid reject the whole mail/send chunk, so
+		// fail it individually (as SendEmail does) rather than sink up to 999
+		// valid recipients with it.
+		if strings.TrimSpace(r.To) == "" {
+			results = append(results, BatchResult{
+				To:  r.To,
+				Err: pkgerrors.NewValidation("sendgrid: recipient (To) is required"),
+			})
+			continue
+		}
 		if !r.SendAt.IsZero() && r.SendAt.After(now.Add(maxSendAtWindow)) {
 			results = append(results, BatchResult{
 				To:  r.To,

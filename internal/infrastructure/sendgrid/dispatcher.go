@@ -7,11 +7,11 @@
 // brokers SendGrid directly for newsletter/marketing sends, while
 // lfx-v2-email-service stays SES for transactional email (LFXV2-2388).
 //
-// This slice implements SendEmail only. Engagement reads (GetEngagement,
+// SendEmail and SendBatch dispatch mail. Engagement reads (GetEngagement,
 // GetStatusByEmailID, GetStatusByGroupID) are served from a newsletter-service
-// store populated by the SendGrid event webhook, which lands in a follow-up
-// slice; until then those methods return errReadNotWired and this provider must
-// not be wired as the active dispatcher for analytics reads.
+// store populated by the SendGrid event webhook (see webhook.go and the
+// repository store). A dispatcher configured without a Store is send-only, and
+// those read methods return errReadNotWired.
 package sendgrid
 
 import (
@@ -50,11 +50,11 @@ const (
 	customArgGroupID = "group_id"
 )
 
-// errReadNotWired marks the engagement-read methods as not yet implemented on
-// the SendGrid provider. Engagement for SendGrid sends is populated by the
-// event webhook into newsletter-service's own store (LFXV2-2388, follow-up
-// slice); until that lands the SendGrid provider only implements SendEmail.
-var errReadNotWired = errors.New("sendgrid: engagement reads require the event-webhook store (LFXV2-2388, not yet wired)")
+// errReadNotWired is returned by the engagement-read methods when the dispatcher
+// was constructed without a Store (send-only mode). Engagement for SendGrid
+// sends is populated by the event webhook into newsletter-service's own store;
+// analytics reads it through a store-backed reader, not through this dispatcher.
+var errReadNotWired = errors.New("sendgrid: engagement reads require a configured Store")
 
 // Config wires a Dispatcher.
 type Config struct {
@@ -268,12 +268,18 @@ func (d *Dispatcher) postMailSend(ctx context.Context, reqBody mailSendRequest) 
 // recordSent persists the initial engagement row for an accepted send. It is
 // best-effort: the email is already sent, so a store failure degrades tracking
 // but must not fail the send. A no-op when no store is wired (send-only mode).
+// recordSent pre-creates the engagement row after an accepted send so TotalSent
+// is accurate before any event arrives. It is best-effort on purpose: the send
+// already succeeded, so failing here must not fail the send (that would risk a
+// duplicate on retry). A failed record is recoverable — the store's Apply*
+// methods upsert on email_id, so the first delivered/open/failed webhook event
+// re-creates the row from the event's group_id / recipient.
 func (d *Dispatcher) recordSent(ctx context.Context, emailID, groupID, to string) {
 	if d.store == nil {
 		return
 	}
 	if err := d.store.RecordSent(ctx, emailID, groupID, to, time.Now().UTC()); err != nil {
-		slog.WarnContext(ctx, "sendgrid: failed to record send for engagement tracking",
+		slog.WarnContext(ctx, "sendgrid: failed to record send for engagement tracking (recoverable via the event webhook)",
 			"email_id", emailID, "error", err)
 	}
 }
