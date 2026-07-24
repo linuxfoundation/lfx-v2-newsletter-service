@@ -187,8 +187,9 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 }
 
 // MarkSending transitions a draft to status=sending atomically, gated on the
-// expected version. Captures the audience size and the lfx-v2-email-service
-// group_id at acceptance time: group_id must be persisted before any email is
+// expected version. Captures the audience size, the dispatching provider
+// (send_provider), and the correlation group_id at acceptance time: group_id
+// must be persisted before any email is
 // dispatched so a crash-recovered row can be marked sent without violating the
 // status='sent' ⇒ group_id NOT NULL CHECK, and so analytics can locate the
 // per-recipient engagement records. The single UPDATE is the duplicate-send

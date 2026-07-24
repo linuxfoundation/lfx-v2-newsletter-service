@@ -16,7 +16,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 - Email dispatch: the send orchestrator mints the email-service `group_id`, renders email chrome, and fans out per-recipient sends to `lfx-v2-email-service` over NATS.
 - Recipient count and recipient preview through committee-service member lookup over NATS.
 - Per-recipient HMAC-signed, project-scoped unsubscribe opt-outs.
-- Newsletter list and analytics reads (local opens overlaid with email-service engagement totals).
+- Newsletter list and analytics reads (local opens overlaid with the sending provider's engagement totals, routed by `send_provider`).
 - Local open tracking through the tracking-pixel endpoint.
 - The public Go DTOs in `pkg/api/newsletter.go`.
 
@@ -109,8 +109,8 @@ The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sen
 
 - persisted recipient total (snapshot at send time)
 - local open rows, unique open counts by recipient hash, daily open buckets, open rate
-- email-service engagement totals fetched by `group_id` over NATS (delivered/failed counts; per-event opens via `opened_at_list` when present), overlaid best-effort — a failed email-service call falls back to local-only analytics
-- `failed_recipients`: the lowercased, deduplicated email addresses email-service marked failed (synchronous send errors plus async bounce/complaint events), drawn from the per-recipient status records. Always present (empty array when there are no known failures or the per-recipient status fetch fails). Best-effort: because the scalar `failed` count comes from the engagement rollup while the list comes from the per-recipient records, the two may briefly diverge while the group index propagates. No failure reason is exposed (the per-recipient records carry no error string).
+- provider engagement totals fetched by `group_id` from the sending provider's `EngagementReader` (email-service over NATS, or the local SendGrid store the event webhook populates), overlaid best-effort — a failed engagement read falls back to local-only analytics
+- `failed_recipients`: the lowercased, deduplicated email addresses the sending provider marked failed (synchronous send errors plus async bounce/complaint events), drawn from the per-recipient status records. Always present (empty array when there are no known failures or the per-recipient status fetch fails). Best-effort: because the scalar `failed` count comes from the engagement rollup while the list comes from the per-recipient records, the two may briefly diverge while the group index propagates. No failure reason is exposed (the per-recipient records carry no error string).
 
 The engagement source is routed per newsletter by `send_provider`, so the response shape is identical whether the newsletter was sent via email-service (SES, engagement read over NATS) or SendGrid (engagement read from the local store the SendGrid event webhook populates). See `docs/recipient-resolution.md` § Provider-Routed Analytics.
 

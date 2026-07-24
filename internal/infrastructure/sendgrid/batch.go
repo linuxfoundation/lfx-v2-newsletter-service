@@ -116,13 +116,18 @@ func (d *Dispatcher) SendBatch(ctx context.Context, in BatchInput) ([]BatchResul
 		// A syntactically invalid To (empty, blank, or e.g. "a@") makes SendGrid
 		// reject the whole mail/send chunk, so validate each address here and fail
 		// only the bad recipient rather than sink up to 999 valid ones with it.
-		if _, err := mail.ParseAddress(strings.TrimSpace(r.To)); err != nil {
+		// Use the parsed mailbox (not the raw string): mail.ParseAddress also
+		// accepts "Name <addr>" forms, and SendGrid's address.email field wants
+		// only the addr-spec, so the display-name form would otherwise be rejected.
+		parsed, err := mail.ParseAddress(strings.TrimSpace(r.To))
+		if err != nil {
 			results = append(results, BatchResult{
 				To:  r.To,
 				Err: pkgerrors.NewValidation(fmt.Sprintf("sendgrid: invalid recipient address %q", r.To)),
 			})
 			continue
 		}
+		r.To = parsed.Address
 		if !r.SendAt.IsZero() {
 			switch {
 			case r.SendAt.After(now.Add(maxSendAtWindow)):

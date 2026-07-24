@@ -61,8 +61,8 @@ func (a *AnalyticsService) readerFor(provider string) port.EngagementReader {
 // ownership. Returns ErrNotFound if the newsletter belongs to a different
 // project than the one supplied, so callers can't probe across projects.
 //
-// Email-service totals are best-effort: if the engagement call fails we still
-// return the locally-tracked analytics with the email-service-derived fields
+// Provider engagement totals are best-effort: if the engagement read fails we
+// still return the locally-tracked analytics with the provider-derived fields
 // zeroed. Newsletter is the source of truth for total_recipients (snapshot
 // taken at send time).
 func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newsletterID uuid.UUID) (*model.Analytics, error) {
@@ -121,7 +121,7 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 	}
 	local.Failed = engagement.Failed
 	if engagement.Opened > local.TotalOpens {
-		// If email-service is tracking more raw opens than our local pixel
+		// If the provider is tracking more raw opens than our local pixel
 		// observed, surface the bigger number.
 		local.TotalOpens = engagement.Opened
 	}
@@ -130,7 +130,7 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 	// to derive UniqueOpens and the DailyOpens time series. We replace (not
 	// merge) the local-table values because the local tracking pixel is not
 	// embedded in outgoing emails today, so newsletter_opens is effectively
-	// always empty — email-service is the authoritative source.
+	// always empty — the provider's records are the authoritative source.
 	records, recErr := reader.GetStatusByGroupID(ctx, *n.GroupID)
 	if recErr != nil {
 		slog.WarnContext(ctx, "analytics: group status fetch failed, keeping engagement-only rollup",

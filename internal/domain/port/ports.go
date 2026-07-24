@@ -181,7 +181,9 @@ type SentRow struct {
 	SentAt  time.Time
 }
 
-// EmailEngagement is the per-group rollup returned by email-service.
+// EmailEngagement is the per-group engagement rollup for a sent newsletter,
+// keyed by group_id. It is provider-agnostic: the email-service (NATS) reader
+// and the SendGrid store-backed reader both return it.
 type EmailEngagement struct {
 	GroupID     string
 	TotalSent   int
@@ -191,15 +193,12 @@ type EmailEngagement struct {
 	Failed      int
 }
 
-// EmailDispatcher fans out individual emails to lfx-v2-email-service and
-// fetches engagement data needed for analytics aggregation.
-//
-// All calls are NATS request/reply against the email-service subjects:
-//   - lfx.email-service.send_email
-//   - lfx.email-service.get_email_status
-//   - lfx.email-service.get_email_engagement_analytics
-//
-// No auth context is propagated — see comments on ProjectMetadataClient.
+// EmailDispatcher sends individual emails and reads back engagement for
+// analytics. It is the outbound-send abstraction: the email-service
+// implementation fans out over NATS (SES), while the SendGrid implementation
+// brokers mail/send over HTTPS with a webhook-populated store. Subject/transport
+// details live on each implementation, not here. No auth context is propagated —
+// see comments on ProjectMetadataClient.
 type EmailDispatcher interface {
 	SendEmail(ctx context.Context, in SendEmailInput) (emailID string, err error)
 	EngagementReader
