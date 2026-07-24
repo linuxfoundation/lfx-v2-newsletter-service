@@ -273,6 +273,104 @@ func TestSchemaMigration_SendProviderUpgradePath(t *testing.T) {
 	must(t, schema.Apply(ctx, pool))
 }
 
+// TestSendGridRevertConcurrency_Integration exercises both commit orderings of a
+// revert racing a webhook, to prove the shared per-group advisory lock (taken by
+// RevertGroup and by the engagement-insert trigger / ApplyOpen) leaves no row
+// behind either way — the guarantee the lock exists for, not just the sequential
+// after-commit case the main test covers.
+func TestSendGridRevertConcurrency_Integration(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	must(t, schema.Apply(ctx, pool))
+	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
+	t.Cleanup(func() { _ = db.Close() })
+	store := repository.NewSendGridEngagementStore(db)
+
+	run := time.Now().UTC().Format("150405.000000000")
+	assertPurged := func(what, group, emailID string) {
+		t.Helper()
+		var eng, opens int
+		must(t, db.NewRaw("SELECT COUNT(*) FROM sendgrid_recipient_engagement WHERE group_id = ?", group).Scan(ctx, &eng))
+		must(t, db.NewRaw("SELECT COUNT(*) FROM sendgrid_open_events WHERE email_id = ?", emailID).Scan(ctx, &opens))
+		if eng != 0 || opens != 0 {
+			t.Errorf("%s: survived a revert with engagement=%d open_events=%d; want 0/0", what, eng, opens)
+		}
+	}
+
+	// Ordering 1 — revert commits before the webhook. The tombstone is visible, so
+	// the engagement insert (trigger) and the open (ApplyOpen check) are both
+	// rejected: no row is created.
+	g1, m1 := "conc1-"+run, "conc1-"+run+"-m"
+	t.Cleanup(func() { _, _ = db.NewRaw("DELETE FROM sendgrid_reverted_groups WHERE group_id = ?", g1).Exec(ctx) })
+	must(t, store.RevertGroup(ctx, g1))
+	must(t, store.ApplyDelivered(ctx, m1, g1, "a@x.io", time.Now().UTC()))
+	must(t, store.ApplyOpen(ctx, g1+"-ev", m1, g1, "a@x.io", time.Now().UTC()))
+	assertPurged("revert-before-webhook", g1, m1)
+
+	// Ordering 2 — the webhook commits before the revert, concurrently. A webhook
+	// transaction inserts its open event + engagement row (the engagement insert
+	// takes the per-group advisory lock) but does NOT commit. A concurrent
+	// RevertGroup then blocks on that lock. Once the webhook commits, the revert
+	// proceeds and must delete the just-committed rows.
+	g2, m2 := "conc2-"+run, "conc2-"+run+"-m"
+	t.Cleanup(func() {
+		_, _ = db.NewRaw("DELETE FROM sendgrid_open_events WHERE email_id = ?", m2).Exec(ctx)
+		_, _ = db.NewRaw("DELETE FROM sendgrid_recipient_engagement WHERE group_id = ?", g2).Exec(ctx)
+		_, _ = db.NewRaw("DELETE FROM sendgrid_reverted_groups WHERE group_id = ?", g2).Exec(ctx)
+	})
+
+	tx1, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin webhook tx: %v", err)
+	}
+	if _, err := tx1.NewRaw("INSERT INTO sendgrid_open_events (sg_event_id, email_id, opened_at) VALUES (?, ?, ?)", g2+"-ev", m2, time.Now().UTC()).Exec(ctx); err != nil {
+		t.Fatalf("webhook open-event insert: %v", err)
+	}
+	// This engagement insert fires the trigger, which takes the per-group advisory
+	// lock; tx1 holds it until it commits below.
+	if _, err := tx1.NewRaw("INSERT INTO sendgrid_recipient_engagement (email_id, group_id, to_email, opened, open_count) VALUES (?, ?, ?, TRUE, 1)", m2, g2, "b@x.io").Exec(ctx); err != nil {
+		t.Fatalf("webhook engagement insert: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- store.RevertGroup(ctx, g2) }()
+
+	// Wait until the revert is genuinely blocked on the advisory lock (a not-yet-
+	// granted advisory lock), so we commit tx1 only after the race is set up.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting int
+		must(t, db.NewRaw("SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted").Scan(ctx, &waiting))
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = tx1.Rollback()
+			t.Fatal("RevertGroup did not block on the advisory lock within 5s")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if err := tx1.Commit(); err != nil {
+		t.Fatalf("commit webhook tx: %v", err)
+	}
+	select {
+	case err := <-done:
+		must(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("RevertGroup did not complete after the webhook committed")
+	}
+	assertPurged("webhook-before-revert", g2, m2)
+}
+
 func exec(ctx context.Context, db *bun.DB, q string, args ...any) error {
 	_, err := db.NewRaw(q, args...).Exec(ctx)
 	return err
