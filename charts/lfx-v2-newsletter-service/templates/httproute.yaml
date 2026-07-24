@@ -42,6 +42,14 @@ spec:
         - path:
             type: Exact
             value: /newsletters/unsubscribe
+        {{- if eq .Values.app.send.provider "sendgrid" }}
+        # SendGrid signed event webhook (POST). Public; authenticity is the
+        # ECDSA signature verified in-app. Routed only when the SendGrid
+        # provider is enabled.
+        - path:
+            type: Exact
+            value: /newsletters/sendgrid/events
+        {{- end }}
       {{- if .Values.heimdall.enabled }}
       filters:
         - type: ExtensionRef

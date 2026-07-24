@@ -32,7 +32,9 @@ func TestSendBatch_BuildsPersonalizations(t *testing.T) {
 		t.Fatalf("NewDispatcher: %v", err)
 	}
 
-	at := time.Unix(1700000000, 0)
+	// A future send_at (within the 72h window) passes through unchanged; an
+	// elapsed one would be normalized to immediate, which a separate test covers.
+	at := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 	results, err := d.SendBatch(context.Background(), BatchInput{
 		Subject: "Weekly", HTML: "<p>Hi %%UNSUB%%</p>", Text: "Hi %%UNSUB%%",
 		GroupID: "grp-1", BatchID: "batch-xyz",
@@ -284,5 +286,42 @@ func TestSendBatch_RejectsEmptyRecipient(t *testing.T) {
 	}
 	if bad == nil || bad.Err == nil {
 		t.Errorf("blank recipient result = %+v, want a validation error", bad)
+	}
+}
+
+func TestSendBatch_NormalizesPastSendAt(t *testing.T) {
+	var gotBody mailSendRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	d, err := NewDispatcher(Config{
+		APIKey: "k", DefaultFrom: "newsletter@lfx.aaif.io",
+		BaseURL: srv.URL, HTTPClient: srv.Client(), Store: &fakeStore{},
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+
+	results, err := d.SendBatch(context.Background(), BatchInput{
+		Subject: "S", Text: "hi",
+		Recipients: []BatchRecipient{
+			{To: "past@x.io", SendAt: time.Now().Add(-time.Hour)}, // elapsed -> send now
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendBatch: %v", err)
+	}
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("results = %+v, want one success", results)
+	}
+	// A past send_at must be dropped, not forwarded (SendGrid rejects past times).
+	if len(gotBody.Personalizations) != 1 {
+		t.Fatalf("personalizations = %d, want 1", len(gotBody.Personalizations))
+	}
+	if gotBody.Personalizations[0].SendAt != 0 {
+		t.Errorf("send_at = %d, want 0 (elapsed schedule normalized to immediate)", gotBody.Personalizations[0].SendAt)
 	}
 }

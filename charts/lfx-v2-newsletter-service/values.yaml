@@ -114,6 +114,35 @@ app:
     # a chart default every environment inherits.
     replyToAllowedDomains: ""
 
+    # provider selects the outbound send provider: "email-service" (default;
+    # fan-out to lfx-v2-email-service over NATS -> SES, kept for transactional)
+    # or "sendgrid" (newsletter-service brokers SendGrid directly for
+    # newsletter/marketing sends). Setting "sendgrid" wires the SendGrid env,
+    # the event-webhook HTTPRoute path, and its anonymous RuleSet entry
+    # together — so enable SendGrid here, not via extraEnv, or the webhook is
+    # unroutable and engagement analytics stay empty.
+    provider: "email-service"
+
+    # sendgrid configures the direct SendGrid provider. Only used when
+    # send.provider="sendgrid".
+    sendgrid:
+      # authenticatedDomains is the comma-separated allowlist of
+      # SendGrid-authenticated sending domains. A From outside it is rejected
+      # before hitting SendGrid; required outside local/dev.
+      authenticatedDomains: ""
+      # apiKeySecretRef sources SENDGRID_API_KEY from a Kubernetes Secret
+      # (typically the chart's ExternalSecret target). Required for real sends.
+      apiKeySecretRef:
+        name: ""
+        key: "sendgrid-api-key"
+      # webhookPublicKeySecretRef sources SENDGRID_WEBHOOK_PUBLIC_KEY (the ECDSA
+      # signed-event-webhook key). Optional; without it the webhook handler is
+      # registered only once the key exists, and engagement stays empty until
+      # then. Sourced optionally so the pod still starts before the key lands.
+      webhookPublicKeySecretRef:
+        name: ""
+        key: "sendgrid-webhook-public-key"
+
   # unsubscribe configures the per-recipient one-click opt-out link
   # embedded in the email footer. publicBaseURL is the externally-reachable
   # origin of this service; the HMAC secret signs the token so links can't

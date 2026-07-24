@@ -109,6 +109,32 @@ spec:
             - name: EMAIL_REPLY_TO_ALLOWED_DOMAINS
               value: {{ . | quote }}
             {{- end }}
+            {{- if eq .Values.app.send.provider "sendgrid" }}
+            # SendGrid direct provider. Enabling it here (not via extraEnv) also
+            # wires the event-webhook HTTPRoute + RuleSet below, so engagement
+            # events can reach the handler.
+            - name: EMAIL_PROVIDER
+              value: "sendgrid"
+            {{- with .Values.app.send.sendgrid.authenticatedDomains }}
+            - name: SENDGRID_AUTHENTICATED_DOMAINS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.app.send.sendgrid.apiKeySecretRef.name }}
+            - name: SENDGRID_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.send.sendgrid.apiKeySecretRef.name }}
+                  key: {{ .Values.app.send.sendgrid.apiKeySecretRef.key }}
+            {{- end }}
+            {{- if .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+            - name: SENDGRID_WEBHOOK_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+                  key: {{ .Values.app.send.sendgrid.webhookPublicKeySecretRef.key }}
+                  optional: true
+            {{- end }}
+            {{- end }}
             - name: NEWSLETTER_PUBLIC_BASE_URL
               value: {{ default (printf "https://lfx-api.%s" .Values.lfx.domain) .Values.app.unsubscribe.publicBaseURL | quote }}
             {{- if .Values.app.unsubscribe.secretRef.name }}

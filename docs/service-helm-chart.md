@@ -17,8 +17,8 @@ Important templates:
 | --- | --- |
 | `deployment.yaml` | Container image, env vars, Postgres secret wiring, probes, resources. |
 | `database.yaml` | Optional CloudNativePG `Cluster` and `Database` resources. |
-| `httproute.yaml` | Gateway API routing for the project-scoped newsletter paths, the open pixel, and `/newsletters/unsubscribe`. |
-| `ruleset.yaml` | Heimdall rules for authenticated API routes plus the unauthenticated open pixel and unsubscribe endpoint. |
+| `httproute.yaml` | Gateway API routing for the project-scoped newsletter paths, the open pixel, `/newsletters/unsubscribe`, and (when `provider=sendgrid`) the SendGrid event webhook. |
+| `ruleset.yaml` | Heimdall rules for authenticated API routes plus the unauthenticated open pixel, unsubscribe, and (when `provider=sendgrid`) SendGrid-webhook endpoints. |
 | `heimdall-middleware.yaml` | Optional Traefik middleware resources when this chart owns them locally. |
 | `externalsecret.yaml` | Optional ExternalSecret resources. |
 | `networkpolicy.yaml` | Optional egress controls for DNS, NATS, OTel, Postgres, and external HTTPS (e.g. JWKS). |
@@ -40,6 +40,10 @@ Important templates:
 | `app.send.fromAddress` | `EMAIL_FROM_ADDRESS` | SMTP envelope From; domain must be in the email-service allowlist. |
 | `app.send.fromAddressOverrides` | `EMAIL_FROM_ADDRESS_OVERRIDES` | Per-project From override as comma-separated `slug=address` pairs (e.g. `agentic-ai-foundation=newsletter@lfx.aaif.io`); each override domain must also be in the email-service allowlist. Empty disables overrides. |
 | `app.send.replyToAllowedDomains` | `EMAIL_REPLY_TO_ALLOWED_DOMAINS` | Comma-separated domains a resolved sender email may use as Reply-To (subdomain suffix matching applies). A resolved address outside this list falls back to the draft's `ed_reply_email`. Must stay in sync with email-service's `SMTP_ALLOWED_REPLY_TO_DOMAINS` — a domain allowed here but not there still gets rejected by email-service. Empty falls back to the app default (`linuxfoundation.org`). |
+| `app.send.provider` | `EMAIL_PROVIDER` | `email-service` (default; fan-out to email-service/SES over NATS) or `sendgrid` (direct SendGrid). Setting `sendgrid` also wires the event-webhook HTTPRoute path and its anonymous RuleSet rule — enable SendGrid here, not via `extraEnv`, or the webhook is unroutable and analytics stay empty. |
+| `app.send.sendgrid.authenticatedDomains` | `SENDGRID_AUTHENTICATED_DOMAINS` | Comma-separated authenticated sending domains; a From outside it is rejected before SendGrid. Required for `provider=sendgrid` outside local/dev. |
+| `app.send.sendgrid.apiKeySecretRef` | `SENDGRID_API_KEY` | Sources the SendGrid API key from a Kubernetes Secret (typically the chart's ExternalSecret target). Required for real sends. |
+| `app.send.sendgrid.webhookPublicKeySecretRef` | `SENDGRID_WEBHOOK_PUBLIC_KEY` | Sources the ECDSA signed-event-webhook key from a Secret (referenced `optional`, so the pod starts before it lands). Without it the webhook handler stays unregistered and engagement is empty. |
 | `app.unsubscribe.publicBaseURL` | `NEWSLETTER_PUBLIC_BASE_URL` | Externally-reachable origin used to build unsubscribe links. Defaults to `https://lfx-api.<lfx.domain>`. Required when fan-out is enabled. |
 | `app.unsubscribe.secret` / `secretRef` | `NEWSLETTER_UNSUBSCRIBE_SECRET` | HMAC key signing unsubscribe tokens. Required when fan-out is enabled; prefer `secretRef`. |
 | `app.requireUserAuth` | `REQUIRE_USER_AUTH` | Disable only for local development. |
@@ -67,6 +71,7 @@ In CNPG modes and `external.shape=fields`, the deployment forwards `PGHOST`, `PG
 - `^/projects/[^/]+/newsletter-opt-outs(/.*)?$`
 - `^/projects/[^/]+/newsletter-opens/[^/]+$`
 - `/newsletters/unsubscribe` (exact)
+- `/newsletters/sendgrid/events` (exact) — only when `app.send.provider=sendgrid`
 
 When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 
@@ -76,6 +81,7 @@ When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 - The opt-out list endpoint (`GET /projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor` role and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` or OpenFGA is misconfigured — that is intentional for PII security.
 - The opt-out delete endpoint (`DELETE /projects/{project_uid}/newsletter-opt-outs/{opt_out_id}`) mutates a user's consent record and is **always fail-closed**: it uses direct `openfga_check` with the `writer` role and does NOT have an `allow_all` fallback, matching the security posture of the list endpoint.
 - The open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` are intentionally unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
+- The SendGrid event webhook (`POST /newsletters/sendgrid/events`, rendered only when `app.send.provider=sendgrid`) is `allow_all` at the gateway because SendGrid posts events without a session; authenticity is the ECDSA signature plus a freshness window, verified in-app.
 
 `openfga.enabled=false` is the default. When false, most routes still work via `allow_all`, but the opt-out endpoints become unreachable. Enable OpenFGA to access the opt-out list and delete endpoints.
 

@@ -118,12 +118,19 @@ func (d *Dispatcher) SendBatch(ctx context.Context, in BatchInput) ([]BatchResul
 			})
 			continue
 		}
-		if !r.SendAt.IsZero() && r.SendAt.After(now.Add(maxSendAtWindow)) {
-			results = append(results, BatchResult{
-				To:  r.To,
-				Err: pkgerrors.NewValidation(fmt.Sprintf("sendgrid: send_at %s is more than 72h out", r.SendAt.UTC().Format(time.RFC3339))),
-			})
-			continue
+		if !r.SendAt.IsZero() {
+			switch {
+			case r.SendAt.After(now.Add(maxSendAtWindow)):
+				results = append(results, BatchResult{
+					To:  r.To,
+					Err: pkgerrors.NewValidation(fmt.Sprintf("sendgrid: send_at %s is more than 72h out", r.SendAt.UTC().Format(time.RFC3339))),
+				})
+				continue
+			case r.SendAt.Before(now):
+				// SendGrid rejects a chunk whose send_at is in the past; a schedule
+				// that elapsed before dispatch means "send now", so drop it to zero.
+				r.SendAt = time.Time{}
+			}
 		}
 		recipients = append(recipients, r)
 	}
