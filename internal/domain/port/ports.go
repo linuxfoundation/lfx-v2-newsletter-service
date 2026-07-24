@@ -48,12 +48,13 @@ type NewsletterRepository interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 
 	// MarkSending atomically transitions draft → sending, persisting the
-	// email-service group_id and the resolved audience size. The single
-	// optimistically-locked UPDATE (gated on id, expectedVersion, and
-	// status='draft') is the duplicate-send guard across replicas: a zero-row
-	// result is classified as domain.ErrNotFound, domain.ErrAlreadySent,
-	// domain.ErrSendInProgress, or domain.ErrVersionMismatch.
-	MarkSending(ctx context.Context, id uuid.UUID, groupID string, totalRecipients int, expectedVersion int64) (*model.Newsletter, error)
+	// group_id, the dispatching provider (send_provider), and the resolved
+	// audience size. The single optimistically-locked UPDATE (gated on id,
+	// expectedVersion, and status='draft') is the duplicate-send guard across
+	// replicas: a zero-row result is classified as domain.ErrNotFound,
+	// domain.ErrAlreadySent, domain.ErrSendInProgress, or
+	// domain.ErrVersionMismatch.
+	MarkSending(ctx context.Context, id uuid.UUID, groupID, sendProvider string, totalRecipients int, expectedVersion int64) (*model.Newsletter, error)
 	// MarkSent transitions sending → sent, gated on the version returned by
 	// MarkSending. group_id and total_recipients were already persisted at the
 	// sending transition.

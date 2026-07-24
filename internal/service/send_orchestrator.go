@@ -67,6 +67,11 @@ type SendOrchestrator struct {
 	fanoutEnabled bool
 	fromAddress   string
 	fromOverrides map[string]string
+	// sendProvider is the value stamped onto newsletters.send_provider at the
+	// sending transition, recording which provider dispatched the newsletter so
+	// analytics reads engagement from the matching store. Set from the active
+	// EMAIL_PROVIDER; empty falls back to model.SendProviderEmailService.
+	sendProvider string
 	// replyToAllowedDomains gates resolveSenderEmail's output: a resolved
 	// address outside these domains (suffix-matched) is dropped in favor of
 	// the draft.EDReplyEmail fallback, so we never hand email-service a
@@ -102,6 +107,10 @@ type SendOrchestratorConfig struct {
 	// From address used for that project, overriding FromAddress. Nil/empty
 	// means every project uses FromAddress.
 	FromAddressOverrides map[string]string
+	// SendProvider is the active dispatch provider stamped onto every send
+	// (newsletters.send_provider), so analytics can later resolve engagement
+	// from the matching store. Empty falls back to model.SendProviderEmailService.
+	SendProvider string
 	// ReplyToAllowedDomains lists the domains a resolved sender email may use
 	// as Reply-To; a resolved address outside this list falls back to
 	// draft.EDReplyEmail (see resolveSenderEmail). Empty defaults to
@@ -156,6 +165,10 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	if jobTimeout <= 0 {
 		jobTimeout = defaultSendJobTimeout
 	}
+	sendProvider := strings.TrimSpace(cfg.SendProvider)
+	if sendProvider == "" {
+		sendProvider = model.SendProviderEmailService
+	}
 	return &SendOrchestrator{
 		repo:                  cfg.Repo,
 		committee:             cfg.Committee,
@@ -170,6 +183,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		fromOverrides:         overrides,
 		replyToAllowedDomains: replyToDomains,
 		jobTimeout:            jobTimeout,
+		sendProvider:          sendProvider,
 	}
 }
 
@@ -290,7 +304,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// The duplicate-send guard: a single optimistically-locked UPDATE gated on
 	// status='draft'. From here on no concurrent or repeated send request can
 	// enter the fan-out for this newsletter.
-	sending, err := o.repo.MarkSending(ctx, draft.ID, groupID, len(recipients), draft.Version)
+	sending, err := o.repo.MarkSending(ctx, draft.ID, groupID, o.sendProvider, len(recipients), draft.Version)
 	if err != nil {
 		return nil, fmt.Errorf("mark sending: %w", err)
 	}

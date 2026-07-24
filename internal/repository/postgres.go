@@ -193,12 +193,13 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 // status='sent' ⇒ group_id NOT NULL CHECK, and so analytics can locate the
 // per-recipient engagement records. The single UPDATE is the duplicate-send
 // guard — a concurrent send observes zero rows affected and is classified.
-func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, groupID string, totalRecipients int, expectedVersion int64) (*model.Newsletter, error) {
+func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, groupID, sendProvider string, totalRecipients int, expectedVersion int64) (*model.Newsletter, error) {
 	updated := &model.Newsletter{}
 	res, err := r.db.NewUpdate().
 		Model(updated).
 		Set("status = ?", model.StatusSending).
 		Set("group_id = ?", groupID).
+		Set("send_provider = ?", sendProvider).
 		Set("total_recipients = ?", totalRecipients).
 		Set("updated_at = now()").
 		Set("version = version + 1").

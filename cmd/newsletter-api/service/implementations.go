@@ -136,6 +136,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		FromAddressOverrides:  cfg.EmailFromAddressOverrides,
 		ReplyToAllowedDomains: cfg.EmailReplyToAllowedDomains,
 		SendJobTimeout:        cfg.SendJobTimeout,
+		SendProvider:          cfg.EmailProvider,
 	})
 	analyticsSvc := service.NewAnalyticsService(repo, emailDispatcher)
 

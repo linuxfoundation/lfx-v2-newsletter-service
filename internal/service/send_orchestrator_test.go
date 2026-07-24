@@ -169,7 +169,7 @@ func (r *fakeNewsletterRepo) Update(_ context.Context, n *model.Newsletter, _ in
 	return n, nil
 }
 func (r *fakeNewsletterRepo) Delete(_ context.Context, _ uuid.UUID) error { return nil }
-func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupID string, total int, expectedVersion int64) (*model.Newsletter, error) {
+func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupID, sendProvider string, total int, expectedVersion int64) (*model.Newsletter, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	n, ok := r.drafts[id]
@@ -188,6 +188,7 @@ func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupI
 	n.Status = model.StatusSending
 	g := groupID
 	n.GroupID = &g
+	n.SendProvider = sendProvider
 	n.TotalRecipients = total
 	n.Version++
 	cp := *n
@@ -1494,7 +1495,7 @@ func TestDraftGuardsWhileSending(t *testing.T) {
 	svc := NewNewsletterService(repo)
 
 	draft := repo.addDraft("p1", []string{"c1"})
-	if _, err := repo.MarkSending(ctx, draft.ID, uuid.NewString(), 1, draft.Version); err != nil {
+	if _, err := repo.MarkSending(ctx, draft.ID, uuid.NewString(), model.SendProviderEmailService, 1, draft.Version); err != nil {
 		t.Fatalf("MarkSending: %v", err)
 	}
 

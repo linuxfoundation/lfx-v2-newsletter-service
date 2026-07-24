@@ -59,7 +59,7 @@ func (a *analyticsRepoFake) Update(_ context.Context, n *model.Newsletter, _ int
 	return n, nil
 }
 func (a *analyticsRepoFake) Delete(_ context.Context, _ uuid.UUID) error { return nil }
-func (a *analyticsRepoFake) MarkSending(_ context.Context, _ uuid.UUID, _ string, _ int, _ int64) (*model.Newsletter, error) {
+func (a *analyticsRepoFake) MarkSending(_ context.Context, _ uuid.UUID, _, _ string, _ int, _ int64) (*model.Newsletter, error) {
 	return a.newsletter, nil
 }
 func (a *analyticsRepoFake) MarkSent(_ context.Context, _ uuid.UUID, _ time.Time, _ int64) (*model.Newsletter, error) {
