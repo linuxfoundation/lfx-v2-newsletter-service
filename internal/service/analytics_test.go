@@ -365,3 +365,65 @@ func TestAnalyticsGet_DegradesGracefullyOnGroupStatusError(t *testing.T) {
 		t.Errorf("FailedRecipients: got %v, want empty on the degraded path", got.FailedRecipients)
 	}
 }
+
+// TestAnalyticsGet_RoutesByProvider verifies the analytics service reads
+// engagement from the reader matching each newsletter's send_provider, and
+// falls back to the default provider for an empty or unrecognized value. The
+// two readers report distinct Opened counts so the assertion identifies which
+// one served the request.
+func TestAnalyticsGet_RoutesByProvider(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	groupID := "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+	sentAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+
+	const emailServiceOpened = 2
+	const sendGridOpened = 7
+
+	emailReader := &statusByGroupFake{
+		engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: 5, Delivered: 5, Opened: emailServiceOpened},
+	}
+	sendGridReader := &statusByGroupFake{
+		engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: 5, Delivered: 5, Opened: sendGridOpened},
+	}
+	readers := map[string]port.EngagementReader{
+		model.SendProviderEmailService: emailReader,
+		model.SendProviderSendGrid:     sendGridReader,
+	}
+
+	cases := []struct {
+		name         string
+		sendProvider string
+		wantOpened   int
+	}{
+		{"sendgrid routes to the sendgrid reader", model.SendProviderSendGrid, sendGridOpened},
+		{"email-service routes to the email-service reader", model.SendProviderEmailService, emailServiceOpened},
+		{"empty provider falls back to the default reader", "", emailServiceOpened},
+		{"unknown provider falls back to the default reader", "mystery", emailServiceOpened},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			newsletterID := uuid.New()
+			repo := &analyticsRepoFake{
+				newsletter: &model.Newsletter{
+					ID:              newsletterID,
+					ProjectUID:      projectUID,
+					Status:          model.StatusSent,
+					GroupID:         &groupID,
+					SendProvider:    tc.sendProvider,
+					SentAt:          &sentAt,
+					TotalRecipients: 5,
+				},
+				base: &model.Analytics{NewsletterID: newsletterID, Status: model.StatusSent, SentAt: &sentAt, TotalRecipients: 5, Delivered: 5},
+			}
+			svc := NewAnalyticsService(repo, readers, model.SendProviderEmailService)
+			got, err := svc.Get(context.Background(), projectUID, newsletterID)
+			if err != nil {
+				t.Fatalf("Get: unexpected error: %v", err)
+			}
+			if got.TotalOpens != tc.wantOpened {
+				t.Errorf("TotalOpens: got %d, want %d (wrong reader served send_provider=%q)", got.TotalOpens, tc.wantOpened, tc.sendProvider)
+			}
+		})
+	}
+}

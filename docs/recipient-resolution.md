@@ -57,6 +57,15 @@ Current behavior — this service owns the email dispatch:
 - `SEND_FANOUT_ENABLED=false` short-circuits dispatch (validate + transition only) for dev/staging shake-out.
 - Analytics later aggregates email-service engagement by this `group_id` (`lfx.email-service.get_email_engagement_analytics`).
 
+## Provider-Routed Analytics
+
+A newsletter's engagement lives in whichever provider dispatched it, so analytics resolves the engagement source per newsletter rather than from a single active provider.
+
+- Every send stamps `newsletters.send_provider` at the `sending` transition (`MarkSending`), set from the active `EMAIL_PROVIDER` (`email-service` or `sendgrid`). The column defaults to `email-service`, and a migration backfills every pre-existing row to `email-service`, since all sends predating SendGrid went via email-service (SES).
+- `AnalyticsService` holds one `EngagementReader` per provider and resolves the reader from `send_provider` (`email-service` reads engagement from email-service over NATS; `sendgrid` reads from the local SendGrid engagement store). An empty or unrecognized value falls back to the default provider (`email-service`).
+- Both readers are always registered. The SendGrid reader is store-backed and needs no API key, so a deployment serves analytics for SendGrid-sent newsletters even when email-service is the currently-active sender, and vice versa. A missing reader degrades that newsletter to local-only analytics rather than failing the request.
+- Net effect: historical SES newsletters keep their analytics and SendGrid sends surface analytics through the same `/analytics` endpoint and DTO after a per-foundation flip, with no UI change.
+
 ## Change Checklist
 
 - Read `lfx-v2-committee-service` docs for committee-member payload fields.
