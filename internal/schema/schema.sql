@@ -106,6 +106,14 @@ ALTER TABLE newsletters
 UPDATE newsletters SET send_provider = 'email-service'
     WHERE send_provider IS NULL OR send_provider = '';
 
+-- Re-assert the default and NOT NULL. A first run's ADD COLUMN ... NOT NULL
+-- DEFAULT sets both, but ADD COLUMN IF NOT EXISTS is a no-op if a prior partial
+-- run added the column nullable, and the CHECK below permits NULL — so a nullable
+-- column could keep accepting NULL providers. Safe now the backfill cleared any
+-- NULLs; both statements are idempotent.
+ALTER TABLE newsletters ALTER COLUMN send_provider SET DEFAULT 'email-service';
+ALTER TABLE newsletters ALTER COLUMN send_provider SET NOT NULL;
+
 -- Constrain to the known providers (mirrors the model.SendProvider* constants).
 DO $$
 BEGIN

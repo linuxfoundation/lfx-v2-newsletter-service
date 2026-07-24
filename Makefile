@@ -51,6 +51,12 @@ run: build
 test:
 	go test -v -race -coverprofile=coverage.out ./...
 
+# test-integration runs the tag-gated integration tests (require a Postgres via
+# DATABASE_URL). CI provides one; locally, point DATABASE_URL at any Postgres.
+.PHONY: test-integration
+test-integration:
+	go test -v -tags integration ./internal/repository/...
+
 .PHONY: fmt
 fmt:
 	go fmt ./...

@@ -15,6 +15,22 @@ jobs:
     env:
       GOTOOLCHAIN: local
 
+    services:
+      # Postgres for the tag-gated integration tests (the SendGrid engagement
+      # store's schema DDL, upserts, transactions, and open-event dedup).
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: newsletter_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
         with:
@@ -44,6 +60,11 @@ jobs:
 
       - name: Test
         run: go test ./... -v
+
+      - name: Integration test
+        run: go test -tags integration ./internal/repository/... -v
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/newsletter_test?sslmode=disable
 
       - name: Vulnerability scan
         run: |

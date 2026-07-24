@@ -115,7 +115,7 @@ func (s *SendGridEngagementStore) ApplyDelivered(ctx context.Context, emailID, g
 	row := &sendgridEngagementRow{EmailID: emailID, GroupID: groupID, ToEmail: to, Delivered: true, DeliveredAt: &at}
 	if _, err := s.db.NewInsert().
 		Model(row).
-		On("CONFLICT (email_id) DO UPDATE SET delivered = TRUE, delivered_at = EXCLUDED.delivered_at WHERE sendgrid_recipient_engagement.delivered = FALSE").
+		On("CONFLICT (email_id) DO UPDATE SET delivered = TRUE, delivered_at = EXCLUDED.delivered_at WHERE sre.delivered = FALSE").
 		Exec(ctx); err != nil {
 		return fmt.Errorf("sendgrid apply delivered: %w", err)
 	}
@@ -129,7 +129,7 @@ func (s *SendGridEngagementStore) ApplyFailed(ctx context.Context, emailID, grou
 	row := &sendgridEngagementRow{EmailID: emailID, GroupID: groupID, ToEmail: to, Failed: true, FailedAt: &at}
 	if _, err := s.db.NewInsert().
 		Model(row).
-		On("CONFLICT (email_id) DO UPDATE SET failed = TRUE, failed_at = EXCLUDED.failed_at WHERE sendgrid_recipient_engagement.failed = FALSE").
+		On("CONFLICT (email_id) DO UPDATE SET failed = TRUE, failed_at = EXCLUDED.failed_at WHERE sre.failed = FALSE").
 		Exec(ctx); err != nil {
 		return fmt.Errorf("sendgrid apply failed: %w", err)
 	}
@@ -158,7 +158,7 @@ func (s *SendGridEngagementStore) ApplyOpen(ctx context.Context, sgEventID, emai
 		row := &sendgridEngagementRow{EmailID: emailID, GroupID: groupID, ToEmail: to, Opened: true, OpenCount: 1, LastOpenedAt: &at}
 		if _, err := tx.NewInsert().
 			Model(row).
-			On("CONFLICT (email_id) DO UPDATE SET opened = TRUE, open_count = sendgrid_recipient_engagement.open_count + 1, last_opened_at = GREATEST(sendgrid_recipient_engagement.last_opened_at, EXCLUDED.last_opened_at)").
+			On("CONFLICT (email_id) DO UPDATE SET opened = TRUE, open_count = sre.open_count + 1, last_opened_at = GREATEST(sre.last_opened_at, EXCLUDED.last_opened_at)").
 			Exec(ctx); err != nil {
 			return fmt.Errorf("sendgrid apply open (rollup): %w", err)
 		}
