@@ -18,6 +18,7 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/handler"
 	natsinfra "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/nats"
@@ -138,7 +139,18 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		SendJobTimeout:        cfg.SendJobTimeout,
 		SendProvider:          cfg.EmailProvider,
 	})
-	analyticsSvc := service.NewAnalyticsService(repo, emailDispatcher)
+	// Analytics routes engagement reads by each newsletter's send_provider, so
+	// register a reader per provider. The email-service (NATS) reader and the
+	// SendGrid store-backed reader are both always available: the SendGrid
+	// reader needs only the engagement store (no API key), so a deployment can
+	// serve analytics for SendGrid-sent newsletters even when email-service is
+	// the currently-active sender, and vice versa. Historical rows default to
+	// email-service.
+	engagementReaders := map[string]port.EngagementReader{
+		model.SendProviderEmailService: natsinfra.NewEmailDispatcher(nc),
+		model.SendProviderSendGrid:     sendgridinfra.NewEngagementReader(repository.NewSendGridEngagementStore(bunDB)),
+	}
+	analyticsSvc := service.NewAnalyticsService(repo, engagementReaders, model.SendProviderEmailService)
 
 	// Step 6: recovery sweep for newsletters stranded in 'sending' by a pod
 	// crash mid-fan-out. Runs once at startup (catches strands from previous

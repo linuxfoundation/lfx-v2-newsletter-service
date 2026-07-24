@@ -23,16 +23,38 @@ import (
 const dayBucketLayout = "2006-01-02"
 
 // AnalyticsService aggregates engagement metrics for a sent newsletter,
-// combining email-service totals (delivered / failed) with locally-tracked
-// open events from the newsletter_opens table.
+// combining the sending provider's totals (delivered / failed) with
+// locally-tracked open events from the newsletter_opens table.
+//
+// A newsletter's engagement lives in whichever provider dispatched it: the SES
+// path reads it back from email-service over NATS, the SendGrid path reads it
+// from the local engagement store. readers maps each provider name to its
+// EngagementReader, and Get resolves the reader from newsletters.send_provider,
+// so a newsletter's stats always come from the store that holds them regardless
+// of the currently-active provider. defaultProvider is used for rows with an
+// unset or unrecognized send_provider (historical rows are all email-service).
 type AnalyticsService struct {
-	repo  port.NewsletterRepository
-	email port.EmailDispatcher
+	repo            port.NewsletterRepository
+	readers         map[string]port.EngagementReader
+	defaultProvider string
 }
 
-// NewAnalyticsService wires an AnalyticsService.
-func NewAnalyticsService(repo port.NewsletterRepository, email port.EmailDispatcher) *AnalyticsService {
-	return &AnalyticsService{repo: repo, email: email}
+// NewAnalyticsService wires an AnalyticsService. readers must contain an entry
+// for defaultProvider; a nil or missing reader for a newsletter's provider
+// degrades that newsletter to local-only analytics rather than panicking.
+func NewAnalyticsService(repo port.NewsletterRepository, readers map[string]port.EngagementReader, defaultProvider string) *AnalyticsService {
+	return &AnalyticsService{repo: repo, readers: readers, defaultProvider: defaultProvider}
+}
+
+// readerFor resolves the engagement reader for a newsletter's send_provider,
+// falling back to the default provider's reader when the value is empty or
+// unrecognized. Returns nil when no usable reader is registered, which the
+// caller treats as an engagement-fetch failure (local-only analytics).
+func (a *AnalyticsService) readerFor(provider string) port.EngagementReader {
+	if r, ok := a.readers[provider]; ok && r != nil {
+		return r
+	}
+	return a.readers[a.defaultProvider]
 }
 
 // Get returns aggregated analytics for the given newsletter, gated on project
@@ -64,16 +86,29 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 	// below when per-recipient records report failures.
 	local.FailedRecipients = []string{}
 
-	// For drafts, skip the email-service call — there's nothing to aggregate.
+	// For drafts, skip the engagement call — there's nothing to aggregate.
 	if n.Status != model.StatusSent || n.GroupID == nil || *n.GroupID == "" {
 		return local, nil
 	}
 
-	engagement, engErr := a.email.GetEngagement(ctx, *n.GroupID)
+	// Route the engagement read to the provider that actually sent this
+	// newsletter, so historical email-service sends and SendGrid sends both
+	// resolve to the store that holds their data.
+	reader := a.readerFor(n.SendProvider)
+	if reader == nil {
+		slog.WarnContext(ctx, "analytics: no engagement reader for provider, returning local-only",
+			"newsletter_id", n.ID,
+			"send_provider", n.SendProvider,
+		)
+		return local, nil
+	}
+
+	engagement, engErr := reader.GetEngagement(ctx, *n.GroupID)
 	if engErr != nil {
-		slog.WarnContext(ctx, "analytics: email-service engagement fetch failed, returning local-only",
+		slog.WarnContext(ctx, "analytics: engagement fetch failed, returning local-only",
 			"newsletter_id", n.ID,
 			"group_id", *n.GroupID,
+			"send_provider", n.SendProvider,
 			"error", engErr.Error(),
 		)
 		return local, nil
@@ -96,9 +131,9 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 	// merge) the local-table values because the local tracking pixel is not
 	// embedded in outgoing emails today, so newsletter_opens is effectively
 	// always empty — email-service is the authoritative source.
-	records, recErr := a.email.GetStatusByGroupID(ctx, *n.GroupID)
+	records, recErr := reader.GetStatusByGroupID(ctx, *n.GroupID)
 	if recErr != nil {
-		slog.WarnContext(ctx, "analytics: email-service group status fetch failed, keeping engagement-only rollup",
+		slog.WarnContext(ctx, "analytics: group status fetch failed, keeping engagement-only rollup",
 			"newsletter_id", n.ID,
 			"group_id", *n.GroupID,
 			"error", recErr.Error(),

@@ -122,7 +122,7 @@ func TestAnalyticsGet_DailyOpensFromGroupStatus(t *testing.T) {
 		},
 	}
 
-	svc := NewAnalyticsService(repo, email)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -194,7 +194,7 @@ func TestAnalyticsGet_FailedRecipients(t *testing.T) {
 		},
 	}
 
-	svc := NewAnalyticsService(repo, email)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -238,7 +238,7 @@ func TestAnalyticsGet_NoFailedRecipients(t *testing.T) {
 		},
 	}
 
-	svc := NewAnalyticsService(repo, email)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -290,7 +290,7 @@ func TestAnalyticsGet_CountsPerEventOpens(t *testing.T) {
 		},
 	}
 
-	svc := NewAnalyticsService(repo, email)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -345,7 +345,7 @@ func TestAnalyticsGet_DegradesGracefullyOnGroupStatusError(t *testing.T) {
 		recordsErr: errors.New("nats: timeout"),
 	}
 
-	svc := NewAnalyticsService(repo, email)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)

@@ -193,11 +193,20 @@ type EmailEngagement struct {
 // No auth context is propagated — see comments on ProjectMetadataClient.
 type EmailDispatcher interface {
 	SendEmail(ctx context.Context, in SendEmailInput) (emailID string, err error)
+	EngagementReader
+}
+
+// EngagementReader reads per-newsletter engagement for analytics, keyed by the
+// send group_id. Both the email-service (NATS) dispatcher and the SendGrid
+// store-backed reader implement it, so the analytics service can resolve a
+// newsletter's engagement from whichever provider actually dispatched it
+// (newsletters.send_provider), regardless of the currently-active provider.
+type EngagementReader interface {
 	GetEngagement(ctx context.Context, groupID string) (*EmailEngagement, error)
 	GetStatusByEmailID(ctx context.Context, emailID string) (*EmailRecipientRecord, error)
 	// GetStatusByGroupID fetches the per-recipient records for every email
 	// dispatched under the given group_id. Used by the analytics service to
-	// build the daily-opens time series and the unique-opens count, since
-	// email-service's engagement summary is scalar-only.
+	// build the daily-opens time series and the unique-opens count, since the
+	// engagement summary is scalar-only.
 	GetStatusByGroupID(ctx context.Context, groupID string) ([]EmailRecipientRecord, error)
 }
