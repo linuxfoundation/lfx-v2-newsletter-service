@@ -256,12 +256,16 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 	}
 
 	if err := d.postMailSend(ctx, reqBody); err != nil {
-		// SendGrid rejected the send synchronously, so no webhook event will ever
-		// arrive for it. Persist the failure so provider-routed analytics counts
-		// this recipient in TotalSent / Failed / failed_recipients instead of
-		// silently omitting it when a sibling recipient in the same newsletter
-		// succeeds and the newsletter is marked sent.
-		d.recordFailed(ctx, emailID, groupID, in.To)
+		// Only persist a failure on a definitive rejection (4xx → Validation):
+		// SendGrid did not accept the message, so no webhook will arrive, and
+		// analytics would otherwise omit this recipient when a sibling succeeds
+		// and the newsletter is marked sent. An ambiguous transport/5xx error is
+		// NOT recorded — SendGrid may have accepted it, and recording failed would
+		// contradict a later delivered webhook (and could double-count a retry).
+		var rejected pkgerrors.Validation
+		if errors.As(err, &rejected) {
+			d.recordFailed(ctx, emailID, groupID, in.To)
+		}
 		return "", err
 	}
 	d.recordSent(ctx, emailID, groupID, in.To)
@@ -296,6 +300,15 @@ func (d *Dispatcher) postMailSend(ctx context.Context, reqBody mailSendRequest) 
 	}
 	// SendGrid reports failures as { "errors": [ { "message", "field", "help" } ] }.
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	// Distinguish a definitive rejection from an ambiguous outcome. A 4xx means
+	// SendGrid did not accept the message (bad request, auth, rate limit), so no
+	// delivery webhook will follow — callers may safely record the recipient as
+	// failed. A 5xx (or the transport error above) is ambiguous: SendGrid may
+	// have accepted it and failed to respond, so the caller must NOT record a
+	// failure that a later delivered/bounce webhook would then contradict.
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		return pkgerrors.NewValidation(fmt.Sprintf("sendgrid: mail/send rejected (%d): %s", resp.StatusCode, summarizeError(resp.StatusCode, body)))
+	}
 	return pkgerrors.NewServiceUnavailable(
 		fmt.Sprintf("sendgrid: mail/send returned %d", resp.StatusCode),
 		errors.New(summarizeError(resp.StatusCode, body)),
