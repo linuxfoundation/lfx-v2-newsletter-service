@@ -52,7 +52,10 @@ test:
 	go test -v -race -coverprofile=coverage.out ./...
 
 # test-integration runs the tag-gated integration tests (require a Postgres via
-# DATABASE_URL). CI provides one; locally, point DATABASE_URL at any Postgres.
+# DATABASE_URL). The tests apply the schema and the migration test creates and
+# drops a throwaway database, so DATABASE_URL must point at a DISPOSABLE Postgres
+# whose role has the CREATEDB privilege — not a shared or production database. CI
+# provides a dedicated instance; locally, use a throwaway container.
 .PHONY: test-integration
 test-integration:
 	go test -v -tags integration ./internal/repository/...

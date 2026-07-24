@@ -13,7 +13,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 
 - Project-scoped newsletter draft persistence in Postgres.
 - Draft-to-sent state transition.
-- Email dispatch: the send orchestrator mints the email-service `group_id`, renders email chrome, and fans out per-recipient sends to `lfx-v2-email-service` over NATS.
+- Email dispatch: the send orchestrator mints the `group_id`, renders email chrome, and fans out per-recipient sends through the active provider (selected by `EMAIL_PROVIDER`): `lfx-v2-email-service` over NATS by default, or SendGrid directly when selected.
 - Recipient count and recipient preview through committee-service member lookup over NATS.
 - Per-recipient HMAC-signed, project-scoped unsubscribe opt-outs.
 - Newsletter list and analytics reads (local opens overlaid with the sending provider's engagement totals, routed by `send_provider`).
@@ -79,7 +79,7 @@ Core state:
 - Drafts can be updated and deleted.
 - `POST …/newsletters/{newsletter_uid}/send` accepts the send synchronously and completes it asynchronously:
   - **Synchronous (inside the request):** validates the draft, resolves recipients (excluding project-scoped unsubscribes), renders the email envelope, mints a `group_id`, and atomically transitions `draft → sending` — persisting `group_id` and `total_recipients` and incrementing `version`. This single optimistically-locked transition is the duplicate-send guard across replicas: a concurrent or repeated send observes the row is no longer a draft and gets `409 send_in_progress`. The endpoint then returns `202`.
-  - **Asynchronous (detached background job):** fans out per-recipient sends to email-service, then — when at least one recipient was delivered to — sets `status=sent`, `sent_at`, and increments `version`. A fully-failed fan-out reverts the row to `draft` (clearing `group_id` and `total_recipients`) so the operator can retry. The job is detached from the HTTP request context, so client disconnects and proxy timeouts cannot cancel a partially-dispatched send or orphan the status; its runtime is bounded by `SEND_JOB_TIMEOUT` (default 30m).
+  - **Asynchronous (detached background job):** fans out per-recipient sends through the active provider, then — when at least one recipient was delivered to — sets `status=sent`, `sent_at`, and increments `version`. A fully-failed fan-out reverts the row to `draft` (clearing `group_id` and `total_recipients`) so the operator can retry. The job is detached from the HTTP request context, so client disconnects and proxy timeouts cannot cancel a partially-dispatched send or orphan the status; its runtime is bounded by `SEND_JOB_TIMEOUT` (default 30m).
   - **Zero-recipient edge case:** if recipient resolution yields an empty set — for example every resolved committee member is filtered out by a project-scoped unsubscribe — the send settles synchronously: the draft is marked `status=sent` with `total_recipients=0` (and `sent=0`, `failed=0`), `group_id` is persisted, and the endpoint returns `200`. No email is dispatched, and the newsletter cannot be sent again.
 - Newsletters in `sending` cannot be updated, deleted, or sent again (`409 send_in_progress`). This also closes the race where an autosave landing mid-fan-out bumped the version and stranded a delivered newsletter in `draft`.
 - Sent newsletters cannot be updated, deleted, or sent again (`409 already_sent`).
@@ -91,7 +91,7 @@ The database enforces `status IN ('draft','sending','sent')`, `status='sent' => 
 
 ## Recipient And Send APIs
 
-Recipient resolution and the email-service fan-out are documented in `docs/recipient-resolution.md`.
+Recipient resolution and the provider fan-out are documented in `docs/recipient-resolution.md`.
 
 | Endpoint | Behavior |
 | --- | --- |

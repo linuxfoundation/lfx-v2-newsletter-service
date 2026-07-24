@@ -116,9 +116,15 @@ spec:
             # Outbound SendGrid send settings, gated on the active provider.
             - name: EMAIL_PROVIDER
               value: "sendgrid"
-            {{- with .Values.app.send.sendgrid.authenticatedDomains }}
+            {{- if .Values.app.send.sendgrid.authenticatedDomains }}
             - name: SENDGRID_AUTHENTICATED_DOMAINS
-              value: {{ . | quote }}
+              value: {{ .Values.app.send.sendgrid.authenticatedDomains | quote }}
+            {{- else }}
+            {{/* Fail the install rather than let every pod CrashLoop in AppConfigFromEnv:
+                 a deployed SendGrid provider requires the authenticated-domain allowlist
+                 (an unset LFX_ENVIRONMENT is treated as production and fails closed), so an
+                 empty list would disable the From-domain guard. Mirrors the API-key guard. */}}
+            {{- required "app.send.sendgrid.authenticatedDomains is required when app.send.provider=sendgrid" "" }}
             {{- end }}
             {{- if .Values.app.send.sendgrid.apiKeySecretRef.name }}
             - name: SENDGRID_API_KEY
