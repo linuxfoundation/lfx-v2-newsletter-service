@@ -171,6 +171,26 @@ func (s *SendGridEngagementStore) ApplyFailed(ctx context.Context, emailID, grou
 // new event bumps open_count / opened / last_opened_at.
 func (s *SendGridEngagementStore) ApplyOpen(ctx context.Context, sgEventID, emailID, groupID, to string, at time.Time) error {
 	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Serialize against RevertGroup and skip a tombstoned group before writing
+		// anything. The engagement trigger already rejects the rollup insert, but
+		// the open-event row is not covered by it (sendgrid_open_events has no
+		// group_id), so without this check a delayed open for a reverted group
+		// would still commit an orphan open-event row. Same advisory lock as the
+		// trigger / RevertGroup, so this open and a concurrent revert are ordered.
+		if _, err := tx.NewRaw(
+			"SELECT pg_advisory_xact_lock(hashtextextended('sendgrid_group:' || ?, 0))", groupID,
+		).Exec(ctx); err != nil {
+			return fmt.Errorf("sendgrid apply open (lock): %w", err)
+		}
+		var reverted bool
+		if err := tx.NewRaw(
+			"SELECT EXISTS(SELECT 1 FROM sendgrid_reverted_groups WHERE group_id = ?)", groupID,
+		).Scan(ctx, &reverted); err != nil {
+			return fmt.Errorf("sendgrid apply open (tombstone check): %w", err)
+		}
+		if reverted {
+			return nil // group reverted — drop the open so no orphan row is left
+		}
 		ev := &sendgridOpenEventRow{SGEventID: sgEventID, EmailID: emailID, OpenedAt: at}
 		res, err := tx.NewInsert().
 			Model(ev).

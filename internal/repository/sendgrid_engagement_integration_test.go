@@ -155,6 +155,13 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	} else if len(recs) != 0 {
 		t.Errorf("late webhooks recreated %d row(s) for a reverted group; want 0 (tombstone must reject them)", len(recs))
 	}
+	// The late open must also leave no orphan open-event row (ApplyOpen drops it
+	// for a tombstoned group before inserting).
+	var lateOpens int
+	must(t, db.NewRaw("SELECT COUNT(*) FROM sendgrid_open_events WHERE sg_event_id = ?", group+"-late-ev").Scan(ctx, &lateOpens))
+	if lateOpens != 0 {
+		t.Errorf("late open for a reverted group left %d orphan open-event row(s); want 0", lateOpens)
+	}
 
 	// A brand-new (non-reverted) group is unaffected by the tombstone.
 	liveGroup := group + "-live"
