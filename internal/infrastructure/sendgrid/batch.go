@@ -6,6 +6,7 @@ package sendgrid
 import (
 	"context"
 	"fmt"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -111,13 +112,13 @@ func (d *Dispatcher) SendBatch(ctx context.Context, in BatchInput) ([]BatchResul
 	recipients := make([]BatchRecipient, 0, len(in.Recipients))
 	results := make([]BatchResult, 0, len(in.Recipients))
 	for _, r := range in.Recipients {
-		// An empty To would make SendGrid reject the whole mail/send chunk, so
-		// fail it individually (as SendEmail does) rather than sink up to 999
-		// valid recipients with it.
-		if strings.TrimSpace(r.To) == "" {
+		// A syntactically invalid To (empty, blank, or e.g. "a@") makes SendGrid
+		// reject the whole mail/send chunk, so validate each address here and fail
+		// only the bad recipient rather than sink up to 999 valid ones with it.
+		if _, err := mail.ParseAddress(strings.TrimSpace(r.To)); err != nil {
 			results = append(results, BatchResult{
 				To:  r.To,
-				Err: pkgerrors.NewValidation("sendgrid: recipient (To) is required"),
+				Err: pkgerrors.NewValidation(fmt.Sprintf("sendgrid: invalid recipient address %q", r.To)),
 			})
 			continue
 		}

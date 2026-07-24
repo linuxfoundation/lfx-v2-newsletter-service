@@ -139,9 +139,12 @@ app:
         name: ""
         key: "sendgrid-api-key"
       # webhookPublicKeySecretRef sources SENDGRID_WEBHOOK_PUBLIC_KEY (the ECDSA
-      # signed-event-webhook key). Optional; without it the webhook handler is
-      # registered only once the key exists, and engagement stays empty until
-      # then. Sourced optionally so the pod still starts before the key lands.
+      # signed-event-webhook key). Setting name here gates the webhook env, the
+      # event-webhook HTTPRoute path, and its RuleSet rule — independent of
+      # provider, so ingestion survives a flip back to email-service. Set it only
+      # once the secret key exists: the env is a required secretKeyRef, so the pod
+      # waits for the key rather than starting with the webhook silently
+      # unregistered. Empty (default) renders no webhook wiring.
       webhookPublicKeySecretRef:
         name: ""
         key: "sendgrid-webhook-public-key"

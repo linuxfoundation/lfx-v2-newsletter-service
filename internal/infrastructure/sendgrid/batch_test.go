@@ -269,7 +269,9 @@ func TestSendBatch_RejectsEmptyRecipient(t *testing.T) {
 		Subject: "S", Text: "hi",
 		Recipients: []BatchRecipient{
 			{To: "good@x.io"},
-			{To: "  "}, // blank -> rejected individually, not sent
+			{To: "  "},   // blank -> rejected individually, not sent
+			{To: "a@"},   // syntactically invalid -> rejected individually
+			{To: "nope"}, // no @ -> rejected individually
 		},
 	})
 	if err != nil {
@@ -278,14 +280,17 @@ func TestSendBatch_RejectsEmptyRecipient(t *testing.T) {
 	if len(gotBody.Personalizations) != 1 || gotBody.Personalizations[0].To[0].Email != "good@x.io" {
 		t.Errorf("dispatched personalizations = %+v, want just good@x.io", gotBody.Personalizations)
 	}
-	var bad *BatchResult
+	byTo := map[string]*BatchResult{}
 	for i := range results {
-		if results[i].To == "  " {
-			bad = &results[i]
+		byTo[results[i].To] = &results[i]
+	}
+	for _, bad := range []string{"  ", "a@", "nope"} {
+		if r := byTo[bad]; r == nil || r.Err == nil {
+			t.Errorf("invalid recipient %q result = %+v, want a validation error", bad, r)
 		}
 	}
-	if bad == nil || bad.Err == nil {
-		t.Errorf("blank recipient result = %+v, want a validation error", bad)
+	if r := byTo["good@x.io"]; r == nil || r.Err != nil {
+		t.Errorf("valid recipient result = %+v, want no error", r)
 	}
 }
 

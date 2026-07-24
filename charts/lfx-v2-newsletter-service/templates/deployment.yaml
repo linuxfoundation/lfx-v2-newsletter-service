@@ -133,13 +133,15 @@ spec:
             # handler registers whenever this key exists, so historical/scheduled
             # SendGrid events keep updating analytics even after a flip back to
             # email-service. The event-webhook HTTPRoute + RuleSet are gated on the
-            # same key ref.
+            # same key ref. Required (not optional): configure this ref only once
+            # the secret key exists, so the pod waits for it rather than starting
+            # with an empty value that would leave the webhook unregistered until a
+            # manual rollout (a Secret-backed env var is not refreshed in place).
             - name: SENDGRID_WEBHOOK_PUBLIC_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
                   key: {{ .Values.app.send.sendgrid.webhookPublicKeySecretRef.key }}
-                  optional: true
             {{- end }}
             - name: NEWSLETTER_PUBLIC_BASE_URL
               value: {{ default (printf "https://lfx-api.%s" .Values.lfx.domain) .Values.app.unsubscribe.publicBaseURL | quote }}
