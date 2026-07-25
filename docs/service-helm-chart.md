@@ -78,13 +78,14 @@ When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 `ruleset.yaml` authentication and authorization:
 
 - Most authenticated project routes (newsletter CRUD, analytics, etc.) authenticate via OIDC and fall back to `allow_all` when `openfga.enabled=false`. When OpenFGA is enabled, these routes enforce `viewer` (read) or `writer` (write) roles.
+- The stateless `…/newsletters/render-preview` route carries a project-scoped `writer` rule (mirroring `…/test-send` — a write-scoped authoring action), so it is FGA-gated, not JWT-only.
+- The editor template routes (`…/newsletters/templates` and `…/newsletters/templates/{template_key}/manifest`) carry explicit project-scoped `viewer` rules. The list path would otherwise match the `{newsletter_uid}` GET rule only by coincidence, and the six-segment manifest path matches no other rule at all, so both are declared rather than inherited.
 - The opt-out list endpoint (`GET /projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor` role and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` or OpenFGA is misconfigured — that is intentional for PII security.
 - The opt-out delete endpoint (`DELETE /projects/{project_uid}/newsletter-opt-outs/{opt_out_id}`) mutates a user's consent record and is **always fail-closed**: it uses direct `openfga_check` with the `writer` role and does NOT have an `allow_all` fallback, matching the security posture of the list endpoint.
 - The open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` are intentionally unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
 - The SendGrid event webhook (`POST /newsletters/sendgrid/events`, rendered only when the webhook key ref is set) is `allow_all` at the gateway because SendGrid posts events without a session; authenticity is the ECDSA signature plus a freshness window, verified in-app.
 
 `openfga.enabled=false` is the default. When false, most routes still work via `allow_all`, but the opt-out endpoints become unreachable. Enable OpenFGA to access the opt-out list and delete endpoints.
-
 ## Local Development
 
 Use `charts/lfx-v2-newsletter-service/values.local.yaml.example` as the starting point for local overrides. The local values file is gitignored at `charts/lfx-v2-newsletter-service/values.local.yaml`.

@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS newsletters (
     project_uid       TEXT         NOT NULL,
     subject           TEXT         NOT NULL,
     body_html         TEXT         NOT NULL,
+    body_layout       JSONB,
     ed_reply_email    TEXT         NOT NULL,
     committee_uids    TEXT[]       NOT NULL DEFAULT '{}',
     status            TEXT         NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sending','sent')),
@@ -49,6 +50,14 @@ END$$;
 -- layer in case a caller misbehaves.
 ALTER TABLE newsletters
     ADD COLUMN IF NOT EXISTS group_id TEXT;
+
+-- body_layout is the editor's structured layout (wrapper key + ordered blocks),
+-- stored verbatim as JSONB. When present it is the source of truth: body_html is
+-- DERIVED from it by the declarative emitter on every write. Nullable so legacy
+-- rows (and the body_html-only API path) keep working unchanged. Added as an
+-- idempotent ALTER so deployments that ran the prior schema migrate in place.
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS body_layout JSONB;
 
 -- PG has no native IF NOT EXISTS on ADD CONSTRAINT; check pg_constraint first
 -- so re-running schema.sql is a no-op.

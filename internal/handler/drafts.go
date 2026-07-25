@@ -4,7 +4,10 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,6 +38,7 @@ func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
 		ProjectUID:    projectUID,
 		Subject:       body.Subject,
 		BodyHTML:      body.BodyHTML,
+		BodyLayout:    toEmitterLayoutPtr(body.BodyLayout),
 		EDReplyEmail:  body.EDReplyEmail,
 		CommitteeUIDs: body.CommitteeUIDs,
 		CreatedBy:     user,
@@ -46,7 +50,7 @@ func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("ETag", formatETag(draft.Version))
 	w.Header().Set("Location", fmt.Sprintf("/projects/%s/newsletters/%s", projectUID, draft.ID))
-	writeJSON(r.Context(), w, http.StatusCreated, toAPINewsletter(draft))
+	writeJSON(r.Context(), w, http.StatusCreated, toAPINewsletter(r.Context(), draft))
 }
 
 // GetNewsletter handles GET /projects/{project_uid}/newsletters/{newsletter_uid}.
@@ -65,7 +69,7 @@ func (h *Handler) GetNewsletter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("ETag", formatETag(n.Version))
-	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(n))
+	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(r.Context(), n))
 }
 
 // UpdateNewsletter handles PUT /projects/{project_uid}/newsletters/{newsletter_uid} with required If-Match.
@@ -94,6 +98,8 @@ func (h *Handler) UpdateNewsletter(w http.ResponseWriter, r *http.Request) {
 		ExpectedVersion: expectedVersion,
 		Subject:         body.Subject,
 		BodyHTML:        body.BodyHTML,
+		BodyLayoutSet:   body.BodyLayout.Present,
+		BodyLayout:      toEmitterLayoutPtr(body.BodyLayout.Layout),
 		EDReplyEmail:    body.EDReplyEmail,
 		CommitteeUIDs:   body.CommitteeUIDs,
 	})
@@ -103,7 +109,7 @@ func (h *Handler) UpdateNewsletter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("ETag", formatETag(updated.Version))
-	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(updated))
+	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(r.Context(), updated))
 }
 
 // DeleteNewsletter handles DELETE /projects/{project_uid}/newsletters/{newsletter_uid}.
@@ -152,12 +158,13 @@ func parseUUID(raw string) (uuid.UUID, error) {
 }
 
 // toAPINewsletter converts a domain model into the public API DTO.
-func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
+func toAPINewsletter(ctx context.Context, n *model.Newsletter) *publicapi.Newsletter {
 	return &publicapi.Newsletter{
 		ID:              n.ID.String(),
 		ProjectUID:      n.ProjectUID,
 		Subject:         n.Subject,
 		BodyHTML:        n.BodyHTML,
+		BodyLayout:      toAPILayout(ctx, n.BodyLayout, n.ID.String()),
 		EDReplyEmail:    n.EDReplyEmail,
 		CommitteeUIDs:   n.CommitteeUIDs,
 		Status:          publicapi.Status(n.Status),
@@ -169,4 +176,27 @@ func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
 		CreatedAt:       n.CreatedAt,
 		UpdatedAt:       n.UpdatedAt,
 	}
+}
+
+// toAPILayout decodes the stored raw layout JSON back into the public-API
+// layout shape. The stored JSON uses the same snake_case field names as the
+// public contract (the emitter Layout and NewsletterLayout share json tags), so
+// this is a direct unmarshal. A nil/empty payload (legacy / html-only
+// newsletter) yields nil. A decode failure is logged and treated as absent
+// rather than failing the read — the body_html is still valid and serving it is
+// better than a 500 on a row that was already persisted.
+func toAPILayout(ctx context.Context, raw json.RawMessage, newsletterID string) *publicapi.NewsletterLayout {
+	if len(raw) == 0 {
+		return nil
+	}
+	var layout publicapi.NewsletterLayout
+	if err := json.Unmarshal(raw, &layout); err != nil {
+		// Corrupt stored layout: serve the (still valid) body_html rather than a
+		// 500. Log WITH the id — the newsletter then reads as html-only, so a
+		// later save would clear the structured layout; the id makes that
+		// silent-loss case traceable.
+		slog.WarnContext(ctx, "decode stored body_layout failed; omitting from response", "newsletter_id", newsletterID, "error", err)
+		return nil
+	}
+	return &layout
 }
