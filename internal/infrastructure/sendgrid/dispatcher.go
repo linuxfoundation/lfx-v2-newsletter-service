@@ -28,6 +28,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
@@ -415,6 +416,15 @@ func (d *Dispatcher) GetStatusByGroupID(ctx context.Context, groupID string) ([]
 		return nil, pkgerrors.NewUnexpected("sendgrid: GetStatusByGroupID unavailable", errReadNotWired)
 	}
 	return d.store.RecipientsByGroupID(ctx, groupID)
+}
+
+// GroupDailyOpens returns the group's per-day opens series from the store's SQL
+// aggregation.
+func (d *Dispatcher) GroupDailyOpens(ctx context.Context, groupID string) ([]model.DailyOpens, *time.Time, error) {
+	if d.store == nil {
+		return nil, nil, pkgerrors.NewUnexpected("sendgrid: GroupDailyOpens unavailable", errReadNotWired)
+	}
+	return d.store.GroupDailyOpens(ctx, groupID)
 }
 
 // summarizeError renders SendGrid's error body into a single readable string,

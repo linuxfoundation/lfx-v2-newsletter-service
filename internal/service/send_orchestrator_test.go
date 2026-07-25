@@ -86,6 +86,9 @@ func (f *fakeEmailDispatcher) GetStatusByEmailID(_ context.Context, _ string) (*
 func (f *fakeEmailDispatcher) GetStatusByGroupID(_ context.Context, _ string) ([]port.EmailRecipientRecord, error) {
 	return nil, nil
 }
+func (f *fakeEmailDispatcher) GroupDailyOpens(_ context.Context, _ string) ([]model.DailyOpens, *time.Time, error) {
+	return nil, nil, nil
+}
 func (f *fakeEmailDispatcher) reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()

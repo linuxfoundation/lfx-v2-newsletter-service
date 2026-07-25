@@ -37,6 +37,15 @@ func (s *statusByGroupFake) GetStatusByEmailID(_ context.Context, _ string) (*po
 func (s *statusByGroupFake) GetStatusByGroupID(_ context.Context, _ string) ([]port.EmailRecipientRecord, error) {
 	return s.records, s.recordsErr
 }
+func (s *statusByGroupFake) GroupDailyOpens(_ context.Context, _ string) ([]model.DailyOpens, *time.Time, error) {
+	// Mirror a real reader: the daily series comes from the same underlying data
+	// (and shares its error), bucketed by the shared helper.
+	if s.recordsErr != nil {
+		return nil, nil, s.recordsErr
+	}
+	daily, lastEvent := port.DailyOpensFromRecords(s.records)
+	return daily, lastEvent, nil
+}
 
 // analyticsRepoFake returns a fixed newsletter + base analytics row regardless
 // of id, which is enough to exercise the email-service overlay path.

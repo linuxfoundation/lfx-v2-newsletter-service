@@ -13,6 +13,7 @@ import (
 	"github.com/uptrace/bun"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 )
 
@@ -267,8 +268,10 @@ func (s *SendGridEngagementStore) RecipientByEmailID(ctx context.Context, emailI
 	return &rec, nil
 }
 
-// RecipientsByGroupID returns every recipient record for a group, each carrying
-// its open series so the analytics daily-opens time series can be built.
+// RecipientsByGroupID returns every recipient record for a group (bounded by the
+// recipient count), for the unique-opens count and failed-recipient list. It
+// does not load the raw open-event timestamps — the daily-opens series comes
+// from GroupDailyOpens, which aggregates in SQL.
 func (s *SendGridEngagementStore) RecipientsByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
 	var rows []sendgridEngagementRow
 	if err := s.db.NewSelect().Model(&rows).Where("sre.group_id = ?", groupID).Scan(ctx); err != nil {
@@ -277,18 +280,62 @@ func (s *SendGridEngagementStore) RecipientsByGroupID(ctx context.Context, group
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	opensByEmail, err := s.openTimesForGroup(ctx, groupID)
-	if err != nil {
-		return nil, err
-	}
 	out := make([]port.EmailRecipientRecord, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, r.toPortRecord(opensByEmail[r.EmailID]))
+		out = append(out, r.toPortRecord(nil))
 	}
 	return out, nil
 }
 
-// openTimesForEmail returns the ascending open timestamps for one email_id.
+// GroupDailyOpens aggregates the group's open events into a per-UTC-day series
+// (total opens and distinct recipients per day) with one SQL GROUP BY, plus the
+// last open instant, so analytics never loads every raw open timestamp. Days are
+// ascending; lastEvent is nil when the group has no opens.
+func (s *SendGridEngagementStore) GroupDailyOpens(ctx context.Context, groupID string) ([]model.DailyOpens, *time.Time, error) {
+	type dayRow struct {
+		Day    time.Time `bun:"day"`
+		Opens  int       `bun:"opens"`
+		Unique int       `bun:"uniq"`
+	}
+	var rows []dayRow
+	if err := s.db.NewSelect().
+		ColumnExpr("date_trunc('day', soe.opened_at AT TIME ZONE 'UTC') AS day").
+		ColumnExpr("COUNT(*) AS opens").
+		ColumnExpr("COUNT(DISTINCT soe.email_id) AS uniq").
+		TableExpr("sendgrid_open_events AS soe").
+		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = soe.email_id").
+		Where("sre.group_id = ?", groupID).
+		GroupExpr("date_trunc('day', soe.opened_at AT TIME ZONE 'UTC')").
+		OrderExpr("day ASC").
+		Scan(ctx, &rows); err != nil {
+		return nil, nil, fmt.Errorf("sendgrid group daily opens: %w", err)
+	}
+	daily := make([]model.DailyOpens, 0, len(rows))
+	var lastEvent *time.Time
+	for _, r := range rows {
+		daily = append(daily, model.DailyOpens{Date: r.Day.UTC(), Opens: r.Opens, UniqueOpens: r.Unique})
+	}
+	// The last open instant is the max over the raw events — a single scalar, not
+	// the whole series, so it stays bounded.
+	var maxAt time.Time
+	if err := s.db.NewSelect().
+		ColumnExpr("MAX(soe.opened_at) AS max_at").
+		TableExpr("sendgrid_open_events AS soe").
+		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = soe.email_id").
+		Where("sre.group_id = ?", groupID).
+		Scan(ctx, &maxAt); err != nil {
+		return nil, nil, fmt.Errorf("sendgrid group last open: %w", err)
+	}
+	if !maxAt.IsZero() {
+		u := maxAt.UTC()
+		lastEvent = &u
+	}
+	return daily, lastEvent, nil
+}
+
+// openTimesForEmail returns the ascending open timestamps for one email_id. This
+// is per-recipient (bounded by one recipient's opens) and feeds the single-
+// recipient status read, not the group analytics path.
 func (s *SendGridEngagementStore) openTimesForEmail(ctx context.Context, emailID string) ([]time.Time, error) {
 	var evs []sendgridOpenEventRow
 	if err := s.db.NewSelect().
@@ -303,29 +350,4 @@ func (s *SendGridEngagementStore) openTimesForEmail(ctx context.Context, emailID
 		times = append(times, e.OpenedAt)
 	}
 	return times, nil
-}
-
-// openTimesForGroup returns ascending open timestamps grouped by email_id for a
-// group, via a join from open events to the group's engagement rows.
-func (s *SendGridEngagementStore) openTimesForGroup(ctx context.Context, groupID string) (map[string][]time.Time, error) {
-	type openRow struct {
-		EmailID  string    `bun:"email_id"`
-		OpenedAt time.Time `bun:"opened_at"`
-	}
-	var rows []openRow
-	if err := s.db.NewSelect().
-		ColumnExpr("soe.email_id").
-		ColumnExpr("soe.opened_at").
-		TableExpr("sendgrid_open_events AS soe").
-		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = soe.email_id").
-		Where("sre.group_id = ?", groupID).
-		OrderExpr("soe.opened_at ASC").
-		Scan(ctx, &rows); err != nil {
-		return nil, fmt.Errorf("sendgrid group open times: %w", err)
-	}
-	out := make(map[string][]time.Time, len(rows))
-	for _, r := range rows {
-		out[r.EmailID] = append(out[r.EmailID], r.OpenedAt)
-	}
-	return out, nil
 }

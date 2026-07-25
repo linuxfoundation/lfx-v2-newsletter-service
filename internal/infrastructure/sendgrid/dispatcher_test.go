@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 )
 
@@ -33,6 +34,8 @@ type fakeStore struct {
 	engagement *port.EmailEngagement
 	byEmailID  *port.EmailRecipientRecord
 	byGroupID  []port.EmailRecipientRecord
+	daily      []model.DailyOpens
+	dailyLast  *time.Time
 }
 
 func (f *fakeStore) RevertGroup(_ context.Context, groupID string) error {
@@ -63,6 +66,9 @@ func (f *fakeStore) RecipientByEmailID(context.Context, string) (*port.EmailReci
 }
 func (f *fakeStore) RecipientsByGroupID(context.Context, string) ([]port.EmailRecipientRecord, error) {
 	return f.byGroupID, nil
+}
+func (f *fakeStore) GroupDailyOpens(context.Context, string) ([]model.DailyOpens, *time.Time, error) {
+	return f.daily, f.dailyLast, nil
 }
 
 func newTestDispatcher(t *testing.T, handler http.HandlerFunc) *Dispatcher {

@@ -8,6 +8,7 @@ package port
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -214,8 +215,67 @@ type EngagementReader interface {
 	GetEngagement(ctx context.Context, groupID string) (*EmailEngagement, error)
 	GetStatusByEmailID(ctx context.Context, emailID string) (*EmailRecipientRecord, error)
 	// GetStatusByGroupID fetches the per-recipient records for every email
-	// dispatched under the given group_id. Used by the analytics service to
-	// build the daily-opens time series and the unique-opens count, since the
-	// engagement summary is scalar-only.
+	// dispatched under the given group_id. Used by the analytics service for the
+	// unique-opens count (records whose Opened is true) and the failed-recipient
+	// list — bounded by the recipient count. It does NOT carry the raw open-event
+	// timestamps; the daily-opens series comes from GroupDailyOpens so analytics
+	// never loads every open event into memory.
 	GetStatusByGroupID(ctx context.Context, groupID string) ([]EmailRecipientRecord, error)
+	// GroupDailyOpens returns the per-calendar-day opens series (total opens and
+	// distinct recipients per UTC day) and the last open instant for a group,
+	// aggregated by the provider (a SQL GROUP BY for the SendGrid store; from the
+	// bounded email-service reply for the NATS reader) rather than by loading
+	// every raw open timestamp. Days are ascending; lastEvent is nil when there
+	// are no opens.
+	GroupDailyOpens(ctx context.Context, groupID string) ([]model.DailyOpens, *time.Time, error)
+}
+
+// DailyOpensFromRecords buckets per-recipient open events into a sorted
+// per-UTC-day series (total opens and distinct recipients per day) and returns
+// the last open instant. It backs the GroupDailyOpens implementations that hold
+// bounded per-recipient records in memory (the email-service reader), keeping the
+// bucketing identical to what the SendGrid store computes in SQL. A record with
+// no opened_at_list but Opened=true and a LastOpened falls back to that single
+// instant, matching older email-service shapes. lastEvent is nil for no opens.
+func DailyOpensFromRecords(records []EmailRecipientRecord) ([]model.DailyOpens, *time.Time) {
+	const dayLayout = "2006-01-02"
+	type bucket struct {
+		date  time.Time
+		opens int
+		uniq  map[string]struct{}
+	}
+	buckets := map[string]*bucket{}
+	var lastEvent *time.Time
+	for _, r := range records {
+		events := r.OpenedAtList
+		if len(events) == 0 && r.Opened && r.LastOpened != nil {
+			events = []time.Time{*r.LastOpened}
+		}
+		key := r.EmailID
+		if key == "" {
+			key = r.To
+		}
+		for _, ev := range events {
+			opened := ev.UTC()
+			if lastEvent == nil || opened.After(*lastEvent) {
+				cp := opened
+				lastEvent = &cp
+			}
+			dk := opened.Format(dayLayout)
+			b, ok := buckets[dk]
+			if !ok {
+				day, _ := time.Parse(dayLayout, dk)
+				b = &bucket{date: day, uniq: map[string]struct{}{}}
+				buckets[dk] = b
+			}
+			b.opens++
+			b.uniq[key] = struct{}{}
+		}
+	}
+	daily := make([]model.DailyOpens, 0, len(buckets))
+	for _, b := range buckets {
+		daily = append(daily, model.DailyOpens{Date: b.date, Opens: b.opens, UniqueOpens: len(b.uniq)})
+	}
+	sort.Slice(daily, func(i, j int) bool { return daily[i].Date.Before(daily[j].Date) })
+	return daily, lastEvent
 }
