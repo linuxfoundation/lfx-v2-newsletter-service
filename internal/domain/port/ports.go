@@ -9,6 +9,7 @@ package port
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -214,25 +215,65 @@ type EngagementPurger interface {
 type EngagementReader interface {
 	GetEngagement(ctx context.Context, groupID string) (*EmailEngagement, error)
 	GetStatusByEmailID(ctx context.Context, emailID string) (*EmailRecipientRecord, error)
-	// GetStatusByGroupID fetches the per-recipient records for every email
-	// dispatched under the given group_id. Used by the analytics service for the
-	// unique-opens count (records whose Opened is true) and the failed-recipient
-	// list — bounded by the recipient count. It does NOT carry the raw open-event
-	// timestamps; the daily-opens series comes from GroupDailyOpens so analytics
-	// never loads every open event into memory.
-	GetStatusByGroupID(ctx context.Context, groupID string) ([]EmailRecipientRecord, error)
-	// GroupDailyOpens returns the per-calendar-day opens series (total opens and
-	// distinct recipients per UTC day) and the last open instant for a group,
-	// aggregated by the provider (a SQL GROUP BY for the SendGrid store; from the
-	// bounded email-service reply for the NATS reader) rather than by loading
-	// every raw open timestamp. Days are ascending; lastEvent is nil when there
-	// are no opens.
-	GroupDailyOpens(ctx context.Context, groupID string) ([]model.DailyOpens, *time.Time, error)
+	// GroupEngagementDetail returns the bounded per-group analytics detail in a
+	// SINGLE fetch: the unique-open count, the per-UTC-day opens series (total
+	// opens and distinct recipients per day, ascending), the last open instant,
+	// and the deduplicated failed-recipient addresses. Each provider computes it
+	// its own bounded way — a set of SQL aggregates for the SendGrid store, one
+	// email-service reply bucketed in memory for the NATS reader — so analytics
+	// makes one call and never loads raw per-open data. lastEvent is nil for a
+	// group with no opens.
+	GroupEngagementDetail(ctx context.Context, groupID string) (*GroupEngagementDetail, error)
+}
+
+// GroupEngagementDetail is the bounded per-group analytics detail a reader
+// computes in a single fetch. It replaces returning every per-recipient record
+// (with its raw open timestamps): only aggregated, bounded values cross the
+// boundary.
+type GroupEngagementDetail struct {
+	UniqueOpens      int
+	DailyOpens       []model.DailyOpens
+	LastEventAt      *time.Time
+	FailedRecipients []string
+}
+
+// GroupDetailFromRecords builds a GroupEngagementDetail from bounded in-memory
+// per-recipient records. It backs the email-service reader (whose by-group reply
+// is bounded), keeping unique-opens, the daily series, lastEvent, and failed
+// recipients identical to what the SendGrid store computes in SQL.
+func GroupDetailFromRecords(records []EmailRecipientRecord) *GroupEngagementDetail {
+	daily, lastEvent := DailyOpensFromRecords(records)
+	unique := 0
+	failedSeen := make(map[string]struct{}, len(records))
+	failed := make([]string, 0)
+	for _, r := range records {
+		if r.Opened {
+			unique++
+		}
+		if !r.Failed {
+			continue
+		}
+		email := strings.ToLower(strings.TrimSpace(r.To))
+		if email == "" {
+			continue
+		}
+		if _, dup := failedSeen[email]; dup {
+			continue
+		}
+		failedSeen[email] = struct{}{}
+		failed = append(failed, email)
+	}
+	return &GroupEngagementDetail{
+		UniqueOpens:      unique,
+		DailyOpens:       daily,
+		LastEventAt:      lastEvent,
+		FailedRecipients: failed,
+	}
 }
 
 // DailyOpensFromRecords buckets per-recipient open events into a sorted
 // per-UTC-day series (total opens and distinct recipients per day) and returns
-// the last open instant. It backs the GroupDailyOpens implementations that hold
+// the last open instant. It backs GroupDetailFromRecords for readers that hold
 // bounded per-recipient records in memory (the email-service reader), keeping the
 // bucketing identical to what the SendGrid store computes in SQL. A record with
 // no opened_at_list but Opened=true and a LastOpened falls back to that single

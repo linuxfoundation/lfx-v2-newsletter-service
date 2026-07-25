@@ -83,11 +83,8 @@ func (f *fakeEmailDispatcher) GetEngagement(_ context.Context, _ string) (*port.
 func (f *fakeEmailDispatcher) GetStatusByEmailID(_ context.Context, _ string) (*port.EmailRecipientRecord, error) {
 	return &port.EmailRecipientRecord{}, nil
 }
-func (f *fakeEmailDispatcher) GetStatusByGroupID(_ context.Context, _ string) ([]port.EmailRecipientRecord, error) {
-	return nil, nil
-}
-func (f *fakeEmailDispatcher) GroupDailyOpens(_ context.Context, _ string) ([]model.DailyOpens, *time.Time, error) {
-	return nil, nil, nil
+func (f *fakeEmailDispatcher) GroupEngagementDetail(_ context.Context, _ string) (*port.GroupEngagementDetail, error) {
+	return &port.GroupEngagementDetail{}, nil
 }
 func (f *fakeEmailDispatcher) reset() {
 	f.mu.Lock()

@@ -7,7 +7,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 )
 
@@ -45,15 +44,10 @@ type EngagementStore interface {
 	Engagement(ctx context.Context, groupID string) (*port.EmailEngagement, error)
 	// RecipientByEmailID returns one recipient's engagement record.
 	RecipientByEmailID(ctx context.Context, emailID string) (*port.EmailRecipientRecord, error)
-	// RecipientsByGroupID returns every recipient record for a group (bounded by
-	// the recipient count), for the unique-opens count and failed-recipient list.
-	// It does NOT carry the raw open-event timestamps — the daily series comes
-	// from GroupDailyOpens.
-	RecipientsByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error)
-	// GroupDailyOpens returns the per-UTC-day opens series and the last open
-	// instant for a group, aggregated in SQL so it does not load every raw open
-	// timestamp. Days ascending; lastEvent nil when there are no opens.
-	GroupDailyOpens(ctx context.Context, groupID string) ([]model.DailyOpens, *time.Time, error)
+	// GroupEngagementDetail computes the group's bounded analytics detail (unique
+	// opens, the per-UTC-day opens series, the last open instant, and the failed
+	// recipients) with a few SQL aggregates, so no raw per-open data is loaded.
+	GroupEngagementDetail(ctx context.Context, groupID string) (*port.GroupEngagementDetail, error)
 
 	// RevertGroup tombstones a group and purges its engagement rows and open
 	// events, atomically. Used after a fully-failed send reverts to draft and

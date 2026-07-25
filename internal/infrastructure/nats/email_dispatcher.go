@@ -12,7 +12,6 @@ import (
 
 	emailapi "github.com/linuxfoundation/lfx-v2-email-service/pkg/api"
 
-	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
@@ -232,17 +231,16 @@ func (d *EmailDispatcher) GetStatusByGroupID(ctx context.Context, groupID string
 	return records, nil
 }
 
-// GroupDailyOpens returns the group's per-UTC-day opens series and last open
-// instant, bucketed from email-service's by-group reply. The reply is bounded
+// GroupEngagementDetail returns the group's bounded analytics detail from a
+// SINGLE email-service by-group fetch, bucketed in memory. The reply is bounded
 // (one record per email_id, each carrying its own opens), so this stays in
 // memory — unlike the SendGrid store, which aggregates in SQL.
-func (d *EmailDispatcher) GroupDailyOpens(ctx context.Context, groupID string) ([]model.DailyOpens, *time.Time, error) {
+func (d *EmailDispatcher) GroupEngagementDetail(ctx context.Context, groupID string) (*port.GroupEngagementDetail, error) {
 	records, err := d.GetStatusByGroupID(ctx, groupID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	daily, lastEvent := port.DailyOpensFromRecords(records)
-	return daily, lastEvent, nil
+	return port.GroupDetailFromRecords(records), nil
 }
 
 // GetStatusByEmailID fetches per-recipient state from email-service for one

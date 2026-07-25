@@ -6,7 +6,6 @@ package service
 import (
 	"context"
 	"log/slog"
-	"strings"
 
 	"github.com/google/uuid"
 
@@ -141,46 +140,28 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 		local.TotalOpens = engagement.Opened
 	}
 
-	// The engagement summary is scalar-only. The per-recipient records (bounded by
-	// the recipient count) give the detailed unique-open count and the failed
-	// recipients. UniqueOpens keeps the larger so a non-empty local count is not
-	// lowered by the provider's.
-	records, recErr := reader.GetStatusByGroupID(ctx, *n.GroupID)
-	if recErr != nil {
-		slog.WarnContext(ctx, "analytics: group status fetch failed, keeping engagement-only rollup",
+	// The engagement summary is scalar-only. GroupEngagementDetail is a single
+	// bounded fetch (SQL aggregates for SendGrid, one email-service reply bucketed
+	// in memory) giving the detailed unique-open count, the daily-opens series,
+	// the last event instant, and the failed recipients — analytics never loads
+	// raw per-open data. UniqueOpens keeps the larger so a non-empty local count is
+	// not lowered by the provider's; the local tracking pixel is not embedded in
+	// outgoing emails today, so DailyOpens/FailedRecipients are replaced.
+	detail, detailErr := reader.GroupEngagementDetail(ctx, *n.GroupID)
+	if detailErr != nil {
+		slog.WarnContext(ctx, "analytics: group engagement detail fetch failed, keeping scalar rollup",
 			"newsletter_id", n.ID,
 			"group_id", *n.GroupID,
-			"error", recErr.Error(),
-		)
-	} else if len(records) > 0 {
-		uniqueOpens := 0
-		for _, r := range records {
-			if r.Opened {
-				uniqueOpens++
-			}
-		}
-		if uniqueOpens > local.UniqueOpens {
-			local.UniqueOpens = uniqueOpens
-		}
-		local.FailedRecipients = failedRecipients(records)
-	}
-
-	// The daily-opens series comes from a provider-side aggregation (SQL GROUP BY
-	// for SendGrid, the bounded reply for email-service) so analytics never loads
-	// every raw open timestamp for the group. The local tracking pixel is not
-	// embedded in outgoing emails today, so newsletter_opens is effectively empty
-	// and these values are replaced rather than merged.
-	daily, lastEvent, dailyErr := reader.GroupDailyOpens(ctx, *n.GroupID)
-	if dailyErr != nil {
-		slog.WarnContext(ctx, "analytics: daily-opens fetch failed, keeping scalar rollup",
-			"newsletter_id", n.ID,
-			"group_id", *n.GroupID,
-			"error", dailyErr.Error(),
+			"error", detailErr.Error(),
 		)
 	} else {
-		local.DailyOpens = daily
-		if lastEvent != nil && (local.LastEventAt == nil || lastEvent.After(*local.LastEventAt)) {
-			local.LastEventAt = lastEvent
+		if detail.UniqueOpens > local.UniqueOpens {
+			local.UniqueOpens = detail.UniqueOpens
+		}
+		local.DailyOpens = detail.DailyOpens
+		local.FailedRecipients = detail.FailedRecipients
+		if detail.LastEventAt != nil && (local.LastEventAt == nil || detail.LastEventAt.After(*local.LastEventAt)) {
+			local.LastEventAt = detail.LastEventAt
 		}
 	}
 
@@ -192,30 +173,4 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 		local.OpenRate = float64(local.UniqueOpens) / float64(denominator)
 	}
 	return local, nil
-}
-
-// failedRecipients extracts the deduplicated email addresses of recipients
-// email-service marked failed. Addresses are lowercased and deduplicated to
-// match the recipient-resolution convention (the send path lowercases before
-// dispatch), so the same recipient never appears twice in different cases.
-// Order follows first appearance in records. Returns a non-nil empty slice when
-// nothing failed.
-func failedRecipients(records []port.EmailRecipientRecord) []string {
-	seen := make(map[string]struct{}, len(records))
-	out := make([]string, 0)
-	for _, r := range records {
-		if !r.Failed || r.To == "" {
-			continue
-		}
-		email := strings.ToLower(strings.TrimSpace(r.To))
-		if email == "" {
-			continue
-		}
-		if _, dup := seen[email]; dup {
-			continue
-		}
-		seen[email] = struct{}{}
-		out = append(out, email)
-	}
-	return out
 }

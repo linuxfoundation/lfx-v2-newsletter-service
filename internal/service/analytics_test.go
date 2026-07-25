@@ -34,17 +34,13 @@ func (s *statusByGroupFake) GetEngagement(_ context.Context, _ string) (*port.Em
 func (s *statusByGroupFake) GetStatusByEmailID(_ context.Context, _ string) (*port.EmailRecipientRecord, error) {
 	return nil, nil
 }
-func (s *statusByGroupFake) GetStatusByGroupID(_ context.Context, _ string) ([]port.EmailRecipientRecord, error) {
-	return s.records, s.recordsErr
-}
-func (s *statusByGroupFake) GroupDailyOpens(_ context.Context, _ string) ([]model.DailyOpens, *time.Time, error) {
-	// Mirror a real reader: the daily series comes from the same underlying data
-	// (and shares its error), bucketed by the shared helper.
+func (s *statusByGroupFake) GroupEngagementDetail(_ context.Context, _ string) (*port.GroupEngagementDetail, error) {
+	// Mirror a real reader: the detail is derived from the same underlying records
+	// (and shares its error), via the shared helper.
 	if s.recordsErr != nil {
-		return nil, nil, s.recordsErr
+		return nil, s.recordsErr
 	}
-	daily, lastEvent := port.DailyOpensFromRecords(s.records)
-	return daily, lastEvent, nil
+	return port.GroupDetailFromRecords(s.records), nil
 }
 
 // analyticsRepoFake returns a fixed newsletter + base analytics row regardless

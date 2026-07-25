@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/uptrace/bun"
@@ -287,11 +288,24 @@ func (s *SendGridEngagementStore) RecipientsByGroupID(ctx context.Context, group
 	return out, nil
 }
 
-// GroupDailyOpens aggregates the group's open events into a per-UTC-day series
-// (total opens and distinct recipients per day) with one SQL GROUP BY, plus the
-// last open instant, so analytics never loads every raw open timestamp. Days are
-// ascending; lastEvent is nil when the group has no opens.
-func (s *SendGridEngagementStore) GroupDailyOpens(ctx context.Context, groupID string) ([]model.DailyOpens, *time.Time, error) {
+// GroupEngagementDetail computes the group's bounded analytics detail with a few
+// SQL aggregates — no raw per-open data is loaded: the unique-open count (rows
+// flagged opened), the per-UTC-day opens series (GROUP BY, ascending), the last
+// open instant (a nullable MAX), and the deduplicated failed-recipient
+// addresses. lastEvent is nil for a group with no opens.
+func (s *SendGridEngagementStore) GroupEngagementDetail(ctx context.Context, groupID string) (*port.GroupEngagementDetail, error) {
+	detail := &port.GroupEngagementDetail{FailedRecipients: []string{}}
+
+	if unique, err := s.db.NewSelect().
+		Table("sendgrid_recipient_engagement").
+		Where("group_id = ?", groupID).
+		Where("opened").
+		Count(ctx); err != nil {
+		return nil, fmt.Errorf("sendgrid group unique opens: %w", err)
+	} else {
+		detail.UniqueOpens = unique
+	}
+
 	type dayRow struct {
 		Day    time.Time `bun:"day"`
 		Opens  int       `bun:"opens"`
@@ -308,29 +322,57 @@ func (s *SendGridEngagementStore) GroupDailyOpens(ctx context.Context, groupID s
 		GroupExpr("date_trunc('day', soe.opened_at AT TIME ZONE 'UTC')").
 		OrderExpr("day ASC").
 		Scan(ctx, &rows); err != nil {
-		return nil, nil, fmt.Errorf("sendgrid group daily opens: %w", err)
+		return nil, fmt.Errorf("sendgrid group daily opens: %w", err)
 	}
-	daily := make([]model.DailyOpens, 0, len(rows))
-	var lastEvent *time.Time
+	detail.DailyOpens = make([]model.DailyOpens, 0, len(rows))
 	for _, r := range rows {
-		daily = append(daily, model.DailyOpens{Date: r.Day.UTC(), Opens: r.Opens, UniqueOpens: r.Unique})
+		detail.DailyOpens = append(detail.DailyOpens, model.DailyOpens{Date: r.Day.UTC(), Opens: r.Opens, UniqueOpens: r.Unique})
 	}
-	// The last open instant is the max over the raw events — a single scalar, not
-	// the whole series, so it stays bounded.
-	var maxAt time.Time
+
+	// The last open instant is a single scalar MAX. It is NULL for a group with no
+	// opens, so scan into a nullable value rather than time.Time (which errors on
+	// NULL) — a no-opens group returns an empty series and nil lastEvent.
+	var maxAt sql.NullTime
 	if err := s.db.NewSelect().
 		ColumnExpr("MAX(soe.opened_at) AS max_at").
 		TableExpr("sendgrid_open_events AS soe").
 		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = soe.email_id").
 		Where("sre.group_id = ?", groupID).
 		Scan(ctx, &maxAt); err != nil {
-		return nil, nil, fmt.Errorf("sendgrid group last open: %w", err)
+		return nil, fmt.Errorf("sendgrid group last open: %w", err)
 	}
-	if !maxAt.IsZero() {
-		u := maxAt.UTC()
-		lastEvent = &u
+	if maxAt.Valid {
+		u := maxAt.Time.UTC()
+		detail.LastEventAt = &u
 	}
-	return daily, lastEvent, nil
+
+	// Failed recipients: only the flagged rows' addresses (bounded), lowercased
+	// and deduplicated to match the recipient-resolution convention.
+	var failedRows []struct {
+		To string `bun:"to_email"`
+	}
+	if err := s.db.NewSelect().
+		ColumnExpr("to_email").
+		Table("sendgrid_recipient_engagement").
+		Where("group_id = ?", groupID).
+		Where("failed").
+		OrderExpr("email_id ASC").
+		Scan(ctx, &failedRows); err != nil {
+		return nil, fmt.Errorf("sendgrid group failed recipients: %w", err)
+	}
+	seen := make(map[string]struct{}, len(failedRows))
+	for _, r := range failedRows {
+		email := strings.ToLower(strings.TrimSpace(r.To))
+		if email == "" {
+			continue
+		}
+		if _, dup := seen[email]; dup {
+			continue
+		}
+		seen[email] = struct{}{}
+		detail.FailedRecipients = append(detail.FailedRecipients, email)
+	}
+	return detail, nil
 }
 
 // openTimesForEmail returns the ascending open timestamps for one email_id. This

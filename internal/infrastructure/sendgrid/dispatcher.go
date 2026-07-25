@@ -28,7 +28,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
@@ -336,7 +335,17 @@ func (d *Dispatcher) postMailSend(ctx context.Context, reqBody mailSendRequest) 
 			fmt.Sprintf("sendgrid: mail/send provider authorization or configuration error (%d)", resp.StatusCode),
 			errors.New("sendgrid rejected the API credentials or account configuration"),
 		)
-	case resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests:
+	case resp.StatusCode == http.StatusTooManyRequests:
+		// Rate limited: SendGrid did NOT accept the message, and the orchestrator
+		// marks the newsletter sent after any sibling succeeds — there is no retry
+		// path for this recipient. So it is a definitive failure for tracking (no
+		// webhook will arrive to contradict it), even though the outward class is a
+		// retry-later ServiceUnavailable for the API caller.
+		return true, pkgerrors.NewServiceUnavailable(
+			fmt.Sprintf("sendgrid: mail/send rate-limited (%d)", resp.StatusCode),
+			errors.New("sendgrid rate-limited the send"),
+		)
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
 		return true, pkgerrors.NewValidation(fmt.Sprintf("sendgrid: mail/send rejected (%d): %s", resp.StatusCode, summarizeError(resp.StatusCode, body)))
 	default:
 		return false, pkgerrors.NewServiceUnavailable(
@@ -410,21 +419,13 @@ func (d *Dispatcher) GetStatusByEmailID(ctx context.Context, emailID string) (*p
 	return d.store.RecipientByEmailID(ctx, emailID)
 }
 
-// GetStatusByGroupID returns every recipient record for a group from the store.
-func (d *Dispatcher) GetStatusByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
+// GroupEngagementDetail returns the group's bounded analytics detail from the
+// store's SQL aggregation.
+func (d *Dispatcher) GroupEngagementDetail(ctx context.Context, groupID string) (*port.GroupEngagementDetail, error) {
 	if d.store == nil {
-		return nil, pkgerrors.NewUnexpected("sendgrid: GetStatusByGroupID unavailable", errReadNotWired)
+		return nil, pkgerrors.NewUnexpected("sendgrid: GroupEngagementDetail unavailable", errReadNotWired)
 	}
-	return d.store.RecipientsByGroupID(ctx, groupID)
-}
-
-// GroupDailyOpens returns the group's per-day opens series from the store's SQL
-// aggregation.
-func (d *Dispatcher) GroupDailyOpens(ctx context.Context, groupID string) ([]model.DailyOpens, *time.Time, error) {
-	if d.store == nil {
-		return nil, nil, pkgerrors.NewUnexpected("sendgrid: GroupDailyOpens unavailable", errReadNotWired)
-	}
-	return d.store.GroupDailyOpens(ctx, groupID)
+	return d.store.GroupEngagementDetail(ctx, groupID)
 }
 
 // summarizeError renders SendGrid's error body into a single readable string,

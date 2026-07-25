@@ -85,28 +85,45 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 		t.Errorf("Engagement = %+v; want TotalSent=2 Delivered=1 Opened=2 UniqueOpens=1 Failed=1", eng)
 	}
 
-	// GroupDailyOpens aggregates the group's opens in SQL: m1 opened twice (ev1 at
-	// now, ev2 a minute later), so total opens across days is 2 and each day has a
-	// single unique recipient. Summing across days keeps the assertion stable even
-	// when the minute gap straddles a UTC midnight.
-	daily, lastEvent, err := store.GroupDailyOpens(ctx, group)
+	// GroupEngagementDetail aggregates the group in SQL: m1 opened twice (ev1 at
+	// now, ev2 a minute later), so unique opens is 1, total opens across days is 2
+	// with a single unique recipient per day, m2 is the one failed recipient, and
+	// lastEvent is the later open. Summing across days keeps the assertion stable
+	// even when the minute gap straddles a UTC midnight.
+	detail, err := store.GroupEngagementDetail(ctx, group)
 	if err != nil {
-		t.Fatalf("GroupDailyOpens: %v", err)
+		t.Fatalf("GroupEngagementDetail: %v", err)
+	}
+	if detail.UniqueOpens != 1 {
+		t.Errorf("GroupEngagementDetail UniqueOpens = %d; want 1 (m1)", detail.UniqueOpens)
+	}
+	if len(detail.FailedRecipients) != 1 || detail.FailedRecipients[0] != "b@x.io" {
+		t.Errorf("GroupEngagementDetail FailedRecipients = %v; want [b@x.io] (m2)", detail.FailedRecipients)
 	}
 	totalOpens := 0
-	for _, d := range daily {
+	for _, d := range detail.DailyOpens {
 		totalOpens += d.Opens
 		if d.UniqueOpens != 1 {
-			t.Errorf("GroupDailyOpens day %v UniqueOpens = %d; want 1 (only m1)", d.Date, d.UniqueOpens)
+			t.Errorf("GroupEngagementDetail day %v UniqueOpens = %d; want 1 (only m1)", d.Date, d.UniqueOpens)
 		}
 	}
 	if totalOpens != 2 {
-		t.Errorf("GroupDailyOpens total opens = %d; want 2", totalOpens)
+		t.Errorf("GroupEngagementDetail total daily opens = %d; want 2", totalOpens)
 	}
-	if lastEvent == nil {
-		t.Error("GroupDailyOpens lastEvent is nil; want the last open instant")
-	} else if diff := lastEvent.Sub(now.Add(time.Minute)); diff > time.Second || diff < -time.Second {
-		t.Errorf("GroupDailyOpens lastEvent = %v; want ~%v", lastEvent, now.Add(time.Minute))
+	if detail.LastEventAt == nil {
+		t.Error("GroupEngagementDetail LastEventAt is nil; want the last open instant")
+	} else if diff := detail.LastEventAt.Sub(now.Add(time.Minute)); diff > time.Second || diff < -time.Second {
+		t.Errorf("GroupEngagementDetail LastEventAt = %v; want ~%v", detail.LastEventAt, now.Add(time.Minute))
+	}
+
+	// A group with no opens returns an empty series and nil LastEventAt (the
+	// nullable MAX must not error).
+	emptyDetail, err := store.GroupEngagementDetail(ctx, group+"-no-opens")
+	if err != nil {
+		t.Fatalf("GroupEngagementDetail(no opens): %v", err)
+	}
+	if len(emptyDetail.DailyOpens) != 0 || emptyDetail.LastEventAt != nil || emptyDetail.UniqueOpens != 0 {
+		t.Errorf("GroupEngagementDetail(no opens) = %+v; want empty series, nil LastEventAt, 0 unique", emptyDetail)
 	}
 
 	rec, err := store.RecipientByEmailID(ctx, m1)

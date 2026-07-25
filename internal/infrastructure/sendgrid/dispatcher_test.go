@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 )
 
@@ -33,9 +32,7 @@ type fakeStore struct {
 	applyErr   error    // when set, the Apply* methods return it
 	engagement *port.EmailEngagement
 	byEmailID  *port.EmailRecipientRecord
-	byGroupID  []port.EmailRecipientRecord
-	daily      []model.DailyOpens
-	dailyLast  *time.Time
+	detail     *port.GroupEngagementDetail
 }
 
 func (f *fakeStore) RevertGroup(_ context.Context, groupID string) error {
@@ -64,11 +61,8 @@ func (f *fakeStore) Engagement(context.Context, string) (*port.EmailEngagement, 
 func (f *fakeStore) RecipientByEmailID(context.Context, string) (*port.EmailRecipientRecord, error) {
 	return f.byEmailID, nil
 }
-func (f *fakeStore) RecipientsByGroupID(context.Context, string) ([]port.EmailRecipientRecord, error) {
-	return f.byGroupID, nil
-}
-func (f *fakeStore) GroupDailyOpens(context.Context, string) ([]model.DailyOpens, *time.Time, error) {
-	return f.daily, f.dailyLast, nil
+func (f *fakeStore) GroupEngagementDetail(context.Context, string) (*port.GroupEngagementDetail, error) {
+	return f.detail, nil
 }
 
 func newTestDispatcher(t *testing.T, handler http.HandlerFunc) *Dispatcher {
@@ -310,7 +304,7 @@ func TestReadsDelegateToStore(t *testing.T) {
 	store := &fakeStore{
 		engagement: &port.EmailEngagement{GroupID: "g", TotalSent: 3, Delivered: 2, Opened: 1},
 		byEmailID:  &port.EmailRecipientRecord{EmailID: "e", Delivered: true},
-		byGroupID:  []port.EmailRecipientRecord{{EmailID: "e1"}, {EmailID: "e2"}},
+		detail:     &port.GroupEngagementDetail{UniqueOpens: 2, FailedRecipients: []string{"x@y"}},
 	}
 	d, err := NewDispatcher(Config{APIKey: "k", DefaultFrom: "f@lfx.aaif.io", Store: store})
 	if err != nil {
@@ -322,8 +316,8 @@ func TestReadsDelegateToStore(t *testing.T) {
 	if rec, err := d.GetStatusByEmailID(context.Background(), "e"); err != nil || rec == nil || !rec.Delivered {
 		t.Errorf("GetStatusByEmailID = %+v, %v; want Delivered record", rec, err)
 	}
-	if recs, err := d.GetStatusByGroupID(context.Background(), "g"); err != nil || len(recs) != 2 {
-		t.Errorf("GetStatusByGroupID len = %d, %v; want 2", len(recs), err)
+	if detail, err := d.GroupEngagementDetail(context.Background(), "g"); err != nil || detail == nil || detail.UniqueOpens != 2 {
+		t.Errorf("GroupEngagementDetail = %+v, %v; want UniqueOpens=2", detail, err)
 	}
 }
 
@@ -390,8 +384,8 @@ func TestEngagementReadsNotWired(t *testing.T) {
 	if _, err := d.GetStatusByEmailID(context.Background(), "e"); err == nil {
 		t.Errorf("GetStatusByEmailID should report not-wired until the webhook store lands")
 	}
-	if _, err := d.GetStatusByGroupID(context.Background(), "g"); err == nil {
-		t.Errorf("GetStatusByGroupID should report not-wired until the webhook store lands")
+	if _, err := d.GroupEngagementDetail(context.Background(), "g"); err == nil {
+		t.Errorf("GroupEngagementDetail should report not-wired until the webhook store lands")
 	}
 }
 
@@ -448,7 +442,7 @@ func TestSendEmail_RecordsFailureOnlyOnDefinitiveRejection(t *testing.T) {
 		{"definitive 400 records failure and surfaces detail", http.StatusBadRequest, 1, false},
 		{"provider 401 records failure, redacted", http.StatusUnauthorized, 1, true},
 		{"provider 403 records failure, redacted", http.StatusForbidden, 1, true},
-		{"transient 429 does not record", http.StatusTooManyRequests, 0, false},
+		{"rate-limit 429 records failure (no retry path)", http.StatusTooManyRequests, 1, false},
 		{"ambiguous 503 does not record", http.StatusServiceUnavailable, 0, false},
 	}
 	for _, tc := range cases {
