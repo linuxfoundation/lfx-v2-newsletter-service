@@ -429,10 +429,11 @@ func TestSendEmail_ReplyToAllowlist(t *testing.T) {
 
 func TestSendEmail_RecordsFailureOnlyOnDefinitiveRejection(t *testing.T) {
 	// A definitive rejection (SendGrid did not accept the message, no webhook
-	// follows) is persisted; an ambiguous 429/5xx is not, or a later delivered
-	// webhook would contradict it. Definitiveness is decoupled from the outward
-	// error type: a client-input 4xx (Validation, detail surfaced) and a provider
-	// auth 401/403 (redacted ServiceUnavailable) are both definitive.
+	// follows) is persisted; an ambiguous 5xx is not, or a later delivered webhook
+	// would contradict it. Definitiveness is decoupled from the outward error
+	// type: a client-input 4xx (Validation, detail surfaced), a provider auth
+	// 401/403 (redacted ServiceUnavailable), and a rate-limit 429 (no retry path)
+	// are all definitive.
 	cases := []struct {
 		name         string
 		status       int

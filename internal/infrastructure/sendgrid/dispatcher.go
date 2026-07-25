@@ -267,12 +267,12 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 		// rejection — SendGrid did not accept the message, so no webhook will
 		// arrive, and analytics would otherwise omit this recipient when a sibling
 		// succeeds and the newsletter is marked sent. Definitiveness is decoupled
-		// from the outward error type: a client-input rejection (Validation) and a
-		// provider auth/config rejection (a redacted ServiceUnavailable) are both
-		// definitive, while an ambiguous 429/5xx/transport error is not recorded —
-		// SendGrid may have accepted it, and recording failed would contradict a
-		// later delivered webhook (and could double-count a retry). An untracked
-		// send records nothing at all.
+		// from the outward error type: a client-input rejection (Validation), a
+		// provider auth/config rejection (a redacted ServiceUnavailable), and a
+		// rate-limit 429 (also a ServiceUnavailable) are all definitive, while an
+		// ambiguous 5xx/transport error is NOT recorded — SendGrid may have accepted
+		// it, and recording failed would contradict a later delivered webhook. An
+		// untracked send records nothing at all.
 		if tracked && definitive {
 			d.recordFailed(ctx, emailID, groupID, in.To)
 		}
@@ -297,8 +297,12 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 //     returned as a REDACTED ServiceUnavailable — this is our SendGrid credential
 //     or account problem, not the API caller's input, so it must not surface as a
 //     client 400 with upstream detail.
-//   - 429, 5xx, or a transport error: ambiguous, NOT definitive — SendGrid may
-//     have accepted it, or a retry may succeed, so the caller must not record a
+//   - Rate limit (429): definitive but returned as a ServiceUnavailable. SendGrid
+//     did not accept the message and there is no retry path (the orchestrator
+//     marks the newsletter sent after any sibling succeeds), so the recipient is
+//     recorded failed rather than silently dropped.
+//   - 5xx or a transport error: ambiguous, NOT definitive — SendGrid may have
+//     accepted it, or a retry may succeed, so the caller must not record a
 //     permanent failure that a later delivered/bounce webhook would contradict.
 func (d *Dispatcher) postMailSend(ctx context.Context, reqBody mailSendRequest) (bool, error) {
 	payload, err := json.Marshal(reqBody)
