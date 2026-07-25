@@ -152,8 +152,9 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 
 // GetEngagement fetches per-group engagement totals from email-service.
 //
-// Note: email-service does not currently report unique opens — UniqueOpens is
-// populated from the local newsletter_opens table by the analytics service.
+// The scalar reply includes unique_opened (email-service v0.1.5+), which we map
+// to UniqueOpens so the analytics scalar fallback preserves the SES unique-open
+// count even when the per-recipient detail fetch fails or is incomplete.
 func (d *EmailDispatcher) GetEngagement(ctx context.Context, groupID string) (*port.EmailEngagement, error) {
 	if groupID == "" {
 		return nil, pkgerrors.NewValidation("group_id is required")
@@ -182,11 +183,12 @@ func (d *EmailDispatcher) GetEngagement(ctx context.Context, groupID string) (*p
 		return nil, pkgerrors.NewUnexpected("malformed email-service engagement reply", jsonErr)
 	}
 	return &port.EmailEngagement{
-		GroupID:   out.GroupID,
-		TotalSent: out.TotalSent,
-		Delivered: out.Delivered,
-		Opened:    out.Opened,
-		Failed:    out.Failed,
+		GroupID:     out.GroupID,
+		TotalSent:   out.TotalSent,
+		Delivered:   out.Delivered,
+		Opened:      out.Opened,
+		UniqueOpens: out.UniqueOpened,
+		Failed:      out.Failed,
 	}, nil
 }
 

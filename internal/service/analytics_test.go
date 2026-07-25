@@ -346,7 +346,7 @@ func TestAnalyticsGet_DegradesGracefullyOnGroupStatusError(t *testing.T) {
 		},
 	}
 	email := &statusByGroupFake{
-		engagement: &port.EmailEngagement{TotalSent: 5, Delivered: 5, Opened: 4},
+		engagement: &port.EmailEngagement{TotalSent: 5, Delivered: 5, Opened: 4, UniqueOpens: 3},
 		recordsErr: errors.New("nats: timeout"),
 	}
 
@@ -357,6 +357,12 @@ func TestAnalyticsGet_DegradesGracefullyOnGroupStatusError(t *testing.T) {
 	}
 	if got.TotalOpens != 4 {
 		t.Errorf("TotalOpens: got %d, want 4 (from engagement)", got.TotalOpens)
+	}
+	// The detail fetch failed, so the scalar unique-open count from GetEngagement
+	// must be preserved (not zeroed) — this is the fallback the scalar seed exists
+	// for, and it depends on the email-service reader populating UniqueOpens.
+	if got.UniqueOpens != 3 {
+		t.Errorf("UniqueOpens: got %d, want 3 (scalar fallback from engagement when detail fetch fails)", got.UniqueOpens)
 	}
 	if len(got.DailyOpens) != 0 {
 		t.Errorf("DailyOpens: got %d buckets, want 0 (no records available)", len(got.DailyOpens))
