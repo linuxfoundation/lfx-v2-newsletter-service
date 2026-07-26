@@ -560,7 +560,8 @@ func TestRenderMJML_BlockSpacingPadding(t *testing.T) {
 		inner := doc[idx:]
 		end := strings.Index(inner, "</mj-wrapper>")
 		if end < 0 {
-			end = len(inner)
+			// A missing closing tag is malformed output, not "search to end of doc".
+			t.Fatalf("expected a closing </mj-wrapper> tag\n---\n%s", doc)
 		}
 		if !strings.Contains(inner[:end], "<mj-section") {
 			t.Errorf("expected the block's mj-section inside the wrapper\n---\n%s", doc)
