@@ -479,3 +479,43 @@ func TestAnalyticsGet_KnownProviderMissingReaderIsLocalOnly(t *testing.T) {
 		t.Errorf("TotalOpens = %d; want 0 (a known provider with a missing reader must degrade to local-only, not fall back to another store)", got.TotalOpens)
 	}
 }
+
+// TestAnalyticsGet_PreservesLocalDailyOpensWhenProviderDetailEmpty verifies that
+// an empty provider detail series does not clobber a non-empty local daily-opens
+// series — the provider owns the breakdown only when it actually returned one,
+// consistent with keeping the larger unique-open count.
+func TestAnalyticsGet_PreservesLocalDailyOpensWhenProviderDetailEmpty(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	groupID := "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+	sentAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	localDay := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	// Scalar rollup is present, but there are no per-recipient records, so the
+	// provider detail (daily series / failed list) is empty.
+	email := &statusByGroupFake{
+		engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: 5, Delivered: 5, Opened: 2, UniqueOpens: 2},
+		records:    nil,
+	}
+	newsletterID := uuid.New()
+	repo := &analyticsRepoFake{
+		newsletter: &model.Newsletter{
+			ID: newsletterID, ProjectUID: projectUID, Status: model.StatusSent,
+			GroupID: &groupID, SendProvider: model.SendProviderEmailService,
+			SentAt: &sentAt, TotalRecipients: 5,
+		},
+		base: &model.Analytics{
+			NewsletterID: newsletterID, Status: model.StatusSent, SentAt: &sentAt,
+			TotalRecipients: 5, Delivered: 5,
+			DailyOpens: []model.DailyOpens{{Date: localDay, Opens: 3, UniqueOpens: 2}},
+		},
+	}
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, model.SendProviderEmailService)
+	got, err := svc.Get(context.Background(), projectUID, newsletterID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// The empty provider detail must NOT clobber the local daily series.
+	if len(got.DailyOpens) != 1 || got.DailyOpens[0].Opens != 3 || got.DailyOpens[0].UniqueOpens != 2 {
+		t.Errorf("DailyOpens: got %+v, want the preserved local series [{Opens:3 UniqueOpens:2}]", got.DailyOpens)
+	}
+}

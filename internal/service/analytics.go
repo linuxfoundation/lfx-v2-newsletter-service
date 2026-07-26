@@ -145,8 +145,12 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 	// in memory) giving the detailed unique-open count, the daily-opens series,
 	// the last event instant, and the failed recipients — analytics never loads
 	// raw per-open data. UniqueOpens keeps the larger so a non-empty local count is
-	// not lowered by the provider's; the local tracking pixel is not embedded in
-	// outgoing emails today, so DailyOpens/FailedRecipients are replaced.
+	// not lowered by the provider's. The provider owns the daily-opens breakdown
+	// and the failed list, but replace the local values only when the provider
+	// actually returned data: an empty provider detail must not clobber a
+	// non-empty local series (consistent with keeping the larger UniqueOpens).
+	// The local tracking pixel is not embedded in outgoing emails today, so in
+	// practice the local series is empty and the provider's replaces it.
 	detail, detailErr := reader.GroupEngagementDetail(ctx, *n.GroupID)
 	if detailErr != nil {
 		slog.WarnContext(ctx, "analytics: group engagement detail fetch failed, keeping scalar rollup",
@@ -158,8 +162,12 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 		if detail.UniqueOpens > local.UniqueOpens {
 			local.UniqueOpens = detail.UniqueOpens
 		}
-		local.DailyOpens = detail.DailyOpens
-		local.FailedRecipients = detail.FailedRecipients
+		if len(detail.DailyOpens) > 0 {
+			local.DailyOpens = detail.DailyOpens
+		}
+		if len(detail.FailedRecipients) > 0 {
+			local.FailedRecipients = detail.FailedRecipients
+		}
 		if detail.LastEventAt != nil && (local.LastEventAt == nil || detail.LastEventAt.After(*local.LastEventAt)) {
 			local.LastEventAt = detail.LastEventAt
 		}
