@@ -343,11 +343,17 @@ func TestSendEmail_AuthenticatedDomainValidation(t *testing.T) {
 	}); err != nil {
 		t.Errorf("authenticated From should be allowed, got: %v", err)
 	}
-	// From on a subdomain of an authenticated domain: allowed.
+	// From on a subdomain of an authenticated domain: REJECTED. Allowlisting
+	// lfx.aaif.io must not implicitly authorize mail.lfx.aaif.io, which may not be
+	// domain-authenticated in SendGrid — From matching is exact.
+	posted = false
 	if _, err := d.SendEmail(context.Background(), port.SendEmailInput{
 		To: "a@x.io", Subject: "s", Text: "t", From: "ed@mail.lfx.aaif.io",
-	}); err != nil {
-		t.Errorf("subdomain From should be allowed, got: %v", err)
+	}); err == nil {
+		t.Errorf("subdomain From must be rejected (exact-match only)")
+	}
+	if posted {
+		t.Errorf("a subdomain From must not reach SendGrid")
 	}
 	// From on an unauthenticated domain: rejected before any POST.
 	posted = false

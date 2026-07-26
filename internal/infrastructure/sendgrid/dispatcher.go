@@ -158,10 +158,12 @@ func domainOf(email string) string {
 	return strings.ToLower(strings.TrimSpace(email[at+1:]))
 }
 
-// domainAllowed reports whether email's domain equals a listed domain or is a
-// subdomain of one. An empty list permits any address (dev/test), matching
+// domainAllowed reports whether email's domain is permitted by the allowlist.
+// With allowSubdomains, a subdomain of a listed domain also passes (e.g.
+// mail.example.com for example.com); without it the domain must equal a listed
+// entry exactly. An empty list permits any address (dev/test), matching
 // email-service's permissive default.
-func domainAllowed(email string, allowed []string) bool {
+func domainAllowed(email string, allowed []string, allowSubdomains bool) bool {
 	if len(allowed) == 0 {
 		return true
 	}
@@ -170,7 +172,10 @@ func domainAllowed(email string, allowed []string) bool {
 		return false
 	}
 	for _, a := range allowed {
-		if dom == a || strings.HasSuffix(dom, "."+a) {
+		if dom == a {
+			return true
+		}
+		if allowSubdomains && strings.HasSuffix(dom, "."+a) {
 			return true
 		}
 	}
@@ -178,10 +183,12 @@ func domainAllowed(email string, allowed []string) bool {
 }
 
 // fromDomainAllowed reports whether a From address may be used: its domain must
-// be in the authenticated-domain allowlist (an unauthenticated From wrecks
-// DKIM/SPF/DMARC alignment).
+// match the authenticated-domain allowlist EXACTLY (an unauthenticated From
+// wrecks DKIM/SPF/DMARC alignment). Subdomains are not implied — allowlisting
+// example.com must not authorize mail.example.com, which may not be
+// domain-authenticated in SendGrid; list each sending domain explicitly.
 func (d *Dispatcher) fromDomainAllowed(email string) bool {
-	return domainAllowed(email, d.authenticatedDomains)
+	return domainAllowed(email, d.authenticatedDomains, false)
 }
 
 // allowedReplyTo returns the Reply-To address to set on a send, or nil to omit
@@ -194,7 +201,9 @@ func (d *Dispatcher) allowedReplyTo(ctx context.Context, replyTo string) *addres
 	if replyTo == "" {
 		return nil
 	}
-	if !domainAllowed(replyTo, d.replyToAllowedDomains) {
+	// Reply-To is not the authenticated sending identity — it only steers where
+	// replies go — so subdomains of an allowed domain are acceptable here.
+	if !domainAllowed(replyTo, d.replyToAllowedDomains, true) {
 		slog.WarnContext(ctx, "sendgrid: dropping reply_to outside the allowed domains",
 			"reply_to_domain", domainOf(replyTo))
 		return nil
