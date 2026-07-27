@@ -557,8 +557,11 @@ func TestRenderMJML_BlockSpacingPadding(t *testing.T) {
 	}
 	// The wrapper must enclose the block's own section(s).
 	if idx := strings.Index(doc, `<mj-wrapper padding="16px">`); idx >= 0 {
-		if inner := doc[idx:]; !strings.Contains(inner[:strings.Index(inner, "</mj-wrapper>")], "<mj-section") {
-			t.Errorf("expected the block's mj-section inside the wrapper\n---\n%s", doc)
+		inner := doc[idx:]
+		if endIdx := strings.Index(inner, "</mj-wrapper>"); endIdx >= 0 {
+			if !strings.Contains(inner[:endIdx], "<mj-section") {
+				t.Errorf("expected the block's mj-section inside the wrapper\n---\n%s", doc)
+			}
 		}
 	}
 	// The reserved key must not leak into the output.
