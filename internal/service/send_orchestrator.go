@@ -545,14 +545,14 @@ type TestSendInput struct {
 	IsLayout bool
 	// BodyLayout, when set, is the structured layout to recompile server-side
 	// for the test send. It is the sole layout trigger: the body is derived from
-	// it with the unsubscribe / compliance footer suppressed (no dangling opt-out
-	// link in a non-recipient test), mirroring how the real send path omits the
-	// compliance footer for a test. Nil keeps the legacy BodyHTML path.
+	// it with the opt-out row suppressed (no dangling unsubscribe link in a
+	// non-recipient test; other footer elements like sender attribution and reply
+	// row still render). Nil keeps the legacy BodyHTML path.
 	BodyLayout *declarative.Layout
 }
 
 // TestSend dispatches a single test email — no persistence, no analytics, no
-// compliance footer.
+// unsubscribe opt-out row (but other footer elements like sender and reply still render).
 func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error {
 	if err := validateProjectUID(in.ProjectUID); err != nil {
 		return err
