@@ -26,9 +26,8 @@ The repo defines its own standards; hold the diff to them, and name the
 documented source in any standards finding. They live in `CLAUDE.md` and the
 docs, skills, and rules it points to: layering and dependency direction,
 where configuration is read, the error model, how docs move with behavior,
-license headers, test expectations. Read the parts relevant to the diff
-before judging, every run, because the standards belong to the repo and move
-with it.
+test expectations. Read the parts relevant to the diff before judging, every
+run, because the standards belong to the repo and move with it.
 
 Enforcement runs in both directions: code that violates a documented standard
 is a finding, and a documented standard the code has visibly outgrown is a
