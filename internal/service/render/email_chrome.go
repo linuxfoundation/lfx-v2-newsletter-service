@@ -237,9 +237,9 @@ func stripHTML(html string) string {
 // text). The layout send path feeds StripHTMLForText a COMPLETE compiled MJML
 // document whose <head><style>…</style></head> carries CSS/media-query text;
 // without dropping these first, stripHTML's tag-only pass would leak that style
-// text into the text/plain part. Case-insensitive, dot-matches-newline so
-// multi-line <style> bodies are removed whole.
-var nonRenderedRe = regexp.MustCompile(`(?is)<(head|style|script)\b[^>]*>.*?</(head|style|script)>`)
+// text into the text/plain part. Tag-specific alternatives ensure each opening
+// tag matches only its own closing tag (case-insensitive, dot-matches-newline).
+var nonRenderedRe = regexp.MustCompile(`(?is)(<head\b[^>]*>.*?</head>|<style\b[^>]*>.*?</style>|<script\b[^>]*>.*?</script>)`)
 
 // StripHTMLForText derives a plain-text body from a full HTML email. It is the
 // exported counterpart to EmailText for the layout-based send path, where the

@@ -468,21 +468,30 @@ func writeNestedLayout(b *strings.Builder, n *node) {
 // (styleAttr), and the remaining declarations ride an inner div that MJML
 // passes through verbatim — without it, font-size, line-height, and the rest
 // of the authored text presentation silently fell back to MJML defaults.
+// For headings, the inner style is applied directly to the h2 element so
+// authored heading typography survives MJML/browser UA defaults.
 func writeTextBlock(b *strings.Builder, n *node) {
 	b.WriteString("<mj-text" + styleAttr(n, styleText) + ">")
 	inner := textInnerStyle(n)
-	if inner != "" {
-		b.WriteString(`<div style="` + html.EscapeString(inner) + `">`)
-	}
 	if n.Tag == "heading" {
-		b.WriteString("<h2 style=\"margin:0\">")
+		// Apply inner style (font-size, line-height, etc.) directly to h2
+		// along with margin:0, not to a wrapper div.
+		h2Style := "margin:0"
+		if inner != "" {
+			h2Style = h2Style + ";" + inner
+		}
+		b.WriteString("<h2 style=\"" + html.EscapeString(h2Style) + "\">")
 		writeInline(b, n.Children)
 		b.WriteString("</h2>")
 	} else {
+		// For text nodes, wrap inner style in a div that MJML passes through.
+		if inner != "" {
+			b.WriteString(`<div style="` + html.EscapeString(inner) + `">`)
+		}
 		writeInline(b, n.Children)
-	}
-	if inner != "" {
-		b.WriteString("</div>")
+		if inner != "" {
+			b.WriteString("</div>")
+		}
 	}
 	b.WriteString("</mj-text>")
 }
