@@ -288,15 +288,14 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	if isLayout {
 		if rerendered, ok := o.reRenderLayoutBody(ctx, draft, replyTo); ok {
 			sendBodyHTML = rerendered
-		} else if o.unsub.Enabled() {
-			// Re-render failed AND unsubscribe is required: the persisted body_html
-			// may predate that requirement (rendered while unsubscribe was disabled,
-			// so with no opt-out row). Falling back to it would send without the
-			// opt-out link — the exact CAN-SPAM gap the re-render exists to prevent —
-			// so refuse instead. The send reverts to draft for retry once the stored
-			// layout is renderable again. (With unsubscribe disabled the persisted
-			// body is compliant, so the fallback below stands.)
-			return nil, fmt.Errorf("newsletter send: body_layout re-render failed while unsubscribe is enabled; refusing to dispatch a persisted body that may lack the opt-out row")
+		} else {
+			// Re-render failed: refuse the send regardless of unsubscribe setting.
+			// The persisted body_html may contain stale compliance footers (unsubscribe
+			// enabled/disabled since write time) or stale sentinels that would be
+			// emptied during fan-out. Rather than risk sending a non-compliant email,
+			// refuse and let the draft revert to draft for retry once the layout is
+			// renderable again.
+			return nil, fmt.Errorf("newsletter send: body_layout re-render failed; refusing to dispatch a persisted body that may not reflect current deployment settings")
 		}
 	}
 
@@ -383,26 +382,13 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 // deployment's CURRENT setting rather than the write-time snapshot baked into
 // draft.BodyHTML. It returns the recompiled HTML and ok=true on success.
 //
-// FALLBACK (ok=false): on any failure — an unparseable stored layout, a block
-// type no longer present in the template set, or an MJML compile error — it
-// logs a warning and returns ok=false. What the CALLER does with ok=false is
-// unsubscribe-config-dependent (see SendNewsletter):
-//
-//   - Unsubscribe DISABLED: the caller dispatches the persisted draft.BodyHTML.
-//     That body already passed validation at write time and IS deliverable, and
-//     with unsubscribe off it carries no opt-out row to go stale, so refusing to
-//     send a newsletter whose layout later became unrenderable (e.g. a template
-//     library changed under it) would strand an otherwise valid send with no
-//     self-service recovery.
-//   - Unsubscribe ENABLED: the caller REFUSES the send (returns an error) rather
-//     than fall back. The persisted body may predate the unsubscribe requirement
-//     (rendered with no opt-out row), so dispatching it would risk the exact
-//     CAN-SPAM gap the send-time re-render exists to close. The row reverts to
-//     draft for retry once the stored layout is renderable again.
-//
-// Either way this helper only logs and signals ok=false; the compliance decision
-// lives at the call site. The warning surfaces the degradation for operators,
-// mirroring the orchestrator's other non-fatal signals (e.g. resolveFromAddress).
+// On failure (ok=false) — an unparseable stored layout, a block type no longer
+// present in the template set, or an MJML compile error — it logs a warning and
+// returns ok=false. The caller REFUSES the send (returns an error) rather than
+// fall back to persisted draft.BodyHTML, because the persisted body may contain
+// stale compliance footers or sentinels that would be emptied during fan-out
+// (unsubscribe setting may have changed since write time). The newsletter row
+// reverts to draft for retry once the stored layout is renderable again.
 func (o *SendOrchestrator) reRenderLayoutBody(ctx context.Context, draft *model.Newsletter, replyTo string) (string, bool) {
 	var layout declarative.Layout
 	if err := json.Unmarshal(draft.BodyLayout, &layout); err != nil {

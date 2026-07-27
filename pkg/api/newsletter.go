@@ -226,10 +226,13 @@ type NewsletterLayout struct {
 // RenderPreviewRequest is the body of POST
 // /projects/{project_uid}/newsletters/render-preview.
 //
-// BodyLayout is the structured layout to render. WrapperContent supplies the
-// runtime values the wrapper template binds against (e.g. edition.date,
-// edition.unsubscribe_url); it is optional and may be omitted when the wrapper
-// needs no runtime data.
+// BodyLayout is the structured layout to render. WrapperContent supplies
+// caller-controlled edition data the wrapper template binds against
+// (e.g. edition.date, edition.view_online_link). The footer fields
+// (unsubscribe_url, reply_email, sender, project) are service-owned and
+// protected against mutation; see previewWrapperContent in newsletter.go.
+// WrapperContent is optional and may be omitted when no edition customization
+// is needed.
 type RenderPreviewRequest struct {
 	BodyLayout     NewsletterLayout `json:"body_layout"`
 	WrapperContent map[string]any   `json:"wrapper_content,omitempty"`

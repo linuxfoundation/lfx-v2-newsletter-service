@@ -1777,12 +1777,12 @@ func TestSendNewsletterRefusesCorruptLayoutWhenUnsubscribeEnabled(t *testing.T) 
 	}
 }
 
-// TestSendNewsletterFallsBackOnCorruptLayoutWhenUnsubscribeDisabled is the
-// companion to the refusal case: with unsubscribe DISABLED the persisted body
-// carries no opt-out row to go stale, so a re-render failure is non-fatal — the
-// send falls back to the persisted body_html rather than stranding a deliverable
-// newsletter with no self-service recovery.
-func TestSendNewsletterFallsBackOnCorruptLayoutWhenUnsubscribeDisabled(t *testing.T) {
+// TestSendNewsletterRefusesCorruptLayoutRegardlessOfUnsubscribe verifies that
+// layout sends are refused when re-render fails, regardless of unsubscribe
+// setting. Fallback to persisted HTML risks sending non-compliant emails with
+// stale compliance footers (unsubscribe enabled/disabled since write time) or
+// stale sentinels (%%UNSUBSCRIBE_URL%%) that would be emptied during fan-out.
+func TestSendNewsletterRefusesCorruptLayoutRegardlessOfUnsubscribe(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
 	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
@@ -1809,16 +1809,13 @@ func TestSendNewsletterFallsBackOnCorruptLayoutWhenUnsubscribeDisabled(t *testin
 	}
 	repo.drafts[draft.ID] = draft
 
-	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
-		t.Fatalf("SendNewsletter should fall back (not refuse) with unsubscribe disabled: %v", err)
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err == nil {
+		t.Fatalf("SendNewsletter should refuse layout re-render failure even with unsubscribe disabled")
 	}
 	orch.Drain(ctx)
 
-	if len(email.sends) != 1 {
-		t.Fatalf("got %d sends, want 1 (fallback to persisted body)", len(email.sends))
-	}
-	if !strings.Contains(email.sends[0].HTML, "PERSISTED_FALLBACK_BODY") {
-		t.Errorf("fallback send did not dispatch the persisted body_html: %s", email.sends[0].HTML)
+	if len(email.sends) != 0 {
+		t.Fatalf("got %d sends, want 0 (refusing to dispatch non-compliant body)", len(email.sends))
 	}
 }
 
