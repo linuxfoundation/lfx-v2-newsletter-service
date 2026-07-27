@@ -103,8 +103,9 @@ using the GitHub tools available to you, on the pull request under review:
 
 - **One inline review comment per issue**, anchored to the relevant file and line
   in the PR diff. Begin every inline comment with its severity in brackets, for
-  example `[high] ...`. If the same defect repeats across lines or files, raise
-  it once on the clearest instance and note where else it applies.
+  example `[high] ...`. If the same defect repeats across lines or files, anchor
+  one comment to the clearest instance and name the other locations inside that
+  same comment, rather than posting the same finding again at each one.
 - **One summary comment.** State what the PR intends and your overall assessment
   of whether it does it well. List which skills you consulted (`/newsletter-code-review`
   and `/newsletter-security-review`, and any central `lfx` /
@@ -156,8 +157,10 @@ where you have something real:
   not comment on pre-existing issues in unchanged code, even when it appears as
   context around the diff, and do not propose refactors of code the PR does not
   touch. One carve-out: a defect this change directly introduces or triggers is
-  in scope wherever it lands — if an edit here breaks an invariant enforced in
-  another file, that is this PR's defect and you say so.
+  still reportable even when the symptom surfaces elsewhere — if an edit here
+  breaks an invariant enforced in another file, that is this PR's defect. Anchor
+  that comment to the changed line that causes it, not to the untouched line
+  where it shows up.
 - **On a re-review, the new pushes first.** A re-review is an independent pass
   with no memory of the previous one, so deliberately focus on what changed since
   the last round. If earlier review comments or resolved threads on this PR are
