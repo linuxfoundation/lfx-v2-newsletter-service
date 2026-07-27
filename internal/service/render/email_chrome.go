@@ -206,7 +206,11 @@ var multiNewlineRe = regexp.MustCompile(`\n{3,}`)
 // is suitable for the plain-text fallback (not for indexing or other downstream
 // consumers).
 func stripHTML(html string) string {
-	out := tagRe.ReplaceAllString(html, "")
+	// Remove <style>, <script>, and <head> tags and their entire content first.
+	// stripHTML's simple tag pass only matches individual tags, so CSS/JS/metadata
+	// inside these elements would otherwise survive as plain text.
+	out := nonRenderedRe.ReplaceAllString(html, "")
+	out = tagRe.ReplaceAllString(out, "")
 	out = entityRe.ReplaceAllStringFunc(out, func(e string) string {
 		switch e {
 		case "&amp;":

@@ -583,6 +583,22 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		return fmt.Errorf("%w: to_email is not a valid email: %v", domain.ErrInvalidRequest, err)
 	}
 
+	// Resolve sender email and name early so layout rendering gets the correct
+	// reply-to address for the footer, matching the real-send behavior where the
+	// footer reflects the resolved sender, not the drafter's saved EDReplyEmail.
+	projectName, _ := o.project.Name(ctx, in.ProjectUID)
+	if projectName == "" {
+		projectName = "Project"
+	}
+	senderName, err := o.resolveSenderName(ctx, in.Principal)
+	if err != nil {
+		return err
+	}
+	// Mirror SendNewsletter's Reply-To resolution so a test-send previews the
+	// same envelope a real send would produce, not the drafter's stored
+	// EDReplyEmail unconditionally.
+	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), strings.TrimSpace(in.EDReplyEmail))
+
 	// body_layout is the SOLE layout trigger for a test send. When present the
 	// server recompiles server-side with the opt-out row SUPPRESSED
 	// (unsubFooterSuppressed drops it via the wrapper's if= guard), matching the
@@ -595,7 +611,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	bodyHTML := in.BodyHTML
 	isLayout := false
 	if in.BodyLayout != nil {
-		derived, _, rerr := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, unsubFooterSuppressed)
+		derived, _, rerr := renderLayout(ctx, in.BodyLayout, replyTo, unsubFooterSuppressed)
 		if rerr != nil {
 			return rerr
 		}
@@ -608,22 +624,10 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		return err
 	}
 
-	projectName, _ := o.project.Name(ctx, in.ProjectUID)
-	if projectName == "" {
-		projectName = "Project"
-	}
-	senderName, err := o.resolveSenderName(ctx, in.Principal)
-	if err != nil {
-		return err
-	}
 	fromDisplayName := senderName
 	if fromDisplayName == "" {
 		fromDisplayName = projectName + fromDisplayNameSuffix
 	}
-	// Mirror SendNewsletter's Reply-To resolution so a test-send previews the
-	// same envelope a real send would produce, not the drafter's stored
-	// EDReplyEmail unconditionally.
-	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), strings.TrimSpace(in.EDReplyEmail))
 
 	// Mirror the real-send branch: a layout-based test send carries the full
 	// emitter email in bodyHTML and must not be re-wrapped in email_chrome.
