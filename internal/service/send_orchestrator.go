@@ -1076,9 +1076,10 @@ func (o *SendOrchestrator) renderBody(isLayout bool, in bodyRenderInput) (htmlBo
 //     substitution below is a harmless no-op kept for when the surface ships.
 //
 // When the unsubscribe service is not configured (Enabled() false) the
-// render-on-write step already omits the opt-out row; replacing any leftover
-// sentinels with empty strings here is a defensive backstop so a misconfigured
-// environment never ships visible sentinels to recipients.
+// render-on-write step renders the reply-based opt-out fallback copy instead
+// of a link, so unsubURL stays empty; replacing any leftover sentinels with
+// empty strings here is a defensive backstop so a misconfigured environment
+// never ships visible sentinels to recipients.
 func (o *SendOrchestrator) substitutePlaceholders(body, projectUID, email string, escapeHTML bool) string {
 	unsubURL := ""
 	if o.unsub.Enabled() {
