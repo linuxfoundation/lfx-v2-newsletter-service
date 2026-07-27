@@ -29,10 +29,12 @@
 
   Only runtime fields use {{mustache}}:
     {{edition.date}}             — formatted edition date
-    {{edition.view_online_link}} — "View Online" URL (substituted per
-                                   recipient at send time via the
-                                   {{web_version}} token; empty for the
-                                   already-online publish page).
+    {{edition.view_online_link}} — "View Online" URL. LayoutWrapperContent
+                                   currently always binds this empty, so the
+                                   if= guard above drops the row; the send
+                                   path's defensive deferred placeholder for
+                                   it is %%VIEW_ONLINE_URL%%, substituted (to
+                                   empty) by substitutePlaceholders.
 -->
 
 <Section>
