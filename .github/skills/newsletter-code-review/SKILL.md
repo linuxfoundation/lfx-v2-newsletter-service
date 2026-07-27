@@ -72,10 +72,10 @@ Run these on the changed code, scaled to the size of the change:
   Judge the lines the diff adds or modifies: a pre-existing issue the diff
   does not touch is not a finding at all, unless this change directly
   introduces or triggers it.
-- **Know your limits.** Distinguish "this is wrong" from "this might be a
-  problem depending on context", and say which one you mean. When a judgment
-  depends on something you cannot see (a peer repo's contract, a deployment
-  value), state the dependency in the finding instead of guessing.
+- **Know your limits.** Only "this is wrong" is worth writing up. When a
+  judgment depends on something you cannot see (a peer repo's contract, a
+  deployment value), you cannot assert a defect: go read the thing, or leave
+  it out. Do not raise it as a caveated or hedged finding instead.
 - **Credit what is good.** When the change handles something well (a tricky
   edge case, a clean migration), say so in the verdict's summary; it shows
   the review was real and reinforces the pattern.
