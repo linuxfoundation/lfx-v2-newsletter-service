@@ -522,10 +522,19 @@ func renderLayout(ctx context.Context, layout *declarative.Layout, replyEmail st
 // the persisted reply email; the preview merges the client's wrapper_content over
 // the send-path footer defaults.
 func renderLayoutBody(ctx context.Context, layout *declarative.Layout, wrapperContent map[string]any) (string, error) {
+	if err := validateNoReservedPlaceholders(layout.Blocks); err != nil {
+		return "", err
+	}
+	// Normalize in place so the persisted layout (renderLayout marshals this
+	// same pointer after we return) carries the same template_key this render
+	// actually resolved against — otherwise a whitespace-padded key renders
+	// successfully here but persists untrimmed, and can't match any catalog key
+	// on a later reload.
+	layout.TemplateKey = strings.TrimSpace(layout.TemplateKey)
 	templates, err := declarative.LoadEmbeddedTemplateCached(layout.TemplateKey)
 	if err != nil {
 		if errors.Is(err, declarative.ErrTemplateNotFound) {
-			return "", fmt.Errorf("%w: unknown template_key %q", domain.ErrUnprocessable, strings.TrimSpace(layout.TemplateKey))
+			return "", fmt.Errorf("%w: unknown template_key %q", domain.ErrUnprocessable, layout.TemplateKey)
 		}
 		return "", fmt.Errorf("load render templates: %w", err)
 	}
@@ -540,6 +549,46 @@ func renderLayoutBody(ctx context.Context, layout *declarative.Layout, wrapperCo
 		return "", fmt.Errorf("render body_layout: %w", err)
 	}
 	return html, nil
+}
+
+// reservedPlaceholders are the send-time sentinel tokens substitutePlaceholders
+// (send_orchestrator.go) swaps in verbatim, unconditionally, across the entire
+// rendered body at send time. Only the service-owned wrapper content
+// (LayoutWrapperContent) may legitimately carry one — writer-controlled block
+// content never should, since bind.go's scheme gate lets a href/src value
+// through unmodified when it exactly matches a sentinel, and richtext content
+// renders verbatim with no scheme gate at all. A writer field (or richtext
+// HTML) that happens to contain one of these tokens would otherwise have it
+// silently swapped for the recipient's real per-recipient URL on send — e.g.
+// an <img src> equal to %%UNSUBSCRIBE_URL%% auto-fires an unsubscribe when the
+// recipient's mail client loads the image, with no recipient action.
+var reservedPlaceholders = []string{
+	UnsubscribeURLPlaceholder,
+	ViewOnlineURLPlaceholder,
+	ManageSubscriptionsURLPlaceholder,
+}
+
+// validateNoReservedPlaceholders rejects a layout whose block content —
+// including richtext fields, which are stored in the same Content map as any
+// other field — contains a reserved send-time sentinel token verbatim.
+func validateNoReservedPlaceholders(blocks []declarative.Block) error {
+	for _, b := range blocks {
+		for field, v := range b.Content {
+			s, ok := v.(string)
+			if !ok {
+				continue
+			}
+			for _, token := range reservedPlaceholders {
+				if strings.Contains(s, token) {
+					return fmt.Errorf("%w: block_type %q field %q contains reserved placeholder token %q", domain.ErrInvalidRequest, b.BlockType, field, token)
+				}
+			}
+		}
+		if err := validateNoReservedPlaceholders(b.Blocks); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RenderPreview renders a layout to email-safe HTML for the stateless editor

@@ -123,6 +123,47 @@ func TestCreateDraft_UnrenderableLayout_ErrorsAndPersistsNothing(t *testing.T) {
 	}
 }
 
+// TestCreateDraft_LayoutContentWithReservedPlaceholder_Rejected proves a
+// writer-controlled block field cannot smuggle a send-time sentinel token
+// (e.g. into an <Img src="...">) — which bind.go's scheme gate would let
+// through unmodified as a whole-value sentinel match, and which
+// substitutePlaceholders would then globally swap for the recipient's real
+// per-recipient URL at send time, auto-firing an unsubscribe when the
+// recipient's mail client loads the image.
+func TestCreateDraft_LayoutContentWithReservedPlaceholder_Rejected(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, true)
+
+	layout := &declarative.Layout{
+		Blocks: []declarative.Block{
+			{
+				BlockType: "logo_header",
+				Content:   map[string]any{"image_url": UnsubscribeURLPlaceholder},
+			},
+		},
+	}
+	_, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "Malicious image src",
+		BodyLayout:    layout,
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if err == nil {
+		t.Fatal("expected error for reserved placeholder in block content, got nil")
+	}
+	if !IsValidationError(err) {
+		t.Errorf("expected validation (400) error, got %v", err)
+	}
+	repo.mu.Lock()
+	n := len(repo.drafts)
+	repo.mu.Unlock()
+	if n != 0 {
+		t.Errorf("expected nothing persisted, got %d drafts", n)
+	}
+}
+
 // TestCreateDraft_TemplateKey_RoundTripsAndRendersFromSelectedLibrary asserts a
 // layout carrying an explicit template_key persists that key and derives its
 // body_html from the named library.
@@ -154,6 +195,37 @@ func TestCreateDraft_TemplateKey_RoundTripsAndRendersFromSelectedLibrary(t *test
 	}
 	if !strings.Contains(draft.BodyHTML, marker) {
 		t.Errorf("derived body_html missing block content %q; got:\n%s", marker, draft.BodyHTML)
+	}
+}
+
+// TestCreateDraft_TemplateKey_WhitespacePadded_PersistsTrimmed proves a
+// whitespace-padded template_key persists trimmed, matching the key the
+// render actually resolved against — otherwise the padded value would persist
+// as-is and fail to match any catalog key on a later reload.
+func TestCreateDraft_TemplateKey_WhitespacePadded_PersistsTrimmed(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, true)
+
+	layout := introLayout("Padded key")
+	layout.TemplateKey = "  default  "
+
+	draft, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "News",
+		BodyLayout:    layout,
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	var stored declarative.Layout
+	if err := json.Unmarshal(draft.BodyLayout, &stored); err != nil {
+		t.Fatalf("unmarshal stored layout: %v", err)
+	}
+	if stored.TemplateKey != "default" {
+		t.Errorf("template_key did not persist trimmed: got %q, want %q", stored.TemplateKey, "default")
 	}
 }
 
@@ -380,11 +452,12 @@ func TestRenderLayout_WrapperRuntimeFields(t *testing.T) {
 	}
 }
 
-// TestRenderLayout_UnsubscribeDisabled_DropsOptOutRow proves the blocking
-// review finding is fixed: with the unsubscribe service unconfigured, the
-// wrapper's opt-out row is dropped at render time instead of shipping a link
-// whose href would substitute to an empty string.
-func TestRenderLayout_UnsubscribeDisabled_DropsOptOutRow(t *testing.T) {
+// TestRenderLayout_UnsubscribeDisabled_RendersReplyFallback proves that with
+// the unsubscribe service unconfigured, the wrapper's opt-out row renders the
+// reply-based fallback copy (sendUnsubFooterMode(false) ->
+// unsubFooterReplyFallback) instead of a working link — never omitting the
+// opt-out row entirely.
+func TestRenderLayout_UnsubscribeDisabled_RendersReplyFallback(t *testing.T) {
 	repo := newFakeRepo()
 	svc := NewNewsletterService(repo, false)
 
@@ -404,6 +477,9 @@ func TestRenderLayout_UnsubscribeDisabled_DropsOptOutRow(t *testing.T) {
 		if strings.Contains(draft.BodyHTML, reject) {
 			t.Errorf("unsubscribe disabled: derived body_html must not contain %q; got:\n%s", reject, draft.BodyHTML)
 		}
+	}
+	if !strings.Contains(draft.BodyHTML, unsubscribeReplyFallbackText) {
+		t.Errorf("unsubscribe disabled: derived body_html must contain the reply fallback copy %q; got:\n%s", unsubscribeReplyFallbackText, draft.BodyHTML)
 	}
 	// The rest of the footer still renders.
 	if !strings.Contains(draft.BodyHTML, "Delivered by LFX") {
