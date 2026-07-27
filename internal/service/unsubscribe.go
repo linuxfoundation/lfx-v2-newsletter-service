@@ -27,6 +27,28 @@ import (
 // envelope for every recipient.
 const UnsubscribeURLPlaceholder = "%%UNSUBSCRIBE_URL%%"
 
+// ViewOnlineURLPlaceholder and ManageSubscriptionsURLPlaceholder are the
+// sibling sentinels for the wrapper's other runtime URLs. Render-on-write
+// currently binds BOTH fields empty (no hosted web version and no preferences
+// surface exist yet), so the wrapper's guarded rows are omitted; the send
+// path's substitutions for these two are defensive backstops for bodies
+// rendered before that change, resolving them to empty rather than shipping
+// raw %%…%% text.
+const (
+	ViewOnlineURLPlaceholder          = "%%VIEW_ONLINE_URL%%"
+	ManageSubscriptionsURLPlaceholder = "%%MANAGE_SUBSCRIPTIONS_URL%%"
+)
+
+// SenderNamePlaceholder and ProjectNamePlaceholder are send-scoped sentinels
+// for the wrapper's compliance footer ("Sent by X on behalf of Y"). They are
+// bound at render-on-write and substituted ONCE per send (not per recipient)
+// because the sender display name is only resolved from the sending
+// principal's profile at send time.
+const (
+	SenderNamePlaceholder  = "%%SENDER_NAME%%"
+	ProjectNamePlaceholder = "%%PROJECT_NAME%%"
+)
+
 // unsubscribePath is the public route the handler registers for the
 // one-click unsubscribe link.
 const unsubscribePath = "/newsletters/unsubscribe"

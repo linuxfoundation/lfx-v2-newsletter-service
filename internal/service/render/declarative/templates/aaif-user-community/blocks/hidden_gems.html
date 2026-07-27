@@ -1,0 +1,13 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: { "title":{"type":"text","label":"Title"}, "gems":{"type":"array","label":"Gems","fields":{"link_text":{"type":"text"},"link_url":{"type":"text"},"description":{"type":"richtext"}}} } -->
+<Section class="card">
+  <div style="padding:15px 15px 5px">
+    <Text class="eyebrow">HIDDEN GEMS</Text>
+    <Heading if="title" class="title">{{title}}</Heading>
+    <div each="gems" style="margin:0 0 14px">
+      <Text class="body" style="margin:0 0 4px"><strong><Link href="{{link_url}}" class="link">{{link_text}}</Link></strong></Text>
+      <richtext field="description" class="body" />
+    </div>
+  </div>
+</Section>

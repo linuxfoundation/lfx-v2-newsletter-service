@@ -1,0 +1,20 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: {
+  "greeting": {"type":"text","label":"Greeting","default":"To the LF Team:"},
+  "body":     {"type":"richtext","label":"Letter body"},
+  "signoff":  {"type":"text","label":"Sign-off","default":"LF"}
+} -->
+<!-- CATEGORY: letter -->
+
+<!--
+  The personal letter that opens the Executive Director weekly newsletter:
+  a greeting line, several free-flowing paragraphs with inline links, and a
+  short sign-off initialism. Plain letter styling, no card chrome.
+-->
+
+<Section style="padding:0 15px">
+  <Text style="font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#000;padding:10px 0 0">{{greeting}}</Text>
+  <richtext field="body" style="font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#000;padding:10px 0" />
+  <Text if="signoff" style="font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#000;padding:0 0 10px">{{signoff}}</Text>
+</Section>

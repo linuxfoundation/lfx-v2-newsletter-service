@@ -4,6 +4,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
@@ -50,7 +51,7 @@ func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusAccepted
 	}
 	w.Header().Set("ETag", formatETag(result.Newsletter.Version))
-	writeJSON(r.Context(), w, status, toAPISendResponse(result))
+	writeJSON(r.Context(), w, status, toAPISendResponse(r.Context(), result))
 }
 
 // RecipientCount handles POST /projects/{project_uid}/newsletters/recipient-count.
@@ -106,6 +107,8 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 		BodyHTML:     body.BodyHTML,
 		ToEmail:      body.ToEmail,
 		EDReplyEmail: body.EDReplyEmail,
+		IsLayout:     body.IsLayout,
+		BodyLayout:   toEmitterLayoutPtr(body.BodyLayout),
 		Principal:    UserFromContext(r.Context()),
 	}); err != nil {
 		writeError(r.Context(), w, err)
@@ -115,13 +118,20 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 }
 
 // toAPISendResponse converts a service SendResult into the public API DTO.
-func toAPISendResponse(result *service.SendResult) publicapi.SendNewsletterResponse {
+func toAPISendResponse(ctx context.Context, result *service.SendResult) publicapi.SendNewsletterResponse {
 	failures := make([]publicapi.SendFailure, 0, len(result.Failures))
 	for _, f := range result.Failures {
 		failures = append(failures, publicapi.SendFailure{Email: f.Email, Error: f.Error})
 	}
+	newsletter := toAPINewsletter(ctx, result.Newsletter)
+	// The send response echoes the newsletter's post-send state (status, counts),
+	// not its editable content. Omit body_layout here — as list rows do — so the
+	// structured layout is carried only by the explicit get / create / update
+	// single-resource reads (see docs/newsletter-service-contract.md). The client
+	// already holds the layout it just sent.
+	newsletter.BodyLayout = nil
 	return publicapi.SendNewsletterResponse{
-		Newsletter:      *toAPINewsletter(result.Newsletter),
+		Newsletter:      *newsletter,
 		GroupID:         result.GroupID,
 		TotalRecipients: result.TotalRecipients,
 		Sent:            result.Sent,
