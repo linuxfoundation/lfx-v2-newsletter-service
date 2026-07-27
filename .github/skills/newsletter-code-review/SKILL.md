@@ -79,5 +79,7 @@ Run these on the changed code, scaled to the size of the change:
   edge case, a clean migration), say so in the verdict's summary; it shows
   the review was real and reinforces the pattern.
 
-The severity ladder comes from the `/copilot-code-reviewer` skill; this skill
-decides what is a finding, not the ladder.
+The severity ladder and the noise budget (confidence gating, clustering, the
+nit cap) come from the `/copilot-code-reviewer` skill; this skill decides what
+is a finding, not how many comments it is worth. A clean diff yielding no
+findings is a valid outcome.
