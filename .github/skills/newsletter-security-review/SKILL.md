@@ -29,7 +29,8 @@ Those facts set the stakes for every security judgment here.
 Run a focused, **diff-aware** review, not a whole-repo audit:
 
 1. **Only new risk.** Assess what this PR introduces or weakens. Do not
-   relitigate pre-existing issues the diff does not touch (at most a `nit`).
+   relitigate pre-existing issues the diff does not touch: they are not
+   findings here unless this change introduces or triggers them.
 2. **Assume hostile input, report only what is real.** Flag only
    high-confidence, concretely exploitable findings: if you cannot trace a
    path from an attacker-controlled input to a sensitive sink, it is not

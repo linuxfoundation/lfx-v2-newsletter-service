@@ -14,7 +14,10 @@ the `/copilot-code-reviewer` skill and follow it exactly. Post one inline commen
 per finding (each prefixed with a severity like `[high]`) plus a summary, through
 your native review publishing (the code-review flow creates inline review threads
 itself; the GitHub MCP server's write tools are for the escalation and conductor
-tasks, which only add issue comments and thread replies).
+tasks, which only add issue comments and thread replies). Comment only on the
+lines this PR changes, and only when you are confident the issue is real — the
+skill's *Signal discipline* section is the bar, and it applies on every re-review
+round, not just the first.
 
 ## 2. needs-human escalation
 

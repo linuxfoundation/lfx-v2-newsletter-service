@@ -70,7 +70,9 @@ Run these on the changed code, scaled to the size of the change:
 - **Pragmatic.** Substance over style: leave to the linters what the linters
   own, do not propose rewrites of a sound approach, and do not suggest
   change for its own sake; working, readable code needs no improvement.
-  Pre-existing issues the diff does not touch are at most a `nit`.
+  Judge the lines the diff adds or modifies: a pre-existing issue the diff
+  does not touch is not a finding at all, unless this change directly
+  introduces or triggers it.
 - **Know your limits.** Distinguish "this is wrong" from "this might be a
   problem depending on context", and say which one you mean. When a judgment
   depends on something you cannot see (a peer repo's contract, a deployment
