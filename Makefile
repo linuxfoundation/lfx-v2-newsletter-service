@@ -20,6 +20,7 @@ CNPG_VERSION := 0.28.0
 KUBE_CONTEXT ?= orbstack
 KO_LOCAL_REPO := ko.local
 KO_LOCAL_TAG := local
+KO_LOCAL_IMAGE := $(KO_LOCAL_REPO)/newsletter-api
 
 GO_VERSION := 1.25.0
 GOLANGCI_LINT_VERSION := v2.12.2
@@ -150,11 +151,11 @@ redeploy-local:
 	@which ko >/dev/null 2>&1 || (echo "ko not found — install from https://ko.build" && exit 1)
 	@set -e; \
 	TAG=local-$$(date +%Y%m%d%H%M%S); \
-	echo "==> Building $(KO_LOCAL_REPO):$$TAG from $$(git rev-parse --short HEAD)..."; \
+	echo "==> Building $(KO_LOCAL_IMAGE):$$TAG from $$(git rev-parse --short HEAD)..."; \
 	KO_DOCKER_REPO=$(KO_LOCAL_REPO) VERSION=$(VERSION) BUILD_TIME=$(BUILD_TIME) GIT_COMMIT=$(GIT_COMMIT) \
 		ko build --local --bare --tags=$$TAG ./cmd/newsletter-api && \
 	echo "==> Rolling $(HELM_RELEASE_NAME) to $$TAG..." && \
-	kubectl --context $(KUBE_CONTEXT) --namespace $(HELM_NAMESPACE) set image deploy/$(HELM_RELEASE_NAME) app=$(KO_LOCAL_REPO):$$TAG && \
+	kubectl --context $(KUBE_CONTEXT) --namespace $(HELM_NAMESPACE) set image deploy/$(HELM_RELEASE_NAME) app=$(KO_LOCAL_IMAGE):$$TAG && \
 	kubectl --context $(KUBE_CONTEXT) --namespace $(HELM_NAMESPACE) rollout status deploy/$(HELM_RELEASE_NAME) --timeout=180s
 
 # helm-uninstall removes the chart release. Run helm-uninstall-cnpg afterwards
