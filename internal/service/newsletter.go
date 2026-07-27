@@ -569,19 +569,15 @@ var reservedPlaceholders = []string{
 }
 
 // validateNoReservedPlaceholders rejects a layout whose block content —
-// including richtext fields, which are stored in the same Content map as any
-// other field — contains a reserved send-time sentinel token verbatim.
+// including richtext fields and each= array items (bind.go's lookupSlice
+// resolves each= against []any elements holding map[string]any), which are
+// stored in the same Content map as any other field — contains a reserved
+// send-time sentinel token verbatim, at any nesting depth.
 func validateNoReservedPlaceholders(blocks []declarative.Block) error {
 	for _, b := range blocks {
 		for field, v := range b.Content {
-			s, ok := v.(string)
-			if !ok {
-				continue
-			}
-			for _, token := range reservedPlaceholders {
-				if strings.Contains(s, token) {
-					return fmt.Errorf("%w: block_type %q field %q contains reserved placeholder token %q", domain.ErrInvalidRequest, b.BlockType, field, token)
-				}
+			if token, ok := findReservedPlaceholder(v); ok {
+				return fmt.Errorf("%w: block_type %q field %q contains reserved placeholder token %q", domain.ErrInvalidRequest, b.BlockType, field, token)
 			}
 		}
 		if err := validateNoReservedPlaceholders(b.Blocks); err != nil {
@@ -589,6 +585,33 @@ func validateNoReservedPlaceholders(blocks []declarative.Block) error {
 		}
 	}
 	return nil
+}
+
+// findReservedPlaceholder recursively inspects a Content value — a string,
+// or a JSON-decoded []any / map[string]any produced by each= array items and
+// nested object fields — for a reserved placeholder token.
+func findReservedPlaceholder(v any) (string, bool) {
+	switch val := v.(type) {
+	case string:
+		for _, token := range reservedPlaceholders {
+			if strings.Contains(val, token) {
+				return token, true
+			}
+		}
+	case []any:
+		for _, item := range val {
+			if token, ok := findReservedPlaceholder(item); ok {
+				return token, true
+			}
+		}
+	case map[string]any:
+		for _, item := range val {
+			if token, ok := findReservedPlaceholder(item); ok {
+				return token, true
+			}
+		}
+	}
+	return "", false
 }
 
 // RenderPreview renders a layout to email-safe HTML for the stateless editor

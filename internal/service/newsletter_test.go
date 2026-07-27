@@ -164,6 +164,52 @@ func TestCreateDraft_LayoutContentWithReservedPlaceholder_Rejected(t *testing.T)
 	}
 }
 
+// TestCreateDraft_LayoutContentNestedArrayWithReservedPlaceholder_Rejected
+// proves the reserved-placeholder check also inspects each= array items
+// (bind.go's lookupSlice resolves each= against []any elements holding
+// map[string]any, not just top-level string fields), so a writer cannot
+// smuggle a sentinel into a nested field like news_items[].source_url.
+func TestCreateDraft_LayoutContentNestedArrayWithReservedPlaceholder_Rejected(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, true)
+
+	layout := &declarative.Layout{
+		Blocks: []declarative.Block{
+			{
+				BlockType: "news_items",
+				Content: map[string]any{
+					"items": []any{
+						map[string]any{
+							"headline":   "Item",
+							"source_url": UnsubscribeURLPlaceholder,
+						},
+					},
+				},
+			},
+		},
+	}
+	_, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "Malicious nested array field",
+		BodyLayout:    layout,
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if err == nil {
+		t.Fatal("expected error for reserved placeholder in nested array content, got nil")
+	}
+	if !IsValidationError(err) {
+		t.Errorf("expected validation (400) error, got %v", err)
+	}
+	repo.mu.Lock()
+	n := len(repo.drafts)
+	repo.mu.Unlock()
+	if n != 0 {
+		t.Errorf("expected nothing persisted, got %d drafts", n)
+	}
+}
+
 // TestCreateDraft_TemplateKey_RoundTripsAndRendersFromSelectedLibrary asserts a
 // layout carrying an explicit template_key persists that key and derives its
 // body_html from the named library.

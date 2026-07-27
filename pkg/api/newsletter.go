@@ -218,8 +218,14 @@ type LayoutBlock struct {
 type NewsletterLayout struct {
 	WrapperKey string `json:"wrapper_key"`
 	// TemplateKey selects which block library the layout was composed from and is
-	// rendered with. Optional: empty means the default render library, so layouts
-	// saved before per-newsletter selection stay valid.
+	// rendered with. Optional: empty does NOT mean the "default" library — it
+	// falls back to the aaif-user-community block superset paired with the
+	// neutral "default" wrapper (see declarative.RenderTemplateKey /
+	// NeutralWrapperTemplateKey), so a layout composed without an explicit
+	// library, or saved before per-newsletter selection, still resolves every
+	// block the editor can offer. Explicitly setting "default" instead selects
+	// that library's own smaller block set and wrapper, and renders differently
+	// from an empty key.
 	TemplateKey string        `json:"template_key,omitempty"`
 	Blocks      []LayoutBlock `json:"blocks"`
 }
