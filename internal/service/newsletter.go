@@ -41,9 +41,9 @@ const (
 type NewsletterService struct {
 	repo port.NewsletterRepository
 	// unsubEnabled mirrors UnsubscribeService.Enabled(). When false the
-	// render-on-write step binds an empty unsubscribe URL so the wrapper's
-	// `if=` guard drops the opt-out row entirely, instead of rendering a row
-	// whose href would substitute to an empty string at send time.
+	// render-on-write step renders the reply-based opt-out fallback copy
+	// (unsubFooterReplyFallback) instead of a link whose href would
+	// substitute to an empty string at send time.
 	unsubEnabled bool
 }
 

@@ -392,7 +392,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 func (o *SendOrchestrator) reRenderLayoutBody(ctx context.Context, draft *model.Newsletter, replyTo string) (string, bool) {
 	var layout declarative.Layout
 	if err := json.Unmarshal(draft.BodyLayout, &layout); err != nil {
-		slog.WarnContext(ctx, "newsletter send: stored body_layout unparseable; caller refuses the send when unsubscribe is enabled, else dispatches persisted body_html whose compliance footer may reflect write-time config",
+		slog.WarnContext(ctx, "newsletter send: stored body_layout unparseable; caller refuses the send",
 			"newsletter_id", draft.ID,
 			"project_uid", draft.ProjectUID,
 			"error", err,
@@ -406,7 +406,7 @@ func (o *SendOrchestrator) reRenderLayoutBody(ctx context.Context, draft *model.
 	// HTML, so the two stay consistent.
 	html, _, err := renderLayout(ctx, &layout, replyTo, sendUnsubFooterMode(o.unsub.Enabled()))
 	if err != nil {
-		slog.WarnContext(ctx, "newsletter send: body_layout re-render failed; caller refuses the send when unsubscribe is enabled, else dispatches persisted body_html whose compliance footer may reflect write-time config",
+		slog.WarnContext(ctx, "newsletter send: body_layout re-render failed; caller refuses the send",
 			"newsletter_id", draft.ID,
 			"project_uid", draft.ProjectUID,
 			"error", err,
@@ -420,7 +420,7 @@ func (o *SendOrchestrator) reRenderLayoutBody(ctx context.Context, draft *model.
 	// and ok=false routes it through the same refuse/fallback policy as any other
 	// re-render failure.
 	if err := validateDerivedBodyHTML(html); err != nil {
-		slog.WarnContext(ctx, "newsletter send: re-rendered body_layout exceeds the size cap; caller refuses the send when unsubscribe is enabled, else dispatches persisted body_html",
+		slog.WarnContext(ctx, "newsletter send: re-rendered body_layout exceeds the size cap; caller refuses the send",
 			"newsletter_id", draft.ID,
 			"project_uid", draft.ProjectUID,
 			"error", err,

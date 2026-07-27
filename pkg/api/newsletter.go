@@ -160,10 +160,11 @@ type TestSendRequest struct {
 	IsLayout bool `json:"is_layout,omitempty"`
 	// BodyLayout, when present, is the structured layout the service recompiles
 	// server-side for the test send. It is the sole layout trigger and suppresses
-	// the unsubscribe / compliance footer (a non-recipient test mints no opt-out
-	// token, so the footer would otherwise render a dangling empty Unsubscribe
-	// link). Send the layout — not a pre-compiled body_html — for a layout test
-	// send so its footer matches the real send.
+	// only the unsubscribe opt-out row (a non-recipient test mints no opt-out
+	// token, so the row would otherwise render a dangling empty Unsubscribe
+	// link); the sender/reply/delivery attribution in the compliance footer
+	// still renders. Send the layout — not a pre-compiled body_html — for a
+	// layout test send so its footer matches the real send.
 	BodyLayout   *NewsletterLayout `json:"body_layout,omitempty"`
 	EDReplyEmail string            `json:"ed_reply_email,omitempty"`
 }
