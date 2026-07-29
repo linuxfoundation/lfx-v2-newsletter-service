@@ -142,13 +142,15 @@ type NewsletterListResponse struct {
 // CommitteeNewsletter is one row in the committee-scoped list response. This
 // is the member-facing shape: it deliberately omits body_html (payload size —
 // members fetch the body via the single-resource endpoint), ed_reply_email,
-// group_id, and created_by (manager-only concerns).
+// group_id, and created_by (manager-only concerns), and committee_uids (the
+// full audience would disclose every other committee a newsletter was
+// addressed to; the caller already knows their own committee matched by
+// construction of the route).
 type CommitteeNewsletter struct {
-	ID            string     `json:"id"`
-	ProjectUID    string     `json:"project_uid"`
-	Subject       string     `json:"subject"`
-	CommitteeUIDs []string   `json:"committee_uids"`
-	SentAt        *time.Time `json:"sent_at,omitempty"`
+	ID         string     `json:"id"`
+	ProjectUID string     `json:"project_uid"`
+	Subject    string     `json:"subject"`
+	SentAt     *time.Time `json:"sent_at,omitempty"`
 }
 
 // CommitteeNewsletterListResponse is the body of

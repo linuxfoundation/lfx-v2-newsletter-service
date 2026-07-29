@@ -15,8 +15,9 @@ import (
 )
 
 // TestToAPICommitteeNewsletter verifies the member-facing DTO mapping: the
-// identifying/list fields carry through, and manager-only fields (body_html,
-// ed_reply_email, group_id, created_by) never appear in the serialized shape.
+// identifying/list fields carry through, and neither manager-only fields
+// (body_html, ed_reply_email, group_id, created_by) nor the full committee
+// audience ever appear in the serialized shape.
 func TestToAPICommitteeNewsletter(t *testing.T) {
 	id := uuid.New()
 	sentAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
@@ -41,9 +42,6 @@ func TestToAPICommitteeNewsletter(t *testing.T) {
 	if dto.ProjectUID != "project-1" || dto.Subject != "Quarterly update" {
 		t.Errorf("got (%s, %s), want (project-1, Quarterly update)", dto.ProjectUID, dto.Subject)
 	}
-	if len(dto.CommitteeUIDs) != 2 {
-		t.Errorf("CommitteeUIDs: got %v, want 2 entries", dto.CommitteeUIDs)
-	}
 	if dto.SentAt == nil || !dto.SentAt.Equal(sentAt) {
 		t.Errorf("SentAt: got %v, want %v", dto.SentAt, sentAt)
 	}
@@ -52,7 +50,9 @@ func TestToAPICommitteeNewsletter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	for _, leak := range []string{"secret-draft-content", "ed@example.com", "group-123", "sender-user"} {
+	// committee-a / committee-b: a member of one committee must not be able to
+	// enumerate the newsletter's other audience committees from this DTO.
+	for _, leak := range []string{"secret-draft-content", "ed@example.com", "group-123", "sender-user", "committee-a", "committee-b"} {
 		if strings.Contains(string(body), leak) {
 			t.Errorf("member-facing DTO leaked %q: %s", leak, body)
 		}

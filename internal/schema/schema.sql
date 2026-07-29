@@ -103,6 +103,10 @@ CREATE INDEX IF NOT EXISTS idx_newsletters_list
 
 -- GIN index on the committee audience array supports the committee-scoped
 -- containment query (committee_uids @> ARRAY[uid]) used by ListSentByCommittee.
+-- The query's (sent_at DESC, id DESC) keyset ordering is deliberately NOT
+-- index-backed: array containment can't participate in a btree, and the GIN
+-- filter narrows to one committee's sent newsletters — a bounded set (tens,
+-- not thousands) that Postgres sorts in memory per page without issue.
 CREATE INDEX IF NOT EXISTS idx_newsletters_committee_uids
     ON newsletters USING GIN (committee_uids);
 

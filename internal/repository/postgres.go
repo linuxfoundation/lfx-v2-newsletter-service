@@ -168,6 +168,11 @@ func (r *PostgresNewsletterRepo) ListSentByCommittee(ctx context.Context, commit
 	if len(rows) > defaultListLimit {
 		last := rows[defaultListLimit-1]
 		page.Newsletters = rows[:defaultListLimit]
+		// last.SentAt is always set in practice: both sent transitions
+		// (MarkSent, RecoverStuckSending) persist sent_at, and this query
+		// filters status='sent'. The DB doesn't enforce that invariant with a
+		// CHECK, so guard anyway — the failure mode is a suppressed
+		// NextPageToken (list truncates at this page) rather than a panic.
 		if last.SentAt != nil {
 			page.NextPageToken = encodeSentCursor(sentListCursor{SentAt: *last.SentAt, ID: last.ID})
 		}

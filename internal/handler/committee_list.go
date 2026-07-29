@@ -43,13 +43,15 @@ func (h *Handler) ListCommitteeNewsletters(w http.ResponseWriter, r *http.Reques
 
 // toAPICommitteeNewsletter converts a domain Newsletter into the member-facing
 // committee list DTO. body_html is intentionally excluded — members fetch the
-// rendered body via GET /projects/{project_uid}/newsletters/{newsletter_uid}.
+// rendered body via GET /projects/{project_uid}/newsletters/{newsletter_uid}
+// (whose project viewer relation includes all authenticated users in the
+// platform model). committee_uids is excluded so a single-committee member
+// can't enumerate the newsletter's full cross-committee audience.
 func toAPICommitteeNewsletter(n *model.Newsletter) publicapi.CommitteeNewsletter {
 	return publicapi.CommitteeNewsletter{
-		ID:            n.ID.String(),
-		ProjectUID:    n.ProjectUID,
-		Subject:       n.Subject,
-		CommitteeUIDs: n.CommitteeUIDs,
-		SentAt:        n.SentAt,
+		ID:         n.ID.String(),
+		ProjectUID: n.ProjectUID,
+		Subject:    n.Subject,
+		SentAt:     n.SentAt,
 	}
 }
