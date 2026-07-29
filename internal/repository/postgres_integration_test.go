@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +47,21 @@ func newIntegrationRepo(t *testing.T) *PostgresNewsletterRepo {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
+
+	// Runtime guard, not just a doc warning: this helper TRUNCATEs the
+	// newsletters table, so refuse to run unless the connected database
+	// positively identifies as test-only. A mispointed env var (shared dev,
+	// staging, prod) fails loudly here before any destructive statement runs.
+	var dbName string
+	if err := pool.QueryRow(ctx, "SELECT current_database()").Scan(&dbName); err != nil {
+		pool.Close()
+		t.Fatalf("identify database: %v", err)
+	}
+	if !strings.Contains(dbName, "test") {
+		pool.Close()
+		t.Fatalf("refusing destructive repository tests against database %q — NEWSLETTER_TEST_DATABASE_URL must point at a dedicated test database whose name contains \"test\"", dbName)
+	}
+
 	if err := schema.Apply(ctx, pool); err != nil {
 		pool.Close()
 		t.Fatalf("apply schema: %v", err)

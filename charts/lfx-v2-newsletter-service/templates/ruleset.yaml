@@ -99,18 +99,21 @@ spec:
 
     # Committee-scoped newsletter list (member-facing). Unlike the
     # project-scoped rules above, FGA gates on `committee:{committee_uid}`
-    # with relation `member`: committee members may list the sent
-    # newsletters addressed to their committee. The member tuples are
-    # maintained by committee-service via fga-sync (member_put /
-    # member_remove), so revocation after a membership delete is eventual —
-    # normally near-immediate, but tuple removal is asynchronous and
-    # best-effort per committee-service's docs/fga-contract.md. The
-    # per-request check here guarantees no caching on top of tuple state:
-    # access ends as soon as the tuple is gone. `viewer` is unsuitable —
-    # the committee viewer relation includes the public wildcard [user:*].
-    # Does NOT fall back to allow_all — the membership check IS this route's
-    # entire authorization boundary, so it fails closed like the opt-out
-    # rules: the endpoint is unreachable when `openfga.enabled=false`.
+    # with `member` OR `auditor` (openfga_or_check): committee members may
+    # list the sent newsletters addressed to their committee, and the
+    # committee auditor relation folds in the oversight roles (committee
+    # writers, project auditors/writers, meeting coordinators) so holding a
+    # stronger role never grants less than membership — consistent with the
+    # rest of the platform. Member tuples are maintained by committee-service
+    # via fga-sync (member_put / member_remove), so revocation after a
+    # membership delete is eventual — normally near-immediate, but tuple
+    # removal is asynchronous and best-effort per committee-service's
+    # docs/fga-contract.md. The per-request check here guarantees no caching
+    # on top of tuple state: access ends as soon as the tuple is gone.
+    # `viewer` is unsuitable — the committee viewer relation includes the
+    # public wildcard [user:*]. Does NOT fall back to allow_all — this FGA
+    # check IS the route's entire authorization boundary, so it fails closed
+    # like the opt-out rules: unreachable when `openfga.enabled=false`.
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:committee_list"
       allow_encoded_slashes: 'off'
       match:
@@ -124,11 +127,13 @@ spec:
         {{- if .Values.app.use_oidc_contextualizer }}
         - contextualizer: oidc_contextualizer
         {{- end }}
-        - authorizer: openfga_check
+        - authorizer: openfga_or_check
           config:
             values:
               relation: member
               object: "committee:{{ "{{- .Request.URL.Captures.committee_uid -}}" }}"
+              or_relation: auditor
+              or_object: "committee:{{ "{{- .Request.URL.Captures.committee_uid -}}" }}"
         - finalizer: create_jwt
           config:
             values:

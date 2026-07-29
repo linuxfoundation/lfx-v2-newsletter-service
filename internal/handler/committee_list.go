@@ -14,9 +14,10 @@ import (
 // ListCommitteeNewsletters handles GET /committees/{committee_uid}/newsletters?page_token=...
 //
 // Member-facing read path: the Heimdall ruleset authorizes the caller against
-// `committee:{committee_uid}#member` before the request reaches this service,
-// so reaching the handler means the caller is a member per the OpenFGA tuple
-// state at request time. Tuples are maintained by committee-service via
+// `committee:{committee_uid}` `member` OR `auditor` before the request reaches
+// this service, so reaching the handler means the caller is a member (or holds
+// an oversight role that folds into auditor) per the OpenFGA tuple state at
+// request time. Tuples are maintained by committee-service via
 // fga-sync, so revocation after a membership delete is eventual (normally
 // near-immediate); the per-request check adds no caching on top of that.
 // Only sent newsletters are returned (enforced in the repository query);
