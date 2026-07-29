@@ -15,9 +15,12 @@ import (
 //
 // Member-facing read path: the Heimdall ruleset authorizes the caller against
 // `committee:{committee_uid}#member` before the request reaches this service,
-// so reaching the handler means the caller is a current member of the
-// committee. Only sent newsletters are returned (enforced in the repository
-// query); drafts and in-flight sends stay manager-only.
+// so reaching the handler means the caller is a member per the OpenFGA tuple
+// state at request time. Tuples are maintained by committee-service via
+// fga-sync, so revocation after a membership delete is eventual (normally
+// near-immediate); the per-request check adds no caching on top of that.
+// Only sent newsletters are returned (enforced in the repository query);
+// drafts and in-flight sends stay manager-only.
 func (h *Handler) ListCommitteeNewsletters(w http.ResponseWriter, r *http.Request) {
 	committeeUID := r.PathValue("committee_uid")
 	pageToken := r.URL.Query().Get("page_token")

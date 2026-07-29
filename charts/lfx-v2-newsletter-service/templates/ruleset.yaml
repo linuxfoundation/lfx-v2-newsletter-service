@@ -99,9 +99,14 @@ spec:
 
     # Committee-scoped newsletter list (member-facing). Unlike the
     # project-scoped rules above, FGA gates on `committee:{committee_uid}`
-    # with relation `member`: current committee members may list the sent
-    # newsletters addressed to their committee, and losing membership
-    # revokes access on the next request. `viewer` is unsuitable here —
+    # with relation `member`: committee members may list the sent
+    # newsletters addressed to their committee. The member tuples are
+    # maintained by committee-service via fga-sync (member_put /
+    # member_remove), so revocation after a membership delete is eventual —
+    # normally near-immediate, but tuple removal is asynchronous and
+    # best-effort per committee-service's docs/fga-contract.md. The
+    # per-request check here guarantees no caching on top of tuple state:
+    # access ends as soon as the tuple is gone. `viewer` is unsuitable —
     # the committee viewer relation includes the public wildcard [user:*].
     # Does NOT fall back to allow_all — the membership check IS this route's
     # entire authorization boundary, so it fails closed like the opt-out
