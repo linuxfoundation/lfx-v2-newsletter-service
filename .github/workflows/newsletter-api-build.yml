@@ -15,6 +15,24 @@ jobs:
     env:
       GOTOOLCHAIN: local
 
+    # Throwaway database for the Postgres-backed repository tests
+    # (internal/repository/postgres_integration_test.go). Those tests skip
+    # when NEWSLETTER_TEST_DATABASE_URL is unset, so local `go test ./...`
+    # stays green without a database.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: newsletter_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
         with:
@@ -43,6 +61,8 @@ jobs:
         run: make build
 
       - name: Test
+        env:
+          NEWSLETTER_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/newsletter_test?sslmode=disable
         run: go test ./... -v
 
       - name: Vulnerability scan

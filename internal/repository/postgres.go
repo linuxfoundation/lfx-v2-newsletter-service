@@ -605,5 +605,12 @@ func decodeSentCursor(token string) (sentListCursor, error) {
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return sentListCursor{}, err
 	}
+	// json.Unmarshal happily accepts `{}` or `null`, leaving zero fields; a
+	// zero (sent_at, id) cursor would silently produce an empty/mispositioned
+	// page instead of surfacing as an invalid token. No legitimate cursor has
+	// either field zero — encodeSentCursor only runs for sent rows.
+	if c.SentAt.IsZero() || c.ID == uuid.Nil {
+		return sentListCursor{}, errors.New("cursor fields must be non-zero")
+	}
 	return c, nil
 }

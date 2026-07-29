@@ -103,6 +103,9 @@ spec:
     # newsletters addressed to their committee, and losing membership
     # revokes access on the next request. `viewer` is unsuitable here —
     # the committee viewer relation includes the public wildcard [user:*].
+    # Does NOT fall back to allow_all — the membership check IS this route's
+    # entire authorization boundary, so it fails closed like the opt-out
+    # rules: the endpoint is unreachable when `openfga.enabled=false`.
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:committee_list"
       allow_encoded_slashes: 'off'
       match:
@@ -116,15 +119,11 @@ spec:
         {{- if .Values.app.use_oidc_contextualizer }}
         - contextualizer: oidc_contextualizer
         {{- end }}
-        {{- if .Values.openfga.enabled }}
         - authorizer: openfga_check
           config:
             values:
               relation: member
               object: "committee:{{ "{{- .Request.URL.Captures.committee_uid -}}" }}"
-        {{- else }}
-        - authorizer: allow_all
-        {{- end }}
         - finalizer: create_jwt
           config:
             values:

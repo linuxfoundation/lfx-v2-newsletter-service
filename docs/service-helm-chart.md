@@ -66,6 +66,7 @@ In CNPG modes and `external.shape=fields`, the deployment forwards `PGHOST`, `PG
 - `^/projects/[^/]+/newsletters(/.*)?$`
 - `^/projects/[^/]+/newsletter-opt-outs(/.*)?$`
 - `^/projects/[^/]+/newsletter-opens/[^/]+$`
+- `^/committees/[^/]+/newsletters$` (member-facing committee-scoped list)
 - `/newsletters/unsubscribe` (exact)
 
 When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
@@ -75,9 +76,10 @@ When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 - Most authenticated project routes (newsletter CRUD, analytics, etc.) authenticate via OIDC and fall back to `allow_all` when `openfga.enabled=false`. When OpenFGA is enabled, these routes enforce `viewer` (read) or `writer` (write) roles.
 - The opt-out list endpoint (`GET /projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor` role and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` or OpenFGA is misconfigured — that is intentional for PII security.
 - The opt-out delete endpoint (`DELETE /projects/{project_uid}/newsletter-opt-outs/{opt_out_id}`) mutates a user's consent record and is **always fail-closed**: it uses direct `openfga_check` with the `writer` role and does NOT have an `allow_all` fallback, matching the security posture of the list endpoint.
+- The committee-scoped list (`GET /committees/{committee_uid}/newsletters`) is **always fail-closed**: it uses direct `openfga_check` with the `member` relation on `committee:{committee_uid}` and does NOT have an `allow_all` fallback. The live-membership check is the route's entire authorization boundary, so it is unreachable when `openfga.enabled=false` — that is intentional.
 - The open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` are intentionally unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
 
-`openfga.enabled=false` is the default. When false, most routes still work via `allow_all`, but the opt-out endpoints become unreachable. Enable OpenFGA to access the opt-out list and delete endpoints.
+`openfga.enabled=false` is the default. When false, most routes still work via `allow_all`, but the opt-out endpoints and the committee-scoped newsletter list become unreachable. Enable OpenFGA to access them.
 
 ## Local Development
 

@@ -28,9 +28,24 @@ func TestSentCursorRoundTrip(t *testing.T) {
 }
 
 func TestSentCursorRejectsMalformedTokens(t *testing.T) {
-	for _, token := range []string{"not-base64!", "bm90LWpzb24", ""} {
+	// "e30" is base64url("{}") and "bnVsbA" is base64url("null"): both decode
+	// and unmarshal cleanly but leave zero cursor fields, which must be
+	// rejected rather than silently produce an empty/mispositioned page.
+	for _, token := range []string{"not-base64!", "bm90LWpzb24", "", "e30", "bnVsbA"} {
 		if _, err := decodeSentCursor(token); err == nil {
 			t.Errorf("decodeSentCursor(%q): expected error, got nil", token)
+		}
+	}
+}
+
+func TestSentCursorRejectsPartiallyZeroCursors(t *testing.T) {
+	sentAt := time.Date(2026, 7, 1, 12, 30, 45, 0, time.UTC)
+	for name, c := range map[string]sentListCursor{
+		"zero id":      {SentAt: sentAt},
+		"zero sent_at": {ID: uuid.New()},
+	} {
+		if _, err := decodeSentCursor(encodeSentCursor(c)); err == nil {
+			t.Errorf("%s: expected error, got nil", name)
 		}
 	}
 }
