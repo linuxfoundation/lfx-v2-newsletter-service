@@ -64,6 +64,9 @@ const (
 // cell that hosts text so Outlook desktop doesn't fall back to Times.
 const fontStack = `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif`
 
+// monoFontStack is the monospace counterpart used for code and pre.
+const monoFontStack = `'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace`
+
 // Per-tag inline styles applied to the authored body so Gmail/Outlook render
 // header underlines, blockquotes, branded links etc. — Gmail strips <style>
 // blocks so each tag has to carry its own `style=` attribute. Mirrors the
@@ -80,12 +83,22 @@ var bodyTagStyles = map[string]string{
 	"a":          "color:" + colorBlue500 + ";text-decoration:underline;",
 	"strong":     "color:" + colorGray900 + ";font-weight:600;",
 	"b":          "color:" + colorGray900 + ";font-weight:600;",
+	// display:block avoids the stray baseline gap inline images get inside
+	// table cells; max-width keeps them inside the 680px card on mobile.
+	"img": "display:block;max-width:100%;height:auto;border:0;border-radius:8px;",
+	// Inline code chip. Quill emits block code as a bare <pre class="ql-syntax">
+	// with no nested <code>, so the chip styling never stacks inside the panel.
+	"code": "font-family:" + monoFontStack + ";font-size:14px;color:" + colorGray800 + ";background-color:" + colorGray50 + ";border:1px solid " + colorGray200 + ";border-radius:4px;padding:2px 6px;",
+	// pre-wrap keeps authored whitespace but still wraps, and break-word
+	// forces a break inside long unbroken tokens — email clients don't
+	// scroll a <pre>, so an unwrapped long line would stretch the card.
+	"pre": "font-family:" + monoFontStack + ";font-size:14px;color:" + colorGray800 + ";background-color:" + colorGray50 + ";border:1px solid " + colorGray200 + ";border-radius:6px;padding:14px 16px;margin:16px 0;line-height:1.55;white-space:pre-wrap;word-break:break-word;",
 }
 
 // inlineBodyStylesTagOrder is the deterministic walk order for inlineBodyStyles.
 // Map iteration in Go is randomized; without this every render would produce a
 // different style attribute (harmless functionally, noisy in tests/diffs).
-var inlineBodyStylesTagOrder = []string{"p", "h2", "h3", "ul", "ol", "li", "blockquote", "hr", "a", "strong", "b"}
+var inlineBodyStylesTagOrder = []string{"p", "h2", "h3", "ul", "ol", "li", "blockquote", "hr", "a", "strong", "b", "img", "code", "pre"}
 
 // htmlEscaper escapes the five characters that need HTML entity treatment in
 // chrome strings (subject, display name, sender, reply-to). bodyHtml is NOT
@@ -112,7 +125,10 @@ func inlineBodyStyles(html string) string {
 	for _, tag := range inlineBodyStylesTagOrder {
 		style := bodyTagStyles[tag]
 		// (?i) case-insensitive. Optional trailing `/` so `<hr/>` is also styled.
-		re := regexp.MustCompile(`(?i)<` + tag + `(\s[^>]*)?/?>`)
+		// The attribute run treats quoted values as opaque units so a `>` inside
+		// a quoted attribute (e.g. alt="a > b") cannot truncate the match before
+		// an author-supplied style= attribute.
+		re := regexp.MustCompile(`(?i)<` + tag + `(\s(?:[^>"']|"[^"]*"|'[^']*')*)?/?>`)
 		result = re.ReplaceAllStringFunc(result, func(match string) string {
 			attrs := extractAttrs(match, tag)
 			if hasStyleAttr(attrs) {
@@ -128,28 +144,91 @@ func inlineBodyStyles(html string) string {
 }
 
 // extractAttrs returns the attribute string of a tag match (everything between
-// the tag name and the closing `>`/`/>`), or empty.
+// the tag name and the closing `>`/`/>`), or empty. A non-empty result keeps
+// its leading whitespace so callers can concatenate it directly after the
+// injected style attribute.
 func extractAttrs(match, tag string) string {
 	// match is like "<p attrs...>" or "<p>" or "<hr/>".
 	inner := strings.TrimPrefix(match, "<")
 	inner = strings.TrimSuffix(inner, ">")
-	inner = strings.TrimSuffix(inner, "/")
-	inner = strings.TrimSpace(inner)
-	// Strip the leading tag name (case-insensitive).
+	// Strip the leading tag name (case-insensitive); the regex guarantees the
+	// match starts with "<" followed immediately by the tag name.
 	lower := strings.ToLower(inner)
 	if strings.HasPrefix(lower, strings.ToLower(tag)) {
 		inner = inner[len(tag):]
 	}
-	return inner
+	// A trailing solidus is a self-closing marker only when it is NOT part of
+	// an unquoted attribute value: directly after the tag name, or preceded by
+	// whitespace or a closing quote. HTML parses <img src=https://x/assets/>
+	// with the solidus as part of the value (no whitespace precedes it), so
+	// stripping it there would corrupt the URL — keep it.
+	if strings.HasSuffix(inner, "/") {
+		rest := inner[:len(inner)-1]
+		if rest == "" || isAttrSpace(rest[len(rest)-1]) || rest[len(rest)-1] == '"' || rest[len(rest)-1] == '\'' {
+			inner = rest
+		}
+	}
+	if strings.TrimSpace(inner) == "" {
+		return ""
+	}
+	return strings.TrimRight(inner, " \t\n\r\f")
 }
 
-var styleAttrRe = regexp.MustCompile(`(?i)\sstyle\s*=`)
-
-func hasStyleAttr(attrs string) bool {
-	if attrs == "" {
-		return false
+// isAttrSpace reports whether c is an HTML attribute-list whitespace byte.
+func isAttrSpace(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '\f':
+		return true
 	}
-	return styleAttrRe.MatchString(attrs)
+	return false
+}
+
+// hasStyleAttr reports whether the attribute string carries a real `style=`
+// attribute. It scans attribute names outside quoted values — a regex over
+// the raw text would also match "style=" occurring inside a quoted value
+// (e.g. alt="choose style=wide") and wrongly skip styling the tag.
+func hasStyleAttr(attrs string) bool {
+	i, n := 0, len(attrs)
+	for i < n {
+		for i < n && isAttrSpace(attrs[i]) {
+			i++
+		}
+		if i >= n {
+			break
+		}
+		start := i
+		for i < n && !isAttrSpace(attrs[i]) && attrs[i] != '=' {
+			i++
+		}
+		name := attrs[start:i]
+		for i < n && isAttrSpace(attrs[i]) {
+			i++
+		}
+		if i < n && attrs[i] == '=' {
+			if strings.EqualFold(name, "style") {
+				return true
+			}
+			i++ // consume '='
+			for i < n && isAttrSpace(attrs[i]) {
+				i++
+			}
+			if i < n && (attrs[i] == '"' || attrs[i] == '\'') {
+				quote := attrs[i]
+				i++
+				for i < n && attrs[i] != quote {
+					i++
+				}
+				if i < n {
+					i++ // consume closing quote
+				}
+			} else {
+				for i < n && !isAttrSpace(attrs[i]) {
+					i++
+				}
+			}
+		}
+	}
+	return false
 }
 
 // ctaButtonStyle is the inline button style for standalone-link CTAs.
