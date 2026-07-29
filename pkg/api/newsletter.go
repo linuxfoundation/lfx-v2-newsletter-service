@@ -139,6 +139,25 @@ type NewsletterListResponse struct {
 	NextPageToken string               `json:"next_page_token,omitempty"`
 }
 
+// CommitteeNewsletter is one row in the committee-scoped list response. This
+// is the member-facing shape: it deliberately omits body_html (payload size —
+// members fetch the body via the single-resource endpoint), ed_reply_email,
+// group_id, and created_by (manager-only concerns).
+type CommitteeNewsletter struct {
+	ID            string     `json:"id"`
+	ProjectUID    string     `json:"project_uid"`
+	Subject       string     `json:"subject"`
+	CommitteeUIDs []string   `json:"committee_uids"`
+	SentAt        *time.Time `json:"sent_at,omitempty"`
+}
+
+// CommitteeNewsletterListResponse is the body of
+// GET /committees/{committee_uid}/newsletters.
+type CommitteeNewsletterListResponse struct {
+	Newsletters   []CommitteeNewsletter `json:"newsletters"`
+	NextPageToken string                `json:"next_page_token,omitempty"`
+}
+
 // NewsletterDailyOpens is one bucket of the daily-opens time series.
 type NewsletterDailyOpens struct {
 	Date        string `json:"date"`

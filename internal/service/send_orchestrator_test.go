@@ -162,6 +162,25 @@ func (r *fakeNewsletterRepo) Get(_ context.Context, id uuid.UUID) (*model.Newsle
 func (r *fakeNewsletterRepo) List(_ context.Context, _ string) ([]*model.Newsletter, error) {
 	return nil, nil
 }
+func (r *fakeNewsletterRepo) ListSentByCommittee(_ context.Context, committeeUID string, _ string) (*port.ListPage, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	page := &port.ListPage{}
+	for _, n := range r.drafts {
+		if n.Status != model.StatusSent {
+			continue
+		}
+		for _, uid := range n.CommitteeUIDs {
+			if uid == committeeUID {
+				cp := *n
+				page.Newsletters = append(page.Newsletters, &cp)
+				break
+			}
+		}
+	}
+	return page, nil
+}
+
 func (r *fakeNewsletterRepo) ListAll(_ context.Context, _ port.ListFilters) (*port.ListPage, error) {
 	return &port.ListPage{}, nil
 }

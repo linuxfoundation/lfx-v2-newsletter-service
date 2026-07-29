@@ -97,6 +97,39 @@ spec:
             values:
               aud: {{ .Values.app.audience }}
 
+    # Committee-scoped newsletter list (member-facing). Unlike the
+    # project-scoped rules above, FGA gates on `committee:{committee_uid}`
+    # with relation `member`: current committee members may list the sent
+    # newsletters addressed to their committee, and losing membership
+    # revokes access on the next request. `viewer` is unsuitable here —
+    # the committee viewer relation includes the public wildcard [user:*].
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:committee_list"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /committees/:committee_uid/newsletters
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: member
+              object: "committee:{{ "{{- .Request.URL.Captures.committee_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:update"
       allow_encoded_slashes: 'off'
       match:

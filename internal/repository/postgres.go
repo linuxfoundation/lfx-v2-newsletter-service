@@ -132,6 +132,49 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 	return page, nil
 }
 
+// ListSentByCommittee returns a page of sent newsletters whose committee_uids
+// contain the given committee, ordered by sent_at DESC (most recently sent
+// first). Only status='sent' rows qualify — drafts and in-flight sends are
+// member-invisible by design. The cursor encodes (sent_at, id) so the next
+// page resumes deterministically even when many rows share a sent_at.
+func (r *PostgresNewsletterRepo) ListSentByCommittee(ctx context.Context, committeeUID string, pageToken string) (*port.ListPage, error) {
+	q := r.db.NewSelect().
+		Model((*model.Newsletter)(nil)).
+		Where("status = ?", model.StatusSent).
+		// pgdialect.Array forces a Postgres text[] literal for the containment
+		// operand; without it bun json-encodes the slice (see Update's
+		// committee_uids Set).
+		Where("committee_uids @> ?", pgdialect.Array([]string{committeeUID})).
+		Order("sent_at DESC").
+		Order("id DESC").
+		Limit(defaultListLimit + 1)
+
+	if pageToken != "" {
+		cursor, err := decodeSentCursor(pageToken)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid pageToken", domain.ErrInvalidRequest)
+		}
+		// Keyset pagination: continue from the (sent_at, id) tuple of the last
+		// row of the previous page. Tuple comparison handles ties on sent_at.
+		q = q.Where("(sent_at, id) < (?, ?)", cursor.SentAt, cursor.ID)
+	}
+
+	var rows []*model.Newsletter
+	if err := q.Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list sent newsletters by committee: %w", err)
+	}
+
+	page := &port.ListPage{Newsletters: rows}
+	if len(rows) > defaultListLimit {
+		last := rows[defaultListLimit-1]
+		page.Newsletters = rows[:defaultListLimit]
+		if last.SentAt != nil {
+			page.NextPageToken = encodeSentCursor(sentListCursor{SentAt: *last.SentAt, ID: last.ID})
+		}
+	}
+	return page, nil
+}
+
 // Update applies optimistic-locking-aware mutations. The query gates on
 // (id, expectedVersion) and atomically increments version. If no rows are
 // affected, the method follows up with an existence check to disambiguate
@@ -528,6 +571,34 @@ func decodeCursor(token string) (listCursor, error) {
 	var c listCursor
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return listCursor{}, err
+	}
+	return c, nil
+}
+
+// sentListCursor is the keyset cursor encoded into NextPageToken for
+// ListSentByCommittee. Distinct from listCursor because that ordering is
+// (updated_at, id) while committee-scoped lists order by (sent_at, id).
+type sentListCursor struct {
+	SentAt time.Time `json:"s"`
+	ID     uuid.UUID `json:"i"`
+}
+
+func encodeSentCursor(c sentListCursor) string {
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func decodeSentCursor(token string) (sentListCursor, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(token))
+	if err != nil {
+		return sentListCursor{}, err
+	}
+	var c sentListCursor
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return sentListCursor{}, err
 	}
 	return c, nil
 }

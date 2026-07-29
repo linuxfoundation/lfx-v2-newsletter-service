@@ -55,6 +55,9 @@ func (a *analyticsRepoFake) List(_ context.Context, _ string) ([]*model.Newslett
 func (a *analyticsRepoFake) ListAll(_ context.Context, _ port.ListFilters) (*port.ListPage, error) {
 	return nil, nil
 }
+func (a *analyticsRepoFake) ListSentByCommittee(_ context.Context, _ string, _ string) (*port.ListPage, error) {
+	return nil, nil
+}
 func (a *analyticsRepoFake) Update(_ context.Context, n *model.Newsletter, _ int64) (*model.Newsletter, error) {
 	return n, nil
 }
