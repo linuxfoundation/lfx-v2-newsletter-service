@@ -101,6 +101,15 @@ CREATE INDEX IF NOT EXISTS idx_newsletters_status  ON newsletters (status);
 CREATE INDEX IF NOT EXISTS idx_newsletters_list
     ON newsletters (project_uid, updated_at DESC, id DESC);
 
+-- GIN index on the committee audience array supports the committee-scoped
+-- containment query (committee_uids @> ARRAY[uid]) used by ListSentByCommittee.
+-- The query's (sent_at DESC, id DESC) keyset ordering is deliberately NOT
+-- index-backed: array containment can't participate in a btree, and the GIN
+-- filter narrows to one committee's sent newsletters — a bounded set (tens,
+-- not thousands) that Postgres sorts in memory per page without issue.
+CREATE INDEX IF NOT EXISTS idx_newsletters_committee_uids
+    ON newsletters USING GIN (committee_uids);
+
 -- newsletter_opens captures one row per open event. recipient_hash is a SHA-256
 -- of the lowercased recipient email so we can compute unique opens without
 -- persisting PII in this table beyond what the newsletters table already holds.

@@ -99,6 +99,12 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("DELETE /projects/{project_uid}/newsletters/{newsletter_uid}", h.withAuth(http.HandlerFunc(h.DeleteNewsletter)))
 	mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/send", h.withAuth(http.HandlerFunc(h.SendNewsletter)))
 
+	// Committee-scoped newsletter reads — JWT auth. Member-facing: Heimdall
+	// gates on `committee:{committee_uid}#member` (not project writer), so
+	// committee members can list the sent newsletters addressed to their
+	// committee. See ListCommitteeNewsletters.
+	mux.Handle("GET /committees/{committee_uid}/newsletters", h.withAuth(http.HandlerFunc(h.ListCommitteeNewsletters)))
+
 	// Recipient resolution + test send — JWT auth.
 	mux.Handle("POST /projects/{project_uid}/newsletters/recipient-count", h.withAuth(http.HandlerFunc(h.RecipientCount)))
 	mux.Handle("POST /projects/{project_uid}/newsletters/recipients", h.withAuth(http.HandlerFunc(h.Recipients)))
