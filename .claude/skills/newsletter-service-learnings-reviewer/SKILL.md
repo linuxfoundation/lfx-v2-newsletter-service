@@ -70,21 +70,27 @@ Every filename in this table is under `docs/reviews/knowledge-base/`.
 | Pattern file | Read when the patch changes |
 | --- | --- |
 | `persistence-and-schema.md` | `internal/schema/schema.sql`, `internal/schema/schema.go`, or `internal/repository/postgres.go` |
-| `recipient-resolution-and-http.md` | `internal/service/send_orchestrator.go`, `internal/service/newsletter.go`, `internal/infrastructure/nats/**`, `internal/handler/send.go`, `internal/handler/http.go`, **or a persisted-field change spanning `internal/domain/model/**`, `pkg/api/newsletter.go` or `internal/handler/drafts.go`** |
+| `recipient-resolution-and-http.md` | `internal/service/send_orchestrator.go`, `internal/service/newsletter.go`, `internal/infrastructure/nats/**`, `internal/handler/send.go`, `internal/handler/http.go`, **or any of `internal/domain/model/**`, `pkg/api/newsletter.go`, `internal/handler/drafts.go`** |
 | `send-orchestration.md` | `internal/service/send_orchestrator.go`, `internal/service/unsubscribe.go`, or `internal/infrastructure/nats/**` |
 | `render-and-email-chrome.md` | anything under `internal/service/render/` |
 | `service-and-tests.md` | anything under `internal/service/`, `cmd/newsletter-api/service/implementations.go`, or any `*_test.go` |
 | `chart.md` | anything under `charts/lfx-v2-newsletter-service/`, **or `internal/handler/http.go`** |
 | `ci-and-workflows.md` | anything under `.github/workflows/` or `.github/skills/` |
 
-Note the one row whose trigger is deliberately *not* its own directory:
-`chart.md` also loads on `internal/handler/http.go`, because
-`chart/new-route-must-be-wired-in-httproute-and-ruleset` fires precisely when a
-route is added to the handler and the chart is **not** touched. Routing that
-pattern only on chart changes would make it unreachable on the exact patch shape
-it exists to catch. When you add a pattern, check whether its `**Detect:**`
-condition names a file outside the pattern file's own area, and route on the file
-the detection actually reads.
+Two rows deliberately route on files outside their own area, because the pattern
+fires precisely when those files change and the pattern file's own area does not:
+
+- `chart.md` also loads on `internal/handler/http.go` —
+  `chart/new-route-must-be-wired-in-httproute-and-ruleset` catches a route added to
+  the handler while the chart is **not** touched.
+- `recipient-resolution-and-http.md` also loads on the persisted-field trio —
+  `recipient/groupid-missing-from-api-mapper` reads `internal/handler/drafts.go`
+  for a field added to `model.Newsletter` and `pkg/api/newsletter.go`.
+
+Routing either pattern only on its own directory would make it unreachable on the
+exact patch shape it exists to catch. When you add a pattern, check whether its
+`**Detect:**` condition names a file outside the pattern file's own area, and route
+on the file the detection actually reads.
 
 Read the KB's `README.md` only if you need its category map; it carries no
 patterns.

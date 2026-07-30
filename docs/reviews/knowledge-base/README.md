@@ -40,14 +40,20 @@ A second pass mined **PRs #26–#63** (38 PRs, created on/after 2026-06-29, all 
 | --- | --- | --- |
 | `security.md` | 6 (5 Critical, 1 Important) | handler / middleware / config / schema changes touching response bodies, JWT validation, auth env, or unauthenticated-endpoint persistence |
 | `persistence-and-schema.md` | 6 (2 Critical, 4 Important) | `internal/schema/schema.sql`, `internal/schema/schema.go`, or `internal/repository/postgres.go` changed |
-| `recipient-resolution-and-http.md` | 6 (all Important) | `send_orchestrator.go`, `internal/infrastructure/nats/**`, `internal/handler/send.go`, `internal/handler/http.go`, or `internal/service/newsletter.go` changed |
+| `recipient-resolution-and-http.md` | 6 (all Important) | `send_orchestrator.go`, `internal/infrastructure/nats/**`, `internal/handler/send.go`, `internal/handler/http.go`, `internal/service/newsletter.go`, `internal/domain/model/**`, `pkg/api/newsletter.go`, or `internal/handler/drafts.go` changed |
 | `send-orchestration.md` | 2 (both Important) | `internal/service/send_orchestrator.go`, `internal/service/unsubscribe.go`, or `internal/infrastructure/nats/**` changed |
 | `render-and-email-chrome.md` | 1 (Critical) | anything under `internal/service/render/` changed |
 | `service-and-tests.md` | 3 (2 Important, 1 Nit) | anything under `internal/service/`, `cmd/newsletter-api/service/implementations.go`, or any `*_test.go` changed |
-| `chart.md` | 7 (3 Critical, 3 Important, 1 Nit) | any `charts/lfx-v2-newsletter-service/**` changed |
+| `chart.md` | 7 (3 Critical, 3 Important, 1 Nit) | any `charts/lfx-v2-newsletter-service/**` **or `internal/handler/http.go`** changed |
 | `ci-and-workflows.md` | 3 (1 Critical, 2 Important) | anything under `.github/workflows/` or `.github/skills/` changed |
 
 **Total: 34 patterns** + `known-false-positives.md` (6 entries).
+
+The `Read when` column above mirrors the routing table in
+`.claude/skills/newsletter-service-learnings-reviewer/SKILL.md`, which is the one
+the reviewer actually executes. Two rows route on files outside their own area
+(see that skill's Step 1) — **change both tables together, or this one silently
+lies about what gets read.**
 
 ## Highest-value patterns
 
@@ -87,8 +93,7 @@ Nothing here changed a pattern's PR / comment / fixing-commit provenance.
   rewrite a path inside quoted evidence to make it resolve — that falsifies the
   quote. *Weak probe:* a path audit that resolves every citation against the repo
   root cannot tell a historical quote from a current claim.
-- **`persistence/on-conflict-on-constraint-names-a-unique-index` remains a live true
-  positive.** *Weak probe:* `grep 'ON CONFLICT' --include='*.go'` returns nothing but
+- **`persistence/on-conflict-target-mismatch` remains a live true positive.** *Weak probe:* `grep 'ON CONFLICT' --include='*.go'` returns nothing but
   a comment, because bun passes the clause as a **string argument to a builder
   method** (`On("CONFLICT …")`). A second weak probe — grepping `schema.sql` for
   `ADD CONSTRAINT <name>` and finding none — examines only the schema half of a
