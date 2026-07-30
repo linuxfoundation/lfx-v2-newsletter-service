@@ -66,6 +66,51 @@ From the 2026-07-30 refresh, the two with the strongest evidence:
 
 Also worth knowing: `ci/order-github-events-by-id-not-created-at` is a merge-gate approval-bypass class, and three of the new entries (`chart/new-route-must-be-wired-in-httproute-and-ruleset`, `test/fake-must-capture-scoping-arguments`, `ci/bot-login-regex-must-allow-bot-suffix`) were promoted specifically because they recurred across independent PRs — the textbook case for a KB.
 
+## Corrections on record
+
+Every correction made to this KB, with the probe that produced the wrong answer. A
+check that returns clean is only evidence if it *could* have returned dirty for the
+thing being claimed, so the failed probe is recorded next to the fix — a future
+refresher who reruns the weak version should recognise it rather than trust it.
+Nothing here changed a pattern's PR / comment / fixing-commit provenance.
+
+- **`ci/gh-paginate-jq-length-per-page` anchor.** Inherited from the LFXV2-2894 brief
+  as `.github/workflows/agentic-gate.yml:418,565`. `:565` paginates ids and never
+  counts anything; the real paginate-then-count site is `:418-420`, and `:416-417`
+  carries an inline comment stating this very lesson. *Weak probe:* reading only the
+  lines the brief cited, instead of searching the file for the counting idiom —
+  which also shows it recurring at `:164`, `:360` and `:512`. The workflow is
+  byte-identical to `f13d015`, so this was brief imprecision, not drift.
+- **`chart/middleware-namespace-must-match-httproute` paths.** The PR #7 quote
+  contains a chart-relative `templates/httproute.yaml`. It is **preserved exactly**;
+  a separate *Current anchor* paragraph carries the repo-relative locations. Never
+  rewrite a path inside quoted evidence to make it resolve — that falsifies the
+  quote. *Weak probe:* a path audit that resolves every citation against the repo
+  root cannot tell a historical quote from a current claim.
+- **`persistence/on-conflict-on-constraint-names-a-unique-index` remains a live true
+  positive.** *Weak probe:* `grep 'ON CONFLICT' --include='*.go'` returns nothing but
+  a comment, because bun passes the clause as a **string argument to a builder
+  method** (`On("CONFLICT …")`). A second weak probe — grepping `schema.sql` for
+  `ADD CONSTRAINT <name>` and finding none — examines only the schema half of a
+  two-file mismatch and cannot see the caller at all. The entry's own `**Detect:**`
+  clause is the correct probe and it fires; run that, not a literal SQL grep. Tracked
+  for fix outside this KB.
+- **Removed false-positive entry.** The dead "Add Copilot custom instructions"
+  promotional-CTA entry was removed but retained as an HTML comment with its evidence
+  in `known-false-positives.md`, so the call is reversible in one line.
+- **Counts re-verified shape-agnostically.** 34 patterns across 8 category files, and
+  6 entries in `known-false-positives.md`. *Weak probe:* counting `##` headings
+  undercounts the false-positive file, whose entries are `###` under category
+  headings; one `##` there is `How to add a new entry`, which is not an entry.
+- **Path-citation audit.** 85 distinct repo paths cited across the two brains and
+  this KB resolve, including 21 directory-only references. *Weak probes, all mine:*
+  building the known-directory set from each file's immediate parent only (so
+  `docs/reviews/` and `internal/infrastructure/` read as dangling), not stripping a
+  `.Symbol` suffix (`pkg/errors.ServiceUnavailable`), and splicing adjacent prose
+  into a path (`Makefile/README`). Backtick-only extraction also misses unquoted and
+  directory-only references; widening it requires filtering language and library
+  identifiers so `net/url` and `golang.org/x/…` are not misread as repo paths.
+
 ## Maintenance
 
 Add entries as new PRs surface repo-specific, mechanically-detectable, acted-on patterns. Move anything the team decides is noise into `known-false-positives.md`. Promote a Nit/Important to a higher tier only on recurrence or maintainer endorsement. Record a removal or revision with its evidence (see the comment in `known-false-positives.md`) rather than deleting silently — the audit trail is what lets a call be reversed cheaply.
