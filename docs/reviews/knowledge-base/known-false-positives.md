@@ -5,7 +5,7 @@
 
 Findings that match any pattern below MUST be dropped, regardless of which source (KB pattern file, code-reviewer rule, bot comment) produced them. This list is the floor — even a quotable KB pattern doesn't survive if it matches a known false positive.
 
-Used by the repo-owned `newsletter-service-learnings-reviewer` brain (its Step 4 floor) and as filter discipline for the `newsletter-service-code-reviewer` brain, both under `.claude/skills/`. The centrally-packaged `lfx-skills:lfx-newsletter-service-{learnings,code}-reviewer` agents read this same file and remain valid for callers that invoke them directly.
+Used by the repo-owned `newsletter-service-learnings-reviewer` brain (its Step 4 floor) and as filter discipline for the `newsletter-service-code-reviewer` brain, both under `.claude/skills/`.
 
 ---
 
