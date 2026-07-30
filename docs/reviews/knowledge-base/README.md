@@ -102,8 +102,19 @@ Nothing here changed a pattern's PR / comment / fixing-commit provenance.
   6 entries in `known-false-positives.md`. *Weak probe:* counting `##` headings
   undercounts the false-positive file, whose entries are `###` under category
   headings; one `##` there is `How to add a new entry`, which is not an entry.
-- **Path-citation audit.** 85 distinct repo paths cited across the two brains and
-  this KB resolve, including 21 directory-only references. *Weak probes, all mine:*
+- **Path-citation audit.** Counts are published per tier, because a single total
+  hides which boundary produced it — the earlier one-number report of "85, of which
+  21 directory-only" was reproducible only if you happened to classify tiers the same
+  way. Distinct normalised tokens across both brains, all nine KB files and
+  `CLAUDE.md`, on two axes:
+
+  | | file-shaped | directory-shaped | tier total |
+  | --- | --- | --- | --- |
+  | backticked | 63 | 15 | 78 |
+  | unquoted | 1 | 6 | 7 |
+  | **total** | **64** | **21** | **85** |
+
+  All 85 resolve; 0 dangling in every cell. *Weak probes, all mine:*
   building the known-directory set from each file's immediate parent only (so
   `docs/reviews/` and `internal/infrastructure/` read as dangling), not stripping a
   `.Symbol` suffix (`pkg/errors.ServiceUnavailable`), and splicing adjacent prose
@@ -117,6 +128,28 @@ Nothing here changed a pattern's PR / comment / fixing-commit provenance.
   entry *are* real anchors; they are listed because the broken probe wrongly called
   them dangling. A path sweep run over this section will flag the two non-paths by
   design — that is the documented behaviour, not a defect to fix.
+- **Quote convention: double quotes mean attributable, findable-in-source evidence.**
+  Editorial or paraphrasing phrasing uses italics or plain prose instead, so a reader can
+  tell at a glance what is worth grepping. Two false-positive entry headings were
+  paraphrases of a reviewer's point wrapped in double quotes, which read as citations;
+  they are now plain headings, and each entry's verbatim quote stays on its `**Source:**`
+  line untouched. *Weak probe:* a quote extractor must be **escape-aware** — `\"` is not
+  a delimiter, and a naive `"([^"]*)"` splices across adjacent unrelated quotes in code
+  fragments, which is what produced phantom not-verbatim hits in an earlier sweep.
+- **Escaping can make a present pattern un-greppable.**
+  `ci/bot-login-regex-must-allow-bot-suffix` showed its regex in single-escaped form
+  while the live instance sits inside a `--jq` string in YAML and is written
+  `\\[bot\\]`. Grepping the form the entry showed returned nothing although the pattern
+  was there. The entry now carries that warning. Generalise it: before concluding a
+  pattern is absent from YAML, JSON, TOML or a shell-quoted string, probe the
+  *authoring* escaping, not the logical form.
+- **Recurrence counts keep the promotion gates.** "Recurred across independent PRs" is
+  counted only over PRs passing the same eligibility the promotion set uses —
+  merged/current and developer-fixed. Widening a recurrence search does not widen
+  eligibility: matches on open or unmerged branches stay in the held set above and never
+  raise a promotion count. Recurrence *within one file at HEAD* — as recorded for the
+  paginate-count anchor — is a code-locality observation, not PR recurrence, and feeds
+  no count here.
 
 ## Maintenance
 

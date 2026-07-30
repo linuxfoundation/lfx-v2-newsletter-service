@@ -64,7 +64,7 @@ deleted silently so the disposition stays auditable.
 
 ## Stale / out-of-scope suggestions
 
-### `EDName` "required but unused" re-flag
+### `EDName` re-flagged as required-but-unused
 
 **Pattern matched:** a finding that `EDName` (or a similar field) is required-but-unused on a send/test-send input.
 
@@ -72,7 +72,7 @@ deleted silently so the disposition stays auditable.
 
 **Source:** PR #3 `internal/service/send_orchestrator.go:62` — resolved in `959e23d`: "dropped the `EDName == ""` rejection … Kept the field … with a comment explaining it's accepted for forward-compatibility."
 
-### "Skip the existence check before insert on the open pixel"
+### Dropping the existence check before the open-pixel insert
 
 **Pattern matched:** Copilot suggesting `RecordOpenWithHash` drop the `repo.Get` existence check and rely on the FK violation path to save a round-trip.
 
