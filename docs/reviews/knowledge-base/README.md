@@ -110,6 +110,13 @@ Nothing here changed a pattern's PR / comment / fixing-commit provenance.
   into a path (`Makefile/README`). Backtick-only extraction also misses unquoted and
   directory-only references; widening it requires filtering language and library
   identifiers so `net/url` and `golang.org/x/…` are not misread as repo paths.
+  **Read those last two as probe examples, not anchors:** `pkg/errors.ServiceUnavailable`
+  is a Go package plus an exported symbol and `Makefile/README` is two separate
+  filenames spliced out of prose — neither is a repo path, and neither is expected to
+  resolve. `docs/reviews/`, `internal/infrastructure/` and `.github/skills/` in this
+  entry *are* real anchors; they are listed because the broken probe wrongly called
+  them dangling. A path sweep run over this section will flag the two non-paths by
+  design — that is the documented behaviour, not a defect to fix.
 
 ## Maintenance
 
