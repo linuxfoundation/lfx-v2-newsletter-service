@@ -31,7 +31,11 @@ Scope note: these are review patterns for *changed workflow shell and expression
 
 **Detect:** in `.github/workflows/**`, flag any `gh api --paginate` whose `--jq` ends in `length` (or otherwise aggregates) and whose output is used as a single number. Require counting the streamed lines instead — `grep -c .` — or aggregating outside the per-page filter.
 
-**Empirical citation:** PR #29 — Copilot `3507277710` plus three siblings — *"`gh api --paginate` applies the `--jq` filter to each page separately, so `[...] | length` emits one count per page … fails with 'integer expression expected'."* Resolved in `5d35d150` and `bebc75e1`. Three-plus sites across two files, and it breaks the gate's blocking checks. Verified at HEAD `f13d015`: `.github/workflows/agentic-gate.yml:418,565` use `grep -c .`.
+**Empirical citation:** PR #29 — Copilot `3507277710` plus three siblings — *"`gh api --paginate` applies the `--jq` filter to each page separately, so `[...] | length` emits one count per page … fails with 'integer expression expected'."* Resolved in `5d35d150` and `bebc75e1`. Three-plus sites across two files, and it breaks the gate's blocking checks.
+
+Verified at `d6e35e5` (the file is byte-identical to `f13d015`): the paginate-then-count site is `.github/workflows/agentic-gate.yml:418-420`, where the `--jq` emits ids and `grep -c .` counts the streamed lines — and `:416-417` carries an inline comment stating this exact lesson. The same `grep -c .` counting idiom appears at `:164`, `:360` and `:512`. No `[...] | length` remains inside any `--jq` in that file; the only occurrence of "length" is the comment explaining why not.
+
+_Anchor note: an earlier draft of this entry cited `:418,565`. Those are `--paginate` invocation lines, not counting sites — `:565` paginates to extract ids and never counts. Corrected against the file at `d6e35e5`; the PR, comment and fixing-commit provenance above is unchanged._
 
 **Failure message:** `gh api --paginate --jq '… | length'` emits one count per page — the shell comparison breaks instead of counting.
 

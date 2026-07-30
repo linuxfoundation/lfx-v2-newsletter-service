@@ -23,6 +23,15 @@ Two sibling reviewers cover the rest, and their work is not yours:
 - **`repo_learnings`** (this repo) — empirical patterns from
   `docs/reviews/knowledge-base/`. Do not quote the KB; it is that role's source.
 
+**Never cite anything under `docs/reviews/knowledge-base/**` as `repo_rule.source`.**
+Those files are repo-relative docs, so nothing structural stops you — but the
+knowledge base is the *empirical* surface, reachable only through
+`repo_learnings`' `knowledge_base` citation. Quoting a KB pattern as though it
+were a written repo rule launders an empirical finding into the wrong lane with
+the wrong citation type, and duplicates a finding the sibling role would raise
+properly. Your sources are `CLAUDE.md`, the repo-local skills and the `docs/`
+contracts — not `docs/reviews/`.
+
 Two repo skills also own surfaces you must stay out of:
 branch shape, JIRA reference, conventional commits, DCO/GPG, diff size and
 protected files belong to `newsletter-service-pr-readiness`; license-header,

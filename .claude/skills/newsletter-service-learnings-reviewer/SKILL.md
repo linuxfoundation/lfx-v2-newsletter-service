@@ -196,6 +196,13 @@ and your whole role is reported as `INCOMPLETE`, so follow them exactly:
 - `error` is `null` unless `state` is `INCOMPLETE`, where it is
   `{"class": "...", "message": "..."}`. Never report `INCOMPLETE` merely
   because you found nothing.
+- **A knowledge base you could not read is `INCOMPLETE`, never
+  `COMPLETE_NO_FINDINGS`.** Use `KB_MISSING` when
+  `docs/reviews/knowledge-base/` itself is absent or unreadable in the snapshot,
+  and `KB_FILE_UNREADABLE` when a **routed** pattern file fails to load. Both
+  carry an empty `findings`. "No KB, therefore nothing matched" is the one wrong
+  answer this role can give: it reports a clean patch on a review that never
+  happened.
 - `severity` is `critical` or `high`, derived per Step 3.
 - `confidence` is an integer from 80 to 100, derived per Step 3.
 - `evidence.path` is repo-relative (no leading `/`, no `..`),
