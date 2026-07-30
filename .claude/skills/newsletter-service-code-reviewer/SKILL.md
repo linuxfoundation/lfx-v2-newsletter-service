@@ -225,12 +225,13 @@ and your whole role is reported as `INCOMPLETE`, so follow them exactly:
   verbatim text you actually read.
 - **Every finding carries `repo_rule`** with a repo-relative `source` and a
   `quote` copied **verbatim** from that file. A finding without it is rejected.
-- **Never emit a `knowledge_base` key.** The launcher tolerates one on this role,
-  so nothing will stop you — which is exactly why it is on you: quoting the
-  knowledge base here duplicates `repo_learnings` and produces two findings for
-  one problem. Cite repo rules only.
 - `id` is a short stable slug.
 - Emit no key that is not shown above.
+
+**Not enforced, still required — this one is on you:** never emit a
+`knowledge_base` key. The launcher accepts one on this role, so nothing will stop
+you, but quoting the knowledge base here duplicates `repo_learnings` and produces
+two findings for one problem. Cite repo rules only.
 
 Finding nothing is a good outcome. Report it honestly:
 

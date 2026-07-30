@@ -192,14 +192,15 @@ and your whole role is reported as `INCOMPLETE`, so follow them exactly:
   repo-relative KB file), `pattern` (the entry's full id), `detect` (the
   entry's detection condition), and `quote` (verbatim text from the entry).
   A finding missing any of the four is rejected.
-- **Never emit a `repo_rule` key.** The launcher tolerates one on this role, so
-  nothing will stop you — which is exactly why it is on you: citing a written
-  repo rule here duplicates `repo_code` and produces two findings for one
-  problem. Cite the knowledge base only.
 - `title` should carry the entry's `**Failure message:**`, scoped to the file
   and line you found.
 - `id` is a short stable slug.
 - Emit no key that is not shown above.
+
+**Not enforced, still required — this one is on you:** never emit a `repo_rule`
+key. The launcher accepts one on this role, so nothing will stop you, but citing
+a written repo rule here duplicates `repo_code` and produces two findings for one
+problem. Cite the knowledge base only.
 
 Finding nothing is a good and common outcome — most patches touch nothing the
 KB has a pattern for. Report it honestly:
