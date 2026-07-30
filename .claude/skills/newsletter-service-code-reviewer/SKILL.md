@@ -145,9 +145,13 @@ either cite this repo's own doc for the handoff, or emit nothing.
 - Nits, style, formatting, wording polish, optional refactors. There is no nit
   severity here.
 - Anything `newsletter-service-pr-readiness` or `newsletter-service-preflight`
-  owns (see above), including "this file is missing its license header" when
-  `make check` would catch it — report only a header genuinely absent in the
-  patch you read.
+  owns (see above). **License headers are the worked example, and the rule has no
+  exception:** never emit a missing-license-header finding, not even one you are
+  sure about. `make check` runs the license-check step, `/newsletter-service-preflight`
+  enforces it pre-PR, and CI gates it — a header this review could flag is one three
+  other gates flag first, and the knowledge base carries it as a standing
+  false-positive. An exception for "a header genuinely absent in the patch" would
+  license exactly the finding this line forbids.
 - Goa design or generated-code expectations. This is a stdlib
   `net/http` + Postgres service.
 - Angular, Yarn or frontend expectations.

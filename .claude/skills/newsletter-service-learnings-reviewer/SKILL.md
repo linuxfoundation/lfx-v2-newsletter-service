@@ -184,14 +184,14 @@ explanation, no second object, no repeated marker.
       "evidence": {
         "path": "internal/service/render/email_chrome.go",
         "line_start": 146,
-        "line_end": 147,
-        "excerpt": "styleAttrRe = regexp.MustCompile(`(?i)\\sstyle\\s*=`)"
+        "line_end": 146,
+        "excerpt": "var styleAttrRe = regexp.MustCompile(`(?i)\\sstyle\\s*=`)"
       },
       "knowledge_base": {
         "source": "docs/reviews/knowledge-base/render-and-email-chrome.md",
         "pattern": "render/no-hand-rolled-regex-html-parsing",
-        "detect": "In internal/service/render/**, flag any regexp that parses HTML structure over author-supplied body_html",
-        "quote": "a `style=`-style attribute regex without quote-awareness"
+        "detect": "in `internal/service/render/**`, flag any `regexp` used to parse HTML **structure** over author-supplied `body_html`",
+        "quote": "an attribute-presence regex with no quote-awareness"
       }
     }
   ],
@@ -226,7 +226,11 @@ and your whole role is reported as `INCOMPLETE`, so follow them exactly:
 - **Every finding carries all four `knowledge_base` fields** — `source` (the
   repo-relative KB file), `pattern` (the entry's full id), `detect` (the
   entry's detection condition), and `quote` (verbatim text from the entry).
-  A finding missing any of the four is rejected.
+  A finding missing any of the four is rejected. `detect` and `quote` are
+  **copied from the entry, not paraphrased** — the example above is copied
+  character-for-character from `render-and-email-chrome.md`, and so is its
+  `excerpt` from the cited source line. Retyping either from memory is how a
+  citation stops matching its source.
 - `title` should carry the entry's `**Failure message:**`, scoped to the file
   and line you found.
 - `id` is a short stable slug.
