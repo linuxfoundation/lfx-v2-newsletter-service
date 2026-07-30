@@ -125,8 +125,8 @@ rules that area's sources state.
 | `internal/infrastructure/nats/**` | subject constants centralized in `subjects.go`; typed `pkgerrors.*` wrapping; the no-token-forwarded rule on outbound NATS |
 | `cmd/newsletter-api/**` | every `os.Getenv` read stays in `service/config.go` → `AppConfigFromEnv()`; chart and docs stay in sync with new env vars |
 | `charts/lfx-v2-newsletter-service/**` | values/templates against `docs/service-helm-chart.md`: database modes, HTTPRoute paths, Heimdall auth shape, the unauthenticated open pixel, secret handling |
-| `docs/**`, `*.md` | markdown license header; for `.claude/skills/**/SKILL.md` the YAML frontmatter stays first with the license comments after the closing `---` |
-| `.go` files | license header; package boundaries; `slog.*Context` with `ctx`; never log tokens, Authorization headers, DB passwords, newsletter HTML bodies or recipient lists; focused tests where the repo requires them |
+| `docs/**`, `*.md` | for `.claude/skills/**/SKILL.md` the YAML frontmatter stays first with the license comments after the closing `---` (a *placement* rule; a missing header is preflight's, never yours — Step 4) |
+| `.go` files | package boundaries; `slog.*Context` with `ctx`; never log tokens, Authorization headers, DB passwords, newsletter HTML bodies or recipient lists; focused tests where the repo requires them |
 
 Docs-move-with-behavior is a real rule and a real finding when broken: API,
 route, status, ETag or error-shape changes update

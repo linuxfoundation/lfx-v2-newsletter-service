@@ -164,9 +164,11 @@ code they describe:
   reviewers have flagged on this repo's PRs. Every finding quotes a KB entry.
 
 The `local-code-review` and `local-learnings-review` symlinks beside them are the
-launcher's stable discovery aliases — keep them pointing at those two files, and
-keep exactly one prose copy of each brain. `.agents/skills/` links to the same two
-files for non-Claude hosts. The `general` brain stays central; this repo never
+launcher's stable discovery aliases. They are directory symlinks — each points at
+the sibling brain *directory*, not at its `SKILL.md` — and the launcher resolves
+the alias to the physical file inside. Keep them pointing at those two
+directories, and keep exactly one prose copy of each brain. `.agents/skills/` links
+to the same two directories for non-Claude hosts. The `general` brain stays central; this repo never
 holds a copy.
 
 When you change this repo's conventions, contracts or KB, update the brain that

@@ -70,7 +70,7 @@ Every filename in this table is under `docs/reviews/knowledge-base/`.
 | Pattern file | Read when the patch changes |
 | --- | --- |
 | `persistence-and-schema.md` | `internal/schema/schema.sql`, `internal/schema/schema.go`, or `internal/repository/postgres.go` |
-| `recipient-resolution-and-http.md` | `internal/service/send_orchestrator.go`, `internal/service/newsletter.go`, `internal/infrastructure/nats/**`, `internal/handler/send.go`, `internal/handler/http.go`, **or any of `internal/domain/model/**`, `pkg/api/newsletter.go`, `internal/handler/drafts.go`** |
+| `recipient-resolution-and-http.md` | `internal/service/send_orchestrator.go`, `internal/service/newsletter.go`, **anything under `internal/infrastructure/`** (any upstream client, not only `nats/`), `internal/handler/send.go`, `internal/handler/http.go`, **or any of `internal/domain/model/**`, `pkg/api/newsletter.go`, `internal/handler/drafts.go`** |
 | `send-orchestration.md` | `internal/service/send_orchestrator.go`, `internal/service/unsubscribe.go`, or `internal/infrastructure/nats/**` |
 | `render-and-email-chrome.md` | anything under `internal/service/render/` |
 | `service-and-tests.md` | anything under `internal/service/`, `cmd/newsletter-api/service/implementations.go`, or any `*_test.go` |
@@ -85,7 +85,10 @@ fires precisely when those files change and the pattern file's own area does not
   the handler while the chart is **not** touched.
 - `recipient-resolution-and-http.md` also loads on the persisted-field trio —
   `recipient/groupid-missing-from-api-mapper` reads `internal/handler/drafts.go`
-  for a field added to `model.Newsletter` and `pkg/api/newsletter.go`.
+  for a field added to `model.Newsletter` and `pkg/api/newsletter.go`. It routes on
+  all of `internal/infrastructure/` rather than `nats/` alone, because
+  `recipient/unbounded-pagination-loop` fires on "any new upstream client" — a new
+  client added outside `nats/` is precisely the case it is forward-looking for.
 
 Routing either pattern only on its own directory would make it unreachable on the
 exact patch shape it exists to catch. When you add a pattern, check whether its
@@ -140,11 +143,44 @@ intuition — deriving them mechanically is what makes two runs agree.
 contract has no nit severity and its confidence floor is 80. This role does not
 use `should-fix`: the KB's vocabulary has no tier that maps to it.
 
-## Step 4 — apply the false-positive floor, last
+## Step 4 — apply the false-positive floor, last, **as it stood before the patch**
 
 Walk `known-false-positives.md` and drop every Step 2 finding it matches.
 **A false-positive entry beats a quotable pattern match.** It is the floor, and
 it is applied after everything else — including on a `Critical` match.
+
+**Use the floor as of the base commit, never the snapshot's post-patch version.**
+The snapshot is checked out at the *target* commit, so its
+`known-false-positives.md` already contains whatever this patch did to it. Applying
+that version lets a patch add or widen a waiver and suppress findings **about
+itself**, before any human sees it. The floor a review applies must be the one that
+existed before the change under review.
+
+Derive it like this:
+
+1. **Does the patch touch
+   `docs/reviews/knowledge-base/known-false-positives.md`?** Check the patch's file
+   list. If it does not, the snapshot copy *is* the base copy — read it normally and
+   continue.
+2. **If it does**, read that file's hunks in the patch and reconstruct the base
+   version from the snapshot copy by reversing them: a line the patch **adds** (`+`)
+   is not in the base, and a line it **removes** (`-`) is. Then apply only the base
+   version.
+   - A waiver this patch **adds or widens** does **not** suppress anything in this
+     review. It takes effect for the next one, once it has been reviewed on its own.
+   - A waiver this patch **removes** still applies for this review, because it was
+     the floor when the change was written. Its removal likewise takes effect next
+     review. This is deliberately conservative in the safe direction: it can only
+     delay a finding, never hide one the patch introduced.
+   - Entries the patch leaves untouched apply normally, as always.
+3. **If you cannot read the patch's hunks for that file reliably** — the patch is
+   unreadable, truncated, or its hunks for that file cannot be parsed — the role is
+   `INCOMPLETE` with `error.class: "FP_BASELINE_UNREADABLE"`. **Never fall back to
+   the post-patch version**: silently honouring a waiver the patch just wrote is the
+   exact failure this rule exists to prevent, and it is invisible in the output.
+
+Say which floor you used only through your findings; the payload carries no field
+for it. The rule is about what you suppress, not about reporting.
 
 ## Step 5 — what never ships
 
@@ -218,6 +254,11 @@ and your whole role is reported as `INCOMPLETE`, so follow them exactly:
   carry an empty `findings`. "No KB, therefore nothing matched" is the one wrong
   answer this role can give: it reports a clean patch on a review that never
   happened.
+- **A false-positive floor you could not reconstruct is `INCOMPLETE` too.** When
+  the patch edits `known-false-positives.md` and its hunks for that file cannot be
+  read, use `FP_BASELINE_UNREADABLE` with empty `findings` (Step 4). Falling back
+  to the post-patch floor would let the patch waive findings about itself, and
+  nothing in the payload would show that it had.
 - `severity` is `critical` or `high`, derived per Step 3.
 - `confidence` is an integer from 80 to 100, derived per Step 3.
 - `evidence.path` is repo-relative (no leading `/`, no `..`),
