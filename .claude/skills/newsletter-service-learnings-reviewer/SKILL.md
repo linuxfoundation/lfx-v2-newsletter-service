@@ -43,6 +43,17 @@ the repository at the target commit. Paths you cite are relative to the snapshot
 
 ## Step 1 — route and load pattern files
 
+The knowledge base lives at **`docs/reviews/knowledge-base/`, resolved from the
+snapshot root** — the absolute snapshot path the prompt gave you. That is the only
+copy: it is never relative to this skill's own directory, and never read from the
+caller's working tree. Every path below, and every `knowledge_base.source` you
+emit, is that repo-relative docs path.
+
+**If `docs/reviews/knowledge-base/` is missing or unreadable in the snapshot, the
+role is `INCOMPLETE`** with `error.class: "KB_MISSING"`. It is never
+`COMPLETE_NO_FINDINGS`: no reachable KB means you could not perform this review,
+not that the patch is clean. Check the directory resolves before routing.
+
 Always read:
 
 - `docs/reviews/knowledge-base/known-false-positives.md` — applied **last**, in
@@ -53,6 +64,8 @@ Always read:
 Then read **only** the rows whose condition the patch matches. Do not
 blanket-read: unrouted files are wasted context with no audit value. When a
 row is borderline, lean toward reading it.
+
+Every filename in this table is under `docs/reviews/knowledge-base/`.
 
 | Pattern file | Read when the patch changes |
 | --- | --- |
