@@ -140,37 +140,88 @@ make lint        # golangci-lint
 
 ## Work cycle — post-commit and pre-PR reviews
 
-> **CRITICAL — while the branch is pre-PR, post-commit reviews are mandatory.** After every commit on the local branch, launch the `lfx-skills:lfx-general-code-reviewer`, `lfx-skills:lfx-newsletter-service-code-reviewer`, and `lfx-skills:lfx-newsletter-service-learnings-reviewer` subagents in parallel via the Agent tool (`subagent_type: lfx-skills:lfx-general-code-reviewer` / `subagent_type: lfx-skills:lfx-newsletter-service-code-reviewer` / `subagent_type: lfx-skills:lfx-newsletter-service-learnings-reviewer`, all `run_in_background: true`) — then keep working while they run. If Claude displays plugin agents without the `lfx-skills:` namespace, use the equivalent displayed reviewer names. Before opening a PR, every running review must return clean (or remaining findings explicitly documented as trade-offs), the **full-branch sweep** must run clean if the branch has more than one commit (`branch` arg), AND `/newsletter-service-pr-readiness` must clear every Critical finding before `/newsletter-service-preflight` runs.
+> **CRITICAL — while the branch is pre-PR, local review is mandatory.** After every
+> commit on the local branch, run `/lfx-skills:lfx-local-review`. It is a
+> cross-model review: three reviewers read the committed snapshot in parallel — the
+> central `general` brain plus this repo's own two brains — headless on Pi when Pi
+> is available, and Claude subagents otherwise. Before opening a PR, local review
+> must come back with no findings (or with the remaining ones explicitly documented
+> as trade-offs), the **branch-mode sweep** must be clean if the branch has more
+> than one commit, AND `/newsletter-service-pr-readiness` must clear every Critical
+> finding before `/newsletter-service-preflight` runs.
 >
-> **Once the PR is open, do NOT invoke these reviewers on iteration commits.** Copilot auto-triggers on every push and owns the audit surface from that point. The central reviewers are pre-PR insurance only.
+> **Local review stops at PR-open.** Once the PR exists, the agentic review flow
+> owns iteration — do not run local review on iteration commits.
 
-### Post-commit (pre-PR phase, after every commit, parallel, asynchronous)
+This repo owns two of the three reviewer brains, so they are versioned with the
+code they describe:
 
-1. **Commit your work.** `git commit -s -S`. Do not wait for any prior review to finish.
-2. **Immediately launch all three reviewer subagents in parallel.** Issue three **Agent tool calls in a single message**:
-   - **`lfx-skills:lfx-general-code-reviewer`** (`subagent_type: lfx-skills:lfx-general-code-reviewer`, `run_in_background: true`) — general senior code review for correctness, security, error handling, maintainability, tests, performance, and code truthfulness. Carries no repo-specific Newsletter Service rulebook.
-   - **`lfx-skills:lfx-newsletter-service-code-reviewer`** (`subagent_type: lfx-skills:lfx-newsletter-service-code-reviewer`, `run_in_background: true`) — Newsletter Service convention and contract audit against this repo's `CLAUDE.md`, local skills, docs, contracts, Makefile, chart, and relevant sibling-service handoffs. Every repo-convention finding must be source-backed.
-   - **`lfx-skills:lfx-newsletter-service-learnings-reviewer`** (`subagent_type: lfx-skills:lfx-newsletter-service-learnings-reviewer`, `run_in_background: true`) — empirical-pattern matching against `docs/reviews/knowledge-base/` (patterns sampled from past PR review comments on this repo). Every finding must quote a KB pattern entry.
+- `.claude/skills/newsletter-service-code-reviewer/SKILL.md` — audits the patch
+  against this repo's written rule surface (`CLAUDE.md`, the repo-local skills, the
+  `docs/` contracts). Every finding quotes a repo rule verbatim.
+- `.claude/skills/newsletter-service-learnings-reviewer/SKILL.md` — matches the
+  patch against `docs/reviews/knowledge-base/`, the empirical patterns real
+  reviewers have flagged on this repo's PRs. Every finding quotes a KB entry.
 
-   **Post-commit mode prompt (exact, all three subagents):** `target repo: lfx-v2-newsletter-service\n\nReview the latest commit.` Append `extra: <focus>` on a new line only when there is a priority hint to add. Do NOT pass `branch` here. If this work cycle is launched from the LFX workspace parent, the `target repo:` line is required so the reviewers operate in this repo.
-3. **Keep working.** Start the next commit while the reviewers run. Do not block on them.
-4. **When the reviews return:** read all three reports. Roll every Critical finding and every reasonable Important finding into the next commit.
+The `local-code-review` and `local-learnings-review` symlinks beside them are the
+launcher's stable discovery aliases — keep them pointing at those two files, and
+keep exactly one prose copy of each brain. `.agents/skills/` links to the same two
+files for non-Claude hosts. The `general` brain stays central; this repo never
+holds a copy.
 
-### Pre-PR (drain the queue, sweep cumulative state, then open)
+When you change this repo's conventions, contracts or KB, update the brain that
+cites them in the same PR.
+
+### Post-commit (pre-PR phase, after every commit)
+
+1. **Commit your work.** `git commit -s -S`.
+2. **Run `/lfx-skills:lfx-local-review`** in post-commit mode (no argument — it
+   reviews `HEAD^..HEAD`). It snapshots the target commit into a temporary
+   worktree, so you can keep editing while the review runs.
+3. **Read the normalized summary it returns in this session.** There is no report
+   file and no result retention: the run lives and dies with the session, and a
+   lost session means a fresh full run. The summary carries the aggregate state,
+   the run provenance (harness, model, and the resolved path and digest of all
+   three brains), and each role's findings.
+4. **Act on the state:**
+   - `COMPLETE_NO_FINDINGS` — nothing to do; keep working.
+   - `COMPLETE_WITH_FINDINGS` — roll every supported finding into the next commit,
+     then rerun local review on that commit. A finding you disagree with is a
+     trade-off you document, not one you silently drop.
+   - `INCOMPLETE` — **not a pass.** Rerun the whole thing on the same harness.
+     Never patch a failed role by hand, never rerun one role in a different
+     harness, and never mix a Pi result with a Claude fallback result for the same
+     run.
+5. **If the run used the Claude fallback**, say so when you report it and relay the
+   launcher's onboarding message verbatim. A fallback run is a same-model review,
+   not cross-model evidence. The onboarding text belongs to the central launcher —
+   do not rewrite or fork it here.
+
+### Pre-PR (branch sweep, then open)
 
 When the work is done and no more code commits are planned:
 
-1. **Wait for every running review to complete.**
-2. **If any returned review flags Critical or reasonable Important:** add a fix commit, launch all three reviewers again on the new state, wait, and loop until clean or explicitly documented as a trade-off.
-3. **Full-branch sweep — only if the branch has more than one commit.** Launch all three reviewer subagents again in parallel via the Agent tool. The Agent `prompt` parameter for each subagent must include the `branch` keyword so the subagent audits the branch's diff against `origin/main` instead of just the latest commit:
-   - **`lfx-skills:lfx-general-code-reviewer`**, prompt: **`target repo: lfx-v2-newsletter-service\nbranch\n\nReview the branch's diff against origin/main.`**
-   - **`lfx-skills:lfx-newsletter-service-code-reviewer`**, prompt: **`target repo: lfx-v2-newsletter-service\nbranch\n\nReview the branch's diff against origin/main.`**
-   - **`lfx-skills:lfx-newsletter-service-learnings-reviewer`**, prompt: **`target repo: lfx-v2-newsletter-service\nbranch\n\nReview the branch's diff against origin/main.`**
+1. **Branch-mode sweep — only if the branch has more than one commit.** Run
+   `/lfx-skills:lfx-local-review` with `branch`. It resolves the base itself
+   (`--base` if given, else local `origin/main`, else local `main`) and reviews the
+   merge-base diff. Nothing is fetched, so refresh your remote-tracking ref first
+   if it is stale.
+2. **Loop until clean.** Address findings in a commit, then rerun the sweep. Handle
+   an `INCOMPLETE` sweep the same way as above: one full rerun of the same harness.
+3. **Run `/newsletter-service-pr-readiness`** for branch name, JIRA reference,
+   conventional commits, rebase status, DCO + GPG signing, diff size, and protected
+   files.
+4. **Run `/newsletter-service-preflight`** for working tree status, license headers,
+   formatting, lint/vet, build, tests, protected files, commit verification, and the
+   PR change summary.
+5. **Only then push and open the PR** — and immediately launch the PR driver (see
+   Post-PR iteration below).
 
-   Address any new findings, then re-run the sweep until clean.
-4. **Run `/newsletter-service-pr-readiness`** for branch name, JIRA reference, conventional commits, rebase status, DCO + GPG signing, diff size, and protected files.
-5. **Run `/newsletter-service-preflight`** for working tree status, license headers, formatting, lint/vet, build, tests, protected files, commit verification, and PR change summary.
-6. **Only then push and open the PR** — and immediately launch the PR driver (see Post-PR iteration below).
+Local review is **author-side only**. It never calls GitHub, and it never creates
+or updates a label, status, check, review, approval, comment or merge. Its states
+are exactly `COMPLETE_WITH_FINDINGS`, `COMPLETE_NO_FINDINGS` and `INCOMPLETE` —
+they are not gate vocabulary, and nothing it produces feeds the conductor, the
+escalation judge or the merge gate.
 
 ### Post-PR iteration (responding to bot feedback on an open PR)
 

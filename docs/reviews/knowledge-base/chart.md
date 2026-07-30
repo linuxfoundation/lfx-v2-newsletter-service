@@ -3,9 +3,9 @@
 
 # Chart
 
-Patterns for the service-local Helm chart: secret hygiene in the deployment template, namespace coupling between Heimdall middleware and the HTTPRoute, and fail-fast handling of mode/shape selectors. These are the patterns the maintainer reviewer and Copilot flagged on PRs #3, #4, and #7.
+Patterns for the service-local Helm chart: secret hygiene in the deployment template, namespace coupling between Heimdall middleware and the HTTPRoute, authorization fallbacks on routes that return PII, wiring a new route through both the HTTPRoute and the Heimdall RuleSet, keeping allowlist defaults in step with the peer service, and fail-fast handling of mode/shape selectors. These are the patterns the maintainer reviewer and Copilot flagged on PRs #3, #4, #7, #52, #56, #57, and #58.
 
-**Read when:** any file under `charts/lfx-v2-newsletter-service/` changed — especially `templates/deployment.yaml`, `templates/heimdall-middleware.yaml`, `templates/httproute.yaml`, and `values.yaml`.
+**Read when:** any file under `charts/lfx-v2-newsletter-service/` changed — especially `templates/deployment.yaml`, `templates/heimdall-middleware.yaml`, `templates/httproute.yaml`, `templates/ruleset.yaml`, and `values.yaml`.
 
 ---
 
@@ -29,11 +29,27 @@ Patterns for the service-local Helm chart: secret hygiene in the deployment temp
 
 **Detect:** in `charts/lfx-v2-newsletter-service/templates/heimdall-middleware.yaml`, confirm the `Middleware` `metadata.namespace` matches the namespace the HTTPRoute's `ExtensionRef` resolves against (`{{ .Values.lfx.namespace }}`), not `{{ .Release.Namespace }}`. Cross-check `templates/httproute.yaml` for the unnamespaced `ExtensionRef`.
 
+**Caution when checking this — read the right block.** `templates/httproute.yaml` carries a `namespace: {{ .Release.Namespace }}` line inside its `backendRefs`, *not* inside the `ExtensionRef`. Skimming the file for "is the ExtensionRef namespaced" lands on that `backendRefs` line and reads as fixed when it is not. Verify against the `filters`/`extensionRef` block specifically. (Audited at HEAD `f13d015`: Middleware renders into `{{ .Release.Namespace }}` at `heimdall-middleware.yaml:14,29`; the HTTPRoute is `{{ .Values.lfx.namespace }}` at `httproute.yaml:9`; the ExtensionRef at `httproute.yaml:47-51` is still unnamespaced — the coupling is unfixed, and the `backendRefs` namespace at `httproute.yaml:57` is a different block.)
+
 **Empirical citation:** PR #7 `charts/lfx-v2-newsletter-service/templates/heimdall-middleware.yaml:15` — Copilot — "The Middleware is referenced from templates/httproute.yaml via an ExtensionRef without a namespace, so it must be created in the same namespace as the HTTPRoute ({{ .Values.lfx.namespace }}). Using {{ .Release.Namespace }} here will break resolution." (Open thread; verify the namespace coupling on any middleware/HTTPRoute change — `templates/heimdall-middleware.yaml` still renders the Middleware into `{{ .Release.Namespace }}` while `templates/httproute.yaml` lives in `{{ .Values.lfx.namespace }}`.)
 
 **Failure message:** Heimdall `Middleware` namespace uses `.Release.Namespace` but the HTTPRoute `ExtensionRef` resolves against `.Values.lfx.namespace` — Traefik drops the route.
 
 **Fix:** render the `Middleware` into `{{ .Values.lfx.namespace }}` (the HTTPRoute namespace), matching the unnamespaced `ExtensionRef`.
+
+---
+
+## `chart/pii-route-must-not-fall-back-to-allow-all` — Critical
+
+**Pattern:** a new Heimdall RuleSet rule guarding a route that returns PII is written with the chart's usual `{{- if .Values.openfga.enabled }} … openfga_check … {{- else }} … allow_all` shape. Because `values.yaml` ships `openfga.enabled: false`, the `else` branch is what actually renders, so every caller Heimdall authenticates can read any project's data on that route.
+
+**Detect:** in `charts/lfx-v2-newsletter-service/templates/ruleset.yaml`, for any added or changed rule whose route returns project-scoped personal data (unsubscribe opt-out lists, recipient addresses), confirm the rule uses `openfga_check` **unconditionally** — no `{{- if .Values.openfga.enabled }}` guard and no `allow_all` fallback. Check the current default in `values.yaml` (`openfga.enabled`) before assuming the guarded branch renders.
+
+**Empirical citation:** PR #52 (MERGED) `charts/lfx-v2-newsletter-service/templates/ruleset.yaml` — Copilot `3617160945` — "`values.yaml` sets `openfga.enabled: false`, so this branch renders `allow_all` … callers accepted by Heimdall can read any project's opt-out list." Resolved in `865fb80f`. Took two rounds to close (first the relation was tightened viewer→auditor, then the fallback was removed). Verified at HEAD `f13d015`: `values.yaml:307` still defaults `openfga.enabled: false`, and the two opt-out rules (`ruleset.yaml:271-284`, `:294-307`) are the only two of 14 rules with no `allow_all` fallback, with an explicit comment at `:267-270` recording why.
+
+**Failure message:** PII route's RuleSet rule falls back to `allow_all` when `openfga.enabled` is false (the shipped default) — cross-project data readable by any authenticated caller.
+
+**Fix:** call `openfga_check` unconditionally on PII routes; do not wrap it in `{{- if .Values.openfga.enabled }}` and do not provide an `allow_all` else-branch. Follow the two existing opt-out rules as the reference shape.
 
 ---
 
@@ -48,6 +64,34 @@ Patterns for the service-local Helm chart: secret hygiene in the deployment temp
 **Failure message:** chart mode/shape selector silently falls back on a bad value (or a required secret name defaults empty) — misconfiguration surfaces only at runtime.
 
 **Fix:** explicitly branch on each valid selector value and `fail "<message>"` on others; wrap required values (e.g. `secretName`) in `required` so `helm template`/upgrade fails fast.
+
+---
+
+## `chart/new-route-must-be-wired-in-httproute-and-ruleset` — Important
+
+**Pattern:** a new HTTP route is added to `internal/handler/http.go` but not to the chart, so it works locally and is unreachable in every deployed environment — the HTTPRoute only forwards the path prefixes it lists, and the Heimdall RuleSet only authorizes the rules it declares. The mirror-image failure is gating a new route or env var on a *correlated* toggle rather than on the config it actually depends on.
+
+**Detect:** when `internal/handler/http.go` registers a new path, confirm both `charts/lfx-v2-newsletter-service/templates/httproute.yaml` (a matching path/regex in `rules`) and `templates/ruleset.yaml` (an authorization rule for it) cover it. When a template gates a new env var or route, confirm the condition names the config the feature actually needs, not a neighbouring flag that merely tends to be set alongside it.
+
+**Empirical citation:** PR #52 (MERGED) — Copilot `3617009921` — "This route is unreachable in deployed environments. The chart's HTTPRoute only forwards `/projects/.../newsletters...` and `/newsletter-opens/...`." Resolved in `5e98c3ca`. The same class recurred twice more: PR #57 (archive endpoints — closed unmerged, never fixed) and PR #58 — Copilot `3647215361`, resolved in `b3f0ba29`, where the sub-lesson was to gate on the dependency itself (`app.send.provider == "sendgrid"` was used where the webhook key ref was what mattered). Three independent PRs; the clearest repeat-miss on this repo. Verified at HEAD `f13d015`: `httproute.yaml:35` carries the opt-outs regex.
+
+**Failure message:** new route registered in the handler but not wired into the chart's HTTPRoute and Heimdall RuleSet — unreachable once deployed.
+
+**Fix:** add the path to `templates/httproute.yaml` `rules` and a matching authorization rule to `templates/ruleset.yaml` in the same change; gate any conditional on the config the feature actually depends on.
+
+---
+
+## `chart/allowlist-default-must-match-peer-service` — Important
+
+**Pattern:** the chart ships a default that is locally sensible but wider than the peer service's own allowlist, so the feature fails 100% of the time in a deployment where the peer's config was not changed in lockstep.
+
+**Detect:** when a chart value enumerates domains, senders or addresses that a peer service also validates (`replyToAllowedDomains`, `EMAIL_FROM_ADDRESS_OVERRIDES` domains), confirm the shipped default does not assume a peer allowlist entry that does not exist yet. Prefer an empty default that a deployment opts into over one that presumes coordinated peer config. Read the peer's contract doc (`lfx-v2-email-service/docs/email-service-contract.md`) rather than inferring its allowlist.
+
+**Empirical citation:** PR #56 (MERGED) `charts/lfx-v2-newsletter-service/values.yaml` — Copilot `3626458835` — "This chart now permits `aaif.io`, but the current email-service chart … configure `SMTP_ALLOWED_REPLY_TO_DOMAINS` as only `linuxfoundation.org` … after which email-service rejects every recipient." Resolved in `3f0025ef`. Verified at HEAD `f13d015`: `values.yaml:115` ships `replyToAllowedDomains: ""`.
+
+**Failure message:** chart default assumes a peer-service allowlist entry that is not deployed — the peer rejects every send.
+
+**Fix:** default the value empty (or to the intersection the peer already allows) and document the peer-side change the wider value requires; land the peer's allowlist update first.
 
 ---
 
