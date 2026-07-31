@@ -5,7 +5,7 @@
 
 Patterns for the recipient-resolution path (concurrent committee lookups, normalization, the email-service `group_id` handoff) and the HTTP error-classification surface. These are the patterns the maintainer reviewer and Copilot flagged on PRs #3 and #9. The lookups originally hit query-service over HTTP; that client was retired for NATS (`lfx.committee-api.list_members`), but the underlying patterns (cancellation, bounded loops, normalization, validated correlation IDs) carry over to the NATS clients.
 
-**Read when:** `internal/service/send_orchestrator.go`, `internal/infrastructure/nats/**`, `internal/handler/send.go`, `internal/handler/http.go`, or `internal/service/newsletter.go` changed — anything that resolves recipients, calls an upstream service, maps domain errors to HTTP status, or handles the `group_id` send handoff.
+**Read when:** `internal/service/send_orchestrator.go`, `internal/infrastructure/**` (any upstream client, not only `nats/`), `internal/handler/send.go`, `internal/handler/http.go`, `internal/service/newsletter.go`, `internal/domain/model/**`, `pkg/api/newsletter.go`, or `internal/handler/drafts.go` changed — anything that resolves recipients, calls an upstream service, maps domain errors to HTTP status, or handles the `group_id` send handoff.
 
 ---
 
@@ -23,11 +23,13 @@ Patterns for the recipient-resolution path (concurrent committee lookups, normal
 
 ---
 
-## `recipient/unbounded-pagination-loop` — Important
+## `recipient/unbounded-pagination-loop` — Important (forward-looking only — no live construct)
 
-**Pattern:** the query-service committee-member client follows `next_page_token` in an unbounded `for` loop. The per-call HTTP timeout does not bound the whole sequence, so an upstream that always returns a non-empty token loops until context cancellation.
+**Scope:** this entry guards **new** code only. The construct it was raised on is entirely gone from the repo; nothing at HEAD matches it. Do not read it as describing live code, and never emit it against an unchanged file.
 
-**Detect:** the HTTP query-service client this was flagged on has been retired (`internal/infrastructure/upstream/` is a placeholder; member lookup is now a single NATS request per committee with no pagination). The pattern still applies: flag any new upstream pagination loop (`next_page_token` or similar) in `internal/infrastructure/nats/**` or elsewhere that has no max-pages ceiling.
+**Pattern:** an upstream client follows a `next_page_token` in an unbounded `for` loop. A per-call timeout does not bound the whole sequence, so an upstream that always returns a non-empty token loops until context cancellation.
+
+**Detect:** fires only when the patch **adds** upstream pagination. Flag a new `next_page_token`-style loop (in `internal/infrastructure/nats/**` or any new upstream client) that has no max-pages ceiling. Two things at HEAD are **not** matches: `internal/infrastructure/upstream/` is a package-doc placeholder (`committee_client.go` is 12 comment lines plus `package upstream`; `http_helpers.go` is 4 lines) with no `maxQueryPages` and no loop, and the only `NextPageToken` in the repo is this service's **own** bounded keyset cursor at `internal/repository/postgres.go:130`, which is not upstream pagination. Committee member lookup is now a single NATS request per committee with no pagination at all.
 
 **Empirical citation:** PR #3 `internal/infrastructure/upstream/committee_client.go:70` — dealako (blocking) — "`GetMembers` follows `next_page_token` in an unbounded loop … a buggy or adversarial upstream that always returns a non-empty token will loop forever. Add a max-pages guard." Resolved in `959e23d` with `maxQueryPages = 100`.
 
