@@ -179,9 +179,13 @@ cites them in the same PR.
 1. **Commit your work.** `git commit -s -S`.
 2. **Run `/lfx-skills:lfx-local-review`** in post-commit mode (no argument — it reviews the
    commit you just made against its parent). The host pins the target and base
-   commits once and gives all three reviewers the same values, so you can keep
-   editing while the review runs: they read committed Git objects, never your
-   working tree.
+   commits once and gives all three reviewers the same values, and all review
+   *evidence* — the diff, and every file they read — comes from those pinned Git
+   objects, not from your checkout. A reviewer may additionally run a build, test
+   or linter, which necessarily uses the working tree; it must skip that check, or
+   say it was not evidence for the reviewed commit, if tracked content moved while
+   it ran. So you can keep editing, but expect optional checks to be skipped or
+   qualified when you do.
 3. **Read the three Markdown reports in this session.** There is no report file and
    nothing is retained — the run lives and dies with the session, and a lost
    session means a fresh full run.
