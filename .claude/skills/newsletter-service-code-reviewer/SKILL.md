@@ -216,21 +216,22 @@ repo's own doc for the handoff, or emit nothing.
 
 ## Severity
 
-Three levels, and no others. There is no nit severity here.
+Two levels, and no others — the same two every role in this review uses. There
+is no nit tier here: something below `Important` is not worth a finding.
 
-- **`critical`** — public DTO, route, status-code or ETag drift from
+- **`Critical`** — public DTO, route, status-code or ETag drift from
   `docs/newsletter-service-contract.md`; a broken draft/sending/sent or
   optimistic-locking invariant; logging tokens, Authorization headers, DB
   passwords, newsletter HTML bodies or recipient lists; a schema change absent
   from the embedded idempotent `schema.sql`; a `group_id`/send handoff that
   contradicts the documented contract; chart auth or routes that expose a
   protected API or break the unauthenticated open pixel.
-- **`high`** — a documented package-boundary violation; an `os.Getenv` read
-  outside `config.go`; a handler bypassing `decodeJSON` or the central error
-  mapper; behavior changed with its owning contract doc left stale; a missing
-  focused test the repo's own rules require.
-- **`should-fix`** — a real, quotable rule violation that is neither of the
-  above.
+- **`Important`** — every other quotable rule violation. The clearest cases are
+  a documented package-boundary violation; an `os.Getenv` read outside
+  `config.go`; a handler bypassing `decodeJSON` or the central error mapper;
+  behavior changed with its owning contract doc left stale; and a missing
+  focused test the repo's own rules require — but any real violation you can
+  quote belongs here if it is not `Critical`.
 
 ## Your report
 
@@ -247,7 +248,7 @@ first:
 Reviewed `internal/service/send_orchestrator.go` and 2 other files in
 `abc1234..def5678`.
 
-### critical — `group_id` accepted from the caller
+### Critical — `group_id` accepted from the caller
 
 `internal/service/send_orchestrator.go:118` — the send path now reads
 `req.GroupID` instead of minting one.
@@ -261,7 +262,7 @@ Reviewed `internal/service/send_orchestrator.go` and 2 other files in
 
 Every finding carries, in whatever prose reads naturally:
 
-- a **severity** — `critical`, `high` or `should-fix`;
+- a **severity** — `Critical` or `Important`;
 - a **repo-relative `file:line`** you actually read;
 - a **verbatim quote of the repo rule**, with the file it came from. A finding
   without a quotable rule is not a finding — drop it;
