@@ -96,7 +96,7 @@ func TestEmailHTMLMyNewslettersURLEscaped(t *testing.T) {
 }
 
 func TestEmailTextMyNewslettersLine(t *testing.T) {
-	wantLine := "Missed an issue? View past newsletters any time: " + testMyNewslettersURL
+	wantLine := "Missed an issue? View past newsletters any time in My Newsletters: " + testMyNewslettersURL
 
 	withURL := Chrome{
 		Subject:                 "Hello",

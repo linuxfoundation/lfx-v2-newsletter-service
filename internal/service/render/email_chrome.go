@@ -361,7 +361,7 @@ func EmailText(input Chrome) string {
 			lines = append(lines, "To reply, email "+input.EDReplyEmail)
 		}
 		if input.MyNewslettersURL != "" {
-			lines = append(lines, "Missed an issue? View past newsletters any time: "+input.MyNewslettersURL)
+			lines = append(lines, "Missed an issue? View past newsletters any time in My Newsletters: "+input.MyNewslettersURL)
 		}
 		if input.UnsubscribeURL != "" {
 			lines = append(lines, "Unsubscribe from "+display+" newsletters: "+input.UnsubscribeURL, "Delivered by LFX.")
