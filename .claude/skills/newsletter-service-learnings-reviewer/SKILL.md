@@ -290,10 +290,24 @@ What this yields:
 - Coverage present in **both** floors suppresses normally, whatever the entry's
   wording did in between.
 
-**Accepted consequence, stated plainly:** a newly added waiver does not take
-effect for suppression until it is part of both the pre-change and the target
-floor — normally a later branch, after this one merges. That delay is deliberate
-and is the price of a change never being able to approve itself.
+**Accepted consequence, stated plainly:** a newly added waiver suppresses
+nothing until it is in *both* floors of the review being run. When that happens
+depends on the review, so do not generalise it to "later" or "after merge":
+
+- **The commit or range that adds the waiver** — base lacks it, target has it.
+  It cannot suppress anything in that review. This is the self-approval case the
+  rule exists for.
+- **A later post-commit review on the same branch**, whose parent already
+  contains the waiver — both floors have it, so it suppresses a covered candidate
+  in that delta normally. The waiver is live from the very next commit; it does
+  not wait for a merge.
+- **The cumulative branch sweep** — the merge-base predates the branch-added
+  waiver while the target contains it, so it still cannot suppress anywhere in
+  the cumulative range. A waiver added on this branch never suppresses in the
+  branch sweep, which is the last gate before the PR opens.
+
+That last point is the one worth holding on to: per-commit reviews start
+honouring a new waiver immediately, and the sweep that gates the PR does not.
 
 Ordinary pattern files are unaffected by all of this: they are read at
 `target_sha` only, as Step 1 says. The two-revision rule is the false-positive
