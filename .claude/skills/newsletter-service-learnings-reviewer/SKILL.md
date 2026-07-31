@@ -186,15 +186,20 @@ For every pattern entry in every loaded file except
 Both come from the entry's own severity header. Do not adjust either on
 intuition — deriving them mechanically is what makes two runs agree.
 
-| KB header | `severity` | `confidence` |
+| KB header | Severity you report | How sure you must be |
 | --- | --- | --- |
-| `Critical` | `critical` | 90–100 |
-| `Important` | `high` | 80–89 |
-| `Nit` | — | below the floor: **drop it** |
+| `Critical` | `Critical` | very — treat 90%+ as the bar |
+| `Important` | `Important` | ~80%+ |
+| `Nit` | — | below the bar: **drop it** |
 
-`Nit` entries exist in the KB as a record; they are never emitted here. The
-contract has no nit severity and its confidence floor is 80. This role does not
-use `should-fix`: the KB's vocabulary has no tier that maps to it.
+The KB's own vocabulary carries straight through: a `Critical` entry reports as
+`Critical` and an `Important` entry as `Important`. Do not translate them into
+some other scale — mechanical derivation is what makes two runs agree, and a
+second vocabulary is exactly where that agreement breaks.
+
+`Nit` entries exist in the KB as a record; they are never reported here. The
+confidence column is a **judgement bar, not a number you print**: if you are
+below it, say nothing.
 
 ## Step 4 — apply the false-positive floor, last, **as it stood at `base_sha`**
 
