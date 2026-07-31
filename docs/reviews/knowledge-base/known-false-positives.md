@@ -3,9 +3,9 @@
 
 # Known false positives — applied LAST in every review pass
 
-Findings that match any pattern below MUST be dropped, regardless of which source (KB pattern file, code-reviewer rule, bot comment) produced them. This list is the floor — even a quotable KB pattern doesn't survive if it matches a known false positive.
+Findings that match any pattern below MUST be dropped. This list is the floor — even a quotable KB pattern doesn't survive if it matches a known false positive.
 
-Used by the repo-owned `newsletter-service-learnings-reviewer` brain (its Step 4 floor) and as filter discipline for the `newsletter-service-code-reviewer` brain, both under `.claude/skills/`.
+**Who actually applies this file:** the repo-owned `newsletter-service-learnings-reviewer` brain, as its Step 4 floor, and nothing else. The `newsletter-service-code-reviewer` brain does **not** load it: `docs/reviews/**` is deliberately outside that role's source surface, so it never reads these entries and cannot apply them. Do not read the floor as a repo-wide suppression guarantee — a code-reviewer finding matching an entry below is not automatically dropped, because that reviewer never sees it. Human reviewers and bots are likewise out of scope: this file binds one brain.
 
 ---
 
