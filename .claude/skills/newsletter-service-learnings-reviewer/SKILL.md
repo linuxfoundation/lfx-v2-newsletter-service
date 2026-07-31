@@ -289,19 +289,24 @@ finding, worst first:
 
 Reviewed 3 files in `abc1234..def5678` against `docs/reviews/knowledge-base/`.
 
-### Critical — recipient list logged at info level
+### Important — terminal send write uses the request context
 
-`internal/service/send_orchestrator.go:212` — the new log line includes the
-resolved recipient slice.
+`internal/service/send_orchestrator.go:351` — the `MarkSent` call now passes the
+inbound request `ctx` straight through instead of a detached one.
 
-> **Pattern:** recipient addresses must never reach logs, at any level.
-> **Detect:** a `slog.*Context` call whose attributes include the recipient
-> slice or any element of it.
+> **Detect:** in `internal/service/send_orchestrator.go`, confirm every terminal
+> persistence call (`MarkSent`, `RevertSending`, and the zero-recipient settle)
+> runs on a context detached from the request —
+> `context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)` — rather than
+> on the request `ctx` itself. Flag a terminal write that passes the request
+> context straight through.
 
 — `docs/reviews/knowledge-base/send-orchestration.md`, entry
-`send/recipients-never-logged`
+`send/terminal-write-must-outlive-request-ctx`
 
-**Fix:** log `len(recipients)` instead of the slice.
+**Fix:** wrap the terminal write in
+`context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)` so it completes
+independently of the HTTP request's lifetime.
 ```
 
 Every finding carries, in whatever prose reads naturally:

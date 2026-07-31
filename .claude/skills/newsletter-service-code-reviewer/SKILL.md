@@ -253,7 +253,9 @@ Reviewed `internal/service/send_orchestrator.go` and 2 other files in
 `internal/service/send_orchestrator.go:118` — the send path now reads
 `req.GroupID` instead of minting one.
 
-> This service mints the `group_id` itself. It is not caller-supplied.
+> Email dispatch: the send orchestrator mints the email-service `group_id`,
+> renders email chrome, and fans out per-recipient sends to
+> `lfx-v2-email-service` over NATS.
 
 — `docs/newsletter-service-contract.md`
 
