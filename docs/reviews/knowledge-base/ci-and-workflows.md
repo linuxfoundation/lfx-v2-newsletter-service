@@ -29,11 +29,22 @@ Scope note: these are review patterns for *changed workflow shell and expression
 
 **Pattern:** `gh api --paginate` applies its `--jq` filter to **each page separately**, so a filter ending in `| length` emits one count per page rather than a single total. The consuming shell then compares a multi-line string as an integer and fails with `integer expression expected`, breaking the check that was supposed to run.
 
-**Detect:** in `.github/workflows/**`, flag any `gh api --paginate` whose `--jq` ends in `length` (or otherwise aggregates) and whose output is used as a single number. Require counting the streamed lines instead, with a counter that **succeeds on empty input without masking an upstream failure** — `awk 'NF { n++ } END { print n + 0 }'` — or aggregating outside the per-page filter.
+**Detect:** in `.github/workflows/**`, flag any `gh api --paginate` whose `--jq` ends in `length` (or otherwise aggregates) and whose output is used as a single number. Require counting the streamed records instead, with a counter that **succeeds on empty input without masking an upstream failure** — for a direct producer-to-counter pipeline, `awk 'END { print NR + 0 }'` — or aggregating outside the per-page filter.
+
+Count records, not non-blank lines: an `NF`-guarded counter silently drops a legitimately empty or whitespace-only value that `--jq` emitted and that `length` would have counted. The one place `NF` *is* needed is the different shape `printf '%s\n' "$VAR" | ...`, where an empty variable still produces one blank line — there the guard is what makes an empty capture count as zero rather than one.
 
 Zero results must not look like an error, and an error must not look like zero results. A bare `grep -c .` fails the first: `grep` exits 1 when it selects no lines, *including* under `-c` where it still prints `0`, so it kills the step under `set -e`/`pipefail` on exactly the empty result the count exists to handle. Appending `|| true` fails the second: under `pipefail` the status being suppressed is the **whole pipeline's**, so a `gh api` that dies after emitting nothing is silently reported as a legitimate count of zero. The `awk` form exits 0 on empty input and leaves `pipefail` free to surface a producer failure.
 
-**Note on the live sites:** `agentic-gate.yml:164`, `:360`, `:420` and `:512` currently use `grep -c . || true` and therefore carry the masking flaw described above — a failed `gh api` reads as zero rows. That is a live observation, not a prescription; this entry deliberately does not match it, and `.github/**` is outside this repo role's edit surface.
+**Note on the live sites.** All four use `grep -c . || true`, but only one is actually exposed, because what matters is whether the API call feeds the counter directly or was captured earlier under its own error handling. Traced individually:
+
+- **`agentic-gate.yml:420`** — the one real case: `gh api --paginate ... | grep -c . || true` pipes the API straight into the counter, so a failed call reads as zero prior approvals and the gate can approve the same head twice, which is what the surrounding comment says the check exists to prevent.
+- **`:164`** — the API failure *is* swallowed, but by the separate `|| true` on its own `PRS="$(gh api ... || true)"` capture, not by the counter. Replacing the counter alone would not fix it.
+- **`:360`** — the API call is the condition of an `if`, so a failure takes the fail-closed `else`. Not exposed.
+- **`:512`** — the capture ends in `|| return 1`, so a failure propagates. Not exposed.
+
+At `:360` and `:512` the counter's `|| true` covers only the local `printf | awk | grep` over an already-captured variable, where it is doing the harmless job of tolerating zero matches.
+
+This is a live observation, not a prescription: this entry deliberately does not match `:420`, and `.github/**` is outside this repo role's edit surface.
 
 **Empirical citation:** PR #29 — Copilot `3507277710` plus three siblings — *"`gh api --paginate` applies the `--jq` filter to each page separately, so `[...] | length` emits one count per page … fails with 'integer expression expected'."* Resolved in `5d35d150` and `bebc75e1`. Three-plus sites across two files, and it breaks the gate's blocking checks.
 
@@ -48,7 +59,7 @@ _Anchor note: an earlier draft of this entry cited `:418,565`. Those are `--pagi
 ```bash
 count="$(
   gh api "..." --paginate --jq '...' |
-    awk 'NF { n++ } END { print n + 0 }'
+    awk 'END { print NR + 0 }'
 )"
 ```
 
