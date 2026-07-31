@@ -40,7 +40,7 @@ A second pass mined **PRs #26–#63** (38 PRs, created on/after 2026-06-29, all 
 | --- | --- | --- |
 | `security.md` | 6 (5 Critical, 1 Important) | handler / middleware / config / schema changes touching response bodies, JWT validation, auth env, or unauthenticated-endpoint persistence |
 | `persistence-and-schema.md` | 6 (2 Critical, 4 Important) | `internal/schema/schema.sql`, `internal/schema/schema.go`, or `internal/repository/postgres.go` changed |
-| `recipient-resolution-and-http.md` | 6 (all Important) | `send_orchestrator.go`, `internal/infrastructure/nats/**`, `internal/handler/send.go`, `internal/handler/http.go`, `internal/service/newsletter.go`, `internal/domain/model/**`, `pkg/api/newsletter.go`, or `internal/handler/drafts.go` changed |
+| `recipient-resolution-and-http.md` | 6 (all Important) | `send_orchestrator.go`, `internal/infrastructure/**` (any upstream client, not only `nats/`), `internal/handler/send.go`, `internal/handler/http.go`, `internal/service/newsletter.go`, `internal/domain/model/**`, `pkg/api/newsletter.go`, or `internal/handler/drafts.go` changed |
 | `send-orchestration.md` | 2 (both Important) | `internal/service/send_orchestrator.go`, `internal/service/unsubscribe.go`, or `internal/infrastructure/nats/**` changed |
 | `render-and-email-chrome.md` | 1 (Critical) | anything under `internal/service/render/` changed |
 | `service-and-tests.md` | 3 (2 Important, 1 Nit) | anything under `internal/service/`, `cmd/newsletter-api/service/implementations.go`, or any `*_test.go` changed |

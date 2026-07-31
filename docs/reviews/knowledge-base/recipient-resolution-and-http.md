@@ -5,7 +5,7 @@
 
 Patterns for the recipient-resolution path (concurrent committee lookups, normalization, the email-service `group_id` handoff) and the HTTP error-classification surface. These are the patterns the maintainer reviewer and Copilot flagged on PRs #3 and #9. The lookups originally hit query-service over HTTP; that client was retired for NATS (`lfx.committee-api.list_members`), but the underlying patterns (cancellation, bounded loops, normalization, validated correlation IDs) carry over to the NATS clients.
 
-**Read when:** `internal/service/send_orchestrator.go`, `internal/infrastructure/nats/**`, `internal/handler/send.go`, `internal/handler/http.go`, `internal/service/newsletter.go`, `internal/domain/model/**`, `pkg/api/newsletter.go`, or `internal/handler/drafts.go` changed — anything that resolves recipients, calls an upstream service, maps domain errors to HTTP status, or handles the `group_id` send handoff.
+**Read when:** `internal/service/send_orchestrator.go`, `internal/infrastructure/**` (any upstream client, not only `nats/`), `internal/handler/send.go`, `internal/handler/http.go`, `internal/service/newsletter.go`, `internal/domain/model/**`, `pkg/api/newsletter.go`, or `internal/handler/drafts.go` changed — anything that resolves recipients, calls an upstream service, maps domain errors to HTTP status, or handles the `group_id` send handoff.
 
 ---
 
