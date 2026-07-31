@@ -29,7 +29,7 @@ Scope note: these are review patterns for *changed workflow shell and expression
 
 **Pattern:** `gh api --paginate` applies its `--jq` filter to **each page separately**, so a filter ending in `| length` emits one count per page rather than a single total. The consuming shell then compares a multi-line string as an integer and fails with `integer expression expected`, breaking the check that was supposed to run.
 
-**Detect:** in `.github/workflows/**`, flag any `gh api --paginate` whose `--jq` ends in `length` (or otherwise aggregates) and whose output is used as a single number. Require counting the streamed lines instead — `grep -c .` — or aggregating outside the per-page filter.
+**Detect:** in `.github/workflows/**`, flag any `gh api --paginate` whose `--jq` ends in `length` (or otherwise aggregates) and whose output is used as a single number. Require counting the streamed lines instead — `grep -c . || true` — or aggregating outside the per-page filter. **The `|| true` is not optional:** `grep` exits 1 when it selects no lines, *including* under `-c` where it still prints `0`, so a bare `grep -c .` kills the step under `set -e`/`pipefail` on the empty result — the case the count exists to handle. All four live sites do this (`agentic-gate.yml:164`, `:360`, `:420`, `:512`).
 
 **Empirical citation:** PR #29 — Copilot `3507277710` plus three siblings — *"`gh api --paginate` applies the `--jq` filter to each page separately, so `[...] | length` emits one count per page … fails with 'integer expression expected'."* Resolved in `5d35d150` and `bebc75e1`. Three-plus sites across two files, and it breaks the gate's blocking checks.
 
@@ -39,7 +39,7 @@ _Anchor note: an earlier draft of this entry cited `:418,565`. Those are `--pagi
 
 **Failure message:** `gh api --paginate --jq '… | length'` emits one count per page — the shell comparison breaks instead of counting.
 
-**Fix:** stream the items and count lines with `grep -c .`, or aggregate after pagination rather than inside the per-page `--jq`.
+**Fix:** stream the items and count lines with `grep -c . || true`, or aggregate after pagination rather than inside the per-page `--jq`. Keep the `|| true` (or an equivalent `if` wrapper or `awk` counter that exits 0 on zero rows) and consume the result with a default, as the live sites do: `"${count:-0}"`.
 
 ---
 
@@ -51,6 +51,6 @@ _Anchor note: an earlier draft of this entry cited `:418,565`. Those are `--pagi
 
 **Empirical citation:** PR #29 — Copilot `3571611498` — and then **independently again on PR #38** — Copilot `3579341527`, `3579341562`. Resolved in `9fc8c942` with `"^(copilot(-pull-request-reviewer)?|github-actions)(\[bot\])?$"`. Promoted specifically because it recurred across two separate PRs: a durable rule would have caught the second. Verified at HEAD `f13d015`: `.github/workflows/agentic-apply.yml:208`.
 
-**Failure message:** bot-login match omits the `[bot]` suffix or an app login variant — the identity check silently fails to apply.
+**Failure message:** bot-login match omits the `[bot]` suffix, an app login variant, or case-insensitive matching — the identity check silently fails to apply.
 
-**Fix:** match with an alternation covering the app's login forms and an optional `(\[bot\])?` suffix, anchored at both ends.
+**Fix:** match with an alternation covering the app's login forms and an optional `(\[bot\])?` suffix, anchored at both ends, **and matched case-insensitively** — in jq, `test("<pattern>"; "i")`. Anchoring and the suffix alone are not enough: this repo's Copilot actor logs in as `Copilot`, so a lower-case pattern still misses the identity the rule was written for.
