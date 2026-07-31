@@ -221,8 +221,15 @@ a reader will look for it at the target and conclude you invented it. Name the
 repo-relative path, the entry's stable id, the verbatim `**Pattern:**` or
 `**Detect:**` text, and **`at base_sha <sha>`**.
 
-Evidence about the **code** stays target-only throughout. The union widens which
-*rules* apply; it never lets you cite or review code at the base.
+The union widens which **rules** apply. It does **not** widen which code you
+review: loading a pattern from the base never authorizes auditing unchanged base
+code, and every finding is still about what this range did.
+
+Which revision you read a changed file at is unchanged from Step 1 and follows the
+path's status in the pinned diff — added or modified at `target_sha`, **deleted at
+`base_sha`**, renamed or copied on the side the pattern is about. A base-only
+pattern matching a file this range deleted is the union and the deletion rule
+working together, not an exception to either.
 
 For every entry in that union:
 
@@ -370,9 +377,12 @@ depends on the review, so do not generalise it to "later" or "after merge":
 That last point is the one worth holding on to: per-commit reviews start
 honouring a new waiver immediately, and the sweep that gates the PR does not.
 
-Ordinary pattern files are unaffected by all of this: they are read at
-`target_sha` only, as Step 1 says. The two-revision rule is the false-positive
-floor's alone.
+Ordinary pattern files are read at both revisions too, but with the **opposite**
+operator: Step 2 matches their **union**, so a pattern present at either revision
+can generate a finding, while this floor uses the **intersection**, so a waiver
+must be present at both to suppress one. Both defaults point the same way — toward
+surfacing — which is what stops a change silencing its own review from either
+side.
 
 Say which floors you used only through your findings; your report has no field
 for it. The rule is about what you suppress, not about reporting.
@@ -460,9 +470,14 @@ INCOMPLETE — <reason>
 followed by what you did establish. State the reason in plain words; there is no
 error code. The cases that require it here:
 
-- `docs/reviews/knowledge-base/` is absent or unreadable at `target_sha`
-  (Step 1);
-- a routed pattern file cannot be read (Step 1);
+- the pattern bundle is **empty at both `base_sha` and `target_sha`** — no
+  reachable patterns at all (Step 1). Absence at only one revision is **not** this
+  case: it contributes an empty bundle from that revision and the review proceeds
+  on the other;
+- the pattern bundle is unreadable, ambiguous, or of the wrong entry type at
+  **either** revision — name which one (Step 1);
+- a routed pattern file that a revision's tree says exists cannot be read there —
+  name the file and the revision (Step 1);
 - the false-positive floor cannot be established at **either** `base_sha` or
   `target_sha` — unreadable object, an entry of the wrong type, a blob that will
   not read, or any ambiguity about whether the file was absent or merely
