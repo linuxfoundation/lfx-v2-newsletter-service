@@ -40,6 +40,11 @@ The host names the pinned revisions and passes the same values to every role:
 The reviewed range is `git diff base_sha..target_sha`. Read file contents at the
 target with `git show target_sha:<path>`.
 
+**Root commit.** The host writes `base_sha: none` when the target has no parent.
+`none` is not a revision — never pass it to git. Review the target on its own
+with `git diff-tree --root -p target_sha`, and read content at the target as
+usual.
+
 - Review **only the changes in that range**.
 - Read the full file **at `target_sha`** for every changed file a routed pattern
   applies to. A `**Detect:**` clause is an operational check against the file's
@@ -203,9 +208,15 @@ add or widen a waiver and suppress findings **about itself**, before any human
 sees it. The floor a review applies must be the one that existed before the
 change under review.
 
-Read it in two steps. One `git show` is **not** enough: it fails identically
-whether the file was absent at the base or the object cannot be read, and those
-are opposite outcomes.
+**If `base_sha` is `none`** (root commit), there is no pre-change floor at all:
+apply no waivers and report your findings normally. Do **not** run `git ls-tree`
+against `none` — it is not a revision, and the failure would look like an
+unreadable base. This is the same legitimately-empty floor as an absent file, and
+it is never `INCOMPLETE`.
+
+Otherwise read it in two steps. One `git show` is **not** enough: it fails
+identically whether the file was absent at the base or the object cannot be read,
+and those are opposite outcomes.
 
 1. **Check the entry in the base tree:**
 

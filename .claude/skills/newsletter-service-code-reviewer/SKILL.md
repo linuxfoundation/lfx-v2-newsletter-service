@@ -50,6 +50,11 @@ The host names the pinned revisions and passes the same values to every role:
 The reviewed range is `git diff base_sha..target_sha`. Read file contents at the
 target with `git show target_sha:<path>`.
 
+**Root commit.** The host writes `base_sha: none` when the target has no parent.
+`none` is not a revision — never pass it to git. Review the target on its own
+with `git diff-tree --root -p target_sha`, and read content at the target as
+usual.
+
 - Review **only the changes in that range**. Do not audit untouched code.
 - Read the full file **at `target_sha`** for anything the range changes; never
   audit from hunk context alone.
