@@ -99,41 +99,20 @@ review to the invoking host.
 
 ## Step 1 — route and load pattern files
 
-The knowledge base lives at **`docs/reviews/knowledge-base/`**. It is never
-relative to this skill's own directory, and never read from the caller's working
-tree. Every path below, and every KB source you cite, is that repo-relative docs
-path.
+The knowledge base lives at **`docs/reviews/knowledge-base/`, read at
+`target_sha`** — `git show target_sha:docs/reviews/knowledge-base/<file>`. That is
+the only copy: it is never relative to this skill's own directory, and never read
+from the caller's working tree. Every path below, and every KB source you cite, is
+that repo-relative docs path.
 
-**Load the pattern bundle at both `base_sha` and `target_sha`, and match against
-the union.** Reading only the target lets a change **delete the pattern that would
-have caught it** and introduce that very defect in the same range: with no entry
-at the target, no candidate is ever generated, and the floor in Step 4 never even
-gets consulted. This is the mirror of the floor rule — a change must not be able
-to silence its own review, whether by adding a waiver or by removing a detector.
-Both rules therefore err the same way, toward surfacing.
+**If `docs/reviews/knowledge-base/` is missing or unreadable at `target_sha`, your
+report starts `INCOMPLETE — <reason>`.** It is never a no-findings result: no
+reachable KB means you could not perform this review, not that the change is
+clean. Check the directory resolves before routing.
 
-Classify each revision **separately**, using revision-scoped tree entries and
-object ids (`git ls-tree <rev> -- <path>`, requiring mode `100644` / type `blob`,
-then reading that exact object):
-
-- **A path validly absent at a revision** contributes nothing from that revision.
-  That is an empty bundle, not a failure.
-- **`base_sha` is `none`** (root commit) → the base bundle is empty. Do not run
-  `git ls-tree` against `none`; it is not a revision.
-- **Ambiguity, a read failure, or a wrong entry type at either revision** →
-  `INCOMPLETE — <reason>`, and the reason must **name which revision failed**.
-  Never substitute one revision's bundle for the other.
-- **If the bundle is empty at *both* revisions**, you have no patterns at all →
-  `INCOMPLETE — <reason>`. That is never a no-findings result: no reachable KB
-  means you could not perform this review, not that the change is clean.
-
-Note the consequence of loading both: a bundle absent at the target but present at
-the base is a range that **deleted the knowledge base**, and you still review
-against what the base carried.
-
-(The **false-positive floor** is handled separately and in the opposite
-direction — read at both revisions, but suppressing only where the two *agree*.
-See Step 4.)
+(The **false-positive floor** is the one exception to reading at the target — it
+is read at **both** `base_sha` and `target_sha`, and suppresses only where the two
+agree. See Step 4.)
 
 Always read:
 
@@ -145,33 +124,6 @@ Always read:
 Then read **only** the rows whose condition the patch matches. Do not
 blanket-read: unrouted files are wasted context with no audit value. When a
 row is borderline, lean toward reading it.
-
-**Route at each revision independently.** The routing conditions are about the
-files the patch touches, which do not change between revisions — but which
-*pattern files exist* does. A pattern file present at `base_sha` and absent at
-`target_sha` is exactly the deletion case above, so route it from the base and
-load it there.
-
-**Do not let this table be the only thing that decides what exists.** The table
-below is part of this skill, which the host loads from the checkout — so a change
-that deletes a pattern file *and* its row here leaves you with no name to look up,
-and the deleted detector is never probed at the base. That is the same
-self-silencing hole in a narrower form, and routing alone cannot close it.
-
-So before applying the table, **enumerate the knowledge base directly at both
-revisions** and reconcile:
-
-```bash
-git ls-tree --name-only base_sha   -- docs/reviews/knowledge-base/
-git ls-tree --name-only target_sha -- docs/reviews/knowledge-base/
-```
-
-**Force-load every pattern file present at `base_sha` and absent at `target_sha`,
-whatever this table says** — a file the range deleted has no row to match, and its
-absence from the table is a consequence of the deletion rather than a routing
-decision. Treat a file whose name appears at either revision but in no row as
-routed-on: an unrouted-but-present file is a gap in this table, and the safe
-reading is to load it.
 
 Every filename in this table is under `docs/reviews/knowledge-base/`.
 
@@ -218,40 +170,14 @@ Every pattern entry has this shape:
 **Fix:** how to fix.
 ```
 
-If a **routed** pattern file cannot be read at a revision where its tree entry
-says it exists, your report starts `INCOMPLETE — <reason>` naming the file **and
-the revision** — not a review over the files that happened to load. A file the
-tree says is simply absent at that revision is the empty case above, not this one.
+If a **routed** pattern file cannot be read, your report starts
+`INCOMPLETE — <reason>` naming it — not a review over the files that happened to
+load.
 
 ## Step 2 — match
 
-Work over the **union** of the entries loaded at `base_sha` and at `target_sha`,
-excluding `known-false-positives.md` (Step 4 owns that, with the opposite rule).
-A candidate is generated if **either** revision's bundle generates it:
-
-- **In both revisions** — the ordinary case. Cite the target.
-- **Target only** (the range added or widened the pattern) — it generates
-  immediately, against the code in this same range.
-- **Base only** (the range removed or narrowed the pattern) — it still generates
-  for this range. This is the case the union exists for: deleting a detector does
-  not retroactively bless the defect it detected.
-
-For a **base-only** entry, the citation must make its provenance unmistakable, or
-a reader will look for it at the target and conclude you invented it. Name the
-repo-relative path, the entry's stable id, the verbatim `**Pattern:**` or
-`**Detect:**` text, and **`at base_sha <sha>`**.
-
-The union widens which **rules** apply. It does **not** widen which code you
-review: loading a pattern from the base never authorizes auditing unchanged base
-code, and every finding is still about what this range did.
-
-Which revision you read a changed file at is unchanged from Step 1 and follows the
-path's status in the pinned diff — added or modified at `target_sha`, **deleted at
-`base_sha`**, renamed or copied on the side the pattern is about. A base-only
-pattern matching a file this range deleted is the union and the deletion rule
-working together, not an exception to either.
-
-For every entry in that union:
+For every pattern entry in every loaded file except
+`known-false-positives.md`:
 
 1. **Run the `**Detect:**` clause**, using reads and greps as it directs.
    Never infer a match from the `**Pattern:**` prose alone — `**Detect:**` is
@@ -273,13 +199,6 @@ intuition — deriving them mechanically is what makes two runs agree.
 | `Critical` | `Critical` | very — treat 90%+ as the bar |
 | `Important` | `Important` | ~80%+ |
 | `Nit` | — | below the bar: **drop it** |
-
-**If the same pattern matches from both revisions with different severities,**
-report the strongest severity that a matching repo-owned entry actually
-authorizes, and cite the entry that authorizes it — naming the revision if it is
-the base one. Never invent a severity higher than some loaded entry grants. A
-range that downgrades a pattern's severity gets the pre-change severity for that
-range, on the same reasoning as removal.
 
 The KB's own vocabulary carries straight through: a `Critical` entry reports as
 `Critical` and an `Important` entry as `Important`. Do not translate them into
@@ -397,12 +316,9 @@ depends on the review, so do not generalise it to "later" or "after merge":
 That last point is the one worth holding on to: per-commit reviews start
 honouring a new waiver immediately, and the sweep that gates the PR does not.
 
-Ordinary pattern files are read at both revisions too, but with the **opposite**
-operator: Step 2 matches their **union**, so a pattern present at either revision
-can generate a finding, while this floor uses the **intersection**, so a waiver
-must be present at both to suppress one. Both defaults point the same way — toward
-surfacing — which is what stops a change silencing its own review from either
-side.
+Ordinary pattern files are unaffected by all of this: they are read at
+`target_sha` only, as Step 1 says. The two-revision rule is the false-positive
+floor's alone.
 
 Say which floors you used only through your findings; your report has no field
 for it. The rule is about what you suppress, not about reporting.
@@ -490,14 +406,9 @@ INCOMPLETE — <reason>
 followed by what you did establish. State the reason in plain words; there is no
 error code. The cases that require it here:
 
-- the pattern bundle is **empty at both `base_sha` and `target_sha`** — no
-  reachable patterns at all (Step 1). Absence at only one revision is **not** this
-  case: it contributes an empty bundle from that revision and the review proceeds
-  on the other;
-- the pattern bundle is unreadable, ambiguous, or of the wrong entry type at
-  **either** revision — name which one (Step 1);
-- a routed pattern file that a revision's tree says exists cannot be read there —
-  name the file and the revision (Step 1);
+- `docs/reviews/knowledge-base/` is absent or unreadable at `target_sha`
+  (Step 1);
+- a routed pattern file cannot be read (Step 1);
 - the false-positive floor cannot be established at **either** `base_sha` or
   `target_sha` — unreadable object, an entry of the wrong type, a blob that will
   not read, or any ambiguity about whether the file was absent or merely
