@@ -141,14 +141,14 @@ make lint        # golangci-lint
 ## Work cycle — post-commit and pre-PR reviews
 
 > **CRITICAL — while the branch is pre-PR, local review is mandatory.** After every
-> commit on the local branch, run `/lfx-skills:lfx-local-review`. It is a
-> cross-model review: three reviewers read the committed snapshot in parallel — the
-> central `general` brain plus this repo's own two brains — headless on Pi when Pi
-> is available, and Claude subagents otherwise. Before opening a PR, local review
-> must come back with no findings (or with the remaining ones explicitly documented
-> as trade-offs), the **branch-mode sweep** must be clean if the branch has more
-> than one commit, AND `/newsletter-service-pr-readiness` must clear every Critical
-> finding before `/newsletter-service-preflight` runs.
+> commit on the local branch, run `/lfx-local-review`. It runs three reviewers in
+> parallel — the central `general` brain plus this repo's own two brains — on Pi
+> when Pi is available, and Claude subagents otherwise. Each returns an ordinary
+> Markdown report. Before opening a PR, local review must come back with no
+> findings (or with the remaining ones explicitly documented as trade-offs), the
+> **branch sweep** must be clean if the branch has more than one commit, AND
+> `/newsletter-service-pr-readiness` must clear every Critical finding before
+> `/newsletter-service-preflight` runs.
 >
 > **Local review stops at PR-open.** Once the PR exists, the agentic review flow
 > owns iteration — do not run local review on iteration commits.
@@ -156,11 +156,11 @@ make lint        # golangci-lint
 This repo owns two of the three reviewer brains, so they are versioned with the
 code they describe:
 
-- `.claude/skills/newsletter-service-code-reviewer/SKILL.md` — audits the patch
+- `.claude/skills/newsletter-service-code-reviewer/SKILL.md` — audits the change
   against this repo's written rule surface (`CLAUDE.md`, the repo-local skills, the
   `docs/` contracts). Every finding quotes a repo rule verbatim.
 - `.claude/skills/newsletter-service-learnings-reviewer/SKILL.md` — matches the
-  patch against `docs/reviews/knowledge-base/`, the empirical patterns real
+  change against `docs/reviews/knowledge-base/`, the empirical patterns real
   reviewers have flagged on this repo's PRs. Every finding quotes a KB entry.
 
 The `local-code-review` and `local-learnings-review` symlinks beside them are the
@@ -177,53 +177,54 @@ cites them in the same PR.
 ### Post-commit (pre-PR phase, after every commit)
 
 1. **Commit your work.** `git commit -s -S`.
-2. **Run `/lfx-skills:lfx-local-review`** in post-commit mode (no argument — it
-   reviews `HEAD^..HEAD`). It snapshots the target commit into a temporary
-   worktree, so you can keep editing while the review runs.
-3. **Read the normalized summary it returns in this session.** There is no report
-   file and no result retention: the run lives and dies with the session, and a
-   lost session means a fresh full run. The summary carries the aggregate state,
-   the run provenance (harness, model, and the resolved path and digest of all
-   three brains), and each role's findings.
-4. **Act on the state:**
-   - `COMPLETE_NO_FINDINGS` — nothing to do; keep working.
-   - `COMPLETE_WITH_FINDINGS` — roll every supported finding into the next commit,
-     then rerun local review on that commit. A finding you disagree with is a
-     trade-off you document, not one you silently drop.
-   - `INCOMPLETE` — **not a pass.** Rerun the whole thing on the same harness.
-     Never patch a failed role by hand, never rerun one role in a different
-     harness, and never mix a Pi result with a Claude fallback result for the same
-     run.
-5. **If the run used the Claude fallback**, say so when you report it and relay the
-   launcher's onboarding message verbatim. A fallback run is a same-model review,
-   not cross-model evidence. The onboarding text belongs to the central launcher —
-   do not rewrite or fork it here.
+2. **Run `/lfx-local-review`** in post-commit mode (no argument — it reviews the
+   commit you just made against its parent). The host pins the target and base
+   commits once and gives all three reviewers the same values, so you can keep
+   editing while the review runs: they read committed Git objects, never your
+   working tree.
+3. **Read the three Markdown reports in this session.** There is no report file and
+   nothing is retained — the run lives and dies with the session, and a lost
+   session means a fresh full run.
+4. **Act on what they say:**
+   - **No findings** — nothing to do; keep working.
+   - **Findings** — the main session, never a reviewer, makes the fixes. Roll every
+     supported finding into a follow-up commit, then rerun the complete trio on it.
+     A finding you disagree with is a trade-off you document, not one you silently
+     drop.
+   - **A report whose first line is `INCOMPLETE — <reason>`, or a reviewer the host
+     reports as failed or empty** — **not a pass.** The whole cycle is incomplete
+     and the other two reports do not rescue it. Resolve the cause and rerun the
+     **complete trio under one harness**. Never hand-patch a failed role, never
+     rerun a single role, and never mix Pi and Claude results for the same run.
+5. **Reviewer-driven follow-ups are ordinary commits.** Sign them (`git commit -s -S`)
+   and use a conventional `fix(<scope>): ...` — or plain `fix: ...` where no scope
+   fits — then rerun the complete trio.
+6. **If the run used the Claude fallback**, say so when you report it. A fallback
+   run is a same-model review, not cross-model evidence.
 
 ### Pre-PR (branch sweep, then open)
 
 When the work is done and no more code commits are planned:
 
-1. **Branch-mode sweep — only if the branch has more than one commit.** Run
-   `/lfx-skills:lfx-local-review` with `branch`. It resolves the base itself
-   (`--base` if given, else local `origin/main`, else local `main`) and reviews the
-   merge-base diff. Nothing is fetched, so refresh your remote-tracking ref first
-   if it is stale.
-2. **Loop until clean.** Address findings in a commit, then rerun the sweep. Handle
-   an `INCOMPLETE` sweep the same way as above: one full rerun of the same harness.
-3. **Run `/newsletter-service-pr-readiness`** for branch name, JIRA reference,
+1. **Drain the reviews** — no outstanding findings, and no incomplete run.
+2. **Branch sweep — only if the branch has more than one commit.** Run
+   `/lfx-local-review branch`. It reviews `merge-base(origin/main, HEAD)..HEAD`.
+3. **Loop until clean.** Address findings in a commit, then rerun the sweep. Handle
+   an incomplete sweep the same way as above: one full rerun of the complete trio.
+4. **Run `/newsletter-service-pr-readiness`** for branch name, JIRA reference,
    conventional commits, rebase status, DCO + GPG signing, diff size, and protected
    files.
-4. **Run `/newsletter-service-preflight`** for working tree status, license headers,
+5. **Run `/newsletter-service-preflight`** for working tree status, license headers,
    formatting, lint/vet, build, tests, protected files, commit verification, and the
    PR change summary.
-5. **Only then push and open the PR** — and immediately launch the PR driver (see
+6. **Only then push and open the PR** — and immediately launch the PR driver (see
    Post-PR iteration below).
 
-Local review is **author-side only**. It never calls GitHub, and it never creates
-or updates a label, status, check, review, approval, comment or merge. Its states
-are exactly `COMPLETE_WITH_FINDINGS`, `COMPLETE_NO_FINDINGS` and `INCOMPLETE` —
-they are not gate vocabulary, and nothing it produces feeds the conductor, the
-escalation judge or the merge gate.
+Local review is **author-side only**. Reviewers may use ordinary local tooling —
+shell, git, builds, tests, read-only GitHub inspection and `git fetch` — but they
+never edit source, commit, push, or create or update a label, status, check,
+review, approval, comment or merge. Nothing they produce feeds the conductor, the
+escalation judge or the merge gate; their reports inform you, and you decide.
 
 ### Post-PR iteration (responding to bot feedback on an open PR)
 
