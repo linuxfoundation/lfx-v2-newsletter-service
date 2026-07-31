@@ -109,6 +109,10 @@ spec:
             - name: EMAIL_REPLY_TO_ALLOWED_DOMAINS
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.app.selfServeBaseURL }}
+            - name: LFX_SELF_SERVE_BASE_URL
+              value: {{ . | quote }}
+            {{- end }}
             - name: NEWSLETTER_PUBLIC_BASE_URL
               value: {{ default (printf "https://lfx-api.%s" .Values.lfx.domain) .Values.app.unsubscribe.publicBaseURL | quote }}
             {{- if .Values.app.unsubscribe.secretRef.name }}
