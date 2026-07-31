@@ -46,9 +46,16 @@ with `git diff-tree --root -p target_sha`, and read content at the target as
 usual.
 
 - Review **only the changes in that range**.
-- Read the full file **at `target_sha`** for every changed file a routed pattern
-  applies to. A `**Detect:**` clause is an operational check against the file's
-  content at the target, not against hunk context.
+- Read the full file for every changed file a routed pattern applies to. A
+  `**Detect:**` clause is an operational check against the file's content, not
+  against hunk context. **Which revision depends on what the range did to the
+  path** — take it from the pinned diff: added or modified → read at
+  `target_sha`; **deleted → read in full at `base_sha`**, since there is nothing
+  to read at the target; renamed or copied → read the side the pattern is about.
+  A path absent at `target_sha` *because the range deleted it* is expected, not
+  missing evidence, and is never a reason to report `INCOMPLETE`. A pattern can
+  match a deletion — removing a guard the pattern exists to require is exactly
+  the kind of change it should catch.
 - **Review committed Git objects only.** Never use staged, unstaged, untracked or
   later-`HEAD` content as evidence for the target.
 - Paths you cite are repo-relative.

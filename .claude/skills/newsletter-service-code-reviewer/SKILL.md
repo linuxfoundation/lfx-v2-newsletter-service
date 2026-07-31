@@ -56,8 +56,16 @@ with `git diff-tree --root -p target_sha`, and read content at the target as
 usual.
 
 - Review **only the changes in that range**. Do not audit untouched code.
-- Read the full file **at `target_sha`** for anything the range changes; never
-  audit from hunk context alone.
+- Read the full file for anything the range changes; never audit from hunk
+  context alone. **Which revision depends on what the range did to the path** —
+  take it from the pinned diff, not from whether a read happens to succeed:
+  added or modified → read at `target_sha`; **deleted → read in full at
+  `base_sha`**, since there is nothing to read at the target; renamed or copied →
+  read the side each question is about. A path that is absent at `target_sha`
+  *because the range deleted it* is expected, not missing evidence, and is never
+  a reason to report `INCOMPLETE`. Deletions get the same scrutiny as additions:
+  removing an authorization check, a validation, or an error path is a change
+  like any other.
 - **Review committed Git objects only.** Never use staged, unstaged, untracked or
   later-`HEAD` content as evidence for the target — the developer keeps working
   while you run, and their working tree is not what you were asked to review.
