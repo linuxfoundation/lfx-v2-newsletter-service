@@ -70,3 +70,6 @@ debug.test
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# OAS local agent instances and worktrees
+local-agents/
