@@ -208,7 +208,9 @@ When the work is done and no more code commits are planned:
 
 1. **Drain the reviews** — no outstanding findings, and no incomplete run.
 2. **Branch sweep — only if the branch has more than one commit.** Run
-   `/lfx-local-review branch`. It reviews `merge-base(origin/main, HEAD)..HEAD`.
+   `/lfx-local-review branch`. The host fetches `origin` once, pins `origin/main`
+   and the merge-base, and reviews `base..HEAD`; a failed fetch fails the run
+   before any reviewer starts.
 3. **Loop until clean.** Address findings in a commit, then rerun the sweep. Handle
    an incomplete sweep the same way as above: one full rerun of the complete trio.
 4. **Run `/newsletter-service-pr-readiness`** for branch name, JIRA reference,
@@ -221,9 +223,13 @@ When the work is done and no more code commits are planned:
    Post-PR iteration below).
 
 Local review is **author-side only**. Reviewers may use ordinary local tooling —
-shell, git, builds, tests, read-only GitHub inspection and `git fetch` — but they
-never edit source, commit, push, or create or update a label, status, check,
-review, approval, comment or merge. Nothing they produce feeds the conductor, the
+shell, git, read-only GitHub inspection, and non-fixing builds, tests and linters
+— but they never edit tracked source or config, run auto-fixing formatters or
+generators, commit, reset, push, or create or update a label, status, check,
+review, approval, comment or merge. Their checks may leave caches, binaries or
+coverage files behind; that debris is yours to clean up, not theirs. If a reviewer
+reports that a command modified tracked files, it is telling you deliberately
+rather than fixing it silently. Nothing they produce feeds the conductor, the
 escalation judge or the merge gate; their reports inform you, and you decide.
 
 ### Post-PR iteration (responding to bot feedback on an open PR)
