@@ -72,4 +72,4 @@ debug.test
 .claude/worktrees/
 
 # OAS local agent instances and worktrees
-local-agents/
+/local-agents/
