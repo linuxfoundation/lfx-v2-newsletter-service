@@ -24,6 +24,23 @@ A second pass mined **PRs #26–#63** (38 PRs, created on/after 2026-06-29, all 
 - **False-positives:** 6 retained (one strengthened), 1 removed as dead noise — see `known-false-positives.md`.
 - **Known gaps deliberately left open**, pending a policy decision rather than resolved by inference: entries whose only cited source is a human maintainer (8 of the original 22) stay as-is; `chart/mode-shape-selector-no-fail-fast` is real but was **raised and never acted on**, and stays unchanged rather than being downgraded; `persistence/on-conflict-target-mismatch` is retained and escalated — its prescribed fix was never applied, but that reading is static and unconfirmed against a live Postgres, so it is not restated here as an observed failure.
 
+### Post-refresh demotion — 2026-07-31 (LFXV2-2903)
+
+One of that refresh's 12 promotions has since been withdrawn; the bullets above are
+left as the record of that pass, and this note supersedes them for current counts.
+
+- `chart/allowlist-default-must-match-peer-service` is **demoted from the firing set
+  back to held evidence** — § Categories reduced with it (`chart.md` 7 → 6, total
+  34 → 33). Its only locally-decidable predicate flagged *every* non-empty
+  peer-validated default as a mismatch, including values the peer already permits, and
+  an `Important` match always reports — so the entry would have blocked correctly
+  coordinated defaults. The disposition, its evidence, and the four reformulations that
+  failed are recorded in place, in the comment at the entry's former position in
+  `chart.md`. It returns if a locally decidable predicate is found.
+- Generalisable: an entry is only promotable if its predicate can **also come back
+  clean** on the compliant case. "Fires on everything in the trigger set" is not a
+  detection rule, however real the miss behind it.
+
 ## Corpus stats — first build (PRs #3–#9)
 
 - **Merged PRs sampled:** 7 (PRs #3–#9). All merged PRs in repo history as of 2026-05-29.
@@ -44,10 +61,10 @@ A second pass mined **PRs #26–#63** (38 PRs, created on/after 2026-06-29, all 
 | `send-orchestration.md` | 2 (both Important) | `internal/service/send_orchestrator.go`, `internal/service/unsubscribe.go`, or `internal/infrastructure/nats/**` changed |
 | `render-and-email-chrome.md` | 1 (Critical) | anything under `internal/service/render/` changed |
 | `service-and-tests.md` | 3 (2 Important, 1 Nit) | anything under `internal/service/`, `cmd/newsletter-api/service/implementations.go`, or any `*_test.go` changed |
-| `chart.md` | 7 (3 Critical, 3 Important, 1 Nit) | any `charts/lfx-v2-newsletter-service/**` **or `internal/handler/http.go`** changed |
+| `chart.md` | 6 (3 Critical, 2 Important, 1 Nit) | any `charts/lfx-v2-newsletter-service/**` **or `internal/handler/http.go`** changed |
 | `ci-and-workflows.md` | 3 (1 Critical, 2 Important) | anything under `.github/workflows/` or `.github/skills/` changed |
 
-**Total: 34 patterns** + `known-false-positives.md` (6 entries).
+**Total: 33 patterns** + `known-false-positives.md` (6 entries).
 
 The `Read when` column above mirrors the routing table in
 `.claude/skills/newsletter-service-learnings-reviewer/SKILL.md`, which is the one

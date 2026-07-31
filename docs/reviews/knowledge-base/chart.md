@@ -3,7 +3,7 @@
 
 # Chart
 
-Patterns for the service-local Helm chart: secret hygiene in the deployment template, namespace coupling between Heimdall middleware and the HTTPRoute, authorization fallbacks on routes that return PII, wiring a new route through both the HTTPRoute and the Heimdall RuleSet, keeping allowlist defaults in step with the peer service, and fail-fast handling of mode/shape selectors. These are the patterns the maintainer reviewer and Copilot flagged on PRs #3, #4, #7, #52, #56, #57, and #58.
+Patterns for the service-local Helm chart: secret hygiene in the deployment template, namespace coupling between Heimdall middleware and the HTTPRoute, authorization fallbacks on routes that return PII, wiring a new route through both the HTTPRoute and the Heimdall RuleSet, and fail-fast handling of mode/shape selectors. These are the patterns the maintainer reviewer and Copilot flagged on PRs #3, #4, #7, #52, #57, and #58.
 
 **Read when:** any file under `charts/lfx-v2-newsletter-service/` **or `internal/handler/http.go`** changed — especially `templates/deployment.yaml`, `templates/heimdall-middleware.yaml`, `templates/httproute.yaml`, `templates/ruleset.yaml`, and `values.yaml`.
 
@@ -83,21 +83,30 @@ Patterns for the service-local Helm chart: secret hygiene in the deployment temp
 
 ---
 
-## `chart/allowlist-default-must-match-peer-service` — Important
+<!--
+Removed 2026-07-31 (LFXV2-2903, PR #65 review): the
+`chart/allowlist-default-must-match-peer-service` entry, demoted from the firing set
+back to held/unpromoted evidence.
 
-**Pattern:** the chart ships a default that is locally sensible but wider than the peer service's own allowlist, so the feature fails 100% of the time in a deployment where the peer's config was not changed in lockstep.
+Why: its only locally-decidable predicate flagged EVERY non-empty peer-validated
+default as a mismatch, including a value the peer already permits, and `Important`
+matches always report — so the entry produced a blocking false positive on correctly
+coordinated defaults. Four reformulations failed to fix that. Reading the peer's
+actual allowlist is unrunnable (a detached single-repo snapshot never contains the
+peer), and requiring evidence that a value *was* uncoordinated makes the rule
+unfirable on exactly the new values it exists to catch, because that evidence lives
+in the peer repo too.
 
-**Detect:** when a chart value enumerates domains, senders or addresses that a peer service also validates (`replyToAllowedDomains`, `EMAIL_FROM_ADDRESS_OVERRIDES` domains), confirm the shipped default does not assume a peer allowlist entry that does not exist yet. Prefer an empty default that a deployment opts into over one that presumes coordinated peer config. **Self-contained check:** the trigger is a chart value that enumerates domains, senders or addresses **the peer also validates** — a small, named set (`replyToAllowedDomains`, `EMAIL_FROM_ADDRESS_OVERRIDES` domains), not any list-valued setting. For those, flag a **non-empty shipped default**: it presumes peer configuration this repo cannot confirm, and the fix below is an empty opt-in default. Decidable from `values.yaml` alone.
+Held, not deleted: the underlying miss is real — PR #56 (MERGED)
+`charts/lfx-v2-newsletter-service/values.yaml`, Copilot `3626458835`, "This chart now
+permits `aaif.io`, but the current email-service chart … configure
+`SMTP_ALLOWED_REPLY_TO_DOMAINS` as only `linuxfoundation.org` … after which
+email-service rejects every recipient", resolved in `3f0025ef`. The entry returns if a
+locally decidable predicate is found. The cross-service sync requirement itself remains
+documented where it is owned, in `docs/service-helm-chart.md`.
 
-Two formulations that do **not** work, recorded so this line stops being rewritten: requiring the reviewer to check the peer's actual allowlist is unrunnable, because a detached single-repo snapshot never contains the peer; and requiring evidence that a specific value *was* uncoordinated makes the rule unfirable on exactly the new values it exists to catch, since that evidence also lives in the peer repo. The non-empty default is the locally-observable proxy, and it is the one to use. The peer's allowlist is not readable from a detached single-repo snapshot, so do not treat `lfx-v2-email-service/docs/email-service-contract.md` as an input; it is the provenance of the rule. Never infer the peer's allowlist, and never cite that path.
-
-**Empirical citation:** PR #56 (MERGED) `charts/lfx-v2-newsletter-service/values.yaml` — Copilot `3626458835` — "This chart now permits `aaif.io`, but the current email-service chart … configure `SMTP_ALLOWED_REPLY_TO_DOMAINS` as only `linuxfoundation.org` … after which email-service rejects every recipient." Resolved in `3f0025ef`. Verified at HEAD `f13d015`: `values.yaml:115` ships `replyToAllowedDomains: ""`.
-
-**Failure message:** chart default assumes a peer-service allowlist entry that is not deployed — the peer rejects every send.
-
-**Fix:** default the value empty (or to the intersection the peer already allows) and document the peer-side change the wider value requires; land the peer's allowlist update first.
-
----
+Published counts in `README.md` were reduced with this removal.
+-->
 
 ## `chart/values-doc-drift-on-new-option` — Nit
 
