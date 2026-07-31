@@ -399,6 +399,12 @@ error code. The cases that require it here:
 
 - `docs/reviews/knowledge-base/` is absent or unreadable at `target_sha`
   (Step 1);
+- an **always-read** file cannot be read — `security.md` or
+  `known-false-positives.md` (Step 1). These are not routed, so the routed-file
+  case below does not cover them, and a directory that loads fine says nothing
+  about either one. `security.md` reaches handler, middleware, config and schema
+  changes alike, so continuing without it is a review missing its security
+  patterns while looking complete;
 - a routed pattern file cannot be read (Step 1);
 - the false-positive floor cannot be established at **either** `base_sha` or
   `target_sha` — unreadable object, an entry of the wrong type, a blob that will
