@@ -141,7 +141,7 @@ make lint        # golangci-lint
 ## Work cycle — post-commit and pre-PR reviews
 
 > **CRITICAL — while the branch is pre-PR, local review is mandatory.** After every
-> commit on the local branch, run `/lfx-local-review`. It runs three reviewers in
+> commit on the local branch, run `/lfx-skills:lfx-local-review`. It runs three reviewers in
 > parallel — the central `general` brain plus this repo's own two brains — on Pi
 > when Pi is available, and Claude subagents otherwise. Each returns an ordinary
 > Markdown report. Before opening a PR, local review must come back with no
@@ -177,7 +177,7 @@ cites them in the same PR.
 ### Post-commit (pre-PR phase, after every commit)
 
 1. **Commit your work.** `git commit -s -S`.
-2. **Run `/lfx-local-review`** in post-commit mode (no argument — it reviews the
+2. **Run `/lfx-skills:lfx-local-review`** in post-commit mode (no argument — it reviews the
    commit you just made against its parent). The host pins the target and base
    commits once and gives all three reviewers the same values, so you can keep
    editing while the review runs: they read committed Git objects, never your
@@ -208,7 +208,7 @@ When the work is done and no more code commits are planned:
 
 1. **Drain the reviews** — no outstanding findings, and no incomplete run.
 2. **Branch sweep — only if the branch has more than one commit.** Run
-   `/lfx-local-review branch`. The host fetches `origin` once, pins `origin/main`
+   `/lfx-skills:lfx-local-review branch`. The host fetches `origin` once, pins `origin/main`
    and the merge-base, and reviews `base..HEAD`; a failed fetch fails the run
    before any reviewer starts.
 3. **Loop until clean.** Address findings in a commit, then rerun the sweep. Handle
