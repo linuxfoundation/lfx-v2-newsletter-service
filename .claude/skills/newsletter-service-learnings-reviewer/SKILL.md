@@ -150,8 +150,28 @@ row is borderline, lean toward reading it.
 files the patch touches, which do not change between revisions — but which
 *pattern files exist* does. A pattern file present at `base_sha` and absent at
 `target_sha` is exactly the deletion case above, so route it from the base and
-load it there. Routing only against the target's file list would reintroduce the
-hole this rule closes.
+load it there.
+
+**Do not let this table be the only thing that decides what exists.** The table
+below is part of this skill, which the host loads from the checkout — so a change
+that deletes a pattern file *and* its row here leaves you with no name to look up,
+and the deleted detector is never probed at the base. That is the same
+self-silencing hole in a narrower form, and routing alone cannot close it.
+
+So before applying the table, **enumerate the knowledge base directly at both
+revisions** and reconcile:
+
+```bash
+git ls-tree --name-only base_sha   -- docs/reviews/knowledge-base/
+git ls-tree --name-only target_sha -- docs/reviews/knowledge-base/
+```
+
+**Force-load every pattern file present at `base_sha` and absent at `target_sha`,
+whatever this table says** — a file the range deleted has no row to match, and its
+absence from the table is a consequence of the deletion rather than a routing
+decision. Treat a file whose name appears at either revision but in no row as
+routed-on: an unrouted-but-present file is a gap in this table, and the safe
+reading is to load it.
 
 Every filename in this table is under `docs/reviews/knowledge-base/`.
 
