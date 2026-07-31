@@ -208,8 +208,8 @@ cites them in the same PR.
 5. **Reviewer-driven follow-ups are ordinary commits.** Sign them (`git commit -s -S`)
    and use a conventional `fix(<scope>): ...` — or plain `fix: ...` where no scope
    fits — then rerun the complete trio.
-6. **If the run used the Claude fallback**, say so when you report it. A fallback
-   run is a same-model review, not cross-model evidence.
+6. **If the run used the Claude Opus fallback**, say so when you report it. It is
+   not the intended Pi/GitHub-Copilot cross-model review.
 
 ### Pre-PR (drain, then open)
 
