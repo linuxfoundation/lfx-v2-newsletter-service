@@ -33,12 +33,13 @@ The sibling roles own everything else, and you must not drift into them:
 The host names the pinned revisions and passes the same values to every role:
 
 - **`target_sha`** — the commit under review.
-- **`base_sha`** — the pre-change commit. Post-commit that is the target's first
-  parent. In branch mode the host fetches once, pins `origin/main`, and gives you
-  the merge-base it computed — you neither fetch nor recompute it.
+- **`base_sha`** — the pre-change commit, **supplied by the host**. Normally the
+  target's first parent; a caller may instead supply a direct base range. You
+  never fetch, compute or derive it, and there is no repository-wide or
+  cumulative comparison to make.
 
-The reviewed range is `git diff base_sha..target_sha`. Read file contents at the
-target with `git show target_sha:<path>`.
+The reviewed range is exactly `git diff <base_sha> <target_sha>`. Read file
+contents at the target with `git show target_sha:<path>`.
 
 **Root commit.** The host writes `base_sha: none` when the target has no parent.
 `none` is not a revision — never pass it to git. Review the target on its own
@@ -222,10 +223,8 @@ revision alone is the floor:
 - Applying only the **target** floor lets a change add or widen a waiver and
   suppress findings **about itself**, before any human sees it.
 - Applying only the **base** floor lets a change remove a waiver *and* introduce
-  the defect that waiver covered, and still be suppressed — on the post-commit
-  review (base = parent) and on the branch sweep (base = merge-base) alike. With
-  no later commit touching it, that finding is never reported before the PR
-  opens.
+  the defect that waiver covered, and still be suppressed, because the base it is
+  judged against still carries the waiver the change just deleted.
 
 The intersection closes both. It can only ever suppress **less** than either
 floor alone, so it cannot open a new suppression path.
@@ -298,23 +297,15 @@ What this yields:
   wording did in between.
 
 **Accepted consequence, stated plainly:** a newly added waiver suppresses
-nothing until it is in *both* floors of the review being run. When that happens
-depends on the review, so do not generalise it to "later" or "after merge":
+nothing until it is in *both* floors of the review being run. Which review that
+is depends only on the base you were supplied:
 
-- **The commit or range that adds the waiver** — base lacks it, target has it.
-  It cannot suppress anything in that review. This is the self-approval case the
-  rule exists for.
-- **A later post-commit review on the same branch**, whose parent already
-  contains the waiver — both floors have it, so it suppresses a covered candidate
-  in that delta normally. The waiver is live from the very next commit; it does
-  not wait for a merge.
-- **The cumulative branch sweep** — the merge-base predates the branch-added
-  waiver while the target contains it, so it still cannot suppress anywhere in
-  the cumulative range. A waiver added on this branch never suppresses in the
-  branch sweep, which is the last gate before the PR opens.
-
-That last point is the one worth holding on to: per-commit reviews start
-honouring a new waiver immediately, and the sweep that gates the PR does not.
+- **The range that adds the waiver** — the base lacks it, the target has it, so
+  it cannot suppress anything here. This is the self-approval case the rule
+  exists for.
+- **A later range whose supplied base already carries the waiver** — both floors
+  have it, so it suppresses a covered candidate normally. Nothing waits on a
+  merge; the waiver is live for the next range whose base includes it.
 
 Ordinary pattern files are unaffected by all of this: they are read at
 `target_sha` only, as Step 1 says. The two-revision rule is the false-positive

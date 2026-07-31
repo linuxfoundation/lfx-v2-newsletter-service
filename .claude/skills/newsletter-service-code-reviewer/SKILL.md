@@ -43,12 +43,13 @@ formatting, lint, vet, build and test *execution* belongs to
 The host names the pinned revisions and passes the same values to every role:
 
 - **`target_sha`** — the commit under review.
-- **`base_sha`** — the pre-change commit. Post-commit that is the target's first
-  parent. In branch mode the host fetches once, pins `origin/main`, and gives you
-  the merge-base it computed — you neither fetch nor recompute it.
+- **`base_sha`** — the pre-change commit, **supplied by the host**. Normally the
+  target's first parent; a caller may instead supply a direct base range. You
+  never fetch, compute or derive it, and there is no repository-wide or
+  cumulative comparison to make.
 
-The reviewed range is `git diff base_sha..target_sha`. Read file contents at the
-target with `git show target_sha:<path>`.
+The reviewed range is exactly `git diff <base_sha> <target_sha>`. Read file
+contents at the target with `git show target_sha:<path>`.
 
 **Root commit.** The host writes `base_sha: none` when the target has no parent.
 `none` is not a revision — never pass it to git. Review the target on its own

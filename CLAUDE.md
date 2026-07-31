@@ -145,8 +145,7 @@ make lint        # golangci-lint
 > parallel — the central `general` brain plus this repo's own two brains — on Pi
 > when Pi is available, and Claude subagents otherwise. Each returns an ordinary
 > Markdown report. Before opening a PR, local review must come back with no
-> findings (or with the remaining ones explicitly documented as trade-offs), the
-> **branch sweep** must be clean if the branch has more than one commit, AND
+> findings (or with the remaining ones explicitly documented as trade-offs), AND
 > `/newsletter-service-pr-readiness` must clear every Critical finding before
 > `/newsletter-service-preflight` runs.
 >
@@ -177,8 +176,11 @@ cites them in the same PR.
 ### Post-commit (pre-PR phase, after every commit)
 
 1. **Commit your work.** `git commit -s -S`.
-2. **Run `/lfx-skills:lfx-local-review`** in post-commit mode (no argument — it reviews the
-   commit you just made against its parent). The host pins the target and base
+2. **Run `/lfx-skills:lfx-local-review`** — exactly that, from this repo, with no
+   argument. It reviews **the newest commit only**: `HEAD^..HEAD`, the diff that
+   commit introduced against its first parent. A caller may supply a direct base
+   range instead; there is no repository-wide, cumulative or main-relative review.
+   The host pins the target and base
    commits once and gives all three reviewers the same values, and the *code
    evidence* — the diff, the repo files under review, and the knowledge base —
    comes from those pinned Git objects, not from your checkout. Two things do
@@ -209,24 +211,21 @@ cites them in the same PR.
 6. **If the run used the Claude fallback**, say so when you report it. A fallback
    run is a same-model review, not cross-model evidence.
 
-### Pre-PR (branch sweep, then open)
+### Pre-PR (drain, then open)
 
 When the work is done and no more code commits are planned:
 
-1. **Drain the reviews** — no outstanding findings, and no incomplete run.
-2. **Branch sweep — only if the branch has more than one commit.** Run
-   `/lfx-skills:lfx-local-review branch`. The host fetches `origin` once, pins `origin/main`
-   and the merge-base, and reviews `base..HEAD`; a failed fetch fails the run
-   before any reviewer starts.
-3. **Loop until clean.** Address findings in a commit, then rerun the sweep. Handle
-   an incomplete sweep the same way as above: one full rerun of the complete trio.
-4. **Run `/newsletter-service-pr-readiness`** for branch name, JIRA reference,
+1. **Drain the reviews** — every commit has had its own clean local review, with no
+   outstanding findings and no incomplete run. Local review is per-commit only:
+   there is no cumulative sweep to run at the end, so a commit that never got a
+   clean review does not get one retroactively here.
+2. **Run `/newsletter-service-pr-readiness`** for branch name, JIRA reference,
    conventional commits, rebase status, DCO + GPG signing, diff size, and protected
    files.
-5. **Run `/newsletter-service-preflight`** for working tree status, license headers,
+3. **Run `/newsletter-service-preflight`** for working tree status, license headers,
    formatting, lint/vet, build, tests, protected files, commit verification, and the
    PR change summary.
-6. **Only then push and open the PR** — and immediately launch the PR driver (see
+4. **Only then push and open the PR** — and immediately launch the PR driver (see
    Post-PR iteration below).
 
 Local review is **author-side only**. Reviewers may use ordinary local tooling —
