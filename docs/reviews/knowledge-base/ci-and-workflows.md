@@ -29,7 +29,11 @@ Scope note: these are review patterns for *changed workflow shell and expression
 
 **Pattern:** `gh api --paginate` applies its `--jq` filter to **each page separately**, so a filter ending in `| length` emits one count per page rather than a single total. The consuming shell then compares a multi-line string as an integer and fails with `integer expression expected`, breaking the check that was supposed to run.
 
-**Detect:** in `.github/workflows/**`, flag any `gh api --paginate` whose `--jq` ends in `length` (or otherwise aggregates) and whose output is used as a single number. Require counting the streamed lines instead — `grep -c . || true` — or aggregating outside the per-page filter. **The `|| true` is not optional:** `grep` exits 1 when it selects no lines, *including* under `-c` where it still prints `0`, so a bare `grep -c .` kills the step under `set -e`/`pipefail` on the empty result — the case the count exists to handle. All four live sites do this (`agentic-gate.yml:164`, `:360`, `:420`, `:512`).
+**Detect:** in `.github/workflows/**`, flag any `gh api --paginate` whose `--jq` ends in `length` (or otherwise aggregates) and whose output is used as a single number. Require counting the streamed lines instead, with a counter that **succeeds on empty input without masking an upstream failure** — `awk 'NF { n++ } END { print n + 0 }'` — or aggregating outside the per-page filter.
+
+Zero results must not look like an error, and an error must not look like zero results. A bare `grep -c .` fails the first: `grep` exits 1 when it selects no lines, *including* under `-c` where it still prints `0`, so it kills the step under `set -e`/`pipefail` on exactly the empty result the count exists to handle. Appending `|| true` fails the second: under `pipefail` the status being suppressed is the **whole pipeline's**, so a `gh api` that dies after emitting nothing is silently reported as a legitimate count of zero. The `awk` form exits 0 on empty input and leaves `pipefail` free to surface a producer failure.
+
+**Note on the live sites:** `agentic-gate.yml:164`, `:360`, `:420` and `:512` currently use `grep -c . || true` and therefore carry the masking flaw described above — a failed `gh api` reads as zero rows. That is a live observation, not a prescription; this entry deliberately does not match it, and `.github/**` is outside this repo role's edit surface.
 
 **Empirical citation:** PR #29 — Copilot `3507277710` plus three siblings — *"`gh api --paginate` applies the `--jq` filter to each page separately, so `[...] | length` emits one count per page … fails with 'integer expression expected'."* Resolved in `5d35d150` and `bebc75e1`. Three-plus sites across two files, and it breaks the gate's blocking checks.
 
@@ -39,7 +43,16 @@ _Anchor note: an earlier draft of this entry cited `:418,565`. Those are `--pagi
 
 **Failure message:** `gh api --paginate --jq '… | length'` emits one count per page — the shell comparison breaks instead of counting.
 
-**Fix:** stream the items and count lines with `grep -c . || true`, or aggregate after pagination rather than inside the per-page `--jq`. Keep the `|| true` (or an equivalent `if` wrapper or `awk` counter that exits 0 on zero rows) and consume the result with a default, as the live sites do: `"${count:-0}"`.
+**Fix:** stream the items and count them with a counter that returns zero successfully for empty input while leaving `pipefail` able to report a producer failure, or aggregate after pagination rather than inside the per-page `--jq`:
+
+```bash
+count="$(
+  gh api "..." --paginate --jq '...' |
+    awk 'NF { n++ } END { print n + 0 }'
+)"
+```
+
+Do not wrap the producer-and-counter pipeline in `|| true`; that converts an API failure into a valid-looking zero.
 
 ---
 

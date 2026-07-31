@@ -322,6 +322,7 @@ floor's alone.
 
 Say which floors you used only through your findings; your report has no field
 for it. The rule is about what you suppress, not about reporting.
+
 ## Step 5 — what never ships
 
 - A finding with no quotable KB entry.
