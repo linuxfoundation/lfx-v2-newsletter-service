@@ -168,6 +168,25 @@ func (r *fakeNewsletterRepo) Get(_ context.Context, id uuid.UUID) (*model.Newsle
 func (r *fakeNewsletterRepo) List(_ context.Context, _ string) ([]*model.Newsletter, error) {
 	return nil, nil
 }
+func (r *fakeNewsletterRepo) ListSentByCommittee(_ context.Context, committeeUID string, _ string) (*port.ListPage, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	page := &port.ListPage{}
+	for _, n := range r.drafts {
+		if n.Status != model.StatusSent {
+			continue
+		}
+		for _, uid := range n.CommitteeUIDs {
+			if uid == committeeUID {
+				cp := *n
+				page.Newsletters = append(page.Newsletters, &cp)
+				break
+			}
+		}
+	}
+	return page, nil
+}
+
 func (r *fakeNewsletterRepo) ListAll(_ context.Context, _ port.ListFilters) (*port.ListPage, error) {
 	return &port.ListPage{}, nil
 }
@@ -421,6 +440,66 @@ func TestFanOutInjectsPerRecipientUnsubscribeURL(t *testing.T) {
 		if gotEmail != s.To {
 			t.Errorf("token for %s decoded to %s", s.To, gotEmail)
 		}
+	}
+}
+
+// TestSendIncludesMyNewslettersLink asserts real sends embed the Self-Serve
+// "My Newsletters" deep link (with the base URL normalized) in both bodies,
+// while test-sends — which render without the compliance footer — do not.
+func TestSendIncludesMyNewslettersLink(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Committee:     committee,
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		Unsubscribe:   unsub,
+		Concurrency:   2,
+		FanoutEnabled: true,
+		// Trailing slash on purpose: NewSendOrchestrator must normalize it so
+		// the rendered link has a single slash before the path.
+		SelfServeBaseURL: "https://app.lfx.dev/",
+	})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	const wantURL = "https://app.lfx.dev/newsletters/my"
+	if !strings.Contains(email.sends[0].HTML, `href="`+wantURL+`"`) {
+		t.Errorf("real-send HTML missing My Newsletters link:\n%s", email.sends[0].HTML)
+	}
+	if !strings.Contains(email.sends[0].Text, wantURL) {
+		t.Errorf("real-send text missing My Newsletters link:\n%s", email.sends[0].Text)
+	}
+
+	// Test-send renders without the compliance footer, so no link.
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "alice@example.com",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 2 {
+		t.Fatalf("got %d sends after test-send, want 2", len(email.sends))
+	}
+	if strings.Contains(email.sends[1].HTML, "newsletters/my") || strings.Contains(email.sends[1].Text, "newsletters/my") {
+		t.Errorf("test-send unexpectedly contains My Newsletters link")
 	}
 }
 

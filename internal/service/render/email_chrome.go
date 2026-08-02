@@ -40,6 +40,11 @@ type Chrome struct {
 	// back to the legacy "reply with UNSUBSCRIBE" copy so test sends and
 	// misconfigured environments still emit valid HTML.
 	UnsubscribeURL string
+	// MyNewslettersURL is the recipient-independent deep link to the LFX
+	// Self-Serve "My Newsletters" page. When non-empty (and
+	// IncludeComplianceFooter is true) the footer renders a dedicated line
+	// above the unsubscribe small print. Empty omits the line.
+	MyNewslettersURL string
 }
 
 // LFX brand colors used by the email chrome. Mirrored from
@@ -275,10 +280,15 @@ func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
 	if input.UnsubscribeURL != "" {
 		unsubLine = `<a href="` + escapeHTML(input.UnsubscribeURL) + `" style="color:` + colorBlue500 + `;text-decoration:underline;">Unsubscribe</a> from ` + displayNameSafe + ` newsletters.`
 	}
+	myNewslettersLine := ""
+	if input.MyNewslettersURL != "" {
+		myNewslettersLine = `<div style="margin-bottom:6px;">Missed an issue? View past newsletters any time in <a href="` + escapeHTML(input.MyNewslettersURL) + `" style="color:` + colorBlue500 + `;text-decoration:underline;">My Newsletters</a>.</div>`
+	}
 	return `<tr>
 <td class="lfx-pad" style="background-color:` + colorGray50 + `;border-top:1px solid ` + colorGray200 + `;padding:24px 24px;font-size:12px;color:` + colorGray500 + `;font-family:` + fontStack + `;">
 <div style="margin-bottom:6px;">Sent by <strong style="color:` + colorGray900 + `;">` + edNameSafe + `</strong> on behalf of <strong style="color:` + colorGray900 + `;">` + displayNameSafe + `</strong>.</div>
 ` + replyLine + `
+` + myNewslettersLine + `
 <div style="color:` + colorGray400 + `;font-size:11px;">` + unsubLine + ` Delivered by <span style="font-weight:700;color:` + colorBlue500 + `;letter-spacing:-0.02em;">LFX</span>.</div>
 </td>
 </tr>`
@@ -375,6 +385,9 @@ func EmailText(input Chrome) string {
 		lines = append(lines, "", "---", "Sent by "+edName+" on behalf of "+display+".")
 		if input.EDReplyEmail != "" {
 			lines = append(lines, "To reply, email "+input.EDReplyEmail)
+		}
+		if input.MyNewslettersURL != "" {
+			lines = append(lines, "Missed an issue? View past newsletters any time in My Newsletters: "+input.MyNewslettersURL)
 		}
 		if input.UnsubscribeURL != "" {
 			lines = append(lines, "Unsubscribe from "+display+" newsletters: "+input.UnsubscribeURL, "Delivered by LFX.")

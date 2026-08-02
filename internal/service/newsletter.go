@@ -203,6 +203,24 @@ func (s *NewsletterService) ListNewsletters(ctx context.Context, in ListNewslett
 	})
 }
 
+// ListCommitteeNewslettersInput is the typed input for ListCommitteeNewsletters.
+type ListCommitteeNewslettersInput struct {
+	CommitteeUID string
+	PageToken    string
+}
+
+// ListCommitteeNewsletters returns a page of sent newsletters whose audience
+// includes the given committee, ordered by sent_at DESC. This is the
+// member-facing read path: the gateway authorizes callers against
+// `committee:{committee_uid}#member`, so only sent newsletters are ever
+// returned — drafts and in-flight sends stay manager-only.
+func (s *NewsletterService) ListCommitteeNewsletters(ctx context.Context, in ListCommitteeNewslettersInput) (*port.ListPage, error) {
+	if strings.TrimSpace(in.CommitteeUID) == "" {
+		return nil, fmt.Errorf("%w: committee_uid is required", domain.ErrInvalidRequest)
+	}
+	return s.repo.ListSentByCommittee(ctx, in.CommitteeUID, in.PageToken)
+}
+
 // Analytics returns aggregated engagement metrics for the given newsletter.
 // Returns ErrNotFound if the newsletter doesn't exist or belongs to a different
 // project than the one supplied.

@@ -36,6 +36,12 @@ spec:
         - path:
             type: RegularExpression
             value: "^/projects/[^/]+/newsletter-opens/[^/]+$"
+        # Member-facing committee-scoped list of sent newsletters. Heimdall
+        # gates it on committee:{committee_uid}#member (fail-closed) — see
+        # the committee_list rule in ruleset.yaml.
+        - path:
+            type: RegularExpression
+            value: "^/committees/[^/]+/newsletters$"
         # One-click unsubscribe link clicked from a recipient's email client.
         # Not project-scoped in the URL: the project_uid is carried inside the
         # signed token so links stay short and opaque.

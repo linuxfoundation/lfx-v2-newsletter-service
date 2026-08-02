@@ -55,6 +55,11 @@ var defaultReplyToAllowedDomains = []string{"linuxfoundation.org"}
 // display name, yielding e.g. "Kubernetes Newsletter".
 const fromDisplayNameSuffix = " Newsletter"
 
+// myNewslettersPath is the Self-Serve route where a recipient can browse the
+// newsletters sent to them. Appended to SelfServeBaseURL to build the footer's
+// "My Newsletters" deep link.
+const myNewslettersPath = "/newsletters/my"
+
 // SendOrchestrator coordinates recipient resolution, email-chrome rendering,
 // per-recipient fan-out to lfx-v2-email-service, and the draft → sent state
 // transition. It owns the email-service integration; the UI no longer talks
@@ -76,7 +81,11 @@ type SendOrchestrator struct {
 	// the draft.EDReplyEmail fallback, so we never hand email-service a
 	// reply_to it will reject outright (see ReplyToAllowedDomains doc).
 	replyToAllowedDomains []string
-	jobTimeout            time.Duration
+	// selfServeBaseURL is the normalized (trimmed, no trailing slash) base URL
+	// of the LFX Self-Serve app. Empty omits the footer's "My Newsletters"
+	// line entirely.
+	selfServeBaseURL string
+	jobTimeout       time.Duration
 	// jobs tracks detached background send goroutines so graceful shutdown
 	// (and tests) can wait for in-flight fan-outs via Drain.
 	jobs sync.WaitGroup
@@ -111,6 +120,10 @@ type SendOrchestratorConfig struct {
 	// draft.EDReplyEmail (see resolveSenderEmail). Empty defaults to
 	// defaultReplyToAllowedDomains ("linuxfoundation.org").
 	ReplyToAllowedDomains []string
+	// SelfServeBaseURL is the base URL of the LFX Self-Serve app, used to
+	// build the compliance footer's "My Newsletters" deep link
+	// (<base>/newsletters/my). Empty omits the footer line.
+	SelfServeBaseURL string
 	// SendJobTimeout bounds the detached background fan-out that runs after a
 	// send is accepted. Zero falls back to defaultSendJobTimeout.
 	//
@@ -173,6 +186,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		fromAddress:           from,
 		fromOverrides:         overrides,
 		replyToAllowedDomains: replyToDomains,
+		selfServeBaseURL:      strings.TrimRight(strings.TrimSpace(cfg.SelfServeBaseURL), "/"),
 		jobTimeout:            jobTimeout,
 	}
 }
@@ -1051,6 +1065,13 @@ func (o *SendOrchestrator) renderBody(isLayout bool, in bodyRenderInput) (htmlBo
 		chrome.EDReplyEmail = in.edReplyEmail
 		if o.unsub.Enabled() {
 			chrome.UnsubscribeURL = UnsubscribeURLPlaceholder
+		}
+		// Preserve main's "My Newsletters" compliance-footer deep link on the
+		// legacy chrome path (the send site now routes through renderBody). The
+		// layout path returns its pre-rendered body_html and carries its own
+		// footer, so this only applies to legacy (html-only) sends.
+		if o.selfServeBaseURL != "" {
+			chrome.MyNewslettersURL = o.selfServeBaseURL + myNewslettersPath
 		}
 	}
 	return render.EmailHTML(chrome), render.EmailText(chrome)
