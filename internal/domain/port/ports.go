@@ -8,6 +8,7 @@ package port
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -202,6 +203,15 @@ type EmailDispatcher interface {
 	SendEmail(ctx context.Context, in SendEmailInput) (emailID string, err error)
 	EngagementReader
 }
+
+// ErrAmbiguousSend marks a SendEmail failure whose delivery outcome is UNKNOWN:
+// the provider may still have accepted the message (a transport error, or a 5xx
+// with no guaranteed rejection). A recipient that fails this way must NOT be
+// treated as a clean, retry-safe failure — reverting the newsletter to draft and
+// retrying could duplicate a message the provider already accepted. Providers
+// wrap their ambiguous errors so it is errors.Is-discoverable; a definitive
+// rejection (the provider did not accept it) is returned unwrapped.
+var ErrAmbiguousSend = errors.New("send outcome ambiguous: provider may have accepted the message")
 
 // EngagementPurger optionally lets a dispatcher delete the engagement rows it
 // persisted for a group_id. The orchestrator calls it after a full fan-out

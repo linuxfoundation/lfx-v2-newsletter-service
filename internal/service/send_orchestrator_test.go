@@ -1387,6 +1387,17 @@ func (f *failingEmailDispatcher) SendEmail(_ context.Context, _ port.SendEmailIn
 	return "", errors.New("email-service unreachable")
 }
 
+// ambiguousEmailDispatcher rejects every SendEmail with an ErrAmbiguousSend-
+// wrapped error — the provider may still have accepted the message, so the send
+// must NOT revert to a retryable draft (which could duplicate accepted sends).
+type ambiguousEmailDispatcher struct {
+	fakeEmailDispatcher
+}
+
+func (f *ambiguousEmailDispatcher) SendEmail(_ context.Context, _ port.SendEmailInput) (string, error) {
+	return "", errors.Join(port.ErrAmbiguousSend, errors.New("sendgrid: mail/send returned 503"))
+}
+
 func newGatedOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email port.EmailDispatcher) *SendOrchestrator {
 	return NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:          repo,
@@ -1543,6 +1554,30 @@ func TestSendNewsletterTotalFailureRevertsToDraft(t *testing.T) {
 	}
 	if got.GroupID != nil || got.TotalRecipients != 0 || got.SentAt != nil {
 		t.Fatalf("revert did not clear send-time fields: group_id=%v total=%d sent_at=%v", got.GroupID, got.TotalRecipients, got.SentAt)
+	}
+}
+
+// TestSendNewsletterAmbiguousFailureDoesNotRevert asserts that when every send
+// fails ambiguously (a transport error / 5xx where the provider MAY have accepted
+// the message), the newsletter settles to sent rather than reverting to a
+// retryable draft. Reverting and retrying could duplicate accepted messages.
+func TestSendNewsletterAmbiguousFailureDoesNotRevert(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	orch := newGatedOrchestrator(repo, committee, &ambiguousEmailDispatcher{})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+
+	got := repo.get(draft.ID)
+	if got.Status != model.StatusSent {
+		t.Fatalf("all-ambiguous send settled to %q, want %q (must NOT revert to a retryable draft — could duplicate accepted sends)", got.Status, model.StatusSent)
 	}
 }
 

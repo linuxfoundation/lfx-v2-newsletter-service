@@ -285,6 +285,13 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 		if tracked && definitive {
 			d.recordFailed(ctx, emailID, groupID, in.To)
 		}
+		if !definitive {
+			// Ambiguous outcome (transport error or 5xx): SendGrid may still have
+			// accepted the message. Mark the error so the orchestrator does not
+			// revert the newsletter to a retryable draft and duplicate a
+			// possibly-accepted send. A definitive rejection is returned unwrapped.
+			return "", fmt.Errorf("%w: %w", port.ErrAmbiguousSend, err)
+		}
 		return "", err
 	}
 	if tracked {

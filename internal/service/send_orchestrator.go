@@ -374,7 +374,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 // every recipient, then settle the newsletter — sent when at least one
 // recipient was delivered to, reverted to draft when none were.
 func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsletter, recipients []model.CommitteeMember, envelope emailEnvelope) {
-	sent, failed, failures := o.fanOut(ctx, sending.ProjectUID, recipients, envelope)
+	sent, failed, unknown, failures := o.fanOut(ctx, sending.ProjectUID, recipients, envelope)
 
 	// The terminal persistence write must not depend on the job context: a
 	// fan-out that consumed the entire job timeout would otherwise leave the
@@ -382,18 +382,22 @@ func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsle
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
 
-	// Only settle to `sent` when at least one recipient was delivered to. If
-	// every send failed (email-service unreachable, all recipients rejected,
-	// etc.) the row reverts to draft so the operator can retry without emails
-	// ever having gone out. Without this gate, a fully-failed send would be
-	// permanently indistinguishable from a successful one — no retry path.
-	if sent == 0 {
-		slog.WarnContext(ctx, "newsletter send failed: no recipients delivered, reverting to draft",
+	// Revert to draft ONLY when nothing was accepted AND nothing is ambiguous —
+	// i.e. every recipient was definitively rejected, so a retry cannot duplicate
+	// a message the provider already accepted. If any outcome is ambiguous (a
+	// transport error or a 5xx where the provider MAY have accepted the message),
+	// fall through and settle as sent instead of creating a retryable draft:
+	// re-sending those recipients could duplicate. This mirrors crash recovery —
+	// when it's unknown whether mail went out, settle to `sent` and let analytics
+	// (via group_id) expose the real delivery rather than risk duplicates.
+	if sent == 0 && unknown == 0 {
+		slog.WarnContext(ctx, "newsletter send failed: all recipients definitively rejected, reverting to draft",
 			"newsletter_id", sending.ID,
 			"project_uid", sending.ProjectUID,
 			"group_id", envelope.GroupID,
 			"total_recipients", len(recipients),
 			"failed", failed,
+			"unknown", unknown,
 			"first_failure", firstFailureError(failures),
 		)
 		// The revert can also fail because another actor already settled the
@@ -679,16 +683,16 @@ type emailEnvelope struct {
 // failures are captured and surfaced in the result so the caller can decide
 // how to react. A nil EmailDispatcher (or FanoutEnabled=false) short-circuits
 // to "all sent, none failed" for dev/test environments.
-func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipients []model.CommitteeMember, env emailEnvelope) (sent, failed int, failures []SendFailure) {
+func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipients []model.CommitteeMember, env emailEnvelope) (sent, failed, unknown int, failures []SendFailure) {
 	if len(recipients) == 0 {
-		return 0, 0, nil
+		return 0, 0, 0, nil
 	}
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "send fanout disabled, marking all as sent without dispatch",
 			"total_recipients", len(recipients),
 			"group_id", env.GroupID,
 		)
-		return len(recipients), 0, nil
+		return len(recipients), 0, 0, nil
 	}
 
 	sem := make(chan struct{}, o.concurrency)
@@ -747,11 +751,20 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				failed++
+				// An ambiguous outcome (the provider may have accepted the message)
+				// is counted separately so an all-ambiguous fan-out does NOT trip
+				// the retryable all-failed revert, which could duplicate a send the
+				// provider already accepted. A definitive failure is safe to retry.
+				if errors.Is(err, port.ErrAmbiguousSend) {
+					unknown++
+				} else {
+					failed++
+				}
 				failures = append(failures, SendFailure{Email: recipient.Email, Error: err.Error()})
 				slog.WarnContext(ctx, "send fanout: recipient failed",
 					"recipient", redactEmail(recipient.Email),
 					"group_id", env.GroupID,
+					"ambiguous", errors.Is(err, port.ErrAmbiguousSend),
 					"error", err.Error(),
 				)
 				return
@@ -760,7 +773,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 		}()
 	}
 	wg.Wait()
-	return sent, failed, failures
+	return sent, failed, unknown, failures
 }
 
 // resolveSenderName looks up the sender's display name from auth-service using
