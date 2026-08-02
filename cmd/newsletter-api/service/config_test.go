@@ -193,3 +193,41 @@ func TestParseAllowedDomains(t *testing.T) {
 		})
 	}
 }
+
+func TestAppConfigSelfServeBaseURL(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want string
+	}{
+		{
+			name: "unset falls back to production default",
+			env:  "",
+			want: "https://app.lfx.dev",
+		},
+		{
+			name: "override with trailing slash is trimmed",
+			env:  "https://app.staging.lfx.dev/",
+			want: "https://app.staging.lfx.dev",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Minimal required env so AppConfigFromEnv succeeds without the
+			// auth/fan-out required variables.
+			t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db")
+			t.Setenv("REQUIRE_USER_AUTH", "false")
+			t.Setenv("SEND_FANOUT_ENABLED", "false")
+			t.Setenv("LFX_SELF_SERVE_BASE_URL", tc.env)
+
+			cfg, err := AppConfigFromEnv()
+			if err != nil {
+				t.Fatalf("AppConfigFromEnv: %v", err)
+			}
+			if cfg.SelfServeBaseURL != tc.want {
+				t.Errorf("SelfServeBaseURL = %q, want %q", cfg.SelfServeBaseURL, tc.want)
+			}
+		})
+	}
+}

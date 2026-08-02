@@ -149,6 +149,13 @@ app:
         name: ""
         key: "sendgrid-webhook-public-key"
 
+  # selfServeBaseURL is the base URL of the LFX Self-Serve web app, used to
+  # build the "My Newsletters" deep link in the email compliance footer
+  # (<selfServeBaseURL>/newsletters/my). Empty falls back to the app default
+  # (https://app.lfx.dev). Set per environment in deployment values (e.g.
+  # https://app.staging.lfx.dev).
+  selfServeBaseURL: ""
+
   # unsubscribe configures the per-recipient one-click opt-out link
   # embedded in the email footer. publicBaseURL is the externally-reachable
   # origin of this service; the HMAC secret signs the token so links can't

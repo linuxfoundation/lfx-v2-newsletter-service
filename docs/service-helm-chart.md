@@ -44,6 +44,7 @@ Important templates:
 | `app.send.sendgrid.authenticatedDomains` | `SENDGRID_AUTHENTICATED_DOMAINS` | Comma-separated authenticated sending domains; a From outside it is rejected before SendGrid. Required for `provider=sendgrid` outside local/dev. |
 | `app.send.sendgrid.apiKeySecretRef` | `SENDGRID_API_KEY` | Sources the SendGrid API key from a Kubernetes Secret (typically the chart's ExternalSecret target). Required for real sends. |
 | `app.send.sendgrid.webhookPublicKeySecretRef` | `SENDGRID_WEBHOOK_PUBLIC_KEY` | Sources the ECDSA signed-event-webhook key from a Secret. Setting this ref (independent of `provider`) wires the webhook env, HTTPRoute path, and RuleSet rule, so ingestion survives a flip back to email-service. Required when set — configure it only once the key exists; empty renders no webhook wiring. |
+| `app.selfServeBaseURL` | `LFX_SELF_SERVE_BASE_URL` | Base URL of the LFX Self-Serve app used to build the compliance footer's "My Newsletters" deep link (`<base>/newsletters/my`). Empty falls back to the app default (`https://app.lfx.dev`); set per environment in deployment values (e.g. `https://app.staging.lfx.dev`). |
 | `app.unsubscribe.publicBaseURL` | `NEWSLETTER_PUBLIC_BASE_URL` | Externally-reachable origin used to build unsubscribe links. Defaults to `https://lfx-api.<lfx.domain>`. Required when fan-out is enabled. |
 | `app.unsubscribe.secret` / `secretRef` | `NEWSLETTER_UNSUBSCRIBE_SECRET` | HMAC key signing unsubscribe tokens. Required when fan-out is enabled; prefer `secretRef`. |
 | `app.requireUserAuth` | `REQUIRE_USER_AUTH` | Disable only for local development. |
@@ -70,6 +71,7 @@ In CNPG modes and `external.shape=fields`, the deployment forwards `PGHOST`, `PG
 - `^/projects/[^/]+/newsletters(/.*)?$`
 - `^/projects/[^/]+/newsletter-opt-outs(/.*)?$`
 - `^/projects/[^/]+/newsletter-opens/[^/]+$`
+- `^/committees/[^/]+/newsletters$` (member-facing committee-scoped list)
 - `/newsletters/unsubscribe` (exact)
 - `/newsletters/sendgrid/events` (exact) — only when `app.send.sendgrid.webhookPublicKeySecretRef.name` is set
 
@@ -78,14 +80,14 @@ When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 `ruleset.yaml` authentication and authorization:
 
 - Most authenticated project routes (newsletter CRUD, analytics, etc.) authenticate via OIDC and fall back to `allow_all` when `openfga.enabled=false`. When OpenFGA is enabled, these routes enforce `viewer` (read) or `writer` (write) roles.
-- The stateless `…/newsletters/render-preview` route carries a project-scoped `writer` rule (mirroring `…/test-send` — a write-scoped authoring action), so it is FGA-gated, not JWT-only.
-- The editor template routes (`…/newsletters/templates` and `…/newsletters/templates/{template_key}/manifest`) carry explicit project-scoped `viewer` rules. The list path would otherwise match the `{newsletter_uid}` GET rule only by coincidence, and the six-segment manifest path matches no other rule at all, so both are declared rather than inherited.
 - The opt-out list endpoint (`GET /projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor` role and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` or OpenFGA is misconfigured — that is intentional for PII security.
 - The opt-out delete endpoint (`DELETE /projects/{project_uid}/newsletter-opt-outs/{opt_out_id}`) mutates a user's consent record and is **always fail-closed**: it uses direct `openfga_check` with the `writer` role and does NOT have an `allow_all` fallback, matching the security posture of the list endpoint.
+- The committee-scoped list (`GET /committees/{committee_uid}/newsletters`) is **always fail-closed**: it uses `openfga_or_check` with `member` OR `auditor` on `committee:{committee_uid}` (auditor folds in committee writers and project oversight roles) and does NOT have an `allow_all` fallback. The FGA check is the route's entire authorization boundary, so it is unreachable when `openfga.enabled=false` — that is intentional.
 - The open pixel (`…/newsletter-opens/{newsletter_uid}`) and `/newsletters/unsubscribe` are intentionally unauthenticated because email clients request them without a user session (the unsubscribe link is authorized by its HMAC token).
 - The SendGrid event webhook (`POST /newsletters/sendgrid/events`, rendered only when the webhook key ref is set) is `allow_all` at the gateway because SendGrid posts events without a session; authenticity is the ECDSA signature plus a freshness window, verified in-app.
 
-`openfga.enabled=false` is the default. When false, most routes still work via `allow_all`, but the opt-out endpoints become unreachable. Enable OpenFGA to access the opt-out list and delete endpoints.
+`openfga.enabled=false` is the default. When false, most routes still work via `allow_all`, but the opt-out endpoints and the committee-scoped newsletter list become unreachable. Enable OpenFGA to access them.
+
 ## Local Development
 
 Use `charts/lfx-v2-newsletter-service/values.local.yaml.example` as the starting point for local overrides. The local values file is gitignored at `charts/lfx-v2-newsletter-service/values.local.yaml`.

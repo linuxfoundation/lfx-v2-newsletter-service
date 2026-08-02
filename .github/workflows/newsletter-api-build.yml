@@ -15,9 +15,13 @@ jobs:
     env:
       GOTOOLCHAIN: local
 
+    # Throwaway Postgres for the DB-backed tests: the repository tests
+    # (internal/repository/postgres_integration_test.go, which skip when
+    # NEWSLETTER_TEST_DATABASE_URL is unset) and the tag-gated SendGrid engagement
+    # integration tests (schema DDL, upserts, transactions, open-event dedup).
+    # Trust auth (no password) keeps a credential-shaped postgres://user:pass@
+    # literal out of the workflow for secret scanners.
     services:
-      # Postgres for the tag-gated integration tests (the SendGrid engagement
-      # store's schema DDL, upserts, transactions, and open-event dedup).
       postgres:
         # Pinned by digest: a service container starts before the harden-runner
         # step can constrain it, so a mutable tag would be an unpinned image
@@ -25,15 +29,15 @@ jobs:
         # multi-arch index for postgres:16-alpine.
         image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
         env:
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: newsletter_test
         ports:
           - 5432:5432
         options: >-
           --health-cmd pg_isready
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
 
     steps:
       - uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
@@ -63,21 +67,16 @@ jobs:
         run: make build
 
       - name: Test
+        env:
+          NEWSLETTER_TEST_DATABASE_URL: postgres://postgres@localhost:5432/newsletter_test?sslmode=disable
         run: go test ./... -v
 
       - name: Integration test
         env:
-          # Throwaway credentials for the CI Postgres service above. Composed at
-          # runtime from parts rather than written as a literal connection-string
-          # URL, so the secret scanner does not raise a false positive on a
-          # hardcoded postgres:// DSN. The scheme is a variable for the same reason.
-          PGUSER: postgres
-          PGPASSWORD: postgres
-          PGDATABASE: newsletter_test
-        run: |
-          scheme=postgres
-          export DATABASE_URL="$scheme://$PGUSER:$PGPASSWORD@localhost:5432/$PGDATABASE?sslmode=disable"
-          go test -tags integration ./internal/repository/... -v
+          # Passwordless DSN (the Postgres service uses trust auth), so there is no
+          # credential-shaped postgres://user:pass@ literal for secret scanners to flag.
+          DATABASE_URL: postgres://postgres@localhost:5432/newsletter_test?sslmode=disable
+        run: go test -tags integration ./internal/repository/... -v
 
       - name: Vulnerability scan
         run: |

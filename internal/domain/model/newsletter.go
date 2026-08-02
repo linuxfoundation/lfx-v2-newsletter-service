@@ -4,7 +4,6 @@
 package model
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,21 +46,15 @@ const (
 type Newsletter struct {
 	bun.BaseModel `bun:"table:newsletters,alias:n"`
 
-	ID         uuid.UUID `bun:"id,pk,type:uuid,default:gen_random_uuid()" json:"id"`
-	ProjectUID string    `bun:"project_uid,notnull" json:"projectUid"`
-	Subject    string    `bun:"subject,notnull" json:"subject"`
-	BodyHTML   string    `bun:"body_html,notnull" json:"bodyHtml"`
-	// BodyLayout is the editor's structured layout (wrapper key + ordered
-	// blocks) stored verbatim as JSONB. When present it is the source of truth:
-	// BodyHTML is derived from it by the declarative emitter on write. Nil for
-	// legacy / body_html-only newsletters. Stored as raw JSON so the persistence
-	// layer never needs to know the emitter's block schema.
-	BodyLayout      json.RawMessage `bun:"body_layout,type:jsonb,nullzero" json:"bodyLayout,omitempty"`
-	EDReplyEmail    string          `bun:"ed_reply_email,notnull" json:"edReplyEmail"`
-	CommitteeUIDs   []string        `bun:"committee_uids,array" json:"committeeUids"`
-	Status          Status          `bun:"status,notnull,default:'draft'" json:"status"`
-	SentAt          *time.Time      `bun:"sent_at" json:"sentAt,omitempty"`
-	TotalRecipients int             `bun:"total_recipients,notnull,default:0" json:"totalRecipients"`
+	ID              uuid.UUID  `bun:"id,pk,type:uuid,default:gen_random_uuid()" json:"id"`
+	ProjectUID      string     `bun:"project_uid,notnull" json:"projectUid"`
+	Subject         string     `bun:"subject,notnull" json:"subject"`
+	BodyHTML        string     `bun:"body_html,notnull" json:"bodyHtml"`
+	EDReplyEmail    string     `bun:"ed_reply_email,notnull" json:"edReplyEmail"`
+	CommitteeUIDs   []string   `bun:"committee_uids,array" json:"committeeUids"`
+	Status          Status     `bun:"status,notnull,default:'draft'" json:"status"`
+	SentAt          *time.Time `bun:"sent_at" json:"sentAt,omitempty"`
+	TotalRecipients int        `bun:"total_recipients,notnull,default:0" json:"totalRecipients"`
 	// GroupID is the lfx-v2-email-service correlation identifier, minted by
 	// the SendOrchestrator at send time and persisted alongside the status
 	// transition. Used by analytics queries to aggregate per-newsletter

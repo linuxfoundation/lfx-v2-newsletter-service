@@ -109,6 +109,12 @@ type AppConfig struct {
 	// used to build unsubscribe links embedded in outgoing emails.
 	PublicBaseURL string
 
+	// SelfServeBaseURL is the base URL of the LFX Self-Serve web app, used to
+	// build the compliance footer's "My Newsletters" deep link
+	// (<base>/newsletters/my). Defaults to the production app; override per
+	// environment via LFX_SELF_SERVE_BASE_URL.
+	SelfServeBaseURL string
+
 	// Auth
 	JWKSURL          string
 	ExpectedAudience string
@@ -129,6 +135,7 @@ const (
 	defaultEmailReplyToDomain    = "linuxfoundation.org"
 	defaultSendJobTimeout        = 30 * time.Minute
 	defaultStuckSendTTL          = 45 * time.Minute
+	defaultSelfServeBaseURL      = "https://app.lfx.dev"
 	// minStuckSendSlack is the minimum margin enforced between SendJobTimeout
 	// and StuckSendTTL so the recovery sweep never marks a row 'sent' while
 	// its fan-out job is still running.
@@ -161,6 +168,7 @@ func AppConfigFromEnv() (AppConfig, error) {
 		SendGridAuthenticatedDomains: splitCSV(os.Getenv("SENDGRID_AUTHENTICATED_DOMAINS")),
 		UnsubscribeSecret:            os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
 		PublicBaseURL:                strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
+		SelfServeBaseURL:             strings.TrimRight(envOr("LFX_SELF_SERVE_BASE_URL", defaultSelfServeBaseURL), "/"),
 		JWKSURL:                      os.Getenv("JWKS_URL"),
 		ExpectedAudience:             os.Getenv("JWT_AUDIENCE"),
 		RequireUserAuth:              boolOr("REQUIRE_USER_AUTH", true),

@@ -3,9 +3,9 @@
 
 # Known false positives — applied LAST in every review pass
 
-Findings that match any pattern below MUST be dropped, regardless of which source (KB pattern file, code-reviewer rule, bot comment) produced them. This list is the floor — even a quotable KB pattern doesn't survive if it matches a known false positive.
+Findings that match any pattern below MUST be dropped. This list is the floor — even a quotable KB pattern doesn't survive if it matches a known false positive.
 
-Used by the `lfx-skills:lfx-newsletter-service-learnings-reviewer` subagent (Step 4) and as filter discipline for the `lfx-skills:lfx-newsletter-service-code-reviewer` subagent.
+**Who actually applies this file:** the repo-owned `newsletter-service-learnings-reviewer` brain, as its Step 4 floor, and nothing else. The `newsletter-service-code-reviewer` brain does **not** load it: `docs/reviews/**` is deliberately outside that role's source surface, so it never reads these entries and cannot apply them. Do not read the floor as a repo-wide suppression guarantee — a code-reviewer finding matching an entry below is not automatically dropped, because that reviewer never sees it. Human reviewers and bots are likewise out of scope: this file binds one brain.
 
 ---
 
@@ -23,9 +23,9 @@ Used by the `lfx-skills:lfx-newsletter-service-learnings-reviewer` subagent (Ste
 
 **Pattern matched:** formatting, import ordering, unused-variable, or generic lint nits on `.go` files.
 
-**Why false:** `make fmt`, `make lint` (repo-pinned golangci-lint), and `go vet` in `make check` already enforce these, and `/newsletter-service-preflight` runs them pre-PR. Surfacing them in a learnings review is duplicate signal.
+**Why false:** `make fmt`, `make lint` (repo-pinned golangci-lint), and `go vet` in `make check` already enforce these, and `/newsletter-service-preflight` runs them pre-PR. CI enforces it too — `.github/workflows/mega-linter.yml` runs on top of `license-header-check.yml`. Surfacing them in a learnings review is duplicate signal.
 
-**Source:** `Makefile`; `.claude/skills/newsletter-service-preflight/SKILL.md`.
+**Source:** `Makefile`; `.claude/skills/newsletter-service-preflight/SKILL.md`; `.github/workflows/mega-linter.yml`.
 
 ---
 
@@ -43,13 +43,14 @@ Used by the `lfx-skills:lfx-newsletter-service-learnings-reviewer` subagent (Ste
 
 ## Copilot review-automation quirks
 
-### "Add Copilot custom instructions" promotional CTA
-
-**Pattern matched:** the trailing "Add Copilot custom instructions for smarter, more guided reviews" text Copilot appends to every PR overview.
-
-**Why false:** promotional, not a finding.
-
-**Source:** Copilot PR overview footer on every PR (#3–#9).
+<!--
+Removed 2026-07-30 (LFXV2-2894 audit, verified at HEAD f13d015): the
+"Add Copilot custom instructions for smarter, more guided reviews" promotional-CTA
+entry. Every Copilot review body across PRs #26-#63 was scanned: zero occurrences.
+The repo added `.github/copilot-instructions.md`, so the CTA is no longer emitted and
+the entry guarded against something that cannot happen. Recorded here rather than
+deleted silently so the disposition stays auditable.
+-->
 
 ### Action-pin version-comment consistency nits (`# v4` vs `# v6.0.2`)
 
@@ -63,7 +64,7 @@ Used by the `lfx-skills:lfx-newsletter-service-learnings-reviewer` subagent (Ste
 
 ## Stale / out-of-scope suggestions
 
-### `EDName` "required but unused" re-flag
+### `EDName` re-flagged as required-but-unused
 
 **Pattern matched:** a finding that `EDName` (or a similar field) is required-but-unused on a send/test-send input.
 
@@ -71,7 +72,7 @@ Used by the `lfx-skills:lfx-newsletter-service-learnings-reviewer` subagent (Ste
 
 **Source:** PR #3 `internal/service/send_orchestrator.go:62` — resolved in `959e23d`: "dropped the `EDName == ""` rejection … Kept the field … with a comment explaining it's accepted for forward-compatibility."
 
-### "Skip the existence check before insert on the open pixel"
+### Dropping the existence check before the open-pixel insert
 
 **Pattern matched:** Copilot suggesting `RecordOpenWithHash` drop the `repo.Get` existence check and rely on the FK violation path to save a round-trip.
 

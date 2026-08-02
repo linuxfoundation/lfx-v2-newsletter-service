@@ -46,6 +46,12 @@ type NewsletterRepository interface {
 	Get(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
 	List(ctx context.Context, projectUID string) ([]*model.Newsletter, error)
 	ListAll(ctx context.Context, filters ListFilters) (*ListPage, error)
+	// ListSentByCommittee returns a page of sent newsletters whose audience
+	// includes the given committee, ordered by sent_at DESC. Backs the
+	// committee-scoped read API (member-facing "my newsletters" feeds); the
+	// sent-only filter is intentional — drafts must never be visible to
+	// committee members.
+	ListSentByCommittee(ctx context.Context, committeeUID string, pageToken string) (*ListPage, error)
 	Update(ctx context.Context, n *model.Newsletter, expectedVersion int64) (*model.Newsletter, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 

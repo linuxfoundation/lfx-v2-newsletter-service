@@ -40,6 +40,11 @@ type Chrome struct {
 	// back to the legacy "reply with UNSUBSCRIBE" copy so test sends and
 	// misconfigured environments still emit valid HTML.
 	UnsubscribeURL string
+	// MyNewslettersURL is the recipient-independent deep link to the LFX
+	// Self-Serve "My Newsletters" page. When non-empty (and
+	// IncludeComplianceFooter is true) the footer renders a dedicated line
+	// above the unsubscribe small print. Empty omits the line.
+	MyNewslettersURL string
 }
 
 // LFX brand colors used by the email chrome. Mirrored from
@@ -229,28 +234,6 @@ func stripHTML(html string) string {
 	return strings.TrimSpace(out)
 }
 
-// nonRenderedRe matches <head>, <style>, and <script> elements (and their inner
-// text). The layout send path feeds StripHTMLForText a COMPLETE compiled MJML
-// document whose <head><style>…</style></head> carries CSS/media-query text;
-// without dropping these first, stripHTML's tag-only pass would leak that style
-// text into the text/plain part. Case-insensitive, dot-matches-newline so
-// multi-line <style> bodies are removed whole.
-var nonRenderedRe = regexp.MustCompile(`(?is)<(head|style|script)\b[^>]*>.*?</(head|style|script)>`)
-
-// StripHTMLForText derives a plain-text body from a full HTML email. It is the
-// exported counterpart to EmailText for the layout-based send path, where the
-// emitter already owns the whole email and there is no Chrome to wrap. Link
-// destinations are preserved (`label (href)`) before tags are stripped so the
-// plain-text fallback keeps its URLs, matching EmailText's body treatment.
-//
-// The layout body is a full HTML document, so its <head>/<style>/<script>
-// contents are removed first: stripHTML only removes tags, so their inner
-// CSS/JS text would otherwise survive into the text/plain part.
-func StripHTMLForText(html string) string {
-	html = nonRenderedRe.ReplaceAllString(html, "")
-	return stripHTML(preserveLinkDestinations(html))
-}
-
 // renderComplianceFooterHTML emits the sender attribution + reply-to + UNSUBSCRIBE
 // block. Empty when input.IncludeComplianceFooter is false.
 func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
@@ -271,10 +254,15 @@ func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
 	if input.UnsubscribeURL != "" {
 		unsubLine = `<a href="` + escapeHTML(input.UnsubscribeURL) + `" style="color:` + colorBlue500 + `;text-decoration:underline;">Unsubscribe</a> from ` + displayNameSafe + ` newsletters.`
 	}
+	myNewslettersLine := ""
+	if input.MyNewslettersURL != "" {
+		myNewslettersLine = `<div style="margin-bottom:6px;">Missed an issue? View past newsletters any time in <a href="` + escapeHTML(input.MyNewslettersURL) + `" style="color:` + colorBlue500 + `;text-decoration:underline;">My Newsletters</a>.</div>`
+	}
 	return `<tr>
 <td class="lfx-pad" style="background-color:` + colorGray50 + `;border-top:1px solid ` + colorGray200 + `;padding:24px 24px;font-size:12px;color:` + colorGray500 + `;font-family:` + fontStack + `;">
 <div style="margin-bottom:6px;">Sent by <strong style="color:` + colorGray900 + `;">` + edNameSafe + `</strong> on behalf of <strong style="color:` + colorGray900 + `;">` + displayNameSafe + `</strong>.</div>
 ` + replyLine + `
+` + myNewslettersLine + `
 <div style="color:` + colorGray400 + `;font-size:11px;">` + unsubLine + ` Delivered by <span style="font-weight:700;color:` + colorBlue500 + `;letter-spacing:-0.02em;">LFX</span>.</div>
 </td>
 </tr>`
@@ -371,6 +359,9 @@ func EmailText(input Chrome) string {
 		lines = append(lines, "", "---", "Sent by "+edName+" on behalf of "+display+".")
 		if input.EDReplyEmail != "" {
 			lines = append(lines, "To reply, email "+input.EDReplyEmail)
+		}
+		if input.MyNewslettersURL != "" {
+			lines = append(lines, "Missed an issue? View past newsletters any time in My Newsletters: "+input.MyNewslettersURL)
 		}
 		if input.UnsubscribeURL != "" {
 			lines = append(lines, "Unsubscribe from "+display+" newsletters: "+input.UnsubscribeURL, "Delivered by LFX.")

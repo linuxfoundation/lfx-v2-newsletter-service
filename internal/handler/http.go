@@ -107,23 +107,16 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("DELETE /projects/{project_uid}/newsletters/{newsletter_uid}", h.withAuth(http.HandlerFunc(h.DeleteNewsletter)))
 	mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/send", h.withAuth(http.HandlerFunc(h.SendNewsletter)))
 
+	// Committee-scoped newsletter reads — JWT auth. Member-facing: Heimdall
+	// gates on `committee:{committee_uid}#member` (not project writer), so
+	// committee members can list the sent newsletters addressed to their
+	// committee. See ListCommitteeNewsletters.
+	mux.Handle("GET /committees/{committee_uid}/newsletters", h.withAuth(http.HandlerFunc(h.ListCommitteeNewsletters)))
+
 	// Recipient resolution + test send — JWT auth.
 	mux.Handle("POST /projects/{project_uid}/newsletters/recipient-count", h.withAuth(http.HandlerFunc(h.RecipientCount)))
 	mux.Handle("POST /projects/{project_uid}/newsletters/recipients", h.withAuth(http.HandlerFunc(h.Recipients)))
 	mux.Handle("POST /projects/{project_uid}/newsletters/test-send", h.withAuth(http.HandlerFunc(h.TestSend)))
-
-	// Stateless render preview — JWT auth. Binds a layout against the embedded
-	// declarative templates and returns email-safe HTML; nothing is persisted.
-	mux.Handle("POST /projects/{project_uid}/newsletters/render-preview", h.withAuth(http.HandlerFunc(h.RenderPreview)))
-
-	// Editor template sets — JWT auth. Serves the hard-coded (embedded)
-	// template catalog and per-key editor manifests; the block composer's
-	// palette is driven entirely by these, so the embedded templates are the
-	// single source of truth for both editing and rendering. The literal
-	// "templates" segment wins over the {newsletter_uid} wildcard in the
-	// ServeMux, so these do not collide with the per-newsletter routes.
-	mux.Handle("GET /projects/{project_uid}/newsletters/templates", h.withAuth(http.HandlerFunc(h.ListTemplates)))
-	mux.Handle("GET /projects/{project_uid}/newsletters/templates/{template_key}/manifest", h.withAuth(http.HandlerFunc(h.GetTemplateManifest)))
 
 	// Per-newsletter analytics — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics", h.withAuth(http.HandlerFunc(h.GetAnalytics)))
@@ -242,8 +235,6 @@ func classifyError(err error) (int, string) {
 		return http.StatusConflict, "send_in_progress"
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest, "invalid_request"
-	case errors.Is(err, domain.ErrUnprocessable):
-		return http.StatusUnprocessableEntity, "unprocessable_entity"
 	case errors.As(err, &svcUnavailable):
 		return http.StatusServiceUnavailable, "service_unavailable"
 	case errors.As(err, &notFound):

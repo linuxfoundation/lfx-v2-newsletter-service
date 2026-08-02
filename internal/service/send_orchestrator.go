@@ -4,12 +4,9 @@
 package service
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"log/slog"
 	"net/mail"
 	"strings"
@@ -23,7 +20,6 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render"
-	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render/declarative"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
@@ -55,6 +51,11 @@ var defaultReplyToAllowedDomains = []string{"linuxfoundation.org"}
 // display name, yielding e.g. "Kubernetes Newsletter".
 const fromDisplayNameSuffix = " Newsletter"
 
+// myNewslettersPath is the Self-Serve route where a recipient can browse the
+// newsletters sent to them. Appended to SelfServeBaseURL to build the footer's
+// "My Newsletters" deep link.
+const myNewslettersPath = "/newsletters/my"
+
 // SendOrchestrator coordinates recipient resolution, email-chrome rendering,
 // per-recipient fan-out to lfx-v2-email-service, and the draft → sent state
 // transition. It owns the email-service integration; the UI no longer talks
@@ -81,7 +82,11 @@ type SendOrchestrator struct {
 	// the draft.EDReplyEmail fallback, so we never hand email-service a
 	// reply_to it will reject outright (see ReplyToAllowedDomains doc).
 	replyToAllowedDomains []string
-	jobTimeout            time.Duration
+	// selfServeBaseURL is the normalized (trimmed, no trailing slash) base URL
+	// of the LFX Self-Serve app. Empty omits the footer's "My Newsletters"
+	// line entirely.
+	selfServeBaseURL string
+	jobTimeout       time.Duration
 	// jobs tracks detached background send goroutines so graceful shutdown
 	// (and tests) can wait for in-flight fan-outs via Drain.
 	jobs sync.WaitGroup
@@ -120,6 +125,10 @@ type SendOrchestratorConfig struct {
 	// draft.EDReplyEmail (see resolveSenderEmail). Empty defaults to
 	// defaultReplyToAllowedDomains ("linuxfoundation.org").
 	ReplyToAllowedDomains []string
+	// SelfServeBaseURL is the base URL of the LFX Self-Serve app, used to
+	// build the compliance footer's "My Newsletters" deep link
+	// (<base>/newsletters/my). Empty omits the footer line.
+	SelfServeBaseURL string
 	// SendJobTimeout bounds the detached background fan-out that runs after a
 	// send is accepted. Zero falls back to defaultSendJobTimeout.
 	//
@@ -186,6 +195,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		fromAddress:           from,
 		fromOverrides:         overrides,
 		replyToAllowedDomains: replyToDomains,
+		selfServeBaseURL:      strings.TrimRight(strings.TrimSpace(cfg.SelfServeBaseURL), "/"),
 		jobTimeout:            jobTimeout,
 		sendProvider:          sendProvider,
 	}
@@ -279,53 +289,22 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// only a fallback for dev mode or a resolution failure.
 	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), draft.EDReplyEmail)
 
-	// Layout-based newsletters carry the FULL emitter email (gatewaze wrapper +
-	// blocks, MJML-compiled) in body_html, with per-recipient runtime fields as
-	// %%…%% placeholder sentinels. The emitter owns the whole email, so the send
-	// path must NOT re-wrap it in email_chrome — doing so would nest a complete
-	// document inside the chrome envelope and double the header/footer. Legacy
-	// (body_html-only) newsletters take the chrome path unchanged.
-	//
-	// COMPLIANCE: draft.BodyHTML was rendered at WRITE time against the
-	// unsubscribe config in effect then. If that config has since flipped (e.g.
-	// unsubscribe was enabled after the draft was saved), the persisted body
-	// carries a STALE compliance footer — a draft saved while unsubscribe was
-	// disabled would otherwise send with NO opt-out row after it's enabled, a
-	// CAN-SPAM gap. For a layout newsletter we therefore RE-RENDER body_html from
-	// the persisted BodyLayout using the SEND-TIME config (o.unsub.Enabled()), so
-	// the footer always reflects the current deployment setting instead of the
-	// write-time snapshot. The re-render binds replyTo (the resolved sender) into
-	// the wrapper's reply row, matching the legacy chrome path below. Legacy
-	// newsletters have no layout to re-render and dispatch draft.BodyHTML unchanged.
-	isLayout := layoutPresent(draft.BodyLayout)
-	sendBodyHTML := draft.BodyHTML
-	if isLayout {
-		if rerendered, ok := o.reRenderLayoutBody(ctx, draft, replyTo); ok {
-			sendBodyHTML = rerendered
-		} else if o.unsub.Enabled() {
-			// Re-render failed AND unsubscribe is required: the persisted body_html
-			// may predate that requirement (rendered while unsubscribe was disabled,
-			// so with no opt-out row). Falling back to it would send without the
-			// opt-out link — the exact CAN-SPAM gap the re-render exists to prevent —
-			// so refuse instead. The send reverts to draft for retry once the stored
-			// layout is renderable again. (With unsubscribe disabled the persisted
-			// body is compliant, so the fallback below stands.)
-			return nil, fmt.Errorf("newsletter send: body_layout re-render failed while unsubscribe is enabled; refusing to dispatch a persisted body that may lack the opt-out row")
-		}
+	chrome := render.Chrome{
+		Subject:                 draft.Subject,
+		BodyHTML:                draft.BodyHTML,
+		DisplayName:             projectName,
+		IncludeComplianceFooter: true,
+		EDName:                  fallbackString(senderName, "Executive Director"),
+		EDReplyEmail:            replyTo,
 	}
-
-	htmlBody, textBody := o.renderBody(isLayout, bodyRenderInput{
-		subject:     draft.Subject,
-		bodyHTML:    sendBodyHTML,
-		displayName: projectName,
-		senderName:  senderName,
-		// Reply-To tracks the resolved sender (main's change), not the drafter's
-		// saved address — matching the envelope ReplyTo and the layout re-render.
-		edReplyEmail: replyTo,
-		compliance:   true,
-	})
-	htmlBody = substituteSendScope(htmlBody, senderName, projectName, true)
-	textBody = substituteSendScope(textBody, senderName, projectName, false)
+	if o.unsub.Enabled() {
+		chrome.UnsubscribeURL = UnsubscribeURLPlaceholder
+	}
+	if o.selfServeBaseURL != "" {
+		chrome.MyNewslettersURL = o.selfServeBaseURL + myNewslettersPath
+	}
+	htmlBody := render.EmailHTML(chrome)
+	textBody := render.EmailText(chrome)
 
 	groupID := uuid.NewString()
 
@@ -389,73 +368,6 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		GroupID:         groupID,
 		TotalRecipients: len(recipients),
 	}, nil
-}
-
-// reRenderLayoutBody recompiles a layout newsletter's body_html from its
-// persisted BodyLayout using the SEND-TIME unsubscribe configuration
-// (o.unsub.Enabled()), so the compliance/unsubscribe footer reflects the
-// deployment's CURRENT setting rather than the write-time snapshot baked into
-// draft.BodyHTML. It returns the recompiled HTML and ok=true on success.
-//
-// FALLBACK (ok=false): on any failure — an unparseable stored layout, a block
-// type no longer present in the template set, or an MJML compile error — it
-// logs a warning and returns ok=false. What the CALLER does with ok=false is
-// unsubscribe-config-dependent (see SendNewsletter):
-//
-//   - Unsubscribe DISABLED: the caller dispatches the persisted draft.BodyHTML.
-//     That body already passed validation at write time and IS deliverable, and
-//     with unsubscribe off it carries no opt-out row to go stale, so refusing to
-//     send a newsletter whose layout later became unrenderable (e.g. a template
-//     library changed under it) would strand an otherwise valid send with no
-//     self-service recovery.
-//   - Unsubscribe ENABLED: the caller REFUSES the send (returns an error) rather
-//     than fall back. The persisted body may predate the unsubscribe requirement
-//     (rendered with no opt-out row), so dispatching it would risk the exact
-//     CAN-SPAM gap the send-time re-render exists to close. The row reverts to
-//     draft for retry once the stored layout is renderable again.
-//
-// Either way this helper only logs and signals ok=false; the compliance decision
-// lives at the call site. The warning surfaces the degradation for operators,
-// mirroring the orchestrator's other non-fatal signals (e.g. resolveFromAddress).
-func (o *SendOrchestrator) reRenderLayoutBody(ctx context.Context, draft *model.Newsletter, replyTo string) (string, bool) {
-	var layout declarative.Layout
-	if err := json.Unmarshal(draft.BodyLayout, &layout); err != nil {
-		slog.WarnContext(ctx, "newsletter send: stored body_layout unparseable; caller refuses the send when unsubscribe is enabled, else dispatches persisted body_html whose compliance footer may reflect write-time config",
-			"newsletter_id", draft.ID,
-			"project_uid", draft.ProjectUID,
-			"error", err,
-		)
-		return "", false
-	}
-	// renderLayout binds the send-time-known reply email (replyTo — the resolved
-	// sender, not the drafter's saved address) and the current unsubscribe setting
-	// into the wrapper footer, matching the legacy chrome path and the envelope
-	// ReplyTo. StripHTMLForText later derives the text/plain part from this same
-	// HTML, so the two stay consistent.
-	html, _, err := renderLayout(ctx, &layout, replyTo, sendUnsubFooterMode(o.unsub.Enabled()))
-	if err != nil {
-		slog.WarnContext(ctx, "newsletter send: body_layout re-render failed; caller refuses the send when unsubscribe is enabled, else dispatches persisted body_html whose compliance footer may reflect write-time config",
-			"newsletter_id", draft.ID,
-			"project_uid", draft.ProjectUID,
-			"error", err,
-		)
-		return "", false
-	}
-	// Bound the re-rendered output to the same ceiling create/update enforce.
-	// Embedded templates can change between write and send (the whole reason this
-	// helper re-renders), so a layout that was under the cap at write time can
-	// compile past it now — validating here keeps an oversized body off the wire,
-	// and ok=false routes it through the same refuse/fallback policy as any other
-	// re-render failure.
-	if err := validateDerivedBodyHTML(html); err != nil {
-		slog.WarnContext(ctx, "newsletter send: re-rendered body_layout exceeds the size cap; caller refuses the send when unsubscribe is enabled, else dispatches persisted body_html",
-			"newsletter_id", draft.ID,
-			"project_uid", draft.ProjectUID,
-			"error", err,
-		)
-		return "", false
-	}
-	return html, true
 }
 
 // runSendJob is the detached background half of SendNewsletter: fan out to
@@ -578,16 +490,6 @@ type TestSendInput struct {
 	ToEmail      string
 	EDReplyEmail string
 	Principal    string
-	// IsLayout is DEPRECATED and ignored (see api.TestSendRequest.IsLayout).
-	// BodyLayout is the sole layout trigger; this field has no effect and is
-	// retained only for wire-compatibility with clients that still send it.
-	IsLayout bool
-	// BodyLayout, when set, is the structured layout to recompile server-side
-	// for the test send. It is the sole layout trigger: the body is derived from
-	// it with the unsubscribe / compliance footer suppressed (no dangling opt-out
-	// link in a non-recipient test), mirroring how the real send path omits the
-	// compliance footer for a test. Nil keeps the legacy BodyHTML path.
-	BodyLayout *declarative.Layout
 }
 
 // TestSend dispatches a single test email — no persistence, no analytics, no
@@ -599,6 +501,9 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	if err := validateSubject(in.Subject); err != nil {
 		return err
 	}
+	if err := validateBodyHTML(in.BodyHTML); err != nil {
+		return err
+	}
 	if strings.TrimSpace(in.EDReplyEmail) != "" {
 		if err := validateEDReplyEmail(in.EDReplyEmail); err != nil {
 			return err
@@ -606,31 +511,6 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	}
 	if _, err := mail.ParseAddress(strings.TrimSpace(in.ToEmail)); err != nil {
 		return fmt.Errorf("%w: to_email is not a valid email: %v", domain.ErrInvalidRequest, err)
-	}
-
-	// body_layout is the SOLE layout trigger for a test send. When present the
-	// server recompiles server-side with the opt-out row SUPPRESSED
-	// (unsubFooterSuppressed drops it via the wrapper's if= guard), matching the
-	// non-recipient test's compliance:false — a test mints no real token, so it
-	// carries no opt-out link. When absent the legacy path stands: the caller's
-	// body_html is simple editor HTML, chrome-wrapped. in.IsLayout is deprecated
-	// and ignored here (a precompiled is_layout body_html is no longer dispatched
-	// verbatim — that path could leave a dangling <a href="">Unsubscribe</a> once
-	// its sentinel resolved empty); layout clients send body_layout instead.
-	bodyHTML := in.BodyHTML
-	isLayout := false
-	if in.BodyLayout != nil {
-		derived, _, rerr := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, unsubFooterSuppressed)
-		if rerr != nil {
-			return rerr
-		}
-		if err := validateDerivedBodyHTML(derived); err != nil {
-			return err
-		}
-		bodyHTML = derived
-		isLayout = true
-	} else if err := validateBodyHTML(in.BodyHTML); err != nil {
-		return err
 	}
 
 	projectName, _ := o.project.Name(ctx, in.ProjectUID)
@@ -650,17 +530,14 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// EDReplyEmail unconditionally.
 	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), strings.TrimSpace(in.EDReplyEmail))
 
-	// Mirror the real-send branch: a layout-based test send carries the full
-	// emitter email in bodyHTML and must not be re-wrapped in email_chrome.
-	// The test-send path never sets the compliance footer (preview/test only).
-	htmlBody, textBody := o.renderBody(isLayout, bodyRenderInput{
-		subject:     in.Subject,
-		bodyHTML:    bodyHTML,
-		displayName: projectName,
-		compliance:  false,
-	})
-	htmlBody = substituteSendScope(htmlBody, senderName, projectName, true)
-	textBody = substituteSendScope(textBody, senderName, projectName, false)
+	chrome := render.Chrome{
+		Subject:                 in.Subject,
+		BodyHTML:                in.BodyHTML,
+		DisplayName:             projectName,
+		IncludeComplianceFooter: false,
+	}
+	htmlBody := render.EmailHTML(chrome)
+	textBody := render.EmailText(chrome)
 
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "test-send: fanout disabled, accepted without dispatch",
@@ -669,14 +546,11 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		)
 		return nil
 	}
-	// Resolve the runtime sentinels for this test recipient. A test send never
-	// mints a real unsubscribe token (see substituteTestPlaceholders); the
-	// wrapper's opt-out rows drop out.
 	if _, dispatchErr := o.email.SendEmail(ctx, port.SendEmailInput{
 		To:              strings.TrimSpace(in.ToEmail),
 		Subject:         in.Subject,
-		HTML:            o.substituteTestPlaceholders(htmlBody),
-		Text:            o.substituteTestPlaceholders(textBody),
+		HTML:            htmlBody,
+		Text:            textBody,
 		From:            o.resolveFromAddress(ctx, in.ProjectUID),
 		FromDisplayName: fromDisplayName,
 		ReplyTo:         replyTo,
@@ -840,19 +714,17 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			// Substitute per-recipient runtime placeholders over the rendered
-			// body (and its text counterpart). Substitution runs over the full
-			// body, including any author-supplied draft. The collision risk is
-			// low — a literal %%…%% sentinel in a legacy draft would just be
-			// replaced with a working per-recipient value — but worth noting if
-			// we ever expose %%-delimited placeholders to authors.
-			//
-			// Legacy chrome bodies only ever contain UnsubscribeURLPlaceholder
-			// (and only when unsub is enabled); the VIEW_ONLINE / MANAGE
-			// sentinels are layout-only, so the extra ReplaceAlls are no-ops on
-			// the legacy path.
-			recipientHTML := o.substitutePlaceholders(env.HTML, projectUID, recipient.Email, true)
-			recipientText := o.substitutePlaceholders(env.Text, projectUID, recipient.Email, false)
+			recipientHTML, recipientText := env.HTML, env.Text
+			if o.unsub.Enabled() {
+				url := o.unsub.BuildURL(projectUID, recipient.Email)
+				// Substitution runs over the full rendered body, including the
+				// author-supplied draft. The collision risk is low (a literal
+				// UnsubscribeURLPlaceholder in the draft would just be replaced
+				// with a working per-recipient link), but worth noting if we
+				// ever expose %%-delimited placeholders to authors.
+				recipientHTML = strings.ReplaceAll(env.HTML, UnsubscribeURLPlaceholder, url)
+				recipientText = strings.ReplaceAll(env.Text, UnsubscribeURLPlaceholder, url)
+			}
 			// Honour the nil-dispatcher contract documented above. Production
 			// wiring always provides one, but tests and misconfigured local
 			// envs should never panic on an unauthenticated send path.
@@ -1034,141 +906,6 @@ func (o *SendOrchestrator) resolveFromAddress(ctx context.Context, projectUID st
 		return override
 	}
 	return o.fromAddress
-}
-
-// layoutPresent reports whether a newsletter's stored BodyLayout selects the
-// layout-based send path. A nil or whitespace-only raw message (the bun
-// `nullzero` column maps an absent layout to nil) means the legacy
-// body_html-only path.
-func layoutPresent(raw json.RawMessage) bool {
-	return len(bytes.TrimSpace(raw)) > 0
-}
-
-// bodyRenderInput carries the fields renderBody needs to produce the email
-// HTML/text for a single send, independent of whether the body is layout-based
-// or legacy chrome.
-type bodyRenderInput struct {
-	subject      string
-	bodyHTML     string
-	displayName  string
-	senderName   string
-	edReplyEmail string
-	compliance   bool
-}
-
-// renderBody returns the HTML and text bodies for a send.
-//
-//   - LAYOUT path (isLayout true): the emitter already produced the full email
-//     (gatewaze wrapper + blocks). Use bodyHTML verbatim as the HTML and derive
-//     the text counterpart from it via stripHTML. The email_chrome envelope is
-//     deliberately NOT applied — see the call sites and the COMPLIANCE note in
-//     the package/PR for what the wrapper does and does not carry.
-//   - LEGACY path (isLayout false): wrap bodyHTML in the email_chrome envelope
-//     exactly as before, including the compliance footer when requested.
-//
-// In both paths the per-recipient %%…%% placeholders are left intact here and
-// substituted later per recipient (substitutePlaceholders).
-func (o *SendOrchestrator) renderBody(isLayout bool, in bodyRenderInput) (htmlBody, textBody string) {
-	if isLayout {
-		htmlBody = in.bodyHTML
-		textBody = render.StripHTMLForText(in.bodyHTML)
-		return htmlBody, textBody
-	}
-
-	chrome := render.Chrome{
-		Subject:                 in.subject,
-		BodyHTML:                in.bodyHTML,
-		DisplayName:             in.displayName,
-		IncludeComplianceFooter: in.compliance,
-	}
-	if in.compliance {
-		chrome.EDName = fallbackString(in.senderName, "Executive Director")
-		chrome.EDReplyEmail = in.edReplyEmail
-		if o.unsub.Enabled() {
-			chrome.UnsubscribeURL = UnsubscribeURLPlaceholder
-		}
-	}
-	return render.EmailHTML(chrome), render.EmailText(chrome)
-}
-
-// substitutePlaceholders binds the per-recipient runtime placeholders in a
-// rendered body for a single recipient. It is safe on both the layout and
-// legacy paths: legacy chrome bodies only ever contain the unsubscribe
-// sentinel, so the layout-only substitutions are no-ops there.
-//
-//   - %%UNSUBSCRIBE_URL%%          → the recipient's signed unsubscribe link
-//     (HTML-escaped; it lands in an href attribute).
-//   - %%MANAGE_SUBSCRIPTIONS_URL%% → EMPTY, never the unsubscribe URL: that
-//     URL performs a destructive one-click opt-out on GET, so aliasing it
-//     under a preferences label would silently unsubscribe recipients.
-//     Render-on-write also binds the field empty (the wrapper drops the
-//     link); this replacement is defensive for bodies rendered before that
-//     change. A real preferences surface replaces it.
-//   - %%VIEW_ONLINE_URL%%          → the hosted "view online" link. No hosted
-//     web-version exists yet, so render-on-write leaves edition.view_online_link
-//     empty and the wrapper's `if=` guard drops the View Online row at RENDER
-//     time — the rendered body therefore never contains this sentinel, and the
-//     substitution below is a harmless no-op kept for when the surface ships.
-//
-// When the unsubscribe service is not configured (Enabled() false) the
-// render-on-write step already omits the opt-out row; replacing any leftover
-// sentinels with empty strings here is a defensive backstop so a misconfigured
-// environment never ships visible sentinels to recipients.
-func (o *SendOrchestrator) substitutePlaceholders(body, projectUID, email string, escapeHTML bool) string {
-	unsubURL := ""
-	if o.unsub.Enabled() {
-		unsubURL = o.unsub.BuildURL(projectUID, email)
-	}
-	// The unsubscribe URL lands in an href in the HTML part, so escape it
-	// there; the plain-text part carries the raw URL (HTML entities would be
-	// wrong in text/plain — see the textBody call sites).
-	if escapeHTML {
-		unsubURL = html.EscapeString(unsubURL)
-	}
-	replacer := strings.NewReplacer(
-		UnsubscribeURLPlaceholder, unsubURL,
-		// Empty, never the unsubscribe URL — see the function comment.
-		ManageSubscriptionsURLPlaceholder, "",
-		ViewOnlineURLPlaceholder, "",
-	)
-	return replacer.Replace(body)
-}
-
-// substituteTestPlaceholders binds the per-recipient sentinels for a TEST
-// send. A test send must not mint a real signed unsubscribe token: BodyHTML
-// and ToEmail are both caller-supplied, so producing a valid opt-out link for
-// an arbitrary address would let a writer harvest tokens. The unsubscribe and
-// manage rows resolve to empty (the layout wrapper drops them), and view-online
-// is empty as in the real path.
-func (o *SendOrchestrator) substituteTestPlaceholders(body string) string {
-	return strings.NewReplacer(
-		UnsubscribeURLPlaceholder, "",
-		ManageSubscriptionsURLPlaceholder, "",
-		ViewOnlineURLPlaceholder, "",
-	).Replace(body)
-}
-
-// substituteSendScope binds the send-scoped (not per-recipient) sentinels: the
-// resolved sender display name and project name for the wrapper's compliance
-// footer ("Sent by X on behalf of Y"). Runs once per send, before the
-// per-recipient fan-out. Values are HTML-escaped: they land in already-compiled
-// HTML, and the sender name (auth-service profile) and project name
-// (project-service) are external data — the legacy chrome path escapes the
-// same values.
-func substituteSendScope(body, senderName, projectName string, escapeHTML bool) string {
-	sender := fallbackString(senderName, "Executive Director")
-	project := projectName
-	// Escape for the HTML part (values land in already-compiled HTML); the
-	// plain-text part keeps them raw so a name like "R&D <Team>" is not turned
-	// into HTML entities in text/plain.
-	if escapeHTML {
-		sender = html.EscapeString(sender)
-		project = html.EscapeString(project)
-	}
-	return strings.NewReplacer(
-		SenderNamePlaceholder, sender,
-		ProjectNamePlaceholder, project,
-	).Replace(body)
 }
 
 func fallbackString(value, fallback string) string {

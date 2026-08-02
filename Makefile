@@ -145,26 +145,7 @@ helm-install-cnpg:
 helm-install-local:
 	helm upgrade --force --install $(HELM_RELEASE_NAME) $(HELM_CHART_PATH) \
 		--namespace $(HELM_NAMESPACE) --create-namespace \
-		--kube-context $(KUBE_CONTEXT) \
 		--values $(HELM_VALUES_FILE)
-
-# redeploy-local is the inner dev loop against the full-local (OrbStack) stack:
-# rebuild the ko image with a fresh unique tag and roll the running deployment to
-# it in one command. Run helm-install-local once first to create the release;
-# after that `make redeploy-local` picks up your latest service code. The unique
-# tag guarantees the deployment sees a new image (imagePullPolicy is Never), so
-# the rollout actually restarts the pod.
-.PHONY: redeploy-local
-redeploy-local:
-	@which ko >/dev/null 2>&1 || (echo "ko not found — install from https://ko.build" && exit 1)
-	@set -e; \
-	TAG=local-$$(date +%Y%m%d%H%M%S); \
-	echo "==> Building $(KO_LOCAL_REPO):$$TAG from $$(git rev-parse --short HEAD)..."; \
-	KO_DOCKER_REPO=$(KO_LOCAL_REPO) VERSION=$(VERSION) BUILD_TIME=$(BUILD_TIME) GIT_COMMIT=$(GIT_COMMIT) \
-		ko build --local --bare --tags=$$TAG ./cmd/newsletter-api && \
-	echo "==> Rolling $(HELM_RELEASE_NAME) to $$TAG..." && \
-	kubectl --context $(KUBE_CONTEXT) --namespace $(HELM_NAMESPACE) set image deploy/$(HELM_RELEASE_NAME) app=$(KO_LOCAL_REPO):$$TAG && \
-	kubectl --context $(KUBE_CONTEXT) --namespace $(HELM_NAMESPACE) rollout status deploy/$(HELM_RELEASE_NAME) --timeout=180s
 
 # helm-uninstall removes the chart release. Run helm-uninstall-cnpg afterwards
 # (in cluster+database mode) if you want to remove the Postgres data as well.

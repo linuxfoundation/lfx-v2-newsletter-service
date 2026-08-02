@@ -8,7 +8,6 @@ CREATE TABLE IF NOT EXISTS newsletters (
     project_uid       TEXT         NOT NULL,
     subject           TEXT         NOT NULL,
     body_html         TEXT         NOT NULL,
-    body_layout       JSONB,
     ed_reply_email    TEXT         NOT NULL,
     committee_uids    TEXT[]       NOT NULL DEFAULT '{}',
     status            TEXT         NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sending','sent')),
@@ -50,14 +49,6 @@ END$$;
 -- layer in case a caller misbehaves.
 ALTER TABLE newsletters
     ADD COLUMN IF NOT EXISTS group_id TEXT;
-
--- body_layout is the editor's structured layout (wrapper key + ordered blocks),
--- stored verbatim as JSONB. When present it is the source of truth: body_html is
--- DERIVED from it by the declarative emitter on every write. Nullable so legacy
--- rows (and the body_html-only API path) keep working unchanged. Added as an
--- idempotent ALTER so deployments that ran the prior schema migrate in place.
-ALTER TABLE newsletters
-    ADD COLUMN IF NOT EXISTS body_layout JSONB;
 
 -- PG has no native IF NOT EXISTS on ADD CONSTRAINT; check pg_constraint first
 -- so re-running schema.sql is a no-op.
@@ -144,6 +135,15 @@ CREATE INDEX IF NOT EXISTS idx_newsletters_project ON newsletters (project_uid);
 CREATE INDEX IF NOT EXISTS idx_newsletters_status  ON newsletters (status);
 CREATE INDEX IF NOT EXISTS idx_newsletters_list
     ON newsletters (project_uid, updated_at DESC, id DESC);
+
+-- GIN index on the committee audience array supports the committee-scoped
+-- containment query (committee_uids @> ARRAY[uid]) used by ListSentByCommittee.
+-- The query's (sent_at DESC, id DESC) keyset ordering is deliberately NOT
+-- index-backed: array containment can't participate in a btree, and the GIN
+-- filter narrows to one committee's sent newsletters — a bounded set (tens,
+-- not thousands) that Postgres sorts in memory per page without issue.
+CREATE INDEX IF NOT EXISTS idx_newsletters_committee_uids
+    ON newsletters USING GIN (committee_uids);
 
 -- newsletter_opens captures one row per open event. recipient_hash is a SHA-256
 -- of the lowercased recipient email so we can compute unique opens without
