@@ -65,6 +65,8 @@ Core state:
 | `created_by` | Authenticated principal or local fallback. |
 | `version` | Optimistic-locking version. |
 
+Write payloads are validated before persistence: `subject` is capped at 200 characters and `body_html` at 100,000 characters, both counted in Unicode code points rather than bytes, so a non-ASCII draft gets the same allowance as an ASCII one. `committee_uids` must hold between 1 and 50 entries. Exceeding any of these returns `400 invalid_request`; the handler's 1 MiB request-body cap still bounds the raw payload independently.
+
 `POST …/send` returns `SendNewsletterResponse`: the newsletter plus `group_id`, `total_recipients`, `sent`, `failed`, and per-recipient `failures`. The send is asynchronous: acceptance returns `202` with the newsletter in `status=sending` and `sent=0`; clients observe the outcome by re-fetching the newsletter (branch on `newsletter.status`, not the HTTP status code). The zero-recipient edge case settles synchronously and returns `200` with `status=sent`.
 
 ## Optimistic Locking
