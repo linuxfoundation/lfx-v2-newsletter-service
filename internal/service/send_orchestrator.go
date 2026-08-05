@@ -496,8 +496,10 @@ type TestSendInput struct {
 	Principal    string
 }
 
-// TestSend dispatches a single test email — no persistence, no analytics, no
-// compliance footer.
+// TestSend dispatches a single test email — no persistence, no analytics. The
+// body renders the same compliance footer as a real send, including a working
+// unsubscribe link minted for to_email (clicking it records a real
+// project-scoped opt-out for that address).
 func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error {
 	if err := validateProjectUID(in.ProjectUID); err != nil {
 		return err
@@ -513,9 +515,15 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 			return err
 		}
 	}
-	if _, err := mail.ParseAddress(strings.TrimSpace(in.ToEmail)); err != nil {
+	parsedTo, err := mail.ParseAddress(strings.TrimSpace(in.ToEmail))
+	if err != nil {
 		return fmt.Errorf("%w: to_email is not a valid email: %v", domain.ErrInvalidRequest, err)
 	}
+	// Canonical addr-spec: mail.ParseAddress accepts display-name forms such
+	// as "Tester <tester@example.com>", but the unsubscribe token must sign
+	// the bare address recipient resolution compares opt-outs against, and
+	// the dispatch To must carry the same canonical value.
+	toEmail := parsedTo.Address
 
 	projectName, _ := o.project.Name(ctx, in.ProjectUID)
 	if projectName == "" {
@@ -538,20 +546,32 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		Subject:                 in.Subject,
 		BodyHTML:                in.BodyHTML,
 		DisplayName:             projectName,
-		IncludeComplianceFooter: false,
+		IncludeComplianceFooter: true,
+		EDName:                  fallbackString(senderName, "Executive Director"),
+		EDReplyEmail:            replyTo,
+	}
+	if o.unsub.Enabled() {
+		// Single recipient: mint the real link directly instead of the
+		// placeholder+ReplaceAll pattern the fan-out uses. BuildURL output has
+		// no HTML-escapable characters, so the footer is byte-identical to a
+		// real send's post-substitution body.
+		chrome.UnsubscribeURL = o.unsub.BuildURL(in.ProjectUID, toEmail)
+	}
+	if o.selfServeBaseURL != "" {
+		chrome.MyNewslettersURL = o.selfServeBaseURL + myNewslettersPath
 	}
 	htmlBody := render.EmailHTML(chrome)
 	textBody := render.EmailText(chrome)
 
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "test-send: fanout disabled, accepted without dispatch",
-			"to_email", in.ToEmail,
+			"to_email", toEmail,
 			"project_uid", in.ProjectUID,
 		)
 		return nil
 	}
 	if _, dispatchErr := o.email.SendEmail(ctx, port.SendEmailInput{
-		To:              strings.TrimSpace(in.ToEmail),
+		To:              toEmail,
 		Subject:         in.Subject,
 		HTML:            htmlBody,
 		Text:            textBody,
@@ -562,7 +582,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		return fmt.Errorf("dispatch test-send: %w", dispatchErr)
 	}
 	slog.InfoContext(ctx, "test-send dispatched",
-		"to_email", in.ToEmail,
+		"to_email", toEmail,
 		"project_uid", in.ProjectUID,
 	)
 	return nil

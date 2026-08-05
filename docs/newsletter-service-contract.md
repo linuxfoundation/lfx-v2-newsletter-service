@@ -98,11 +98,11 @@ Recipient resolution and the provider fan-out are documented in `docs/recipient-
 | --- | --- |
 | `…/newsletters/recipient-count` | Returns unique recipient count after resolving committee members. |
 | `…/newsletters/recipients` | Returns unique recipient emails and first names. |
-| `…/newsletters/test-send` | Validates fields and dispatches a single test email to `to_email` — no persistence, no analytics, no compliance footer (including the "My Newsletters" link). Returns `{ "ok": true }`. |
+| `…/newsletters/test-send` | Validates fields and dispatches a single test email to `to_email` — no persistence, no analytics. The body renders the same compliance footer as a real send: sender attribution, optional reply-to line, the "My Newsletters" link, and a working unsubscribe link minted for `to_email` (clicking it records a real project-scoped opt-out for that address). Returns `{ "ok": true }`. |
 
 The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sends validate and transition state without dispatching email.
 
-Real sends render a compliance footer containing sender attribution, an optional reply-to line, a "My Newsletters" deep link (`<LFX_SELF_SERVE_BASE_URL>/newsletters/my`, default `https://app.lfx.dev/newsletters/my`) so recipients can browse past newsletters in Self-Serve, and the per-recipient unsubscribe small print. The "My Newsletters" line sits above the unsubscribe small print in both the HTML and plain-text bodies. An unset or empty `LFX_SELF_SERVE_BASE_URL` falls back to the production default — no supported configuration omits the line from real sends (the renderer omits it only for callers that pass no URL, e.g. test-sends).
+Real sends and test-sends render a compliance footer containing sender attribution, an optional reply-to line, a "My Newsletters" deep link (`<LFX_SELF_SERVE_BASE_URL>/newsletters/my`, default `https://app.lfx.dev/newsletters/my`) so recipients can browse past newsletters in Self-Serve, and the per-recipient unsubscribe small print. The "My Newsletters" line sits above the unsubscribe small print in both the HTML and plain-text bodies. An unset or empty `LFX_SELF_SERVE_BASE_URL` falls back to the production default — no supported configuration omits the line from sends (the renderer omits it only for callers that pass no URL).
 
 ## Analytics, Open Tracking, And Unsubscribe
 
