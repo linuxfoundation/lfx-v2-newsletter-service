@@ -565,6 +565,45 @@ func TestTestSendRendersComplianceFooterWithRealUnsubscribeLink(t *testing.T) {
 	}
 }
 
+// TestTestSendUsesParsedAddrSpec asserts a display-name to_email such as
+// "Tester <tester@example.com>" mints the unsubscribe token — and dispatches —
+// with the bare addr-spec, so the recorded opt-out matches the normalized
+// address recipient resolution compares against on real sends.
+func TestTestSendUsesParsedAddrSpec(t *testing.T) {
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, &fakeCommitteeClient{}, email, unsub)
+
+	if err := orch.TestSend(context.Background(), TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "Tester <Tester@Example.com>",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	if s.To != "Tester@Example.com" {
+		t.Errorf("dispatch To = %q, want bare addr-spec %q", s.To, "Tester@Example.com")
+	}
+	_, after, _ := strings.Cut(s.HTML, "/newsletters/unsubscribe?t=")
+	token, _, _ := strings.Cut(after, `"`)
+	gotProject, gotEmail, vErr := unsub.VerifyToken(token)
+	if vErr != nil {
+		t.Fatalf("verify token: %v", vErr)
+	}
+	if gotProject != "p1" {
+		t.Errorf("token project = %q, want p1", gotProject)
+	}
+	if gotEmail != "tester@example.com" {
+		t.Errorf("token email = %q, want tester@example.com", gotEmail)
+	}
+}
+
 // TestTestSendFooterFallbacksMirrorRealSend asserts test-sends degrade the
 // same way real sends do: unsubscribe disabled falls back to the legacy
 // reply-with-UNSUBSCRIBE copy, and an empty Self-Serve base URL omits the

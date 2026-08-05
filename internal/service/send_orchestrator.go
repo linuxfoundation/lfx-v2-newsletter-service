@@ -486,9 +486,15 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 			return err
 		}
 	}
-	if _, err := mail.ParseAddress(strings.TrimSpace(in.ToEmail)); err != nil {
+	parsedTo, err := mail.ParseAddress(strings.TrimSpace(in.ToEmail))
+	if err != nil {
 		return fmt.Errorf("%w: to_email is not a valid email: %v", domain.ErrInvalidRequest, err)
 	}
+	// Canonical addr-spec: mail.ParseAddress accepts display-name forms such
+	// as "Tester <tester@example.com>", but the unsubscribe token must sign
+	// the bare address recipient resolution compares opt-outs against, and
+	// the dispatch To must carry the same canonical value.
+	toEmail := parsedTo.Address
 
 	projectName, _ := o.project.Name(ctx, in.ProjectUID)
 	if projectName == "" {
@@ -520,7 +526,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		// placeholder+ReplaceAll pattern the fan-out uses. BuildURL output has
 		// no HTML-escapable characters, so the footer is byte-identical to a
 		// real send's post-substitution body.
-		chrome.UnsubscribeURL = o.unsub.BuildURL(in.ProjectUID, strings.TrimSpace(in.ToEmail))
+		chrome.UnsubscribeURL = o.unsub.BuildURL(in.ProjectUID, toEmail)
 	}
 	if o.selfServeBaseURL != "" {
 		chrome.MyNewslettersURL = o.selfServeBaseURL + myNewslettersPath
@@ -530,13 +536,13 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "test-send: fanout disabled, accepted without dispatch",
-			"to_email", in.ToEmail,
+			"to_email", toEmail,
 			"project_uid", in.ProjectUID,
 		)
 		return nil
 	}
 	if _, dispatchErr := o.email.SendEmail(ctx, port.SendEmailInput{
-		To:              strings.TrimSpace(in.ToEmail),
+		To:              toEmail,
 		Subject:         in.Subject,
 		HTML:            htmlBody,
 		Text:            textBody,
@@ -547,7 +553,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		return fmt.Errorf("dispatch test-send: %w", dispatchErr)
 	}
 	slog.InfoContext(ctx, "test-send dispatched",
-		"to_email", in.ToEmail,
+		"to_email", toEmail,
 		"project_uid", in.ProjectUID,
 	)
 	return nil
