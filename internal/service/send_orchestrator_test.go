@@ -437,9 +437,9 @@ func TestFanOutInjectsPerRecipientUnsubscribeURL(t *testing.T) {
 	}
 }
 
-// TestSendIncludesMyNewslettersLink asserts real sends embed the Self-Serve
-// "My Newsletters" deep link (with the base URL normalized) in both bodies,
-// while test-sends — which render without the compliance footer — do not.
+// TestSendIncludesMyNewslettersLink asserts real sends and test-sends both
+// embed the Self-Serve "My Newsletters" deep link (with the base URL
+// normalized) in both bodies.
 func TestSendIncludesMyNewslettersLink(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
@@ -480,7 +480,7 @@ func TestSendIncludesMyNewslettersLink(t *testing.T) {
 		t.Errorf("real-send text missing My Newsletters link:\n%s", email.sends[0].Text)
 	}
 
-	// Test-send renders without the compliance footer, so no link.
+	// Test-send renders the same compliance footer, so the link is there too.
 	if err := orch.TestSend(ctx, TestSendInput{
 		ProjectUID: "p1",
 		Subject:    "Hello",
@@ -492,8 +492,152 @@ func TestSendIncludesMyNewslettersLink(t *testing.T) {
 	if len(email.sends) != 2 {
 		t.Fatalf("got %d sends after test-send, want 2", len(email.sends))
 	}
-	if strings.Contains(email.sends[1].HTML, "newsletters/my") || strings.Contains(email.sends[1].Text, "newsletters/my") {
-		t.Errorf("test-send unexpectedly contains My Newsletters link")
+	if !strings.Contains(email.sends[1].HTML, `href="`+wantURL+`"`) {
+		t.Errorf("test-send HTML missing My Newsletters link:\n%s", email.sends[1].HTML)
+	}
+	if !strings.Contains(email.sends[1].Text, wantURL) {
+		t.Errorf("test-send text missing My Newsletters link:\n%s", email.sends[1].Text)
+	}
+}
+
+// TestTestSendRendersComplianceFooterWithRealUnsubscribeLink asserts a
+// test-send body carries the same compliance footer as a real send, with a
+// working unsubscribe link minted directly for the to_email recipient.
+func TestTestSendRendersComplianceFooterWithRealUnsubscribeLink(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:             repo,
+		Committee:        &fakeCommitteeClient{},
+		Project:          &fakeProjectClient{},
+		Email:            email,
+		Unsubscribe:      unsub,
+		Concurrency:      2,
+		FanoutEnabled:    true,
+		SelfServeBaseURL: "https://app.lfx.dev",
+	})
+
+	// Mixed-case recipient on purpose: buildToken lowercases, so the minted
+	// link must still verify against the normalized address.
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "Tester@Example.com",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+
+	if strings.Contains(s.HTML, UnsubscribeURLPlaceholder) {
+		t.Errorf("placeholder leaked into test-send HTML:\n%s", s.HTML)
+	}
+	if !strings.Contains(s.HTML, "https://api.example/newsletters/unsubscribe?t=") {
+		t.Errorf("test-send HTML missing unsubscribe link:\n%s", s.HTML)
+	}
+	// The link must be a real working opt-out for the test recipient.
+	_, after, _ := strings.Cut(s.HTML, "/newsletters/unsubscribe?t=")
+	token, _, _ := strings.Cut(after, `"`)
+	gotProject, gotEmail, vErr := unsub.VerifyToken(token)
+	if vErr != nil {
+		t.Fatalf("verify token: %v", vErr)
+	}
+	if gotProject != "p1" {
+		t.Errorf("token project = %q, want p1", gotProject)
+	}
+	if gotEmail != "tester@example.com" {
+		t.Errorf("token email = %q, want tester@example.com", gotEmail)
+	}
+
+	if !strings.Contains(s.HTML, "Sent by") {
+		t.Errorf("test-send HTML missing sender attribution:\n%s", s.HTML)
+	}
+	if !strings.Contains(s.Text, "Unsubscribe from Test Project newsletters: https://api.example/newsletters/unsubscribe?t=") {
+		t.Errorf("test-send text missing unsubscribe footer:\n%s", s.Text)
+	}
+	if !strings.Contains(s.HTML, "https://app.lfx.dev/newsletters/my") || !strings.Contains(s.Text, "https://app.lfx.dev/newsletters/my") {
+		t.Errorf("test-send missing My Newsletters link")
+	}
+}
+
+// TestTestSendUsesParsedAddrSpec asserts a display-name to_email such as
+// "Tester <tester@example.com>" mints the unsubscribe token — and dispatches —
+// with the bare addr-spec, so the recorded opt-out matches the normalized
+// address recipient resolution compares against on real sends.
+func TestTestSendUsesParsedAddrSpec(t *testing.T) {
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, &fakeCommitteeClient{}, email, unsub)
+
+	if err := orch.TestSend(context.Background(), TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "Tester <Tester@Example.com>",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	if s.To != "Tester@Example.com" {
+		t.Errorf("dispatch To = %q, want bare addr-spec %q", s.To, "Tester@Example.com")
+	}
+	_, after, _ := strings.Cut(s.HTML, "/newsletters/unsubscribe?t=")
+	token, _, _ := strings.Cut(after, `"`)
+	gotProject, gotEmail, vErr := unsub.VerifyToken(token)
+	if vErr != nil {
+		t.Fatalf("verify token: %v", vErr)
+	}
+	if gotProject != "p1" {
+		t.Errorf("token project = %q, want p1", gotProject)
+	}
+	if gotEmail != "tester@example.com" {
+		t.Errorf("token email = %q, want tester@example.com", gotEmail)
+	}
+}
+
+// TestTestSendFooterFallbacksMirrorRealSend asserts test-sends degrade the
+// same way real sends do: unsubscribe disabled falls back to the legacy
+// reply-with-UNSUBSCRIBE copy, and an empty Self-Serve base URL omits the
+// My Newsletters line.
+func TestTestSendFooterFallbacksMirrorRealSend(t *testing.T) {
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	orch := newTestOrchestrator(repo, &fakeCommitteeClient{}, email, NewUnsubscribeService(repo, nil, ""))
+
+	if err := orch.TestSend(context.Background(), TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "tester@example.com",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	if !strings.Contains(s.HTML, "reply with <strong>UNSUBSCRIBE</strong>") {
+		t.Errorf("test-send HTML missing legacy unsubscribe copy:\n%s", s.HTML)
+	}
+	if !strings.Contains(s.Text, "reply with UNSUBSCRIBE") {
+		t.Errorf("test-send text missing legacy unsubscribe copy:\n%s", s.Text)
+	}
+	for _, body := range []string{s.HTML, s.Text} {
+		if strings.Contains(body, "newsletters/my") {
+			t.Errorf("test-send unexpectedly contains My Newsletters link")
+		}
+		if strings.Contains(body, "newsletters/unsubscribe") {
+			t.Errorf("test-send unexpectedly contains an unsubscribe link")
+		}
 	}
 }
 
