@@ -467,8 +467,10 @@ type TestSendInput struct {
 	Principal    string
 }
 
-// TestSend dispatches a single test email — no persistence, no analytics, no
-// compliance footer.
+// TestSend dispatches a single test email — no persistence, no analytics. The
+// body renders the same compliance footer as a real send, including a working
+// unsubscribe link minted for to_email (clicking it records a real
+// project-scoped opt-out for that address).
 func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error {
 	if err := validateProjectUID(in.ProjectUID); err != nil {
 		return err
@@ -509,7 +511,19 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		Subject:                 in.Subject,
 		BodyHTML:                in.BodyHTML,
 		DisplayName:             projectName,
-		IncludeComplianceFooter: false,
+		IncludeComplianceFooter: true,
+		EDName:                  fallbackString(senderName, "Executive Director"),
+		EDReplyEmail:            replyTo,
+	}
+	if o.unsub.Enabled() {
+		// Single recipient: mint the real link directly instead of the
+		// placeholder+ReplaceAll pattern the fan-out uses. BuildURL output has
+		// no HTML-escapable characters, so the footer is byte-identical to a
+		// real send's post-substitution body.
+		chrome.UnsubscribeURL = o.unsub.BuildURL(in.ProjectUID, strings.TrimSpace(in.ToEmail))
+	}
+	if o.selfServeBaseURL != "" {
+		chrome.MyNewslettersURL = o.selfServeBaseURL + myNewslettersPath
 	}
 	htmlBody := render.EmailHTML(chrome)
 	textBody := render.EmailText(chrome)
