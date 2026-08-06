@@ -18,8 +18,11 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/handler"
 	natsinfra "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/nats"
+	sendgridinfra "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/sendgrid"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/repository"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/schema"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
@@ -90,7 +93,10 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	natsClient = nc
 	committeeClient := natsinfra.NewCommitteeClient(nc)
 	projectClient := natsinfra.NewProjectClient(nc)
-	emailDispatcher := natsinfra.NewEmailDispatcher(nc)
+	emailDispatcher, err := newEmailDispatcher(ctx, cfg, nc)
+	if err != nil {
+		return err
+	}
 	userMetadataClient := natsinfra.NewUserMetadataClient(nc)
 
 	// Step 4: auth.
@@ -132,13 +138,30 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		ReplyToAllowedDomains: cfg.EmailReplyToAllowedDomains,
 		SelfServeBaseURL:      cfg.SelfServeBaseURL,
 		SendJobTimeout:        cfg.SendJobTimeout,
+		SendProvider:          cfg.EmailProvider,
 	})
-	analyticsSvc := service.NewAnalyticsService(repo, emailDispatcher)
+	// Analytics routes engagement reads by each newsletter's send_provider, so
+	// register a reader per provider. The email-service (NATS) reader and the
+	// SendGrid store-backed reader are both always available: the SendGrid
+	// reader needs only the engagement store (no API key), so a deployment can
+	// serve analytics for SendGrid-sent newsletters even when email-service is
+	// the currently-active sender, and vice versa. Historical rows default to
+	// email-service.
+	engagementReaders := map[string]port.EngagementReader{
+		model.SendProviderEmailService: natsinfra.NewEmailDispatcher(nc),
+		model.SendProviderSendGrid:     sendgridinfra.NewEngagementReader(repository.NewSendGridEngagementStore(bunDB)),
+	}
+	analyticsSvc := service.NewAnalyticsService(repo, engagementReaders, model.SendProviderEmailService)
 
 	// Step 6: recovery sweep for newsletters stranded in 'sending' by a pod
 	// crash mid-fan-out. Runs once at startup (catches strands from previous
 	// pods immediately) and then on a ticker.
 	startStuckSendRecovery(repo, cfg.StuckSendTTL)
+
+	sendgridWebhook, err := newSendGridWebhook(ctx, cfg)
+	if err != nil {
+		return err
+	}
 
 	handlerImpl = handler.New(handler.Config{
 		Newsletter:      newsletterSvc,
@@ -149,6 +172,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		DB:              sqlDB,
 		Auth:            authImpl,
 		RequireUserAuth: cfg.RequireUserAuth,
+		SendGridWebhook: sendgridWebhook,
 	})
 	httpHandler = handlerImpl.Routes()
 
@@ -232,4 +256,59 @@ func Shutdown() {
 	if pgPool != nil {
 		pgPool.Close()
 	}
+}
+
+// newEmailDispatcher selects the outbound send provider from cfg.EmailProvider.
+// "sendgrid" brokers SendGrid directly (newsletter/marketing, LFXV2-2388) with a
+// store-backed engagement path populated by the signed event webhook; any other
+// value keeps the NATS request/reply path to lfx-v2-email-service (SES,
+// transactional).
+func newEmailDispatcher(ctx context.Context, cfg AppConfig, nc *natsinfra.Client) (port.EmailDispatcher, error) {
+	if cfg.EmailProvider == "sendgrid" {
+		sg, err := sendgridinfra.NewDispatcher(sendgridinfra.Config{
+			APIKey:                cfg.SendGridAPIKey,
+			DefaultFrom:           cfg.EmailFromAddress,
+			Store:                 repository.NewSendGridEngagementStore(bunDB),
+			AuthenticatedDomains:  cfg.SendGridAuthenticatedDomains,
+			ReplyToAllowedDomains: cfg.EmailReplyToAllowedDomains,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("sendgrid dispatcher: %w", err)
+		}
+		slog.InfoContext(ctx, "email provider: SendGrid — direct send + engagement store active; engagement is populated by the SendGrid event webhook")
+		return sg, nil
+	}
+	return natsinfra.NewEmailDispatcher(nc), nil
+}
+
+// Compile-time assertion that the repository store satisfies the SendGrid
+// dispatcher's EngagementStore, kept here so the repository package stays free
+// of an infrastructure import.
+var _ sendgridinfra.EngagementStore = (*repository.SendGridEngagementStore)(nil)
+
+// newSendGridWebhook builds the SendGrid event-webhook handler whenever a
+// verification key is configured, independent of the active EMAIL_PROVIDER, so
+// engagement for historical and scheduled SendGrid sends keeps flowing after a
+// flip back to email-service. Returns nil (no route) when no key is set — with a
+// warning only when the provider is SendGrid, since that is the case where the
+// missing key silently leaves engagement unpopulated.
+func newSendGridWebhook(ctx context.Context, cfg AppConfig) (http.Handler, error) {
+	// Register the webhook whenever a verification key is configured, independent
+	// of the active EMAIL_PROVIDER. SendGrid keeps delivering events for
+	// historical and scheduled SendGrid sends after the outbound provider is
+	// flipped back to email-service, and analytics still routes those newsletters
+	// (by send_provider) to the local SendGrid store — so gating the route on
+	// EMAIL_PROVIDER would silently freeze their engagement.
+	if cfg.SendGridWebhookPublicKey == "" {
+		if cfg.EmailProvider == model.SendProviderSendGrid {
+			slog.WarnContext(ctx, "EMAIL_PROVIDER=sendgrid but SENDGRID_WEBHOOK_PUBLIC_KEY is unset — the event webhook is not registered and engagement/analytics will stay empty")
+		}
+		return nil, nil
+	}
+	verifier, err := sendgridinfra.NewVerifier(cfg.SendGridWebhookPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("sendgrid webhook verifier: %w", err)
+	}
+	slog.InfoContext(ctx, "SendGrid event webhook registered at POST /newsletters/sendgrid/events")
+	return sendgridinfra.NewWebhook(verifier, repository.NewSendGridEngagementStore(bunDB)), nil
 }

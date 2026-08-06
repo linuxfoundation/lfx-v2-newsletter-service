@@ -72,6 +72,11 @@ type SendOrchestrator struct {
 	fanoutEnabled bool
 	fromAddress   string
 	fromOverrides map[string]string
+	// sendProvider is the value stamped onto newsletters.send_provider at the
+	// sending transition, recording which provider dispatched the newsletter so
+	// analytics reads engagement from the matching store. Set from the active
+	// EMAIL_PROVIDER; empty falls back to model.SendProviderEmailService.
+	sendProvider string
 	// replyToAllowedDomains gates resolveSenderEmail's output: a resolved
 	// address outside these domains (suffix-matched) is dropped in favor of
 	// the draft.EDReplyEmail fallback, so we never hand email-service a
@@ -111,6 +116,10 @@ type SendOrchestratorConfig struct {
 	// From address used for that project, overriding FromAddress. Nil/empty
 	// means every project uses FromAddress.
 	FromAddressOverrides map[string]string
+	// SendProvider is the active dispatch provider stamped onto every send
+	// (newsletters.send_provider), so analytics can later resolve engagement
+	// from the matching store. Empty falls back to model.SendProviderEmailService.
+	SendProvider string
 	// ReplyToAllowedDomains lists the domains a resolved sender email may use
 	// as Reply-To; a resolved address outside this list falls back to
 	// draft.EDReplyEmail (see resolveSenderEmail). Empty defaults to
@@ -169,6 +178,10 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	if jobTimeout <= 0 {
 		jobTimeout = defaultSendJobTimeout
 	}
+	sendProvider := strings.TrimSpace(cfg.SendProvider)
+	if sendProvider == "" {
+		sendProvider = model.SendProviderEmailService
+	}
 	return &SendOrchestrator{
 		repo:                  cfg.Repo,
 		committee:             cfg.Committee,
@@ -184,6 +197,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		replyToAllowedDomains: replyToDomains,
 		selfServeBaseURL:      strings.TrimRight(strings.TrimSpace(cfg.SelfServeBaseURL), "/"),
 		jobTimeout:            jobTimeout,
+		sendProvider:          sendProvider,
 	}
 }
 
@@ -307,7 +321,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// The duplicate-send guard: a single optimistically-locked UPDATE gated on
 	// status='draft'. From here on no concurrent or repeated send request can
 	// enter the fan-out for this newsletter.
-	sending, err := o.repo.MarkSending(ctx, draft.ID, groupID, len(recipients), draft.Version)
+	sending, err := o.repo.MarkSending(ctx, draft.ID, groupID, o.sendProvider, len(recipients), draft.Version)
 	if err != nil {
 		return nil, fmt.Errorf("mark sending: %w", err)
 	}
@@ -360,7 +374,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 // every recipient, then settle the newsletter — sent when at least one
 // recipient was delivered to, reverted to draft when none were.
 func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsletter, recipients []model.CommitteeMember, envelope emailEnvelope) {
-	sent, failed, failures := o.fanOut(ctx, sending.ProjectUID, recipients, envelope)
+	sent, failed, unknown, failures := o.fanOut(ctx, sending.ProjectUID, recipients, envelope)
 
 	// The terminal persistence write must not depend on the job context: a
 	// fan-out that consumed the entire job timeout would otherwise leave the
@@ -368,18 +382,22 @@ func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsle
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
 
-	// Only settle to `sent` when at least one recipient was delivered to. If
-	// every send failed (email-service unreachable, all recipients rejected,
-	// etc.) the row reverts to draft so the operator can retry without emails
-	// ever having gone out. Without this gate, a fully-failed send would be
-	// permanently indistinguishable from a successful one — no retry path.
-	if sent == 0 {
-		slog.WarnContext(ctx, "newsletter send failed: no recipients delivered, reverting to draft",
+	// Revert to draft ONLY when nothing was accepted AND nothing is ambiguous —
+	// i.e. every recipient was definitively rejected, so a retry cannot duplicate
+	// a message the provider already accepted. If any outcome is ambiguous (a
+	// transport error or a 5xx where the provider MAY have accepted the message),
+	// fall through and settle as sent instead of creating a retryable draft:
+	// re-sending those recipients could duplicate. This mirrors crash recovery —
+	// when it's unknown whether mail went out, settle to `sent` and let analytics
+	// (via group_id) expose the real delivery rather than risk duplicates.
+	if sent == 0 && unknown == 0 {
+		slog.WarnContext(ctx, "newsletter send failed: all recipients definitively rejected, reverting to draft",
 			"newsletter_id", sending.ID,
 			"project_uid", sending.ProjectUID,
 			"group_id", envelope.GroupID,
 			"total_recipients", len(recipients),
 			"failed", failed,
+			"unknown", unknown,
 			"first_failure", firstFailureError(failures),
 		)
 		// The revert can also fail because another actor already settled the
@@ -390,6 +408,17 @@ func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsle
 				"newsletter_id", sending.ID,
 				"error", err,
 			)
+		} else if purger, ok := o.email.(port.EngagementPurger); ok {
+			// The revert cleared group_id, so any engagement rows the provider
+			// recorded for this fully-failed send (with recipient emails) are now
+			// orphaned. Purge them; best-effort, so a failure only logs.
+			if err := purger.PurgeEngagement(persistCtx, envelope.GroupID); err != nil {
+				slog.WarnContext(persistCtx, "newsletter send: failed to purge provider engagement after revert",
+					"newsletter_id", sending.ID,
+					"group_id", envelope.GroupID,
+					"error", err,
+				)
+			}
 		}
 		return
 	}
@@ -674,16 +703,16 @@ type emailEnvelope struct {
 // failures are captured and surfaced in the result so the caller can decide
 // how to react. A nil EmailDispatcher (or FanoutEnabled=false) short-circuits
 // to "all sent, none failed" for dev/test environments.
-func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipients []model.CommitteeMember, env emailEnvelope) (sent, failed int, failures []SendFailure) {
+func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipients []model.CommitteeMember, env emailEnvelope) (sent, failed, unknown int, failures []SendFailure) {
 	if len(recipients) == 0 {
-		return 0, 0, nil
+		return 0, 0, 0, nil
 	}
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "send fanout disabled, marking all as sent without dispatch",
 			"total_recipients", len(recipients),
 			"group_id", env.GroupID,
 		)
-		return len(recipients), 0, nil
+		return len(recipients), 0, 0, nil
 	}
 
 	sem := make(chan struct{}, o.concurrency)
@@ -742,11 +771,20 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				failed++
+				// An ambiguous outcome (the provider may have accepted the message)
+				// is counted separately so an all-ambiguous fan-out does NOT trip
+				// the retryable all-failed revert, which could duplicate a send the
+				// provider already accepted. A definitive failure is safe to retry.
+				if errors.Is(err, port.ErrAmbiguousSend) {
+					unknown++
+				} else {
+					failed++
+				}
 				failures = append(failures, SendFailure{Email: recipient.Email, Error: err.Error()})
 				slog.WarnContext(ctx, "send fanout: recipient failed",
 					"recipient", redactEmail(recipient.Email),
 					"group_id", env.GroupID,
+					"ambiguous", errors.Is(err, port.ErrAmbiguousSend),
 					"error", err.Error(),
 				)
 				return
@@ -755,7 +793,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 		}()
 	}
 	wg.Wait()
-	return sent, failed, failures
+	return sent, failed, unknown, failures
 }
 
 // resolveSenderName looks up the sender's display name from auth-service using

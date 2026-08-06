@@ -26,6 +26,18 @@ const (
 	StatusSent    Status = "sent"
 )
 
+// Send provider values persisted in newsletters.send_provider. They record
+// which provider dispatched a newsletter so analytics reads engagement from the
+// store that holds it. Mirrored by the schema CHECK constraint and matched to
+// the newsletter-service EMAIL_PROVIDER config value.
+const (
+	// SendProviderEmailService is the SES path via lfx-v2-email-service (the
+	// default and the value backfilled onto every pre-SendGrid row).
+	SendProviderEmailService = "email-service"
+	// SendProviderSendGrid is the direct-to-SendGrid path (LFXV2-2388).
+	SendProviderSendGrid = "sendgrid"
+)
+
 // Newsletter is the aggregate root persisted in the newsletters table.
 //
 // Project_uid is the only scope dimension — foundation-scoped newsletters are
@@ -47,11 +59,17 @@ type Newsletter struct {
 	// the SendOrchestrator at send time and persisted alongside the status
 	// transition. Used by analytics queries to aggregate per-newsletter
 	// engagement across the per-recipient sends.
-	GroupID   *string   `bun:"group_id" json:"groupId,omitempty"`
-	CreatedBy string    `bun:"created_by,notnull" json:"createdBy"`
-	Version   int64     `bun:"version,notnull,default:1" json:"version"`
-	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
-	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
+	GroupID *string `bun:"group_id" json:"groupId,omitempty"`
+	// SendProvider records which provider dispatched this newsletter
+	// ('email-service' or 'sendgrid'), stamped by the SendOrchestrator at the
+	// sending transition. Analytics routes engagement reads by this value so a
+	// newsletter's stats always come from the store that holds them, regardless
+	// of the currently-active provider. Defaults to 'email-service'.
+	SendProvider string    `bun:"send_provider,notnull,default:'email-service'" json:"sendProvider"`
+	CreatedBy    string    `bun:"created_by,notnull" json:"createdBy"`
+	Version      int64     `bun:"version,notnull,default:1" json:"version"`
+	CreatedAt    time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
+	UpdatedAt    time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
 }
 
 // NewsletterOpen records a single open event for a sent newsletter.

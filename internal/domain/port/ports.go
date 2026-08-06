@@ -8,6 +8,9 @@ package port
 
 import (
 	"context"
+	"errors"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -54,12 +57,13 @@ type NewsletterRepository interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 
 	// MarkSending atomically transitions draft → sending, persisting the
-	// email-service group_id and the resolved audience size. The single
-	// optimistically-locked UPDATE (gated on id, expectedVersion, and
-	// status='draft') is the duplicate-send guard across replicas: a zero-row
-	// result is classified as domain.ErrNotFound, domain.ErrAlreadySent,
-	// domain.ErrSendInProgress, or domain.ErrVersionMismatch.
-	MarkSending(ctx context.Context, id uuid.UUID, groupID string, totalRecipients int, expectedVersion int64) (*model.Newsletter, error)
+	// group_id, the dispatching provider (send_provider), and the resolved
+	// audience size. The single optimistically-locked UPDATE (gated on id,
+	// expectedVersion, and status='draft') is the duplicate-send guard across
+	// replicas: a zero-row result is classified as domain.ErrNotFound,
+	// domain.ErrAlreadySent, domain.ErrSendInProgress, or
+	// domain.ErrVersionMismatch.
+	MarkSending(ctx context.Context, id uuid.UUID, groupID, sendProvider string, totalRecipients int, expectedVersion int64) (*model.Newsletter, error)
 	// MarkSent transitions sending → sent, gated on the version returned by
 	// MarkSending. group_id and total_recipients were already persisted at the
 	// sending transition.
@@ -177,7 +181,9 @@ type EmailRecipientRecord struct {
 	Failed       bool
 }
 
-// EmailEngagement is the per-group rollup returned by email-service.
+// EmailEngagement is the per-group engagement rollup for a sent newsletter,
+// keyed by group_id. It is provider-agnostic: the email-service (NATS) reader
+// and the SendGrid store-backed reader both return it.
 type EmailEngagement struct {
 	GroupID     string
 	TotalSent   int
@@ -187,22 +193,146 @@ type EmailEngagement struct {
 	Failed      int
 }
 
-// EmailDispatcher fans out individual emails to lfx-v2-email-service and
-// fetches engagement data needed for analytics aggregation.
-//
-// All calls are NATS request/reply against the email-service subjects:
-//   - lfx.email-service.send_email
-//   - lfx.email-service.get_email_status
-//   - lfx.email-service.get_email_engagement_analytics
-//
-// No auth context is propagated — see comments on ProjectMetadataClient.
+// EmailDispatcher sends individual emails and reads back engagement for
+// analytics. It is the outbound-send abstraction: the email-service
+// implementation fans out over NATS (SES), while the SendGrid implementation
+// brokers mail/send over HTTPS with a webhook-populated store. Subject/transport
+// details live on each implementation, not here. No auth context is propagated —
+// see comments on ProjectMetadataClient.
 type EmailDispatcher interface {
 	SendEmail(ctx context.Context, in SendEmailInput) (emailID string, err error)
+	EngagementReader
+}
+
+// ErrAmbiguousSend marks a SendEmail failure whose delivery outcome is UNKNOWN:
+// the provider may still have accepted the message (a transport error, or a 5xx
+// with no guaranteed rejection). A recipient that fails this way must NOT be
+// treated as a clean, retry-safe failure — reverting the newsletter to draft and
+// retrying could duplicate a message the provider already accepted. Providers
+// wrap their ambiguous errors so it is errors.Is-discoverable; a definitive
+// rejection (the provider did not accept it) is returned unwrapped.
+var ErrAmbiguousSend = errors.New("send outcome ambiguous: provider may have accepted the message")
+
+// EngagementPurger optionally lets a dispatcher delete the engagement rows it
+// persisted for a group_id. The orchestrator calls it after a full fan-out
+// failure reverts a newsletter to draft and clears its group_id, so the
+// provider's now-orphaned per-recipient rows (which hold recipient emails) are
+// not leaked. Dispatchers whose engagement lives elsewhere (email-service) need
+// not implement it; the orchestrator type-asserts for it.
+type EngagementPurger interface {
+	PurgeEngagement(ctx context.Context, groupID string) error
+}
+
+// EngagementReader reads per-newsletter engagement for analytics, keyed by the
+// send group_id. Both the email-service (NATS) dispatcher and the SendGrid
+// store-backed reader implement it, so the analytics service can resolve a
+// newsletter's engagement from whichever provider actually dispatched it
+// (newsletters.send_provider), regardless of the currently-active provider.
+type EngagementReader interface {
 	GetEngagement(ctx context.Context, groupID string) (*EmailEngagement, error)
 	GetStatusByEmailID(ctx context.Context, emailID string) (*EmailRecipientRecord, error)
-	// GetStatusByGroupID fetches the per-recipient records for every email
-	// dispatched under the given group_id. Used by the analytics service to
-	// build the daily-opens time series and the unique-opens count, since
-	// email-service's engagement summary is scalar-only.
-	GetStatusByGroupID(ctx context.Context, groupID string) ([]EmailRecipientRecord, error)
+	// GroupEngagementDetail returns the bounded per-group analytics detail in a
+	// SINGLE fetch: the unique-open count, the per-UTC-day opens series (total
+	// opens and distinct recipients per day, ascending), the last open instant,
+	// and the deduplicated failed-recipient addresses. Each provider computes it
+	// its own bounded way — a set of SQL aggregates for the SendGrid store, one
+	// email-service reply bucketed in memory for the NATS reader — so analytics
+	// makes one call and never loads raw per-open data. lastEvent is nil for a
+	// group with no opens.
+	GroupEngagementDetail(ctx context.Context, groupID string) (*GroupEngagementDetail, error)
+}
+
+// GroupEngagementDetail is the bounded per-group analytics detail a reader
+// computes in a single fetch. It replaces returning every per-recipient record
+// (with its raw open timestamps): only aggregated, bounded values cross the
+// boundary.
+type GroupEngagementDetail struct {
+	UniqueOpens      int
+	DailyOpens       []model.DailyOpens
+	LastEventAt      *time.Time
+	FailedRecipients []string
+}
+
+// GroupDetailFromRecords builds a GroupEngagementDetail from bounded in-memory
+// per-recipient records. It backs the email-service reader (whose by-group reply
+// is bounded), keeping unique-opens, the daily series, lastEvent, and failed
+// recipients identical to what the SendGrid store computes in SQL.
+func GroupDetailFromRecords(records []EmailRecipientRecord) *GroupEngagementDetail {
+	daily, lastEvent := DailyOpensFromRecords(records)
+	unique := 0
+	failedSeen := make(map[string]struct{}, len(records))
+	failed := make([]string, 0)
+	for _, r := range records {
+		if r.Opened {
+			unique++
+		}
+		if !r.Failed {
+			continue
+		}
+		email := strings.ToLower(strings.TrimSpace(r.To))
+		if email == "" {
+			continue
+		}
+		if _, dup := failedSeen[email]; dup {
+			continue
+		}
+		failedSeen[email] = struct{}{}
+		failed = append(failed, email)
+	}
+	return &GroupEngagementDetail{
+		UniqueOpens:      unique,
+		DailyOpens:       daily,
+		LastEventAt:      lastEvent,
+		FailedRecipients: failed,
+	}
+}
+
+// DailyOpensFromRecords buckets per-recipient open events into a sorted
+// per-UTC-day series (total opens and distinct recipients per day) and returns
+// the last open instant. It backs GroupDetailFromRecords for readers that hold
+// bounded per-recipient records in memory (the email-service reader), keeping the
+// bucketing identical to what the SendGrid store computes in SQL. A record with
+// no opened_at_list but Opened=true and a LastOpened falls back to that single
+// instant, matching older email-service shapes. lastEvent is nil for no opens.
+func DailyOpensFromRecords(records []EmailRecipientRecord) ([]model.DailyOpens, *time.Time) {
+	const dayLayout = "2006-01-02"
+	type bucket struct {
+		date  time.Time
+		opens int
+		uniq  map[string]struct{}
+	}
+	buckets := map[string]*bucket{}
+	var lastEvent *time.Time
+	for _, r := range records {
+		events := r.OpenedAtList
+		if len(events) == 0 && r.Opened && r.LastOpened != nil {
+			events = []time.Time{*r.LastOpened}
+		}
+		key := r.EmailID
+		if key == "" {
+			key = r.To
+		}
+		for _, ev := range events {
+			opened := ev.UTC()
+			if lastEvent == nil || opened.After(*lastEvent) {
+				cp := opened
+				lastEvent = &cp
+			}
+			dk := opened.Format(dayLayout)
+			b, ok := buckets[dk]
+			if !ok {
+				day, _ := time.Parse(dayLayout, dk)
+				b = &bucket{date: day, uniq: map[string]struct{}{}}
+				buckets[dk] = b
+			}
+			b.opens++
+			b.uniq[key] = struct{}{}
+		}
+	}
+	daily := make([]model.DailyOpens, 0, len(buckets))
+	for _, b := range buckets {
+		daily = append(daily, model.DailyOpens{Date: b.date, Opens: b.opens, UniqueOpens: len(b.uniq)})
+	}
+	sort.Slice(daily, func(i, j int) bool { return daily[i].Date.Before(daily[j].Date) })
+	return daily, lastEvent
 }

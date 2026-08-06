@@ -34,8 +34,13 @@ func (s *statusByGroupFake) GetEngagement(_ context.Context, _ string) (*port.Em
 func (s *statusByGroupFake) GetStatusByEmailID(_ context.Context, _ string) (*port.EmailRecipientRecord, error) {
 	return nil, nil
 }
-func (s *statusByGroupFake) GetStatusByGroupID(_ context.Context, _ string) ([]port.EmailRecipientRecord, error) {
-	return s.records, s.recordsErr
+func (s *statusByGroupFake) GroupEngagementDetail(_ context.Context, _ string) (*port.GroupEngagementDetail, error) {
+	// Mirror a real reader: the detail is derived from the same underlying records
+	// (and shares its error), via the shared helper.
+	if s.recordsErr != nil {
+		return nil, s.recordsErr
+	}
+	return port.GroupDetailFromRecords(s.records), nil
 }
 
 // analyticsRepoFake returns a fixed newsletter + base analytics row regardless
@@ -62,7 +67,7 @@ func (a *analyticsRepoFake) Update(_ context.Context, n *model.Newsletter, _ int
 	return n, nil
 }
 func (a *analyticsRepoFake) Delete(_ context.Context, _ uuid.UUID) error { return nil }
-func (a *analyticsRepoFake) MarkSending(_ context.Context, _ uuid.UUID, _ string, _ int, _ int64) (*model.Newsletter, error) {
+func (a *analyticsRepoFake) MarkSending(_ context.Context, _ uuid.UUID, _, _ string, _ int, _ int64) (*model.Newsletter, error) {
 	return a.newsletter, nil
 }
 func (a *analyticsRepoFake) MarkSent(_ context.Context, _ uuid.UUID, _ time.Time, _ int64) (*model.Newsletter, error) {
@@ -125,7 +130,7 @@ func TestAnalyticsGet_DailyOpensFromGroupStatus(t *testing.T) {
 		},
 	}
 
-	svc := NewAnalyticsService(repo, email)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -197,7 +202,7 @@ func TestAnalyticsGet_FailedRecipients(t *testing.T) {
 		},
 	}
 
-	svc := NewAnalyticsService(repo, email)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -241,7 +246,7 @@ func TestAnalyticsGet_NoFailedRecipients(t *testing.T) {
 		},
 	}
 
-	svc := NewAnalyticsService(repo, email)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -293,7 +298,7 @@ func TestAnalyticsGet_CountsPerEventOpens(t *testing.T) {
 		},
 	}
 
-	svc := NewAnalyticsService(repo, email)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -344,17 +349,23 @@ func TestAnalyticsGet_DegradesGracefullyOnGroupStatusError(t *testing.T) {
 		},
 	}
 	email := &statusByGroupFake{
-		engagement: &port.EmailEngagement{TotalSent: 5, Delivered: 5, Opened: 4},
+		engagement: &port.EmailEngagement{TotalSent: 5, Delivered: 5, Opened: 4, UniqueOpens: 3},
 		recordsErr: errors.New("nats: timeout"),
 	}
 
-	svc := NewAnalyticsService(repo, email)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
 	}
 	if got.TotalOpens != 4 {
 		t.Errorf("TotalOpens: got %d, want 4 (from engagement)", got.TotalOpens)
+	}
+	// The detail fetch failed, so the scalar unique-open count from GetEngagement
+	// must be preserved (not zeroed) — this is the fallback the scalar seed exists
+	// for, and it depends on the email-service reader populating UniqueOpens.
+	if got.UniqueOpens != 3 {
+		t.Errorf("UniqueOpens: got %d, want 3 (scalar fallback from engagement when detail fetch fails)", got.UniqueOpens)
 	}
 	if len(got.DailyOpens) != 0 {
 		t.Errorf("DailyOpens: got %d buckets, want 0 (no records available)", len(got.DailyOpens))
@@ -366,5 +377,148 @@ func TestAnalyticsGet_DegradesGracefullyOnGroupStatusError(t *testing.T) {
 	}
 	if len(got.FailedRecipients) != 0 {
 		t.Errorf("FailedRecipients: got %v, want empty on the degraded path", got.FailedRecipients)
+	}
+}
+
+// TestAnalyticsGet_RoutesByProvider verifies the analytics service reads
+// engagement from the reader matching each newsletter's send_provider, and
+// falls back to the default provider for an empty or unrecognized value. The
+// two readers report distinct Opened counts so the assertion identifies which
+// one served the request.
+func TestAnalyticsGet_RoutesByProvider(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	groupID := "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+	sentAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+
+	const emailServiceOpened = 2
+	const sendGridOpened = 7
+
+	emailReader := &statusByGroupFake{
+		engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: 5, Delivered: 5, Opened: emailServiceOpened},
+	}
+	sendGridReader := &statusByGroupFake{
+		engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: 5, Delivered: 5, Opened: sendGridOpened},
+	}
+	readers := map[string]port.EngagementReader{
+		model.SendProviderEmailService: emailReader,
+		model.SendProviderSendGrid:     sendGridReader,
+	}
+
+	cases := []struct {
+		name         string
+		sendProvider string
+		wantOpened   int
+	}{
+		{"sendgrid routes to the sendgrid reader", model.SendProviderSendGrid, sendGridOpened},
+		{"email-service routes to the email-service reader", model.SendProviderEmailService, emailServiceOpened},
+		{"empty provider falls back to the default reader", "", emailServiceOpened},
+		{"unknown provider falls back to the default reader", "mystery", emailServiceOpened},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			newsletterID := uuid.New()
+			repo := &analyticsRepoFake{
+				newsletter: &model.Newsletter{
+					ID:              newsletterID,
+					ProjectUID:      projectUID,
+					Status:          model.StatusSent,
+					GroupID:         &groupID,
+					SendProvider:    tc.sendProvider,
+					SentAt:          &sentAt,
+					TotalRecipients: 5,
+				},
+				base: &model.Analytics{NewsletterID: newsletterID, Status: model.StatusSent, SentAt: &sentAt, TotalRecipients: 5, Delivered: 5},
+			}
+			svc := NewAnalyticsService(repo, readers, model.SendProviderEmailService)
+			got, err := svc.Get(context.Background(), projectUID, newsletterID)
+			if err != nil {
+				t.Fatalf("Get: unexpected error: %v", err)
+			}
+			if got.TotalOpens != tc.wantOpened {
+				t.Errorf("TotalOpens: got %d, want %d (wrong reader served send_provider=%q)", got.TotalOpens, tc.wantOpened, tc.sendProvider)
+			}
+		})
+	}
+}
+
+// TestAnalyticsGet_KnownProviderMissingReaderIsLocalOnly verifies that a known
+// provider whose reader is not wired (a misconfiguration) degrades to local-only
+// analytics rather than falling back to another store's reader — reading SendGrid
+// engagement from the email-service reader would report another store's data for
+// this newsletter.
+func TestAnalyticsGet_KnownProviderMissingReaderIsLocalOnly(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	groupID := "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+	sentAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+
+	// Only the email-service reader is wired; the SendGrid reader is missing. Its
+	// data would be visibly wrong (99 opens) if the fallback served it.
+	emailReader := &statusByGroupFake{
+		engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: 5, Delivered: 5, Opened: 99},
+	}
+	readers := map[string]port.EngagementReader{model.SendProviderEmailService: emailReader}
+
+	newsletterID := uuid.New()
+	repo := &analyticsRepoFake{
+		newsletter: &model.Newsletter{
+			ID:              newsletterID,
+			ProjectUID:      projectUID,
+			Status:          model.StatusSent,
+			GroupID:         &groupID,
+			SendProvider:    model.SendProviderSendGrid, // known provider, reader missing
+			SentAt:          &sentAt,
+			TotalRecipients: 5,
+		},
+		base: &model.Analytics{NewsletterID: newsletterID, Status: model.StatusSent, SentAt: &sentAt, TotalRecipients: 5, Delivered: 5},
+	}
+	svc := NewAnalyticsService(repo, readers, model.SendProviderEmailService)
+	got, err := svc.Get(context.Background(), projectUID, newsletterID)
+	if err != nil {
+		t.Fatalf("Get: unexpected error: %v", err)
+	}
+	// Must not read the email-service reader's 99 opens for a SendGrid newsletter.
+	if got.TotalOpens != 0 {
+		t.Errorf("TotalOpens = %d; want 0 (a known provider with a missing reader must degrade to local-only, not fall back to another store)", got.TotalOpens)
+	}
+}
+
+// TestAnalyticsGet_PreservesLocalDailyOpensWhenProviderDetailEmpty verifies that
+// an empty provider detail series does not clobber a non-empty local daily-opens
+// series — the provider owns the breakdown only when it actually returned one,
+// consistent with keeping the larger unique-open count.
+func TestAnalyticsGet_PreservesLocalDailyOpensWhenProviderDetailEmpty(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	groupID := "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+	sentAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	localDay := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	// Scalar rollup is present, but there are no per-recipient records, so the
+	// provider detail (daily series / failed list) is empty.
+	email := &statusByGroupFake{
+		engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: 5, Delivered: 5, Opened: 2, UniqueOpens: 2},
+		records:    nil,
+	}
+	newsletterID := uuid.New()
+	repo := &analyticsRepoFake{
+		newsletter: &model.Newsletter{
+			ID: newsletterID, ProjectUID: projectUID, Status: model.StatusSent,
+			GroupID: &groupID, SendProvider: model.SendProviderEmailService,
+			SentAt: &sentAt, TotalRecipients: 5,
+		},
+		base: &model.Analytics{
+			NewsletterID: newsletterID, Status: model.StatusSent, SentAt: &sentAt,
+			TotalRecipients: 5, Delivered: 5,
+			DailyOpens: []model.DailyOpens{{Date: localDay, Opens: 3, UniqueOpens: 2}},
+		},
+	}
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, model.SendProviderEmailService)
+	got, err := svc.Get(context.Background(), projectUID, newsletterID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// The empty provider detail must NOT clobber the local daily series.
+	if len(got.DailyOpens) != 1 || got.DailyOpens[0].Opens != 3 || got.DailyOpens[0].UniqueOpens != 2 {
+		t.Errorf("DailyOpens: got %+v, want the preserved local series [{Opens:3 UniqueOpens:2}]", got.DailyOpens)
 	}
 }

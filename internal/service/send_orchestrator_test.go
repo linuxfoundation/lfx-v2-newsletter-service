@@ -86,6 +86,9 @@ func (f *fakeEmailDispatcher) GetStatusByEmailID(_ context.Context, _ string) (*
 func (f *fakeEmailDispatcher) GetStatusByGroupID(_ context.Context, _ string) ([]port.EmailRecipientRecord, error) {
 	return nil, nil
 }
+func (f *fakeEmailDispatcher) GroupEngagementDetail(_ context.Context, _ string) (*port.GroupEngagementDetail, error) {
+	return &port.GroupEngagementDetail{}, nil
+}
 func (f *fakeEmailDispatcher) reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -188,7 +191,7 @@ func (r *fakeNewsletterRepo) Update(_ context.Context, n *model.Newsletter, _ in
 	return n, nil
 }
 func (r *fakeNewsletterRepo) Delete(_ context.Context, _ uuid.UUID) error { return nil }
-func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupID string, total int, expectedVersion int64) (*model.Newsletter, error) {
+func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupID, sendProvider string, total int, expectedVersion int64) (*model.Newsletter, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	n, ok := r.drafts[id]
@@ -207,6 +210,7 @@ func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupI
 	n.Status = model.StatusSending
 	g := groupID
 	n.GroupID = &g
+	n.SendProvider = sendProvider
 	n.TotalRecipients = total
 	n.Version++
 	cp := *n
@@ -1527,6 +1531,17 @@ func (f *failingEmailDispatcher) SendEmail(_ context.Context, _ port.SendEmailIn
 	return "", errors.New("email-service unreachable")
 }
 
+// ambiguousEmailDispatcher rejects every SendEmail with an ErrAmbiguousSend-
+// wrapped error — the provider may still have accepted the message, so the send
+// must NOT revert to a retryable draft (which could duplicate accepted sends).
+type ambiguousEmailDispatcher struct {
+	fakeEmailDispatcher
+}
+
+func (f *ambiguousEmailDispatcher) SendEmail(_ context.Context, _ port.SendEmailInput) (string, error) {
+	return "", errors.Join(port.ErrAmbiguousSend, errors.New("sendgrid: mail/send returned 503"))
+}
+
 func newGatedOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email port.EmailDispatcher) *SendOrchestrator {
 	return NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:          repo,
@@ -1686,6 +1701,30 @@ func TestSendNewsletterTotalFailureRevertsToDraft(t *testing.T) {
 	}
 }
 
+// TestSendNewsletterAmbiguousFailureDoesNotRevert asserts that when every send
+// fails ambiguously (a transport error / 5xx where the provider MAY have accepted
+// the message), the newsletter settles to sent rather than reverting to a
+// retryable draft. Reverting and retrying could duplicate accepted messages.
+func TestSendNewsletterAmbiguousFailureDoesNotRevert(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	orch := newGatedOrchestrator(repo, committee, &ambiguousEmailDispatcher{})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+
+	got := repo.get(draft.ID)
+	if got.Status != model.StatusSent {
+		t.Fatalf("all-ambiguous send settled to %q, want %q (must NOT revert to a retryable draft — could duplicate accepted sends)", got.Status, model.StatusSent)
+	}
+}
+
 // TestSendNewsletterZeroRecipientsSettlesSynchronously asserts the historical
 // zero-audience contract: no fan-out, marked sent before the response returns.
 func TestSendNewsletterZeroRecipientsSettlesSynchronously(t *testing.T) {
@@ -1717,7 +1756,7 @@ func TestDraftGuardsWhileSending(t *testing.T) {
 	svc := NewNewsletterService(repo)
 
 	draft := repo.addDraft("p1", []string{"c1"})
-	if _, err := repo.MarkSending(ctx, draft.ID, uuid.NewString(), 1, draft.Version); err != nil {
+	if _, err := repo.MarkSending(ctx, draft.ID, uuid.NewString(), model.SendProviderEmailService, 1, draft.Version); err != nil {
 		t.Fatalf("MarkSending: %v", err)
 	}
 
@@ -1735,5 +1774,43 @@ func TestDraftGuardsWhileSending(t *testing.T) {
 
 	if err := svc.DeleteDraft(ctx, "p1", draft.ID); !errors.Is(err, domain.ErrSendInProgress) {
 		t.Fatalf("DeleteDraft while sending: got err=%v, want ErrSendInProgress", err)
+	}
+}
+
+// TestSendNewsletter_StampsSendProvider verifies the orchestrator threads its
+// configured provider into MarkSending so the sent newsletter records the
+// provider that dispatched it (which analytics later routes on). Without this a
+// regression could stamp every send as email-service and silently route SendGrid
+// newsletters to the wrong engagement reader.
+func TestSendNewsletter_StampsSendProvider(t *testing.T) {
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Committee:     committee,
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		Unsubscribe:   unsub,
+		Concurrency:   2,
+		FanoutEnabled: true,
+		SendProvider:  model.SendProviderSendGrid,
+	})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(context.Background(), SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(context.Background())
+
+	got, err := repo.Get(context.Background(), draft.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.SendProvider != model.SendProviderSendGrid {
+		t.Errorf("send_provider = %q, want %q", got.SendProvider, model.SendProviderSendGrid)
 	}
 }
