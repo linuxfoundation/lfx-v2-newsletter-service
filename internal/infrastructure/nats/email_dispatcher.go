@@ -11,6 +11,7 @@ import (
 	"time"
 
 	emailapi "github.com/linuxfoundation/lfx-v2-email-service/pkg/api"
+	"github.com/nats-io/nats.go"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
@@ -129,6 +130,13 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 	}
 	reply, err := d.client.Request(ctx, EmailServiceSendEmailSubject, data)
 	if err != nil {
+		if requestErrIsAmbiguous(err) {
+			// email-service may have delivered the message before the reply
+			// timed out or the context was cancelled. Mark the outcome ambiguous
+			// so an all-timeout fan-out is not reverted to a retryable draft,
+			// which could duplicate a message that was already delivered.
+			return "", fmt.Errorf("%w: %w", port.ErrAmbiguousSend, err)
+		}
 		return "", err
 	}
 	if len(reply) == 0 {
@@ -148,6 +156,23 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 		return "", pkgerrors.NewServiceUnavailable("email-service returned error", errors.New(errResp.Error))
 	}
 	return "", nil
+}
+
+// requestErrIsAmbiguous reports whether a failed email-service send request may
+// have been delivered despite the error. A timeout or cancellation happens after
+// the request is published, so email-service may have processed it before the
+// reply arrived — the outcome is unknown. A no-responders error is definitive:
+// no email-service instance received the request, so nothing was delivered and a
+// retry is safe. The SendEmail caller wraps an ambiguous error with
+// port.ErrAmbiguousSend so the orchestrator does not revert an all-ambiguous
+// fan-out to a retryable draft, which could duplicate a delivered message.
+func requestErrIsAmbiguous(err error) bool {
+	if errors.Is(err, nats.ErrNoResponders) {
+		return false
+	}
+	return errors.Is(err, nats.ErrTimeout) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled)
 }
 
 // GetEngagement fetches per-group engagement totals from email-service.
