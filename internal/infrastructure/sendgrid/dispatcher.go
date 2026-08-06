@@ -117,6 +117,18 @@ func NewDispatcher(cfg Config) (*Dispatcher, error) {
 	if strings.TrimSpace(cfg.DefaultFrom) == "" {
 		return nil, pkgerrors.NewValidation("sendgrid: DefaultFrom is required")
 	}
+	// Fail fast when DefaultFrom's domain is not authenticated. An empty list
+	// permits any domain (dev/test); a non-empty list that excludes DefaultFrom
+	// would let the Dispatcher construct yet reject every default-sender send at
+	// dispatch, stranding the newsletter in 'sending' until the recovery sweep,
+	// with no signal at deploy time.
+	authDomains := normalizeDomains(cfg.AuthenticatedDomains)
+	if len(authDomains) > 0 && !domainAllowed(cfg.DefaultFrom, authDomains, false) {
+		return nil, pkgerrors.NewValidation(fmt.Sprintf(
+			"sendgrid: DefaultFrom domain %q is not one of the authenticated sending domains; add it to AuthenticatedDomains or correct DefaultFrom",
+			domainOf(cfg.DefaultFrom),
+		))
+	}
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = defaultBaseURL
@@ -133,7 +145,7 @@ func NewDispatcher(cfg Config) (*Dispatcher, error) {
 		httpClient:            httpClient,
 		sandboxMode:           cfg.SandboxMode,
 		store:                 cfg.Store,
-		authenticatedDomains:  normalizeDomains(cfg.AuthenticatedDomains),
+		authenticatedDomains:  authDomains,
 		replyToAllowedDomains: normalizeDomains(cfg.ReplyToAllowedDomains),
 	}, nil
 }

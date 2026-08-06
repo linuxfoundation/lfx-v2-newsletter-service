@@ -233,6 +233,30 @@ func TestNewDispatcher_RequiredConfig(t *testing.T) {
 	}
 }
 
+func TestNewDispatcher_DefaultFromMustBeAuthenticated(t *testing.T) {
+	// A non-empty authenticated-domains list that excludes DefaultFrom's domain
+	// must fail at construction, not silently at the first send.
+	if _, err := NewDispatcher(Config{
+		APIKey:               "k",
+		DefaultFrom:          "newsletter@example.com",
+		AuthenticatedDomains: []string{"lfx.aaif.io"},
+	}); err == nil {
+		t.Errorf("expected an error when DefaultFrom domain is not in AuthenticatedDomains")
+	}
+	// DefaultFrom on an authenticated domain constructs.
+	if _, err := NewDispatcher(Config{
+		APIKey:               "k",
+		DefaultFrom:          "newsletter@lfx.aaif.io",
+		AuthenticatedDomains: []string{"lfx.aaif.io"},
+	}); err != nil {
+		t.Errorf("DefaultFrom on an authenticated domain: unexpected error: %v", err)
+	}
+	// An empty list permits any domain (dev/test).
+	if _, err := NewDispatcher(Config{APIKey: "k", DefaultFrom: "newsletter@example.com"}); err != nil {
+		t.Errorf("empty AuthenticatedDomains should permit any DefaultFrom: %v", err)
+	}
+}
+
 func TestSendEmail_RecordsSentToStore(t *testing.T) {
 	store := &fakeStore{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
