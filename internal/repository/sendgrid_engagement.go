@@ -154,6 +154,14 @@ func (s *SendGridEngagementStore) ApplyDelivered(ctx context.Context, emailID, g
 // ApplyFailed marks the recipient failed — bounce / dropped / spamreport (first
 // failure wins). Upserts on email_id for the same self-healing reason as
 // ApplyDelivered.
+//
+// delivered and failed are independent flags, not mutually exclusive. SendGrid
+// can deliver a message and later report a failure for the same email_id (a
+// delivered message that bounces afterward, or one the recipient marks as spam),
+// so both flags can be TRUE for one recipient. That is the intended record.
+// Analytics counts delivered and failed separately and computes rates against
+// the recipient total, not against delivered + failed, so a recipient in both
+// buckets does not inflate a rate.
 func (s *SendGridEngagementStore) ApplyFailed(ctx context.Context, emailID, groupID, to string, at time.Time) error {
 	row := &sendgridEngagementRow{EmailID: emailID, GroupID: groupID, ToEmail: to, Failed: true, FailedAt: &at}
 	if _, err := s.db.NewInsert().

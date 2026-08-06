@@ -412,6 +412,55 @@ func TestSendGridRevertConcurrency_Integration(t *testing.T) {
 	assertPurged("webhook-before-revert", g2, m2)
 }
 
+// TestSendGridEngagement_DeliveredAndFailedCoexist pins the intended state when
+// SendGrid delivers a message and later reports a failure for the same email_id.
+// That sequence is real: a delivered message can bounce afterward, or a recipient
+// can mark a delivered message as spam. ApplyDelivered and ApplyFailed each guard
+// on their own column, so both flags end TRUE, in either arrival order.
+func TestSendGridEngagement_DeliveredAndFailedCoexist(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	must(t, schema.Apply(ctx, pool))
+	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
+	t.Cleanup(func() { _ = db.Close() })
+	store := repository.NewSendGridEngagementStore(db)
+
+	group := "grp-dc-" + time.Now().UTC().Format("150405.000000000")
+	m1, m2 := group+"-m1", group+"-m2"
+	t.Cleanup(func() {
+		must(t, exec(ctx, db, "DELETE FROM sendgrid_recipient_engagement WHERE group_id = ?", group))
+	})
+
+	now := time.Now().UTC()
+
+	// delivered, then a later failure event: both flags end TRUE.
+	must(t, store.ApplyDelivered(ctx, m1, group, "a@x.io", now))
+	must(t, store.ApplyFailed(ctx, m1, group, "a@x.io", now.Add(time.Minute)))
+	rec, err := store.RecipientByEmailID(ctx, m1)
+	must(t, err)
+	if rec == nil || !rec.Delivered || !rec.Failed {
+		t.Fatalf("delivered-then-failed rec = %+v; want Delivered and Failed both true", rec)
+	}
+
+	// the reverse order (failed, then delivered) reaches the same state.
+	must(t, store.ApplyFailed(ctx, m2, group, "b@x.io", now))
+	must(t, store.ApplyDelivered(ctx, m2, group, "b@x.io", now.Add(time.Minute)))
+	rec2, err := store.RecipientByEmailID(ctx, m2)
+	must(t, err)
+	if rec2 == nil || !rec2.Delivered || !rec2.Failed {
+		t.Fatalf("failed-then-delivered rec = %+v; want Delivered and Failed both true", rec2)
+	}
+}
+
 func exec(ctx context.Context, db *bun.DB, q string, args ...any) error {
 	_, err := db.NewRaw(q, args...).Exec(ctx)
 	return err
