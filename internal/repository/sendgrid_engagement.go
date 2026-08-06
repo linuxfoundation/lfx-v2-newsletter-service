@@ -135,6 +135,44 @@ func (s *SendGridEngagementStore) RevertGroup(ctx context.Context, groupID strin
 	})
 }
 
+// PurgeEngagementOlderThan deletes recipient engagement and its open events for
+// sends older than cutoff, so recipient email addresses (to_email) are not kept
+// with no end (see the schema retention note). A row's age is its send time,
+// falling back to the latest event timestamp when a webhook created the row
+// before RecordSent persisted it. The open events for each purged recipient are
+// deleted first, in the same transaction, so none is left orphaned. Returns the
+// number of recipient rows deleted. Unlike RevertGroup this writes no tombstone:
+// an aged-out group is not in flight, so no late self-healing webhook is due.
+func (s *SendGridEngagementStore) PurgeEngagementOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	const ageExpr = "COALESCE(sent_at, delivered_at, failed_at, last_opened_at)"
+	var deleted int64
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewDelete().
+			Table("sendgrid_open_events").
+			Where("email_id IN (SELECT email_id FROM sendgrid_recipient_engagement WHERE "+ageExpr+" < ?)", cutoff).
+			Exec(ctx); err != nil {
+			return fmt.Errorf("purge open events: %w", err)
+		}
+		res, err := tx.NewDelete().
+			Table("sendgrid_recipient_engagement").
+			Where(ageExpr+" < ?", cutoff).
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("purge engagement: %w", err)
+		}
+		n, affErr := res.RowsAffected()
+		if affErr != nil {
+			return affErr
+		}
+		deleted = n
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("sendgrid purge engagement older than: %w", err)
+	}
+	return deleted, nil
+}
+
 // ApplyDelivered marks the recipient delivered (first delivery wins). It upserts
 // on email_id, so a delivered event still lands its engagement even if RecordSent
 // never persisted the row (e.g. the post-send record write failed) — the row is

@@ -53,6 +53,11 @@ type AppConfig struct {
 	// (pod crash mid-fan-out) is recovered to 'sent' by the periodic sweep.
 	// Kept above SendJobTimeout so the sweep never races a live job.
 	StuckSendTTL time.Duration
+	// EngagementRetentionTTL bounds how long SendGrid per-recipient engagement
+	// rows, which hold recipient email addresses, are kept. The retention sweep
+	// purges rows older than this. Empty or below the minimum falls back to the
+	// default. Set via SENDGRID_ENGAGEMENT_RETENTION.
+	EngagementRetentionTTL time.Duration
 
 	// EmailFromAddress is the bare address used as the SMTP envelope From on
 	// outbound newsletters. Defaults to newsletter@lfx.linuxfoundation.org; override
@@ -135,11 +140,19 @@ const (
 	defaultEmailReplyToDomain    = "linuxfoundation.org"
 	defaultSendJobTimeout        = 30 * time.Minute
 	defaultStuckSendTTL          = 45 * time.Minute
-	defaultSelfServeBaseURL      = "https://app.lfx.dev"
+	// defaultEngagementRetentionTTL keeps about six months of per-recipient
+	// engagement, enough for the analytics trend while bounding retention of
+	// recipient email addresses.
+	defaultEngagementRetentionTTL = 180 * 24 * time.Hour
+	defaultSelfServeBaseURL       = "https://app.lfx.dev"
 	// minStuckSendSlack is the minimum margin enforced between SendJobTimeout
 	// and StuckSendTTL so the recovery sweep never marks a row 'sent' while
 	// its fan-out job is still running.
 	minStuckSendSlack = 5 * time.Minute
+	// minEngagementRetentionTTL guards against a misconfigured tiny value that
+	// would purge nearly all engagement on the next sweep. Below it, the default
+	// is used.
+	minEngagementRetentionTTL = 24 * time.Hour
 )
 
 // AppConfigFromEnv reads AppConfig from environment variables, applying defaults
@@ -157,6 +170,7 @@ func AppConfigFromEnv() (AppConfig, error) {
 		SendConcurrency:           intOr("SEND_CONCURRENCY", defaultSendConcurrency),
 		SendJobTimeout:            durationOr("SEND_JOB_TIMEOUT", defaultSendJobTimeout),
 		StuckSendTTL:              durationOr("STUCK_SEND_TTL", defaultStuckSendTTL),
+		EngagementRetentionTTL:    durationOr("SENDGRID_ENGAGEMENT_RETENTION", defaultEngagementRetentionTTL),
 		EmailFromAddress:          envOr("EMAIL_FROM_ADDRESS", defaultEmailFromAddress),
 		EmailFromAddressOverrides: parseFromAddressOverrides(os.Getenv("EMAIL_FROM_ADDRESS_OVERRIDES")),
 		EmailReplyToAllowedDomains: parseAllowedDomains(
@@ -238,6 +252,11 @@ func AppConfigFromEnv() (AppConfig, error) {
 	// never mark a row 'sent' while its fan-out is still running.
 	if cfg.StuckSendTTL < cfg.SendJobTimeout+minStuckSendSlack {
 		cfg.StuckSendTTL = cfg.SendJobTimeout + minStuckSendSlack
+	}
+	// Guard against a misconfigured tiny retention window that would purge nearly
+	// all engagement on the next sweep.
+	if cfg.EngagementRetentionTTL < minEngagementRetentionTTL {
+		cfg.EngagementRetentionTTL = defaultEngagementRetentionTTL
 	}
 
 	return cfg, nil

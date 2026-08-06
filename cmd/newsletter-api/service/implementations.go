@@ -30,15 +30,16 @@ import (
 
 // Package-level singletons populated by InitInfrastructure and torn down by Shutdown.
 var (
-	pgPool       *pgxpool.Pool
-	bunDB        *bun.DB
-	sqlDB        *sql.DB
-	httpHandler  http.Handler
-	handlerImpl  *handler.Handler
-	authImpl     *handler.AuthValidator
-	natsClient   *natsinfra.Client
-	sendSvc      *service.SendOrchestrator
-	recoveryStop chan struct{}
+	pgPool                  *pgxpool.Pool
+	bunDB                   *bun.DB
+	sqlDB                   *sql.DB
+	httpHandler             http.Handler
+	handlerImpl             *handler.Handler
+	authImpl                *handler.AuthValidator
+	natsClient              *natsinfra.Client
+	sendSvc                 *service.SendOrchestrator
+	recoveryStop            chan struct{}
+	engagementRetentionStop chan struct{}
 )
 
 // stuckSendSweepInterval is how often the recovery sweep re-checks for
@@ -47,6 +48,11 @@ var (
 const (
 	stuckSendSweepInterval = 5 * time.Minute
 	stuckSendSweepTimeout  = 30 * time.Second
+	// engagementRetentionSweepInterval is how often the retention sweep purges
+	// aged-out SendGrid engagement rows. Daily is ample for a retention bound.
+	engagementRetentionSweepInterval = 24 * time.Hour
+	// engagementRetentionSweepTimeout bounds a single retention sweep iteration.
+	engagementRetentionSweepTimeout = 2 * time.Minute
 )
 
 // drainTimeout bounds how long Shutdown waits for in-flight background send
@@ -158,6 +164,11 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	// pods immediately) and then on a ticker.
 	startStuckSendRecovery(repo, cfg.StuckSendTTL)
 
+	// Retention sweep: purge SendGrid engagement rows (recipient email addresses)
+	// older than the retention window. Runs regardless of the active provider so
+	// historical SendGrid engagement ages out.
+	startEngagementRetentionSweep(repository.NewSendGridEngagementStore(bunDB), cfg.EngagementRetentionTTL)
+
 	sendgridWebhook, err := newSendGridWebhook(ctx, cfg)
 	if err != nil {
 		return err
@@ -226,11 +237,57 @@ func startStuckSendRecovery(repo stuckSendRecoverer, ttl time.Duration) {
 	}()
 }
 
+// engagementPurger is the narrow store slice the retention sweep needs.
+type engagementPurger interface {
+	PurgeEngagementOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// startEngagementRetentionSweep launches the background sweep that purges SendGrid
+// engagement rows (recipient email addresses) older than ttl. Runs once at startup
+// and then on a ticker. Stopped via engagementRetentionStop in Shutdown.
+func startEngagementRetentionSweep(store engagementPurger, ttl time.Duration) {
+	engagementRetentionStop = make(chan struct{})
+	go func() {
+		sweep := func() {
+			// Bound each iteration so a hung DB call can't wedge the sweep
+			// goroutine (Shutdown closes engagementRetentionStop without awaiting it).
+			ctx, cancel := context.WithTimeout(context.Background(), engagementRetentionSweepTimeout)
+			defer cancel()
+			purged, err := store.PurgeEngagementOlderThan(ctx, time.Now().Add(-ttl))
+			if err != nil {
+				slog.ErrorContext(ctx, "engagement retention sweep failed", "error", err)
+				return
+			}
+			if purged > 0 {
+				slog.InfoContext(ctx, "engagement retention sweep purged aged-out rows",
+					"purged", purged,
+					"ttl", ttl.String(),
+				)
+			}
+		}
+		sweep()
+		ticker := time.NewTicker(engagementRetentionSweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				sweep()
+			case <-engagementRetentionStop:
+				return
+			}
+		}
+	}()
+}
+
 // Shutdown tears down singletons in reverse order. Safe to call from defer.
 func Shutdown() {
 	if recoveryStop != nil {
 		close(recoveryStop)
 		recoveryStop = nil
+	}
+	if engagementRetentionStop != nil {
+		close(engagementRetentionStop)
+		engagementRetentionStop = nil
 	}
 	// Give in-flight background send jobs a bounded chance to settle before
 	// the NATS and DB connections go away. An undrained job is recovered by

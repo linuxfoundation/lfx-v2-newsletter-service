@@ -461,6 +461,66 @@ func TestSendGridEngagement_DeliveredAndFailedCoexist(t *testing.T) {
 	}
 }
 
+// TestSendGridEngagement_PurgeOlderThan verifies PurgeEngagementOlderThan deletes
+// recipient engagement and its open events for sends older than the cutoff, and
+// keeps newer rows. The purge is global, so this asserts on the specific rows it
+// created rather than the total deleted count.
+func TestSendGridEngagement_PurgeOlderThan(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	must(t, schema.Apply(ctx, pool))
+	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
+	t.Cleanup(func() { _ = db.Close() })
+	store := repository.NewSendGridEngagementStore(db)
+
+	group := "grp-ttl-" + time.Now().UTC().Format("150405.000000000")
+	oldM, newM := group+"-old", group+"-new"
+	oldEv := group + "-old-ev"
+	t.Cleanup(func() {
+		must(t, exec(ctx, db, "DELETE FROM sendgrid_open_events WHERE email_id IN (?, ?)", oldM, newM))
+		must(t, exec(ctx, db, "DELETE FROM sendgrid_recipient_engagement WHERE group_id = ?", group))
+	})
+
+	old := time.Now().UTC().Add(-200 * 24 * time.Hour)
+	recent := time.Now().UTC().Add(-1 * time.Hour)
+
+	// An old recipient with an open event, plus a recent recipient.
+	must(t, store.ApplyDelivered(ctx, oldM, group, "old@x.io", old))
+	must(t, store.ApplyOpen(ctx, oldEv, oldM, group, "old@x.io", old))
+	must(t, store.ApplyDelivered(ctx, newM, group, "new@x.io", recent))
+
+	purged, err := store.PurgeEngagementOlderThan(ctx, time.Now().UTC().Add(-180*24*time.Hour))
+	must(t, err)
+	if purged < 1 {
+		t.Fatalf("purged = %d; want at least the old recipient", purged)
+	}
+
+	// The old recipient and its open event are gone.
+	var recCount int
+	must(t, db.NewRaw("SELECT COUNT(*) FROM sendgrid_recipient_engagement WHERE email_id = ?", oldM).Scan(ctx, &recCount))
+	if recCount != 0 {
+		t.Errorf("old recipient not purged: %d rows", recCount)
+	}
+	var openCount int
+	must(t, db.NewRaw("SELECT COUNT(*) FROM sendgrid_open_events WHERE email_id = ?", oldM).Scan(ctx, &openCount))
+	if openCount != 0 {
+		t.Errorf("old open events not purged: %d", openCount)
+	}
+	// The recent recipient remains.
+	if rec, err := store.RecipientByEmailID(ctx, newM); err != nil || rec == nil || !rec.Delivered {
+		t.Errorf("recent recipient should remain: rec=%+v err=%v", rec, err)
+	}
+}
+
 func exec(ctx context.Context, db *bun.DB, q string, args ...any) error {
 	_, err := db.NewRaw(q, args...).Exec(ctx)
 	return err
