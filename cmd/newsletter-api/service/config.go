@@ -76,6 +76,30 @@ type AppConfig struct {
 	// email-service's allowlist manually; update both when either changes.
 	EmailReplyToAllowedDomains []string
 
+	// EmailProvider selects the outbound send provider: "email-service" (default;
+	// NATS request/reply to lfx-v2-email-service -> SES, kept for transactional)
+	// or "sendgrid" (newsletter-service brokers SendGrid directly for
+	// newsletter/marketing sends, LFXV2-2388). SendGrid engagement analytics are
+	// served from a local store the signed event webhook populates, routed per
+	// newsletter by send_provider.
+	EmailProvider string
+
+	// SendGridAPIKey is the SendGrid API key (subuser-scoped in production).
+	// Required when EmailProvider="sendgrid".
+	SendGridAPIKey string
+
+	// SendGridWebhookPublicKey is the base64 PKIX ECDSA public key from the
+	// SendGrid signed-event-webhook settings, used to verify inbound event
+	// batches. Optional; when unset the webhook route is not registered and
+	// engagement analytics stay empty for SendGrid-sent newsletters.
+	SendGridWebhookPublicKey string
+
+	// SendGridAuthenticatedDomains lists the SendGrid-authenticated sending
+	// domains for the configured subuser. A send whose From domain is not one of
+	// these (or a subdomain) is rejected before hitting SendGrid. Empty permits
+	// any From (dev/test).
+	SendGridAuthenticatedDomains []string
+
 	// UnsubscribeSecret is the HMAC key signing per-recipient unsubscribe
 	// tokens. When empty, the footer falls back to the legacy "reply with
 	// UNSUBSCRIBE" copy and the public endpoint rejects all requests.
@@ -138,13 +162,17 @@ func AppConfigFromEnv() (AppConfig, error) {
 		EmailReplyToAllowedDomains: parseAllowedDomains(
 			os.Getenv("EMAIL_REPLY_TO_ALLOWED_DOMAINS"), defaultEmailReplyToDomain,
 		),
-		UnsubscribeSecret: os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
-		PublicBaseURL:     strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
-		SelfServeBaseURL:  strings.TrimRight(envOr("LFX_SELF_SERVE_BASE_URL", defaultSelfServeBaseURL), "/"),
-		JWKSURL:           os.Getenv("JWKS_URL"),
-		ExpectedAudience:  os.Getenv("JWT_AUDIENCE"),
-		RequireUserAuth:   boolOr("REQUIRE_USER_AUTH", true),
-		LFXEnvironment:    os.Getenv("LFX_ENVIRONMENT"),
+		EmailProvider:                strings.ToLower(envOr("EMAIL_PROVIDER", "email-service")),
+		SendGridAPIKey:               strings.TrimSpace(os.Getenv("SENDGRID_API_KEY")),
+		SendGridWebhookPublicKey:     strings.TrimSpace(os.Getenv("SENDGRID_WEBHOOK_PUBLIC_KEY")),
+		SendGridAuthenticatedDomains: splitCSV(os.Getenv("SENDGRID_AUTHENTICATED_DOMAINS")),
+		UnsubscribeSecret:            os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
+		PublicBaseURL:                strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
+		SelfServeBaseURL:             strings.TrimRight(envOr("LFX_SELF_SERVE_BASE_URL", defaultSelfServeBaseURL), "/"),
+		JWKSURL:                      os.Getenv("JWKS_URL"),
+		ExpectedAudience:             os.Getenv("JWT_AUDIENCE"),
+		RequireUserAuth:              boolOr("REQUIRE_USER_AUTH", true),
+		LFXEnvironment:               os.Getenv("LFX_ENVIRONMENT"),
 	}
 
 	// If DATABASE_URL is not set, compose it from PG* env vars in-process so
@@ -172,8 +200,38 @@ func AppConfigFromEnv() (AppConfig, error) {
 	if cfg.SendFanoutEnabled && cfg.PublicBaseURL == "" {
 		missing = append(missing, "NEWSLETTER_PUBLIC_BASE_URL (required when SEND_FANOUT_ENABLED=true)")
 	}
+	if cfg.EmailProvider == "sendgrid" && cfg.SendGridAPIKey == "" {
+		missing = append(missing, "SENDGRID_API_KEY (required when EMAIL_PROVIDER=sendgrid)")
+	}
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
+	}
+	// Reject an unknown EMAIL_PROVIDER up front. newEmailDispatcher treats any
+	// non-"sendgrid" value as email-service, but the raw value is also stamped
+	// onto newsletters.send_provider, whose CHECK constraint would then fail every
+	// send at MarkSending — so a typo must fail fast at startup, not per send.
+	if cfg.EmailProvider != "email-service" && cfg.EmailProvider != "sendgrid" {
+		return cfg, fmt.Errorf("EMAIL_PROVIDER must be \"email-service\" or \"sendgrid\", got %q", cfg.EmailProvider)
+	}
+	// For a deployed SendGrid provider — any LFX_ENVIRONMENT other than an
+	// explicit local/dev value; the chart does not set it, so an unset value is
+	// treated as production and fails closed — require the two settings that would
+	// otherwise silently degrade in exactly the misconfiguration each guard exists
+	// to catch:
+	//   - the authenticated-domain allowlist: an empty list makes fromDomainAllowed
+	//     permit every From, disabling the authenticated-domain guard.
+	//   - the event-webhook public key: without it the webhook route is never
+	//     registered, so no delivery/open/bounce events arrive and engagement
+	//     analytics stays empty for every SendGrid send.
+	if cfg.EmailProvider == "sendgrid" {
+		if env := strings.ToLower(strings.TrimSpace(cfg.LFXEnvironment)); env != "local" && env != "development" && env != "dev" {
+			if len(cfg.SendGridAuthenticatedDomains) == 0 {
+				return cfg, fmt.Errorf("SENDGRID_AUTHENTICATED_DOMAINS is required when EMAIL_PROVIDER=sendgrid outside an explicit local/dev LFX_ENVIRONMENT (LFX_ENVIRONMENT=%q); an empty allowlist disables the authenticated-domain guard", cfg.LFXEnvironment)
+			}
+			if cfg.SendGridWebhookPublicKey == "" {
+				return cfg, fmt.Errorf("SENDGRID_WEBHOOK_PUBLIC_KEY is required when EMAIL_PROVIDER=sendgrid outside an explicit local/dev LFX_ENVIRONMENT (LFX_ENVIRONMENT=%q); without it no delivery/open/bounce events arrive and engagement analytics stays empty", cfg.LFXEnvironment)
+			}
+		}
 	}
 
 	// Keep the stuck-send sweep strictly behind the job timeout so it can
@@ -251,6 +309,22 @@ func parseAllowedDomains(raw, fallback string) []string {
 	}
 	if len(out) == 0 {
 		return []string{fallback}
+	}
+	return out
+}
+
+// splitCSV parses a comma-separated env value into a trimmed, blank-free slice,
+// returning nil (not a one-element blank slice) when the value is empty.
+func splitCSV(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
 	}
 	return out
 }

@@ -92,6 +92,9 @@ func (f *fakeEmailDispatcher) GetStatusByEmailID(_ context.Context, _ string) (*
 func (f *fakeEmailDispatcher) GetStatusByGroupID(_ context.Context, _ string) ([]port.EmailRecipientRecord, error) {
 	return nil, nil
 }
+func (f *fakeEmailDispatcher) GroupEngagementDetail(_ context.Context, _ string) (*port.GroupEngagementDetail, error) {
+	return &port.GroupEngagementDetail{}, nil
+}
 func (f *fakeEmailDispatcher) reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -194,7 +197,7 @@ func (r *fakeNewsletterRepo) Update(_ context.Context, n *model.Newsletter, _ in
 	return n, nil
 }
 func (r *fakeNewsletterRepo) Delete(_ context.Context, _ uuid.UUID) error { return nil }
-func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupID string, total int, expectedVersion int64) (*model.Newsletter, error) {
+func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupID, sendProvider string, total int, expectedVersion int64) (*model.Newsletter, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	n, ok := r.drafts[id]
@@ -213,6 +216,7 @@ func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupI
 	n.Status = model.StatusSending
 	g := groupID
 	n.GroupID = &g
+	n.SendProvider = sendProvider
 	n.TotalRecipients = total
 	n.Version++
 	cp := *n
@@ -443,9 +447,9 @@ func TestFanOutInjectsPerRecipientUnsubscribeURL(t *testing.T) {
 	}
 }
 
-// TestSendIncludesMyNewslettersLink asserts real sends embed the Self-Serve
-// "My Newsletters" deep link (with the base URL normalized) in both bodies,
-// while test-sends — which render without the compliance footer — do not.
+// TestSendIncludesMyNewslettersLink asserts real sends and test-sends both
+// embed the Self-Serve "My Newsletters" deep link (with the base URL
+// normalized) in both bodies.
 func TestSendIncludesMyNewslettersLink(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
@@ -486,7 +490,7 @@ func TestSendIncludesMyNewslettersLink(t *testing.T) {
 		t.Errorf("real-send text missing My Newsletters link:\n%s", email.sends[0].Text)
 	}
 
-	// Test-send renders without the compliance footer, so no link.
+	// Test-send renders the same compliance footer, so the link is there too.
 	if err := orch.TestSend(ctx, TestSendInput{
 		ProjectUID: "p1",
 		Subject:    "Hello",
@@ -498,8 +502,152 @@ func TestSendIncludesMyNewslettersLink(t *testing.T) {
 	if len(email.sends) != 2 {
 		t.Fatalf("got %d sends after test-send, want 2", len(email.sends))
 	}
-	if strings.Contains(email.sends[1].HTML, "newsletters/my") || strings.Contains(email.sends[1].Text, "newsletters/my") {
-		t.Errorf("test-send unexpectedly contains My Newsletters link")
+	if !strings.Contains(email.sends[1].HTML, `href="`+wantURL+`"`) {
+		t.Errorf("test-send HTML missing My Newsletters link:\n%s", email.sends[1].HTML)
+	}
+	if !strings.Contains(email.sends[1].Text, wantURL) {
+		t.Errorf("test-send text missing My Newsletters link:\n%s", email.sends[1].Text)
+	}
+}
+
+// TestTestSendRendersComplianceFooterWithRealUnsubscribeLink asserts a
+// test-send body carries the same compliance footer as a real send, with a
+// working unsubscribe link minted directly for the to_email recipient.
+func TestTestSendRendersComplianceFooterWithRealUnsubscribeLink(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:             repo,
+		Committee:        &fakeCommitteeClient{},
+		Project:          &fakeProjectClient{},
+		Email:            email,
+		Unsubscribe:      unsub,
+		Concurrency:      2,
+		FanoutEnabled:    true,
+		SelfServeBaseURL: "https://app.lfx.dev",
+	})
+
+	// Mixed-case recipient on purpose: buildToken lowercases, so the minted
+	// link must still verify against the normalized address.
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "Tester@Example.com",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+
+	if strings.Contains(s.HTML, UnsubscribeURLPlaceholder) {
+		t.Errorf("placeholder leaked into test-send HTML:\n%s", s.HTML)
+	}
+	if !strings.Contains(s.HTML, "https://api.example/newsletters/unsubscribe?t=") {
+		t.Errorf("test-send HTML missing unsubscribe link:\n%s", s.HTML)
+	}
+	// The link must be a real working opt-out for the test recipient.
+	_, after, _ := strings.Cut(s.HTML, "/newsletters/unsubscribe?t=")
+	token, _, _ := strings.Cut(after, `"`)
+	gotProject, gotEmail, vErr := unsub.VerifyToken(token)
+	if vErr != nil {
+		t.Fatalf("verify token: %v", vErr)
+	}
+	if gotProject != "p1" {
+		t.Errorf("token project = %q, want p1", gotProject)
+	}
+	if gotEmail != "tester@example.com" {
+		t.Errorf("token email = %q, want tester@example.com", gotEmail)
+	}
+
+	if !strings.Contains(s.HTML, "Sent by") {
+		t.Errorf("test-send HTML missing sender attribution:\n%s", s.HTML)
+	}
+	if !strings.Contains(s.Text, "Unsubscribe from Test Project newsletters: https://api.example/newsletters/unsubscribe?t=") {
+		t.Errorf("test-send text missing unsubscribe footer:\n%s", s.Text)
+	}
+	if !strings.Contains(s.HTML, "https://app.lfx.dev/newsletters/my") || !strings.Contains(s.Text, "https://app.lfx.dev/newsletters/my") {
+		t.Errorf("test-send missing My Newsletters link")
+	}
+}
+
+// TestTestSendUsesParsedAddrSpec asserts a display-name to_email such as
+// "Tester <tester@example.com>" mints the unsubscribe token — and dispatches —
+// with the bare addr-spec, so the recorded opt-out matches the normalized
+// address recipient resolution compares against on real sends.
+func TestTestSendUsesParsedAddrSpec(t *testing.T) {
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, &fakeCommitteeClient{}, email, unsub)
+
+	if err := orch.TestSend(context.Background(), TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "Tester <Tester@Example.com>",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	if s.To != "Tester@Example.com" {
+		t.Errorf("dispatch To = %q, want bare addr-spec %q", s.To, "Tester@Example.com")
+	}
+	_, after, _ := strings.Cut(s.HTML, "/newsletters/unsubscribe?t=")
+	token, _, _ := strings.Cut(after, `"`)
+	gotProject, gotEmail, vErr := unsub.VerifyToken(token)
+	if vErr != nil {
+		t.Fatalf("verify token: %v", vErr)
+	}
+	if gotProject != "p1" {
+		t.Errorf("token project = %q, want p1", gotProject)
+	}
+	if gotEmail != "tester@example.com" {
+		t.Errorf("token email = %q, want tester@example.com", gotEmail)
+	}
+}
+
+// TestTestSendFooterFallbacksMirrorRealSend asserts test-sends degrade the
+// same way real sends do: unsubscribe disabled falls back to the legacy
+// reply-with-UNSUBSCRIBE copy, and an empty Self-Serve base URL omits the
+// My Newsletters line.
+func TestTestSendFooterFallbacksMirrorRealSend(t *testing.T) {
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	orch := newTestOrchestrator(repo, &fakeCommitteeClient{}, email, NewUnsubscribeService(repo, nil, ""))
+
+	if err := orch.TestSend(context.Background(), TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "tester@example.com",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	if !strings.Contains(s.HTML, "reply with <strong>UNSUBSCRIBE</strong>") {
+		t.Errorf("test-send HTML missing legacy unsubscribe copy:\n%s", s.HTML)
+	}
+	if !strings.Contains(s.Text, "reply with UNSUBSCRIBE") {
+		t.Errorf("test-send text missing legacy unsubscribe copy:\n%s", s.Text)
+	}
+	for _, body := range []string{s.HTML, s.Text} {
+		if strings.Contains(body, "newsletters/my") {
+			t.Errorf("test-send unexpectedly contains My Newsletters link")
+		}
+		if strings.Contains(body, "newsletters/unsubscribe") {
+			t.Errorf("test-send unexpectedly contains an unsubscribe link")
+		}
 	}
 }
 
@@ -1389,6 +1537,17 @@ func (f *failingEmailDispatcher) SendEmail(_ context.Context, _ port.SendEmailIn
 	return "", errors.New("email-service unreachable")
 }
 
+// ambiguousEmailDispatcher rejects every SendEmail with an ErrAmbiguousSend-
+// wrapped error — the provider may still have accepted the message, so the send
+// must NOT revert to a retryable draft (which could duplicate accepted sends).
+type ambiguousEmailDispatcher struct {
+	fakeEmailDispatcher
+}
+
+func (f *ambiguousEmailDispatcher) SendEmail(_ context.Context, _ port.SendEmailInput) (string, error) {
+	return "", errors.Join(port.ErrAmbiguousSend, errors.New("sendgrid: mail/send returned 503"))
+}
+
 func newGatedOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email port.EmailDispatcher) *SendOrchestrator {
 	return NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:          repo,
@@ -1548,6 +1707,30 @@ func TestSendNewsletterTotalFailureRevertsToDraft(t *testing.T) {
 	}
 }
 
+// TestSendNewsletterAmbiguousFailureDoesNotRevert asserts that when every send
+// fails ambiguously (a transport error / 5xx where the provider MAY have accepted
+// the message), the newsletter settles to sent rather than reverting to a
+// retryable draft. Reverting and retrying could duplicate accepted messages.
+func TestSendNewsletterAmbiguousFailureDoesNotRevert(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	orch := newGatedOrchestrator(repo, committee, &ambiguousEmailDispatcher{})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+
+	got := repo.get(draft.ID)
+	if got.Status != model.StatusSent {
+		t.Fatalf("all-ambiguous send settled to %q, want %q (must NOT revert to a retryable draft — could duplicate accepted sends)", got.Status, model.StatusSent)
+	}
+}
+
 // TestSendNewsletterZeroRecipientsSettlesSynchronously asserts the historical
 // zero-audience contract: no fan-out, marked sent before the response returns.
 func TestSendNewsletterZeroRecipientsSettlesSynchronously(t *testing.T) {
@@ -1579,7 +1762,7 @@ func TestDraftGuardsWhileSending(t *testing.T) {
 	svc := NewNewsletterService(repo, true)
 
 	draft := repo.addDraft("p1", []string{"c1"})
-	if _, err := repo.MarkSending(ctx, draft.ID, uuid.NewString(), 1, draft.Version); err != nil {
+	if _, err := repo.MarkSending(ctx, draft.ID, uuid.NewString(), model.SendProviderEmailService, 1, draft.Version); err != nil {
 		t.Fatalf("MarkSending: %v", err)
 	}
 
@@ -1597,6 +1780,44 @@ func TestDraftGuardsWhileSending(t *testing.T) {
 
 	if err := svc.DeleteDraft(ctx, "p1", draft.ID); !errors.Is(err, domain.ErrSendInProgress) {
 		t.Fatalf("DeleteDraft while sending: got err=%v, want ErrSendInProgress", err)
+	}
+}
+
+// TestSendNewsletter_StampsSendProvider verifies the orchestrator threads its
+// configured provider into MarkSending so the sent newsletter records the
+// provider that dispatched it (which analytics later routes on). Without this a
+// regression could stamp every send as email-service and silently route SendGrid
+// newsletters to the wrong engagement reader.
+func TestSendNewsletter_StampsSendProvider(t *testing.T) {
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Committee:     committee,
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		Unsubscribe:   unsub,
+		Concurrency:   2,
+		FanoutEnabled: true,
+		SendProvider:  model.SendProviderSendGrid,
+	})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(context.Background(), SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(context.Background())
+
+	got, err := repo.Get(context.Background(), draft.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.SendProvider != model.SendProviderSendGrid {
+		t.Errorf("send_provider = %q, want %q", got.SendProvider, model.SendProviderSendGrid)
 	}
 }
 
@@ -2102,8 +2323,10 @@ func TestTestSendLayoutSuppressesUnsubscribeFooter(t *testing.T) {
 }
 
 // TestTestSendLegacyStillUsesChrome asserts the legacy test-send (IsLayout
-// false / unset) is unchanged: chrome-wrapped, no compliance footer (test
-// sends never carry it).
+// false / unset) is chrome-wrapped and now previews the SAME compliance footer
+// a real send produces, including a working unsubscribe link minted for
+// to_email (main's newer test-send semantics — see
+// TestTestSendRendersComplianceFooterWithRealUnsubscribeLink).
 func TestTestSendLegacyStillUsesChrome(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
@@ -2124,13 +2347,22 @@ func TestTestSendLegacyStillUsesChrome(t *testing.T) {
 		t.Fatalf("got %d sends, want 1", len(email.sends))
 	}
 	s := email.sends[0]
-	// Chrome header eyebrow present; the compliance footer is intentionally
-	// absent on the test-send path, so only assert the header marker.
+	// Chrome header eyebrow present.
 	if !strings.Contains(s.HTML, "&middot; Newsletter") {
 		t.Errorf("legacy test-send missing chrome header: %s", s.HTML)
 	}
-	if strings.Contains(s.HTML, "Sent by") {
-		t.Errorf("test-send must not carry the compliance footer: %s", s.HTML)
+	// The compliance footer now renders on the test-send path (main's change).
+	if !strings.Contains(s.HTML, "Sent by") {
+		t.Errorf("legacy test-send missing the compliance footer: %s", s.HTML)
+	}
+	// A real, working unsubscribe link minted for to_email — not the blanked
+	// placeholder — so the footer previews exactly what a recipient would get.
+	wantURL := unsub.BuildURL("p1", "tester@example.com")
+	if !strings.Contains(s.HTML, wantURL) {
+		t.Errorf("legacy test-send missing the real unsubscribe link: %s", s.HTML)
+	}
+	if strings.Contains(s.HTML, UnsubscribeURLPlaceholder) {
+		t.Errorf("legacy test-send left the unsubscribe sentinel unresolved: %s", s.HTML)
 	}
 	if !strings.Contains(s.HTML, "Body") {
 		t.Errorf("legacy test-send missing authored body: %s", s.HTML)

@@ -513,4 +513,23 @@ spec:
           - path: /newsletters/unsubscribe
       execute:
         - authorizer: allow_all
+
+    {{- if .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+    # ---------------------------------------------------------------------
+    # SendGrid event webhook: intentionally unauthenticated. SendGrid POSTs
+    # engagement events with no session; authenticity is the ECDSA signature
+    # over (timestamp + body) plus a freshness window, verified in-app. Allowed
+    # whenever the webhook key is configured, independent of the active outbound
+    # provider, so historical/scheduled events keep ingesting after a flip.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:sendgrid:events"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /newsletters/sendgrid/events
+      execute:
+        - authorizer: allow_all
+    {{- end }}
 {{- end }}

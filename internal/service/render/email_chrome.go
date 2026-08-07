@@ -28,17 +28,18 @@ type Chrome struct {
 	// header renders text-only — there is no NATS subject for project logo
 	// today, so this is typically empty for now.
 	LogoURL string
-	// IncludeComplianceFooter is true for real recipient-facing sends.
-	// Test sends and previews keep it false.
+	// IncludeComplianceFooter is true for recipient-facing sends, including
+	// test sends. Previews and other callers that want no footer keep it
+	// false.
 	IncludeComplianceFooter bool
 	// Required when IncludeComplianceFooter is true.
 	EDName       string
 	EDReplyEmail string
-	// UnsubscribeURL is the per-recipient one-click opt-out link. The send
-	// orchestrator passes a placeholder here and substitutes the real URL
-	// per recipient inside the fan-out loop. When empty the footer falls
-	// back to the legacy "reply with UNSUBSCRIBE" copy so test sends and
-	// misconfigured environments still emit valid HTML.
+	// UnsubscribeURL is the per-recipient one-click opt-out link. Real sends
+	// pass a placeholder here and substitute the real URL per recipient
+	// inside the fan-out loop; test sends pass the recipient's real URL
+	// directly. When empty the footer falls back to the legacy "reply with
+	// UNSUBSCRIBE" copy so misconfigured environments still emit valid HTML.
 	UnsubscribeURL string
 	// MyNewslettersURL is the recipient-independent deep link to the LFX
 	// Self-Serve "My Newsletters" page. When non-empty (and

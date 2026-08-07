@@ -48,6 +48,16 @@ spec:
         - path:
             type: Exact
             value: /newsletters/unsubscribe
+        {{- if .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+        # SendGrid signed event webhook (POST). Public; authenticity is the
+        # ECDSA signature verified in-app. Routed whenever the webhook key is
+        # configured, independent of the active outbound provider, so
+        # historical/scheduled SendGrid events keep reaching the handler after a
+        # flip back to email-service.
+        - path:
+            type: Exact
+            value: /newsletters/sendgrid/events
+        {{- end }}
       {{- if .Values.heimdall.enabled }}
       filters:
         - type: ExtensionRef

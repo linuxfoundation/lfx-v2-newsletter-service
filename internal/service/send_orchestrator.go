@@ -76,6 +76,11 @@ type SendOrchestrator struct {
 	fanoutEnabled bool
 	fromAddress   string
 	fromOverrides map[string]string
+	// sendProvider is the value stamped onto newsletters.send_provider at the
+	// sending transition, recording which provider dispatched the newsletter so
+	// analytics reads engagement from the matching store. Set from the active
+	// EMAIL_PROVIDER; empty falls back to model.SendProviderEmailService.
+	sendProvider string
 	// replyToAllowedDomains gates resolveSenderEmail's output: a resolved
 	// address outside these domains (suffix-matched) is dropped in favor of
 	// the draft.EDReplyEmail fallback, so we never hand email-service a
@@ -115,6 +120,10 @@ type SendOrchestratorConfig struct {
 	// From address used for that project, overriding FromAddress. Nil/empty
 	// means every project uses FromAddress.
 	FromAddressOverrides map[string]string
+	// SendProvider is the active dispatch provider stamped onto every send
+	// (newsletters.send_provider), so analytics can later resolve engagement
+	// from the matching store. Empty falls back to model.SendProviderEmailService.
+	SendProvider string
 	// ReplyToAllowedDomains lists the domains a resolved sender email may use
 	// as Reply-To; a resolved address outside this list falls back to
 	// draft.EDReplyEmail (see resolveSenderEmail). Empty defaults to
@@ -173,6 +182,10 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	if jobTimeout <= 0 {
 		jobTimeout = defaultSendJobTimeout
 	}
+	sendProvider := strings.TrimSpace(cfg.SendProvider)
+	if sendProvider == "" {
+		sendProvider = model.SendProviderEmailService
+	}
 	return &SendOrchestrator{
 		repo:                  cfg.Repo,
 		committee:             cfg.Committee,
@@ -188,6 +201,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		replyToAllowedDomains: replyToDomains,
 		selfServeBaseURL:      strings.TrimRight(strings.TrimSpace(cfg.SelfServeBaseURL), "/"),
 		jobTimeout:            jobTimeout,
+		sendProvider:          sendProvider,
 	}
 }
 
@@ -341,7 +355,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// The duplicate-send guard: a single optimistically-locked UPDATE gated on
 	// status='draft'. From here on no concurrent or repeated send request can
 	// enter the fan-out for this newsletter.
-	sending, err := o.repo.MarkSending(ctx, draft.ID, groupID, len(recipients), draft.Version)
+	sending, err := o.repo.MarkSending(ctx, draft.ID, groupID, o.sendProvider, len(recipients), draft.Version)
 	if err != nil {
 		return nil, fmt.Errorf("mark sending: %w", err)
 	}
@@ -448,7 +462,7 @@ func (o *SendOrchestrator) reRenderLayoutBody(ctx context.Context, draft *model.
 // every recipient, then settle the newsletter — sent when at least one
 // recipient was delivered to, reverted to draft when none were.
 func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsletter, recipients []model.CommitteeMember, envelope emailEnvelope) {
-	sent, failed, failures := o.fanOut(ctx, sending.ProjectUID, recipients, envelope)
+	sent, failed, unknown, failures := o.fanOut(ctx, sending.ProjectUID, recipients, envelope)
 
 	// The terminal persistence write must not depend on the job context: a
 	// fan-out that consumed the entire job timeout would otherwise leave the
@@ -456,18 +470,22 @@ func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsle
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
 
-	// Only settle to `sent` when at least one recipient was delivered to. If
-	// every send failed (email-service unreachable, all recipients rejected,
-	// etc.) the row reverts to draft so the operator can retry without emails
-	// ever having gone out. Without this gate, a fully-failed send would be
-	// permanently indistinguishable from a successful one — no retry path.
-	if sent == 0 {
-		slog.WarnContext(ctx, "newsletter send failed: no recipients delivered, reverting to draft",
+	// Revert to draft ONLY when nothing was accepted AND nothing is ambiguous —
+	// i.e. every recipient was definitively rejected, so a retry cannot duplicate
+	// a message the provider already accepted. If any outcome is ambiguous (a
+	// transport error or a 5xx where the provider MAY have accepted the message),
+	// fall through and settle as sent instead of creating a retryable draft:
+	// re-sending those recipients could duplicate. This mirrors crash recovery —
+	// when it's unknown whether mail went out, settle to `sent` and let analytics
+	// (via group_id) expose the real delivery rather than risk duplicates.
+	if sent == 0 && unknown == 0 {
+		slog.WarnContext(ctx, "newsletter send failed: all recipients definitively rejected, reverting to draft",
 			"newsletter_id", sending.ID,
 			"project_uid", sending.ProjectUID,
 			"group_id", envelope.GroupID,
 			"total_recipients", len(recipients),
 			"failed", failed,
+			"unknown", unknown,
 			"first_failure", firstFailureError(failures),
 		)
 		// The revert can also fail because another actor already settled the
@@ -478,6 +496,17 @@ func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsle
 				"newsletter_id", sending.ID,
 				"error", err,
 			)
+		} else if purger, ok := o.email.(port.EngagementPurger); ok {
+			// The revert cleared group_id, so any engagement rows the provider
+			// recorded for this fully-failed send (with recipient emails) are now
+			// orphaned. Purge them; best-effort, so a failure only logs.
+			if err := purger.PurgeEngagement(persistCtx, envelope.GroupID); err != nil {
+				slog.WarnContext(persistCtx, "newsletter send: failed to purge provider engagement after revert",
+					"newsletter_id", sending.ID,
+					"group_id", envelope.GroupID,
+					"error", err,
+				)
+			}
 		}
 		return
 	}
@@ -565,8 +594,18 @@ type TestSendInput struct {
 	BodyLayout *declarative.Layout
 }
 
-// TestSend dispatches a single test email — no persistence, no analytics, no
-// unsubscribe opt-out row (but other footer elements like sender and reply still render).
+// TestSend dispatches a single test email — no persistence, no analytics.
+//
+// Legacy (body_html) path: the body renders the same compliance footer as a
+// real send, including a working unsubscribe link minted for to_email (clicking
+// it records a real project-scoped opt-out for that address) plus the My
+// Newsletters deep link.
+//
+// Layout (body_layout) path: the server recompiles the layout with the opt-out
+// row SUPPRESSED (a test mints no real token, so a layout preview carries no
+// unsubscribe link); other footer elements like sender attribution and the
+// reply row still render. The emitter body is dispatched verbatim, never
+// re-wrapped in email_chrome.
 func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error {
 	if err := validateProjectUID(in.ProjectUID); err != nil {
 		return err
@@ -579,9 +618,15 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 			return err
 		}
 	}
-	if _, err := mail.ParseAddress(strings.TrimSpace(in.ToEmail)); err != nil {
+	parsedTo, err := mail.ParseAddress(strings.TrimSpace(in.ToEmail))
+	if err != nil {
 		return fmt.Errorf("%w: to_email is not a valid email: %v", domain.ErrInvalidRequest, err)
 	}
+	// Canonical addr-spec: mail.ParseAddress accepts display-name forms such
+	// as "Tester <tester@example.com>", but the unsubscribe token must sign
+	// the bare address recipient resolution compares opt-outs against, and
+	// the dispatch To must carry the same canonical value.
+	toEmail := parsedTo.Address
 
 	// Resolve sender email and name early so layout rendering gets the correct
 	// reply-to address for the footer, matching the real-send behavior where the
@@ -599,18 +644,25 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// EDReplyEmail unconditionally.
 	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), strings.TrimSpace(in.EDReplyEmail))
 
-	// body_layout is the SOLE layout trigger for a test send. When present the
-	// server recompiles server-side with the opt-out row SUPPRESSED
-	// (unsubFooterSuppressed drops it via the wrapper's if= guard), matching the
-	// non-recipient test's compliance:false — a test mints no real token, so it
-	// carries no opt-out link. When absent the legacy path stands: the caller's
-	// body_html is simple editor HTML, chrome-wrapped. in.IsLayout is deprecated
-	// and ignored here (a precompiled is_layout body_html is no longer dispatched
-	// verbatim — that path could leave a dangling <a href="">Unsubscribe</a> once
-	// its sentinel resolved empty); layout clients send body_layout instead.
-	bodyHTML := in.BodyHTML
-	isLayout := false
-	if in.BodyLayout != nil {
+	// body_layout is the SOLE layout trigger for a test send. in.IsLayout is
+	// deprecated and ignored here (a precompiled is_layout body_html is no longer
+	// dispatched verbatim — that path could leave a dangling
+	// <a href="">Unsubscribe</a> once its sentinel resolved empty); layout
+	// clients send body_layout instead.
+	isLayout := in.BodyLayout != nil
+
+	fromDisplayName := senderName
+	if fromDisplayName == "" {
+		fromDisplayName = projectName + fromDisplayNameSuffix
+	}
+
+	var htmlBody, textBody string
+	if isLayout {
+		// Layout test send: recompile server-side with the opt-out row SUPPRESSED
+		// (unsubFooterSuppressed drops it via the wrapper's if= guard) — a test
+		// mints no real token, so a preview carries no opt-out link. The emitter
+		// owns the whole email; it is dispatched verbatim, never re-wrapped in
+		// email_chrome (mirrors the real-send layout branch).
 		derived, _, rerr := renderLayout(ctx, in.BodyLayout, replyTo, unsubFooterSuppressed)
 		if rerr != nil {
 			return rerr
@@ -618,32 +670,51 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		if err := validateDerivedBodyHTML(derived); err != nil {
 			return err
 		}
-		bodyHTML = derived
-		isLayout = true
-	} else if err := validateBodyHTML(in.BodyHTML); err != nil {
-		return err
+		htmlBody, textBody = o.renderBody(true, bodyRenderInput{
+			subject:     in.Subject,
+			bodyHTML:    derived,
+			displayName: projectName,
+		})
+	} else {
+		// Legacy (body_html) path: preview the SAME compliance footer a real send
+		// produces, including a working unsubscribe link minted for to_email.
+		// This is main's newer test-send behavior and must win over the older
+		// footer-less preview.
+		if err := validateBodyHTML(in.BodyHTML); err != nil {
+			return err
+		}
+		chrome := render.Chrome{
+			Subject:                 in.Subject,
+			BodyHTML:                in.BodyHTML,
+			DisplayName:             projectName,
+			IncludeComplianceFooter: true,
+			EDName:                  fallbackString(senderName, "Executive Director"),
+			EDReplyEmail:            replyTo,
+		}
+		if o.unsub.Enabled() {
+			// Single recipient: mint the real link directly instead of the
+			// placeholder+ReplaceAll pattern the fan-out uses. BuildURL output has
+			// no HTML-escapable characters, so the footer is byte-identical to a
+			// real send's post-substitution body.
+			chrome.UnsubscribeURL = o.unsub.BuildURL(in.ProjectUID, toEmail)
+		}
+		if o.selfServeBaseURL != "" {
+			chrome.MyNewslettersURL = o.selfServeBaseURL + myNewslettersPath
+		}
+		htmlBody = render.EmailHTML(chrome)
+		textBody = render.EmailText(chrome)
 	}
 
-	fromDisplayName := senderName
-	if fromDisplayName == "" {
-		fromDisplayName = projectName + fromDisplayNameSuffix
-	}
-
-	// Mirror the real-send branch: a layout-based test send carries the full
-	// emitter email in bodyHTML and must not be re-wrapped in email_chrome.
-	// The test-send path never sets the compliance footer (preview/test only).
-	htmlBody, textBody := o.renderBody(isLayout, bodyRenderInput{
-		subject:     in.Subject,
-		bodyHTML:    bodyHTML,
-		displayName: projectName,
-		compliance:  false,
-	})
+	// Bind the sender/project scope sentinels the layout wrapper emits. On the
+	// legacy chrome body these are no-ops (it carries none), and the real
+	// unsubscribe URL minted above is not a placeholder, so the
+	// substituteTestPlaceholders pass at dispatch leaves it intact.
 	htmlBody = substituteSendScope(htmlBody, senderName, projectName, true)
 	textBody = substituteSendScope(textBody, senderName, projectName, false)
 
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "test-send: fanout disabled, accepted without dispatch",
-			"to_email", in.ToEmail,
+			"to_email", toEmail,
 			"project_uid", in.ProjectUID,
 		)
 		return nil
@@ -652,7 +723,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// mints a real unsubscribe token (see substituteTestPlaceholders); the
 	// wrapper's opt-out rows drop out.
 	if _, dispatchErr := o.email.SendEmail(ctx, port.SendEmailInput{
-		To:              strings.TrimSpace(in.ToEmail),
+		To:              toEmail,
 		Subject:         in.Subject,
 		HTML:            o.substituteTestPlaceholders(htmlBody),
 		Text:            o.substituteTestPlaceholders(textBody),
@@ -663,7 +734,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		return fmt.Errorf("dispatch test-send: %w", dispatchErr)
 	}
 	slog.InfoContext(ctx, "test-send dispatched",
-		"to_email", in.ToEmail,
+		"to_email", toEmail,
 		"project_uid", in.ProjectUID,
 	)
 	return nil
@@ -784,16 +855,16 @@ type emailEnvelope struct {
 // failures are captured and surfaced in the result so the caller can decide
 // how to react. A nil EmailDispatcher (or FanoutEnabled=false) short-circuits
 // to "all sent, none failed" for dev/test environments.
-func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipients []model.CommitteeMember, env emailEnvelope) (sent, failed int, failures []SendFailure) {
+func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipients []model.CommitteeMember, env emailEnvelope) (sent, failed, unknown int, failures []SendFailure) {
 	if len(recipients) == 0 {
-		return 0, 0, nil
+		return 0, 0, 0, nil
 	}
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "send fanout disabled, marking all as sent without dispatch",
 			"total_recipients", len(recipients),
 			"group_id", env.GroupID,
 		)
-		return len(recipients), 0, nil
+		return len(recipients), 0, 0, nil
 	}
 
 	sem := make(chan struct{}, o.concurrency)
@@ -854,11 +925,20 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				failed++
+				// An ambiguous outcome (the provider may have accepted the message)
+				// is counted separately so an all-ambiguous fan-out does NOT trip
+				// the retryable all-failed revert, which could duplicate a send the
+				// provider already accepted. A definitive failure is safe to retry.
+				if errors.Is(err, port.ErrAmbiguousSend) {
+					unknown++
+				} else {
+					failed++
+				}
 				failures = append(failures, SendFailure{Email: recipient.Email, Error: err.Error()})
 				slog.WarnContext(ctx, "send fanout: recipient failed",
 					"recipient", redactEmail(recipient.Email),
 					"group_id", env.GroupID,
+					"ambiguous", errors.Is(err, port.ErrAmbiguousSend),
 					"error", err.Error(),
 				)
 				return
@@ -867,7 +947,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 		}()
 	}
 	wg.Wait()
-	return sent, failed, failures
+	return sent, failed, unknown, failures
 }
 
 // resolveSenderName looks up the sender's display name from auth-service using

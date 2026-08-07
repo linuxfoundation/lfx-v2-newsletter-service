@@ -100,6 +100,41 @@ BEGIN
     END IF;
 END$$;
 
+-- send_provider records which provider actually dispatched each newsletter, so
+-- analytics can route engagement reads to the store that holds the data:
+-- 'email-service' (SES engagement read back over NATS) or 'sendgrid' (the local
+-- engagement store populated by the SendGrid event webhook). Every historical
+-- row predates SendGrid, so the column defaults to 'email-service' and the
+-- backfill below stamps any pre-existing rows; the SendOrchestrator stamps the
+-- active provider on every new send.
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS send_provider TEXT NOT NULL DEFAULT 'email-service';
+
+-- Defensive backfill for a DB where an earlier partial run added the column
+-- nullable (a first-time ADD COLUMN ... DEFAULT already backfills existing rows).
+UPDATE newsletters SET send_provider = 'email-service'
+    WHERE send_provider IS NULL OR send_provider = '';
+
+-- Re-assert the default and NOT NULL. A first run's ADD COLUMN ... NOT NULL
+-- DEFAULT sets both, but ADD COLUMN IF NOT EXISTS is a no-op if a prior partial
+-- run added the column nullable, and the CHECK below permits NULL — so a nullable
+-- column could keep accepting NULL providers. Safe now the backfill cleared any
+-- NULLs; both statements are idempotent.
+ALTER TABLE newsletters ALTER COLUMN send_provider SET DEFAULT 'email-service';
+ALTER TABLE newsletters ALTER COLUMN send_provider SET NOT NULL;
+
+-- Constrain to the known providers (mirrors the model.SendProvider* constants).
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_send_provider_check'
+    ) THEN
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_send_provider_check
+            CHECK (send_provider IN ('email-service','sendgrid'));
+    END IF;
+END$$;
+
 -- Replace the old (context_type, context_uid) indexes with project-scoped
 -- equivalents. The composite list index supports the (project_uid, updated_at
 -- DESC, id DESC) keyset pagination used by ListAll.
@@ -183,3 +218,80 @@ CREATE TABLE IF NOT EXISTS newsletter_unsubscribes (
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_unsubscribes_project_email
     ON newsletter_unsubscribes (project_uid, email);
+
+-- ---------------------------------------------------------------------------
+-- SendGrid engagement (LFXV2-2388)
+--
+-- With SendGrid the newsletter service brokers sends directly and therefore
+-- owns engagement (the SES path reads it back from email-service over NATS).
+-- The SendGrid dispatcher records one row per send below; the SendGrid event
+-- webhook applies delivered / open / failed events. Rows are keyed by the
+-- email_id minted into custom_args on mail/send, which the webhook echoes back.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sendgrid_recipient_engagement (
+    email_id       TEXT        PRIMARY KEY,
+    group_id       TEXT        NOT NULL,
+    to_email       TEXT        NOT NULL DEFAULT '',
+    sent_at        TIMESTAMPTZ,
+    delivered      BOOLEAN     NOT NULL DEFAULT FALSE,
+    delivered_at   TIMESTAMPTZ,
+    opened         BOOLEAN     NOT NULL DEFAULT FALSE,
+    open_count     INTEGER     NOT NULL DEFAULT 0,
+    last_opened_at TIMESTAMPTZ,
+    failed         BOOLEAN     NOT NULL DEFAULT FALSE,
+    failed_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_sg_engagement_group ON sendgrid_recipient_engagement (group_id);
+
+-- Individual open events, for unique opens and the daily-opens series.
+-- Deduplicated by SendGrid's sg_event_id so a webhook redelivery is a no-op;
+-- group_id is derived by joining to sendgrid_recipient_engagement on email_id.
+CREATE TABLE IF NOT EXISTS sendgrid_open_events (
+    sg_event_id TEXT        PRIMARY KEY,
+    email_id    TEXT        NOT NULL,
+    opened_at   TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sg_open_events_email ON sendgrid_open_events (email_id);
+
+-- Tombstone of reverted send groups. A fully-failed send reverts to draft,
+-- clears its group_id, and purges the engagement rows above. But an ambiguous
+-- transport/5xx send may still have been accepted by SendGrid, so a delayed
+-- delivered/open/bounce webhook can arrive AFTER the purge. The webhook Apply*
+-- methods upsert (self-heal), which would recreate a row — re-persisting
+-- recipient PII (to_email) under a group_id no newsletter references. A row here
+-- durably marks a group reverted so the trigger below rejects any late write.
+CREATE TABLE IF NOT EXISTS sendgrid_reverted_groups (
+    group_id    TEXT        PRIMARY KEY,
+    reverted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Reject an INSERT of an engagement row for a reverted group. This fires BEFORE
+-- INSERT and returns NULL to skip the row, so a delayed webhook's self-healing
+-- upsert cannot recreate purged PII: a reverted group's rows were already
+-- deleted, so every webhook write for it is a fresh INSERT that this stops. Rows
+-- for a live (non-reverted) group are unaffected.
+--
+-- It first takes a transaction-scoped advisory lock keyed by the group, the same
+-- lock RevertGroup takes, so the tombstone check and this insert are serialized
+-- against a concurrent revert rather than racing under READ COMMITTED. Ordering:
+-- if the revert commits first the webhook then sees the tombstone and skips; if
+-- the webhook inserts first the revert blocks on the lock, then deletes the
+-- just-inserted row. Either way no engagement row survives a revert. The lock is
+-- released on commit/rollback. CREATE OR REPLACE + DROP/CREATE keep re-running
+-- schema.sql a no-op.
+CREATE OR REPLACE FUNCTION sendgrid_reject_reverted_engagement() RETURNS trigger AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended('sendgrid_group:' || NEW.group_id, 0));
+    IF EXISTS (SELECT 1 FROM sendgrid_reverted_groups g WHERE g.group_id = NEW.group_id) THEN
+        RETURN NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_sg_reject_reverted_engagement ON sendgrid_recipient_engagement;
+CREATE TRIGGER trg_sg_reject_reverted_engagement
+    BEFORE INSERT ON sendgrid_recipient_engagement
+    FOR EACH ROW EXECUTE FUNCTION sendgrid_reject_reverted_engagement();

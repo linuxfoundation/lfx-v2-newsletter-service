@@ -11,6 +11,7 @@ import (
 	"time"
 
 	emailapi "github.com/linuxfoundation/lfx-v2-email-service/pkg/api"
+	"github.com/nats-io/nats.go"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
@@ -129,6 +130,13 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 	}
 	reply, err := d.client.Request(ctx, EmailServiceSendEmailSubject, data)
 	if err != nil {
+		if requestErrIsAmbiguous(err) {
+			// email-service may have delivered the message before the reply
+			// timed out or the context was cancelled. Mark the outcome ambiguous
+			// so an all-timeout fan-out is not reverted to a retryable draft,
+			// which could duplicate a message that was already delivered.
+			return "", fmt.Errorf("%w: %w", port.ErrAmbiguousSend, err)
+		}
 		return "", err
 	}
 	if len(reply) == 0 {
@@ -150,10 +158,28 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 	return "", nil
 }
 
+// requestErrIsAmbiguous reports whether a failed email-service send request may
+// have been delivered despite the error. A timeout or cancellation happens after
+// the request is published, so email-service may have processed it before the
+// reply arrived — the outcome is unknown. A no-responders error is definitive:
+// no email-service instance received the request, so nothing was delivered and a
+// retry is safe. The SendEmail caller wraps an ambiguous error with
+// port.ErrAmbiguousSend so the orchestrator does not revert an all-ambiguous
+// fan-out to a retryable draft, which could duplicate a delivered message.
+func requestErrIsAmbiguous(err error) bool {
+	if errors.Is(err, nats.ErrNoResponders) {
+		return false
+	}
+	return errors.Is(err, nats.ErrTimeout) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled)
+}
+
 // GetEngagement fetches per-group engagement totals from email-service.
 //
-// Note: email-service does not currently report unique opens — UniqueOpens is
-// populated from the local newsletter_opens table by the analytics service.
+// The scalar reply includes unique_opened (email-service v0.1.5+), which we map
+// to UniqueOpens so the analytics scalar fallback preserves the SES unique-open
+// count even when the per-recipient detail fetch fails or is incomplete.
 func (d *EmailDispatcher) GetEngagement(ctx context.Context, groupID string) (*port.EmailEngagement, error) {
 	if groupID == "" {
 		return nil, pkgerrors.NewValidation("group_id is required")
@@ -182,11 +208,12 @@ func (d *EmailDispatcher) GetEngagement(ctx context.Context, groupID string) (*p
 		return nil, pkgerrors.NewUnexpected("malformed email-service engagement reply", jsonErr)
 	}
 	return &port.EmailEngagement{
-		GroupID:   out.GroupID,
-		TotalSent: out.TotalSent,
-		Delivered: out.Delivered,
-		Opened:    out.Opened,
-		Failed:    out.Failed,
+		GroupID:     out.GroupID,
+		TotalSent:   out.TotalSent,
+		Delivered:   out.Delivered,
+		Opened:      out.Opened,
+		UniqueOpens: out.UniqueOpened,
+		Failed:      out.Failed,
 	}, nil
 }
 
@@ -229,6 +256,18 @@ func (d *EmailDispatcher) GetStatusByGroupID(ctx context.Context, groupID string
 		records = append(records, r.toPortRecord())
 	}
 	return records, nil
+}
+
+// GroupEngagementDetail returns the group's bounded analytics detail from a
+// SINGLE email-service by-group fetch, bucketed in memory. The reply is bounded
+// (one record per email_id, each carrying its own opens), so this stays in
+// memory — unlike the SendGrid store, which aggregates in SQL.
+func (d *EmailDispatcher) GroupEngagementDetail(ctx context.Context, groupID string) (*port.GroupEngagementDetail, error) {
+	records, err := d.GetStatusByGroupID(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	return port.GroupDetailFromRecords(records), nil
 }
 
 // GetStatusByEmailID fetches per-recipient state from email-service for one

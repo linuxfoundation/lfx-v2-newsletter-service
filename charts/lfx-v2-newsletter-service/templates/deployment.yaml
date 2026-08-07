@@ -109,6 +109,58 @@ spec:
             - name: EMAIL_REPLY_TO_ALLOWED_DOMAINS
               value: {{ . | quote }}
             {{- end }}
+            {{- if and (ne .Values.app.send.provider "email-service") (ne .Values.app.send.provider "sendgrid") }}
+            {{- fail (printf "app.send.provider must be \"email-service\" or \"sendgrid\", got %q" .Values.app.send.provider) }}
+            {{- end }}
+            {{- if eq .Values.app.send.provider "sendgrid" }}
+            # Outbound SendGrid send settings, gated on the active provider.
+            - name: EMAIL_PROVIDER
+              value: "sendgrid"
+            {{- if .Values.app.send.sendgrid.authenticatedDomains }}
+            - name: SENDGRID_AUTHENTICATED_DOMAINS
+              value: {{ .Values.app.send.sendgrid.authenticatedDomains | quote }}
+            {{- else }}
+            {{/* Fail the install rather than let every pod CrashLoop in AppConfigFromEnv:
+                 a deployed SendGrid provider requires the authenticated-domain allowlist
+                 (an unset LFX_ENVIRONMENT is treated as production and fails closed), so an
+                 empty list would disable the From-domain guard. Mirrors the API-key guard. */}}
+            {{- required "app.send.sendgrid.authenticatedDomains is required when app.send.provider=sendgrid" "" }}
+            {{- end }}
+            {{- if .Values.app.send.sendgrid.apiKeySecretRef.name }}
+            - name: SENDGRID_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.send.sendgrid.apiKeySecretRef.name }}
+                  key: {{ .Values.app.send.sendgrid.apiKeySecretRef.key }}
+            {{- else }}
+            {{/* Fail the install rather than let every pod CrashLoop in AppConfigFromEnv on a missing key. */}}
+            {{- required "app.send.sendgrid.apiKeySecretRef.name is required when app.send.provider=sendgrid" "" }}
+            {{- end }}
+            {{- if not .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+            {{/* A SendGrid provider needs its event webhook to populate engagement
+                 analytics; without the public key the webhook route is never registered
+                 and no delivery/open/bounce events arrive. Require the ref for
+                 provider=sendgrid, matching the app's startup guard. The env itself is
+                 still rendered independently below, so events keep flowing after a flip
+                 back to email-service. */}}
+            {{- required "app.send.sendgrid.webhookPublicKeySecretRef.name is required when app.send.provider=sendgrid" "" }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+            # Webhook ingestion is independent of the active outbound provider: the
+            # handler registers whenever this key exists, so historical/scheduled
+            # SendGrid events keep updating analytics even after a flip back to
+            # email-service. The event-webhook HTTPRoute + RuleSet are gated on the
+            # same key ref. Required (not optional): configure this ref only once
+            # the secret key exists, so the pod waits for it rather than starting
+            # with an empty value that would leave the webhook unregistered until a
+            # manual rollout (a Secret-backed env var is not refreshed in place).
+            - name: SENDGRID_WEBHOOK_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+                  key: {{ .Values.app.send.sendgrid.webhookPublicKeySecretRef.key }}
+            {{- end }}
             {{- with .Values.app.selfServeBaseURL }}
             - name: LFX_SELF_SERVE_BASE_URL
               value: {{ . | quote }}
