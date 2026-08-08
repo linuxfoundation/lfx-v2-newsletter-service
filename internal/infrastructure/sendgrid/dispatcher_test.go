@@ -465,6 +465,90 @@ func TestSendEmail_ReplyToAllowlist(t *testing.T) {
 	}
 }
 
+func TestSendEmail_ListUnsubscribeHeaders(t *testing.T) {
+	var gotBody mailSendRequest
+	d := newTestDispatcher(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	if _, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To:                  "alice@example.com",
+		Text:                "hi",
+		ListUnsubscribeURL:  "https://lfx.example.com/newsletters/unsubscribe?t=abc",
+		ListUnsubscribePost: true,
+	}); err != nil {
+		t.Fatalf("SendEmail: %v", err)
+	}
+	if got := gotBody.Headers["List-Unsubscribe"]; got != "<https://lfx.example.com/newsletters/unsubscribe?t=abc>" {
+		t.Errorf("List-Unsubscribe header = %q, want angle-bracketed URL", got)
+	}
+	if got := gotBody.Headers["List-Unsubscribe-Post"]; got != "List-Unsubscribe=One-Click" {
+		t.Errorf("List-Unsubscribe-Post header = %q, want List-Unsubscribe=One-Click", got)
+	}
+}
+
+func TestSendEmail_ListUnsubscribePostOmittedWhenNotOneClick(t *testing.T) {
+	var gotBody mailSendRequest
+	d := newTestDispatcher(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	if _, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To:                 "alice@example.com",
+		Text:               "hi",
+		ListUnsubscribeURL: "https://lfx.example.com/newsletters/unsubscribe?t=abc",
+	}); err != nil {
+		t.Fatalf("SendEmail: %v", err)
+	}
+	if _, ok := gotBody.Headers["List-Unsubscribe-Post"]; ok {
+		t.Errorf("List-Unsubscribe-Post should be omitted when ListUnsubscribePost is false, got %+v", gotBody.Headers)
+	}
+}
+
+func TestSendEmail_ListUnsubscribeOmittedWhenEmpty(t *testing.T) {
+	var gotBody mailSendRequest
+	d := newTestDispatcher(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	if _, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To:   "alice@example.com",
+		Text: "hi",
+	}); err != nil {
+		t.Fatalf("SendEmail: %v", err)
+	}
+	if gotBody.Headers != nil {
+		t.Errorf("headers should be omitted when no unsubscribe URL is set, got %+v", gotBody.Headers)
+	}
+}
+
+func TestSendEmail_ListUnsubscribeURL_InjectionStripped(t *testing.T) {
+	var gotBody mailSendRequest
+	d := newTestDispatcher(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	if _, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To:                  "alice@example.com",
+		Text:                "hi",
+		ListUnsubscribeURL:  "https://evil.example.com/x\r\nX-Injected: true",
+		ListUnsubscribePost: true,
+	}); err != nil {
+		t.Fatalf("SendEmail: %v", err)
+	}
+	if strings.Contains(gotBody.Headers["List-Unsubscribe"], "\r\n") {
+		t.Errorf("List-Unsubscribe header retains CR/LF: %q", gotBody.Headers["List-Unsubscribe"])
+	}
+}
+
 func TestSendEmail_RecordsFailureOnlyOnDefinitiveRejection(t *testing.T) {
 	// A definitive rejection (SendGrid did not accept the message, no webhook
 	// follows) is persisted; an ambiguous 5xx is not, or a later delivered webhook

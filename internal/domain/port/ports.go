@@ -187,6 +187,10 @@ type UserEmailReader interface {
 // applies its configured service defaults and (for ReplyTo) omits the SMTP
 // Reply-To header entirely. Domains on From and ReplyTo must be in the
 // email-service allowlist — enforcement lives there, not here.
+//
+// ListUnsubscribeURL and ListUnsubscribePost are optional and carry the RFC 8058
+// one-click unsubscribe link for this recipient. Callers set them from
+// unsub.BuildURL when the unsubscribe feature is enabled.
 type SendEmailInput struct {
 	To              string
 	Subject         string
@@ -196,6 +200,11 @@ type SendEmailInput struct {
 	FromDisplayName string
 	ReplyTo         string
 	GroupID         string
+	// ListUnsubscribeURL, when non-empty, arms RFC 8058 one-click unsubscribe:
+	// the dispatcher emits List-Unsubscribe / List-Unsubscribe-Post headers so
+	// mail clients can show a native unsubscribe control (LFXV2-2581).
+	ListUnsubscribeURL  string
+	ListUnsubscribePost bool
 	// SendAt and BatchID arm a scheduled release: when SendAt is non-nil, every
 	// recipient in the fan-out carries the same SendAt/BatchID so the provider
 	// holds and releases them together (LFXV2-2685). Nil/empty means send

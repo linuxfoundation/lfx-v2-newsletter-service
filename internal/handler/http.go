@@ -134,10 +134,14 @@ func (h *Handler) Routes() http.Handler {
 	// hash in the query string.
 	mux.HandleFunc("GET /projects/{project_uid}/newsletter-opens/{newsletter_uid}", h.OpenPixel)
 
-	// One-click unsubscribe — intentionally unauthenticated; requested by a
-	// recipient clicking the footer link. Authorization comes from the
-	// HMAC-signed token in the query string.
-	mux.HandleFunc("GET /newsletters/unsubscribe", h.Unsubscribe)
+	// Unsubscribe — intentionally unauthenticated; requested by a recipient
+	// clicking the footer link, or by a mail client's one-click unsubscribe.
+	// Authorization comes from the HMAC-signed token in the query string.
+	// GET only verifies the token and renders a confirmation page; it never
+	// mutates. POST performs the actual unsubscribe, reached either from the
+	// confirmation form or directly via an RFC 8058 one-click POST.
+	mux.HandleFunc("GET /newsletters/unsubscribe", h.UnsubscribeConfirm)
+	mux.HandleFunc("POST /newsletters/unsubscribe", h.UnsubscribeSubmit)
 
 	// SendGrid event webhook — intentionally unauthenticated; SendGrid POSTs
 	// engagement events with no session. Authenticity comes from the ECDSA

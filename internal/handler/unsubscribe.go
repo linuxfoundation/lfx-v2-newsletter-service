@@ -8,11 +8,12 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"net/url"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 )
 
-// Unsubscribe handles GET /newsletters/unsubscribe?t=<token>.
+// UnsubscribeConfirm handles GET /newsletters/unsubscribe?t=<token>.
 //
 // This endpoint is *intentionally unauthenticated* — it is requested by a
 // newsletter recipient clicking the footer link in their mail client, which
@@ -20,20 +21,64 @@ import (
 // someone who received the email (or this service) can produce a valid
 // token for a given (project_uid, email) pair.
 //
+// GET never mutates state. It only verifies the token and renders a
+// confirmation page with a form that POSTs back to this same path to
+// complete the unsubscribe. This two-stage split exists because link
+// checkers, security scanners, and mail-client preview engines routinely
+// GET links in email bodies; if GET mutated state, every preview would
+// silently unsubscribe the recipient.
+//
 // Always returns text/html so the browser renders a confirmation rather
 // than offering a JSON download.
-func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) UnsubscribeConfirm(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Go's net/http ServeMux routes HEAD to a GET-only pattern. Link
-	// checkers, security scanners, and mail-client preview engines
-	// commonly probe URLs with HEAD; if we processed those, every preview
-	// would silently unsubscribe the recipient. Treat HEAD as a no-op.
+	// Go's net/http ServeMux routes HEAD to a GET-only pattern. Treat it as
+	// a no-op for the same reason GET itself never mutates.
 	if r.Method == http.MethodHead {
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+
+	token := r.URL.Query().Get("t")
+
+	if h.unsub == nil {
+		slog.ErrorContext(ctx, "unsubscribe: service not configured")
+		writeUnsubscribeHTML(w, http.StatusInternalServerError, "Unsubscribe unavailable", "Unsubscribe is not configured on this server.")
+		return
+	}
+
+	projectUID, email, err := h.unsub.VerifyToken(token)
+	if err != nil {
+		if errors.Is(err, domain.ErrInvalidRequest) {
+			slog.WarnContext(ctx, "unsubscribe: invalid token", "error", err.Error())
+			writeUnsubscribeHTML(w, http.StatusBadRequest, "Invalid link", "This unsubscribe link is invalid.")
+			return
+		}
+		slog.ErrorContext(ctx, "unsubscribe: failed", "error", err.Error())
+		writeUnsubscribeHTML(w, http.StatusInternalServerError, "Something went wrong", "We couldn't process your request. Please try again later.")
+		return
+	}
+
+	displayName := h.projectDisplayName(ctx, projectUID)
+	actionURL := "/newsletters/unsubscribe?t=" + url.QueryEscape(token)
+	body := "Confirm that " + html.EscapeString(email) + " should stop receiving " + html.EscapeString(displayName) + " newsletters." +
+		`<form method="POST" action="` + html.EscapeString(actionURL) + `" style="margin-top:24px;">` +
+		`<button type="submit" style="font-size:15px;padding:10px 20px;background:#3B82F6;color:#fff;border:none;border-radius:6px;cursor:pointer;">Unsubscribe</button>` +
+		`</form>`
+	writeUnsubscribeHTML(w, http.StatusOK, "Confirm unsubscribe", body)
+}
+
+// UnsubscribeSubmit handles POST /newsletters/unsubscribe?t=<token>.
+//
+// This endpoint is *intentionally unauthenticated*, for the same reason as
+// UnsubscribeConfirm: authorization comes from the HMAC-signed token, not a
+// session. It is reached either by the confirmation form UnsubscribeConfirm
+// renders, or directly by a mail client performing an RFC 8058 one-click
+// unsubscribe POST. This is the only path that mutates unsubscribe state.
+func (h *Handler) UnsubscribeSubmit(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 
 	token := r.URL.Query().Get("t")
 
