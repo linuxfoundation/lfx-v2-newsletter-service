@@ -413,3 +413,81 @@ CREATE TABLE IF NOT EXISTS sendgrid_click_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sg_click_events_email ON sendgrid_click_events (email_id);
+
+-- ---------------------------------------------------------------------------
+-- Newsletter Publications (LFXV2-2582)
+--
+-- newsletter_publications is the parent "newsletter identity": wrapper,
+-- branding, block-template set, subscriber list, slug, and the base URL used
+-- to build each edition's View Online link. An edition (a row in
+-- `newsletters`) belongs to exactly one publication via publication_id.
+--
+-- publication_id is nullable-first, NOT NULL deferred to a follow-up migration
+-- once the backfill has run everywhere; this is the reversibility mechanism.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS newsletter_publications (
+    id                UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_uid       TEXT         NOT NULL,
+    slug              TEXT         NOT NULL,
+    name              TEXT         NOT NULL,
+    is_default        BOOLEAN      NOT NULL DEFAULT false,
+    wrapper_content   JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    template_set_id   TEXT,
+    view_online_base  TEXT,
+    created_by        TEXT         NOT NULL,
+    version           BIGINT       NOT NULL DEFAULT 1,
+    created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_publications_project_id
+    ON newsletter_publications (project_uid, id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_publications_project_slug
+    ON newsletter_publications (project_uid, slug);
+
+CREATE INDEX IF NOT EXISTS idx_publications_project ON newsletter_publications (project_uid);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_publications_one_default_per_project
+    ON newsletter_publications (project_uid) WHERE is_default;
+
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS publication_id UUID;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_publication_fk'
+    ) THEN
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_publication_fk
+            FOREIGN KEY (project_uid, publication_id)
+            REFERENCES newsletter_publications (project_uid, id)
+            ON DELETE RESTRICT;
+    END IF;
+END$$;
+
+CREATE INDEX IF NOT EXISTS idx_newsletters_publication ON newsletters (publication_id);
+
+-- Covers the publication-scoped editions list: the ListAll keyset query filters
+-- by (project_uid, publication_id) and orders by (updated_at DESC, id DESC), so
+-- the index carries both the filter and the cursor columns to avoid a per-call
+-- heap scan + sort. Mirrors idx_newsletters_list with publication_id spliced in.
+CREATE INDEX IF NOT EXISTS idx_newsletters_publication_list
+    ON newsletters (project_uid, publication_id, updated_at DESC, id DESC);
+
+INSERT INTO newsletter_publications (project_uid, slug, name, is_default, created_by)
+SELECT DISTINCT n.project_uid, 'default', 'Newsletter', true, 'system-backfill'
+FROM newsletters n
+WHERE NOT EXISTS (
+    SELECT 1 FROM newsletter_publications p
+    WHERE p.project_uid = n.project_uid AND p.is_default
+)
+ON CONFLICT DO NOTHING;
+
+UPDATE newsletters n
+SET publication_id = p.id
+FROM newsletter_publications p
+WHERE n.publication_id IS NULL
+  AND p.project_uid = n.project_uid
+  AND p.is_default;

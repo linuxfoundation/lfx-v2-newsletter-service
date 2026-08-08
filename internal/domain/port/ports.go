@@ -37,11 +37,13 @@ const MaxTopLinks = 20
 // Multiple values match any of them (the service layer maps the public
 // 'sent' filter to [sent, sending] so in-flight sends appear on the Sent tab).
 // PageToken is the opaque cursor returned in the previous page's response.
+// PublicationID is optional: if set, only newsletters with that publication_id are returned.
 type ListFilters struct {
-	ProjectUID string
-	Statuses   []model.Status
-	PageToken  string
-	Limit      int
+	ProjectUID    string
+	Statuses      []model.Status
+	PublicationID *uuid.UUID
+	PageToken     string
+	Limit         int
 }
 
 // ListPage is one page of newsletters plus an optional NextPageToken for
@@ -136,6 +138,18 @@ type UnsubscribeRepository interface {
 	ListUnsubscribedEmails(ctx context.Context, projectUID string) (map[string]struct{}, error)
 	ListUnsubscribes(ctx context.Context, projectUID string) ([]*model.NewsletterUnsubscribe, error)
 	DeleteUnsubscribe(ctx context.Context, projectUID string, id uuid.UUID) error
+}
+
+// PublicationRepository persists NewsletterPublication aggregates.
+//
+// Implementations must surface optimistic-locking conflicts as
+// domain.ErrVersionMismatch and missing records as domain.ErrNotFound.
+type PublicationRepository interface {
+	Create(ctx context.Context, pub *model.NewsletterPublication) error
+	Get(ctx context.Context, projectUID string, id uuid.UUID) (*model.NewsletterPublication, error)
+	List(ctx context.Context, projectUID string) ([]*model.NewsletterPublication, error)
+	Update(ctx context.Context, pub *model.NewsletterPublication, expectedVersion int64) error
+	GetDefault(ctx context.Context, projectUID string) (*model.NewsletterPublication, error)
 }
 
 // CommitteeClient resolves committee members for newsletter recipient calculation.

@@ -31,6 +31,12 @@ func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
 		user = "anonymous"
 	}
 
+	publicationID, err := parseOptionalPublicationID(body.PublicationID)
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+
 	draft, err := h.newsletter.CreateDraft(r.Context(), service.CreateDraftInput{
 		ProjectUID:    projectUID,
 		Subject:       body.Subject,
@@ -39,6 +45,7 @@ func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
 		CommitteeUIDs: body.CommitteeUIDs,
 		CreatedBy:     user,
 		ScheduledAt:   body.ScheduledAt,
+		PublicationID: publicationID,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -90,6 +97,12 @@ func (h *Handler) UpdateNewsletter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	publicationID, err := parseOptionalPublicationID(body.PublicationID)
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+
 	updated, err := h.newsletter.UpdateDraft(r.Context(), projectUID, service.UpdateDraftInput{
 		ID:              id,
 		ExpectedVersion: expectedVersion,
@@ -98,6 +111,7 @@ func (h *Handler) UpdateNewsletter(w http.ResponseWriter, r *http.Request) {
 		EDReplyEmail:    body.EDReplyEmail,
 		CommitteeUIDs:   body.CommitteeUIDs,
 		ScheduledAt:     body.ScheduledAt,
+		PublicationID:   publicationID,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -153,8 +167,27 @@ func parseUUID(raw string) (uuid.UUID, error) {
 	return id, nil
 }
 
+// parseOptionalPublicationID converts the API's optional string publication_id
+// into a *uuid.UUID. Nil or empty means "unset"; a non-empty malformed value is
+// a client error, surfaced as 400 rather than being silently dropped.
+func parseOptionalPublicationID(raw *string) (*uuid.UUID, error) {
+	if raw == nil || *raw == "" {
+		return nil, nil
+	}
+	id, err := uuid.Parse(*raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err)
+	}
+	return &id, nil
+}
+
 // toAPINewsletter converts a domain model into the public API DTO.
 func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
+	var publicationID *string
+	if n.PublicationID != nil {
+		pubIDStr := n.PublicationID.String()
+		publicationID = &pubIDStr
+	}
 	return &publicapi.Newsletter{
 		ID:              n.ID.String(),
 		ProjectUID:      n.ProjectUID,
@@ -166,6 +199,7 @@ func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
 		SentAt:          n.SentAt,
 		GroupID:         n.GroupID,
 		ScheduledAt:     n.ScheduledAt,
+		PublicationID:   publicationID,
 		TotalRecipients: n.TotalRecipients,
 		CreatedBy:       n.CreatedBy,
 		Version:         n.Version,

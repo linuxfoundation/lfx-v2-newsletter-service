@@ -38,12 +38,35 @@ const (
 
 // NewsletterService implements business logic for draft management.
 type NewsletterService struct {
-	repo port.NewsletterRepository
+	repo    port.NewsletterRepository
+	pubRepo port.PublicationRepository
 }
 
-// NewNewsletterService wires a NewsletterService over the given repository.
-func NewNewsletterService(repo port.NewsletterRepository) *NewsletterService {
-	return &NewsletterService{repo: repo}
+// NewNewsletterService wires a NewsletterService over the given repositories.
+// pubRepo may be nil in tests that never set a publication_id on create/update;
+// it is only dereferenced when a non-nil PublicationID is supplied.
+func NewNewsletterService(repo port.NewsletterRepository, pubRepo port.PublicationRepository) *NewsletterService {
+	return &NewsletterService{repo: repo, pubRepo: pubRepo}
+}
+
+// validatePublicationID confirms an optional publication_id resolves to a
+// publication in the same project, so an edition can never be linked to another
+// project's publication (or a nonexistent one). Nil is valid — the edition is
+// left unlinked and later backfilled to the project default.
+func (s *NewsletterService) validatePublicationID(ctx context.Context, projectUID string, publicationID *uuid.UUID) error {
+	if publicationID == nil {
+		return nil
+	}
+	if s.pubRepo == nil {
+		return fmt.Errorf("%w: publication_id is not supported in this configuration", domain.ErrInvalidRequest)
+	}
+	if _, err := s.pubRepo.Get(ctx, projectUID, *publicationID); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return fmt.Errorf("%w: publication_id does not resolve to a publication in this project", domain.ErrInvalidRequest)
+		}
+		return err
+	}
+	return nil
 }
 
 // CreateDraftInput is the typed input for CreateDraft.
@@ -56,6 +79,9 @@ type CreateDraftInput struct {
 	CreatedBy     string
 	// ScheduledAt is optional save-time intent — see validateScheduledAtSave.
 	ScheduledAt *time.Time
+	// PublicationID optionally links the new edition to a publication in the
+	// same project. Nil leaves it unlinked (backfilled to the project default).
+	PublicationID *uuid.UUID
 }
 
 // UpdateDraftInput is the typed input for UpdateDraft.
@@ -69,6 +95,8 @@ type UpdateDraftInput struct {
 	// ScheduledAt is full-replace like every other field here: nil clears a
 	// previously-saved schedule.
 	ScheduledAt *time.Time
+	// PublicationID is full-replace: nil unlinks the edition from its publication.
+	PublicationID *uuid.UUID
 }
 
 // CreateDraft validates the input and inserts a new draft row.
@@ -94,6 +122,9 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	if err := validateScheduledAtSave(in.ScheduledAt); err != nil {
 		return nil, err
 	}
+	if err := s.validatePublicationID(ctx, in.ProjectUID, in.PublicationID); err != nil {
+		return nil, err
+	}
 
 	n := &model.Newsletter{
 		ProjectUID:    in.ProjectUID,
@@ -104,6 +135,7 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 		Status:        model.StatusDraft,
 		CreatedBy:     in.CreatedBy,
 		ScheduledAt:   in.ScheduledAt,
+		PublicationID: in.PublicationID,
 	}
 
 	if err := s.repo.Create(ctx, n); err != nil {
@@ -142,6 +174,9 @@ type ListNewslettersInput struct {
 	ProjectUID string
 	Status     model.Status // optional; "" means both drafts and sent
 	PageToken  string
+	// PublicationID optionally scopes the list to a single publication's
+	// editions. Nil returns the project's newsletters across all publications.
+	PublicationID *uuid.UUID
 }
 
 // ListNewsletters returns a page of newsletters for the given project, ordered
@@ -166,9 +201,10 @@ func (s *NewsletterService) ListNewsletters(ctx context.Context, in ListNewslett
 		return nil, fmt.Errorf("%w: status must be 'draft', 'sending', 'scheduled', or 'sent'", domain.ErrInvalidRequest)
 	}
 	return s.repo.ListAll(ctx, port.ListFilters{
-		ProjectUID: in.ProjectUID,
-		Statuses:   statuses,
-		PageToken:  in.PageToken,
+		ProjectUID:    in.ProjectUID,
+		Statuses:      statuses,
+		PageToken:     in.PageToken,
+		PublicationID: in.PublicationID,
 	})
 }
 
@@ -264,6 +300,9 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	if err := validateScheduledAtSave(in.ScheduledAt); err != nil {
 		return nil, err
 	}
+	if err := s.validatePublicationID(ctx, projectUID, in.PublicationID); err != nil {
+		return nil, err
+	}
 
 	existing, err := s.repo.Get(ctx, in.ID)
 	if err != nil {
@@ -293,6 +332,7 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	existing.EDReplyEmail = strings.TrimSpace(in.EDReplyEmail)
 	existing.CommitteeUIDs = normalizeCommitteeUIDs(in.CommitteeUIDs)
 	existing.ScheduledAt = in.ScheduledAt
+	existing.PublicationID = in.PublicationID
 
 	return s.repo.Update(ctx, existing, in.ExpectedVersion)
 }

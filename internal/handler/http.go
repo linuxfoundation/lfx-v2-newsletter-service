@@ -29,6 +29,7 @@ type Handler struct {
 	send            *service.SendOrchestrator
 	analytics       *service.AnalyticsService
 	unsub           *service.UnsubscribeService
+	publication     *service.PublicationService
 	project         port.ProjectMetadataClient
 	db              *sql.DB
 	auth            *AuthValidator
@@ -45,6 +46,7 @@ type Config struct {
 	Send            *service.SendOrchestrator
 	Analytics       *service.AnalyticsService
 	Unsubscribe     *service.UnsubscribeService
+	Publication     *service.PublicationService
 	Project         port.ProjectMetadataClient
 	DB              *sql.DB
 	Auth            *AuthValidator
@@ -61,6 +63,7 @@ func New(cfg Config) *Handler {
 		send:            cfg.Send,
 		analytics:       cfg.Analytics,
 		unsub:           cfg.Unsubscribe,
+		publication:     cfg.Publication,
 		project:         cfg.Project,
 		db:              cfg.DB,
 		auth:            cfg.Auth,
@@ -99,6 +102,16 @@ func (h *Handler) Routes() http.Handler {
 	// Health endpoints — no auth.
 	mux.HandleFunc("GET /livez", h.Livez)
 	mux.HandleFunc("GET /readyz", h.Readyz)
+
+	// Newsletter publications CRUD — JWT auth via withAuth().
+	mux.Handle("POST /projects/{project_uid}/newsletter-publications", h.withAuth(http.HandlerFunc(h.CreatePublication)))
+	mux.Handle("GET /projects/{project_uid}/newsletter-publications", h.withAuth(http.HandlerFunc(h.ListPublications)))
+	mux.Handle("GET /projects/{project_uid}/newsletter-publications/{publication_uid}", h.withAuth(http.HandlerFunc(h.GetPublication)))
+	mux.Handle("PUT /projects/{project_uid}/newsletter-publications/{publication_uid}", h.withAuth(http.HandlerFunc(h.UpdatePublication)))
+	// Editions of a publication are read via the flat newsletter list filtered by
+	// `?publication_id=` (GET /projects/{uid}/newsletters), which supports the
+	// status tabs and keyset pagination the editions view needs — so there is no
+	// dedicated editions endpoint.
 
 	// Newsletter CRUD — JWT auth via withAuth().
 	mux.Handle("POST /projects/{project_uid}/newsletters", h.withAuth(http.HandlerFunc(h.CreateNewsletter)))

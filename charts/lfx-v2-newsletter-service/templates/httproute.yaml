@@ -30,6 +30,12 @@ spec:
         - path:
             type: RegularExpression
             value: "^/projects/[^/]+/newsletters(/.*)?$"
+        # Publication (two-level parent of many editions, LFXV2-2582). A distinct
+        # match because `newsletters(/.*)?` does not cover the `newsletter-publications`
+        # segment (the `-` breaks the literal `newsletters`).
+        - path:
+            type: RegularExpression
+            value: "^/projects/[^/]+/newsletter-publications(/.*)?$"
         - path:
             type: RegularExpression
             value: "^/projects/[^/]+/newsletter-opt-outs(/.*)?$"

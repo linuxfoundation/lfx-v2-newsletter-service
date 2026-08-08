@@ -21,10 +21,21 @@ func (h *Handler) ListNewsletters(w http.ResponseWriter, r *http.Request) {
 	status := model.Status(q.Get("status"))
 	pageToken := q.Get("page_token")
 
+	var pubRaw *string
+	if v := q.Get("publication_id"); v != "" {
+		pubRaw = &v
+	}
+	publicationID, err := parseOptionalPublicationID(pubRaw)
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+
 	page, err := h.newsletter.ListNewsletters(r.Context(), service.ListNewslettersInput{
-		ProjectUID: projectUID,
-		Status:     status,
-		PageToken:  pageToken,
+		ProjectUID:    projectUID,
+		Status:        status,
+		PageToken:     pageToken,
+		PublicationID: publicationID,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)

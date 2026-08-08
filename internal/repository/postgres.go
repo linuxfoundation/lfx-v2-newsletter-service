@@ -107,6 +107,10 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 		q = q.Where("status IN (?)", bun.In(filters.Statuses))
 	}
 
+	if filters.PublicationID != nil {
+		q = q.Where("publication_id = ?", filters.PublicationID)
+	}
+
 	if filters.PageToken != "" {
 		cursor, err := decodeCursor(filters.PageToken)
 		if err != nil {

@@ -82,11 +82,15 @@ type Newsletter struct {
 	// armed (SendGrid POST /v3/mail/batch). Every recipient in the fan-out
 	// carries the same BatchID and ScheduledAt so the provider releases them
 	// together, and it is what makes the batch cancellable.
-	BatchID   *string   `bun:"batch_id" json:"-"`
-	CreatedBy string    `bun:"created_by,notnull" json:"createdBy"`
-	Version   int64     `bun:"version,notnull,default:1" json:"version"`
-	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
-	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
+	BatchID *string `bun:"batch_id" json:"-"`
+	// PublicationID links this edition to its parent newsletter_publications
+	// row. Nullable-first during migration (LFXV2-2582); NOT NULL deferred to a
+	// follow-up once backfill has run everywhere.
+	PublicationID *uuid.UUID `bun:"publication_id" json:"publicationId,omitempty"`
+	CreatedBy     string     `bun:"created_by,notnull" json:"createdBy"`
+	Version       int64      `bun:"version,notnull,default:1" json:"version"`
+	CreatedAt     time.Time  `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
+	UpdatedAt     time.Time  `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
 }
 
 // NewsletterOpen records a single open event for a sent newsletter.

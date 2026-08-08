@@ -50,6 +50,7 @@ type Newsletter struct {
 	// POST .../schedule), it is the committed release time. Null when no
 	// schedule has ever been set.
 	ScheduledAt     *time.Time `json:"scheduled_at,omitempty"`
+	PublicationID   *string    `json:"publication_id,omitempty"`
 	TotalRecipients int        `json:"total_recipients"`
 	CreatedBy       string     `json:"created_by"`
 	Version         int64      `json:"version"`
@@ -66,7 +67,8 @@ type CreateNewsletterRequest struct {
 	// ScheduledAt is optional. When set, only a future time is required at
 	// save time — arming the schedule (72h horizon, minimum lead) is
 	// validated separately by POST .../schedule.
-	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+	ScheduledAt   *time.Time `json:"scheduled_at,omitempty"`
+	PublicationID *string    `json:"publication_id,omitempty"`
 }
 
 // UpdateNewsletterRequest is the body of PUT /projects/{project_uid}/newsletters/{newsletter_uid}.
@@ -79,6 +81,7 @@ type UpdateNewsletterRequest struct {
 	EDReplyEmail  string     `json:"ed_reply_email"`
 	CommitteeUIDs []string   `json:"committee_uids"`
 	ScheduledAt   *time.Time `json:"scheduled_at,omitempty"`
+	PublicationID *string    `json:"publication_id,omitempty"`
 }
 
 // RecipientCountRequest is the body of POST /projects/{project_uid}/newsletters/recipient-count.
@@ -338,4 +341,42 @@ type OptOut struct {
 // OptOutListResponse is the body of GET /projects/{project_uid}/newsletter-opt-outs.
 type OptOutListResponse struct {
 	OptOuts []OptOut `json:"opt_outs"`
+}
+
+// NewsletterPublication is the response shape returned by publication endpoints.
+type NewsletterPublication struct {
+	ID             string    `json:"id"`
+	ProjectUID     string    `json:"project_uid"`
+	Slug           string    `json:"slug"`
+	Name           string    `json:"name"`
+	IsDefault      bool      `json:"is_default"`
+	WrapperContent any       `json:"wrapper_content"`
+	TemplateSetID  *string   `json:"template_set_id,omitempty"`
+	ViewOnlineBase *string   `json:"view_online_base,omitempty"`
+	CreatedBy      string    `json:"created_by"`
+	Version        int64     `json:"version"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// CreatePublicationRequest is the body of POST /projects/{project_uid}/newsletter-publications.
+type CreatePublicationRequest struct {
+	Slug           string  `json:"slug"`
+	Name           string  `json:"name"`
+	WrapperContent any     `json:"wrapper_content,omitempty"`
+	TemplateSetID  *string `json:"template_set_id,omitempty"`
+	ViewOnlineBase *string `json:"view_online_base,omitempty"`
+}
+
+// UpdatePublicationRequest is the body of PUT /projects/{project_uid}/newsletter-publications/{publication_uid}.
+type UpdatePublicationRequest struct {
+	Name           *string `json:"name,omitempty"`
+	WrapperContent any     `json:"wrapper_content,omitempty"`
+	TemplateSetID  *string `json:"template_set_id,omitempty"`
+	ViewOnlineBase *string `json:"view_online_base,omitempty"`
+}
+
+// PublicationListResponse is the body of GET /projects/{project_uid}/newsletter-publications.
+type PublicationListResponse struct {
+	Publications []NewsletterPublication `json:"publications"`
 }

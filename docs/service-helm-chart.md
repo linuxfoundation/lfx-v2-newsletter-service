@@ -72,6 +72,7 @@ In CNPG modes and `external.shape=fields`, the deployment forwards `PGHOST`, `PG
 `httproute.yaml` routes (regex path matches, so only the newsletter sub-paths of `/projects/...` route here):
 
 - `^/projects/[^/]+/newsletters(/.*)?$`
+- `^/projects/[^/]+/newsletter-publications(/.*)?$` (a distinct match — the `-` in `newsletter-publications` breaks the literal `newsletters` in the rule above)
 - `^/projects/[^/]+/newsletter-opt-outs(/.*)?$`
 - `^/projects/[^/]+/newsletter-opens/[^/]+$`
 - `^/committees/[^/]+/newsletters$` (member-facing committee-scoped list)
@@ -83,6 +84,7 @@ When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 `ruleset.yaml` authentication and authorization:
 
 - Most authenticated project routes (newsletter CRUD, analytics, etc.) authenticate via OIDC and fall back to `allow_all` when `openfga.enabled=false`. When OpenFGA is enabled, these routes enforce `viewer` (read) or `writer` (write) roles.
+- The newsletter-publication routes (`POST`/`GET`/`PUT …/newsletter-publications[/{publication_uid}]`, LFXV2-2582) follow this same posture: create/update require `writer`, list/get require `viewer`, with the `allow_all` fallback when `openfga.enabled=false`. Editions of a publication are read via the flat newsletter list filtered by `?publication_id=` (covered by the newsletter list rule), so there is no dedicated editions route.
 - The scheduled-send routes (`POST …/newsletters/{newsletter_uid}/schedule` and `POST …/cancel-schedule`, LFXV2-2685) are copied verbatim from `newsletters:send` — same `writer` relation, same `allow_all` fallback. Rationale: arming and cancelling a send carry exactly the authority `send` already carries — same actor, same blast radius, no new data exposure — so they deliberately do **not** follow the fail-closed pattern below.
 - The opt-out list endpoint (`GET /projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor` role and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` or OpenFGA is misconfigured — that is intentional for PII security.
 - The opt-out delete endpoint (`DELETE /projects/{project_uid}/newsletter-opt-outs/{opt_out_id}`) mutates a user's consent record and is **always fail-closed**: it uses direct `openfga_check` with the `writer` role and does NOT have an `allow_all` fallback, matching the security posture of the list endpoint.

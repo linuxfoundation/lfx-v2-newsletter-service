@@ -27,7 +27,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `GET` | `/livez` | no | Liveness probe. |
 | `GET` | `/readyz` | no | Readiness probe. |
 | `POST` | `/projects/{project_uid}/newsletters` | yes | Create a draft. |
-| `GET` | `/projects/{project_uid}/newsletters` | yes | Unified list of drafts and sent newsletters. Supports `status` and `page_token` query params. |
+| `GET` | `/projects/{project_uid}/newsletters` | yes | Unified list of drafts and sent newsletters. Supports `status`, `page_token`, and `publication_id` query params. `publication_id` (a UUID; `400` if malformed) scopes the list to one publication's editions — this is how the editions view filters by publication while keeping the status tabs. Omitted returns the project's newsletters across all publications. |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Get one newsletter and return its ETag. |
 | `PUT` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Update a draft. Requires `If-Match`. |
 | `DELETE` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Delete a draft. |
@@ -45,6 +45,10 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `POST` | `/newsletters/sendgrid/events` | no | SendGrid signed event webhook (delivered / open / click / bounce / dropped / spamreport / blocked). Authenticity is the ECDSA signature over `timestamp + body` plus a 10-minute freshness window against replay; no user session. Registered whenever `SENDGRID_WEBHOOK_PUBLIC_KEY` is set — independent of `EMAIL_PROVIDER`, so events for historical and scheduled SendGrid sends keep flowing after the outbound provider is flipped back to `email-service`; do not remove or block this route on a provider flip. Returns `204`; `400` on a malformed body, `401` on a bad signature or stale timestamp. The chart routes this path (`httproute.yaml` + an anonymous `ruleset.yaml` rule) whenever `app.send.sendgrid.webhookPublicKeySecretRef.name` is set — independent of the outbound provider, so ingestion survives a flip back to `email-service`. |
 | `GET` | `/projects/{project_uid}/newsletter-opt-outs` | yes | List all unsubscribes for the project — `id`, `email`, and `unsubscribed_at`, ordered by `unsubscribed_at` descending. No pagination (opt-out volumes are small). |
 | `DELETE` | `/projects/{project_uid}/newsletter-opt-outs/{opt_out_id}` | yes | Delete an opt-out entry. Returns `204 No Content` on success, `400` for a malformed `opt_out_id` UUID, `404` for unknown `opt_out_id` or project mismatch. |
+| `POST` | `/projects/{project_uid}/newsletter-publications` | yes | Create a publication (the parent "newsletter identity": wrapper, branding, template set, slug, View Online base). Requires `slug` and `name`. Returns `201` with the publication and its ETag. |
+| `GET` | `/projects/{project_uid}/newsletter-publications` | yes | List the project's publications. Returns `PublicationListResponse`. |
+| `GET` | `/projects/{project_uid}/newsletter-publications/{publication_uid}` | yes | Get one publication and return its ETag. `404` on project mismatch or unknown id. |
+| `PUT` | `/projects/{project_uid}/newsletter-publications/{publication_uid}` | yes | Update a publication. Requires `If-Match`; missing/malformed → `400`, stale version → `412`. |
 
 Auth routes expect a Heimdall-issued JWT. `REQUIRE_USER_AUTH=false` is only for local development; startup refuses auth-disabled mode outside local/dev `LFX_ENVIRONMENT` values.
 
@@ -62,6 +66,7 @@ Core state:
 | `body_html` | Newsletter HTML body. |
 | `ed_reply_email` | Reply-to address stored on the draft. Fallback only — at send time the orchestrator resolves the sender's own primary email via `lfx.auth-service.user_emails.read` and uses it as Reply-To instead, so replies reach whoever sends rather than whoever last drafted. This field is used only when that resolution fails or the sender's domain isn't in the Reply-To allowlist. |
 | `committee_uids` | Committees used for recipient resolution. |
+| `publication_id` | Optional UUID linking this edition to a `newsletter_publications` row in the same project. Settable on create/update — a value that doesn't resolve to a publication in this project returns `400 invalid_request`; a malformed UUID likewise returns `400`. `PUT` is full-replace: an omitted value unlinks the edition. Null editions are backfilled to the project's default publication by the schema migration. |
 | `status` | `draft`, `sending`, `scheduled`, or `sent`. |
 | `sent_at` | Set when status becomes `sent`. |
 | `scheduled_at` | Optional, settable on create/update. Two meanings depending on `status`: while `draft`, it is the author's saved intent — saving it does **not** by itself contact the send provider or send anything. Once `status=scheduled`, it is the committed release time armed at the provider. Null when no schedule has ever been set. `PUT` is full-replace: an omitted value clears a previously-saved schedule. |
@@ -76,11 +81,32 @@ Core state:
 
 **Save-time vs. arm-time validation.** `scheduled_at` on create/update is validated leniently — only that it is in the future. The full arm-time window (minimum lead, and a hard cap at the send provider's horizon — currently 72 hours for SendGrid Mail Send) is validated only when `POST …/schedule` is called, independently of when the value was saved. An author can save a schedule five days out on a draft; arming it fails with `400 invalid_request` until it falls inside the window.
 
+### Publications
+
+A publication is the parent "newsletter identity" that editions (rows in `newsletters`) belong to. `NewsletterPublication`:
+
+| Field | Description |
+| --- | --- |
+| `id` | Publication UUID. |
+| `project_uid` | Owning project UID. |
+| `slug` | URL-safe identifier, unique within the project. |
+| `name` | Display name. |
+| `is_default` | Whether this is the project's default publication (editions with no explicit `publication_id` are backfilled to it). |
+| `wrapper_content` | JSON block-template wrapper/branding applied to every edition. Defaults to `{}`. |
+| `template_set_id` | Optional block-template set identifier. |
+| `view_online_base` | Optional base URL used to build each edition's View Online link. |
+| `created_by` | Authenticated principal or local fallback. |
+| `version` | Optimistic-locking version. |
+
+`CreatePublicationRequest` requires `slug` + `name` (`wrapper_content`, `template_set_id`, `view_online_base` optional). `UpdatePublicationRequest` carries the same optional fields and requires `If-Match`. `GET …/newsletter-publications` returns `PublicationListResponse` (`publications` array; `next_page_token` reserved, not yet used).
+
 ## Optimistic Locking
 
 `POST /projects/{project_uid}/newsletters`, `GET …/newsletters/{newsletter_uid}`, and `PUT …/newsletters/{newsletter_uid}` return a strong ETag formatted as the current integer version.
 
 `PUT …/newsletters/{newsletter_uid}`, `POST …/newsletters/{newsletter_uid}/send`, `POST …/schedule`, and `POST …/cancel-schedule` require `If-Match`. Missing or malformed `If-Match` returns `400 invalid_request`. A stale version returns `412 version_mismatch`.
+
+Publications follow the same scheme: `POST`/`GET`/`PUT …/newsletter-publications/{publication_uid}` return a strong ETag, and `PUT …/newsletter-publications/{publication_uid}` requires `If-Match` (missing/malformed → `400`, stale → `412`).
 
 ## State Transitions
 
