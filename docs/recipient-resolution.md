@@ -70,6 +70,10 @@ A newsletter's engagement lives in whichever provider dispatched it, so analytic
 - The per-recipient endpoint (`…/analytics/recipients`) reads the same provider-routed source via `EngagementReader.RecipientRecords` (email-service's by-group status reply over NATS, or the SendGrid store's engagement rows joined with their open events). Display names are resolved at read time by re-querying the newsletter's committees over `lfx.committee-api.list_members` and matching members on lowercased email — a read-only lookup with no unsubscribe filtering (the engagement rows already reflect who was actually sent to). Name resolution is best-effort: a failed committee lookup degrades to email-only rows.
 - **Clicks are SendGrid-only.** The SendGrid store's `EngagementReader` additionally reports click totals, a daily click series, per-recipient click detail, and a top-clicked-links breakdown, all sourced from the `click` event on the same signed event webhook that feeds opens (`sendgrid_click_events`, joined to `sendgrid_recipient_engagement` by `email_id`). The email-service reader's `GroupDetailFromRecords` builder leaves every click field zero/empty — SES has no click-event delivery path into this service — so an `email-service`-provider newsletter always reports zero clicks rather than erroring. The compliance-footer's Unsubscribe and My Newsletters links are rendered with `clicktracking="off"` so opt-out/browse clicks never inflate `click_rate` or `top_links`.
 
+## Not Yet a Resolution Source
+
+`newsletter_subscriptions` (added in LFXV2-2713 — see `docs/subscriber-import.md`) holds a bulk-imported, per-`list_id` subscriber list. `SendOrchestrator.resolveRecipients` does not read this table today: it resolves recipients only from committee membership, as described above. Wiring `newsletter_subscriptions` into recipient resolution (so a newsletter can target an imported list in addition to, or instead of, committees) is a separate, follow-on change (LFXV2-2684) and is out of scope for the importer itself.
+
 ## Change Checklist
 
 - Read `lfx-v2-committee-service` docs for committee-member payload fields.

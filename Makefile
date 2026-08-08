@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 APP_NAME := lfx-v2-newsletter-service/newsletter-api
+IMPORT_APP_NAME := lfx-v2-newsletter-service/newsletter-import
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo "dev")
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -46,6 +47,10 @@ build:
 .PHONY: run
 run: build
 	./bin/$(APP_NAME)
+
+.PHONY: build-import
+build-import:
+	go build -o bin/$(IMPORT_APP_NAME) ./cmd/newsletter-import
 
 .PHONY: test
 test:

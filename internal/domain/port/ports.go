@@ -138,6 +138,20 @@ type UnsubscribeRepository interface {
 	DeleteUnsubscribe(ctx context.Context, projectUID string, id uuid.UUID) error
 }
 
+// SubscriptionRepository persists per-(list, email) subscription rows.
+//
+// Populated today only by cmd/newsletter-import (LFXV2-2713); no HTTP or NATS
+// handler calls this interface yet. Kept narrow — exactly the one bulk-write
+// operation the importer needs, nothing speculative.
+type SubscriptionRepository interface {
+	// ImportBatch upserts a batch of rows for listID via
+	// ON CONFLICT (list_id, email) DO NOTHING, so a row a person already
+	// unsubscribed from (subscribed=false, from either a prior import or a
+	// future unsubscribe flow) is never overwritten by a later import.
+	// Returns the number of rows actually inserted (excludes conflicts).
+	ImportBatch(ctx context.Context, listID string, rows []model.Subscription) (inserted int, err error)
+}
+
 // CommitteeClient resolves committee members for newsletter recipient calculation.
 //
 // The concrete implementation talks to lfx-v2-committee-service via the

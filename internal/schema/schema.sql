@@ -413,3 +413,53 @@ CREATE TABLE IF NOT EXISTS sendgrid_click_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sg_click_events_email ON sendgrid_click_events (email_id);
+
+-- ---------------------------------------------------------------------------
+-- newsletter_subscriptions (LFXV2-2713)
+--
+-- Per-(list_id, email) subscription state, populated today only by the
+-- cmd/newsletter-import CLI (bulk migration of the AAIF User Community
+-- subscriber list out of Gatewaze). This table is NOT yet a recipient
+-- resolution source: SendOrchestrator.resolveRecipients only reads committee
+-- membership (see docs/recipient-resolution.md). Wiring list-based audiences
+-- into sends is tracked separately (LFXV2-2684).
+--
+-- Email is stored lowercased, matching the newsletter_unsubscribes convention,
+-- so the unique index below is what makes the importer idempotent: a re-run
+-- of the same (or an overlapping) export inserts zero duplicate rows via
+-- ON CONFLICT (list_id, email) DO NOTHING.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS newsletter_subscriptions (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    list_id         TEXT        NOT NULL,
+    email           TEXT        NOT NULL,
+    subscribed      BOOLEAN     NOT NULL DEFAULT true,
+    source          TEXT        NOT NULL DEFAULT 'import',
+    subscribed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    unsubscribed_at TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_newsletter_subscriptions_list_email
+    ON newsletter_subscriptions (list_id, email);
+
+-- Partial index over the common "who's currently subscribed to this list"
+-- query shape, once this table gains a reader.
+CREATE INDEX IF NOT EXISTS idx_newsletter_subscriptions_list_subscribed
+    ON newsletter_subscriptions (list_id) WHERE subscribed;
+
+-- The list_id enumeration is intentionally a CHECK constraint, not a lists
+-- CRUD table — there is exactly one list today. Widen this the same way
+-- newsletters_status_check is widened above: drop and re-add with the
+-- extended IN (...) list when a second list is onboarded.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletter_subscriptions_list_id_check'
+    ) THEN
+        ALTER TABLE newsletter_subscriptions
+            ADD CONSTRAINT newsletter_subscriptions_list_id_check
+            CHECK (list_id IN ('aaif-user-community'));
+    END IF;
+END$$;
