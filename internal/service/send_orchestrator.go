@@ -75,6 +75,14 @@ const fromDisplayNameSuffix = " Newsletter"
 // "My Newsletters" deep link.
 const myNewslettersPath = "/newsletters/my"
 
+// viewOnlinePath builds the Self-Serve permalink for the public "View Online"
+// page of a single sent newsletter edition, appended to SelfServeBaseURL. Only
+// meaningful once the edition has settled to status='sent' — set on real
+// sends only, never on TestSend, which has no persisted edition to link to.
+func viewOnlinePath(projectUID, newsletterID string) string {
+	return "/newsletters/" + projectUID + "/" + newsletterID + "/view"
+}
+
 // SendOrchestrator coordinates recipient resolution, email-chrome rendering,
 // per-recipient fan-out to lfx-v2-email-service, and the draft → sent state
 // transition. It owns the email-service integration; the UI no longer talks
@@ -426,6 +434,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	}
 	if o.selfServeBaseURL != "" {
 		chrome.MyNewslettersURL = o.selfServeBaseURL + myNewslettersPath
+		chrome.ViewOnlineURL = o.selfServeBaseURL + viewOnlinePath(draft.ProjectUID, draft.ID.String())
 	}
 	htmlBody := render.EmailHTML(chrome)
 	textBody := render.EmailText(chrome)

@@ -46,6 +46,12 @@ type Chrome struct {
 	// IncludeComplianceFooter is true) the footer renders a dedicated line
 	// above the unsubscribe small print. Empty omits the line.
 	MyNewslettersURL string
+	// ViewOnlineURL is the recipient-independent permalink to the public
+	// "View Online" page for this newsletter edition. When non-empty (and
+	// IncludeComplianceFooter is true) the footer renders a dedicated line
+	// alongside the "My Newsletters" line. Empty omits the line. Set only for
+	// real sends — test sends have no sent edition to link to.
+	ViewOnlineURL string
 }
 
 // LFX brand colors used by the email chrome. Mirrored from
@@ -267,11 +273,21 @@ func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
 		// SendGrid honors clicktracking="off" only when the attribute appears BEFORE href.
 		myNewslettersLine = `<div style="margin-bottom:6px;">Missed an issue? View past newsletters any time in <a clicktracking="off" href="` + escapeHTML(input.MyNewslettersURL) + `" style="color:` + colorBlue500 + `;text-decoration:underline;">My Newsletters</a>.</div>`
 	}
+	viewOnlineLine := ""
+	if input.ViewOnlineURL != "" {
+		// clicktracking="off" for the same reason as the Unsubscribe and My
+		// Newsletters links above: this is a chrome/navigational link, not author
+		// content, so it must not be proxied through the provider's click-tracking
+		// redirect or counted toward click_rate. SendGrid honors clicktracking="off"
+		// only when the attribute appears BEFORE href.
+		viewOnlineLine = `<div style="margin-bottom:6px;">Trouble viewing this email? <a clicktracking="off" href="` + escapeHTML(input.ViewOnlineURL) + `" style="color:` + colorBlue500 + `;text-decoration:underline;">View it online</a>.</div>`
+	}
 	return `<tr>
 <td class="lfx-pad" style="background-color:` + colorGray50 + `;border-top:1px solid ` + colorGray200 + `;padding:24px 24px;font-size:12px;color:` + colorGray500 + `;font-family:` + fontStack + `;">
 <div style="margin-bottom:6px;">Sent by <strong style="color:` + colorGray900 + `;">` + edNameSafe + `</strong> on behalf of <strong style="color:` + colorGray900 + `;">` + displayNameSafe + `</strong>.</div>
 ` + replyLine + `
 ` + myNewslettersLine + `
+` + viewOnlineLine + `
 <div style="color:` + colorGray400 + `;font-size:11px;">` + unsubLine + ` Delivered by <span style="font-weight:700;color:` + colorBlue500 + `;letter-spacing:-0.02em;">LFX</span>.</div>
 </td>
 </tr>`
@@ -371,6 +387,9 @@ func EmailText(input Chrome) string {
 		}
 		if input.MyNewslettersURL != "" {
 			lines = append(lines, "Missed an issue? View past newsletters any time in My Newsletters: "+input.MyNewslettersURL)
+		}
+		if input.ViewOnlineURL != "" {
+			lines = append(lines, "Trouble viewing this email? View it online: "+input.ViewOnlineURL)
 		}
 		if input.UnsubscribeURL != "" {
 			lines = append(lines, "Unsubscribe from "+display+" newsletters: "+input.UnsubscribeURL, "Delivered by LFX.")

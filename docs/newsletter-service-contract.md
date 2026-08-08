@@ -42,6 +42,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `GET` | `/committees/{committee_uid}/newsletters` | yes | Member-facing: sent newsletters whose audience includes the committee, ordered `sent_at` descending. Supports `page_token`. The gateway gates on `committee:{committee_uid}` `member` OR `auditor` (openfga_or_check), checked per request against OpenFGA — auditor folds in committee writers and project oversight roles so stronger roles never see less than members. Member tuples are maintained by committee-service via fga-sync, so revocation after a membership removal is eventual — normally near-immediate, but tuple removal is asynchronous/best-effort (see committee-service's `docs/fga-contract.md`); this endpoint adds no caching on top of tuple state. Returns `CommitteeNewsletterListResponse` — a reduced DTO without `body_html`, `ed_reply_email`, `group_id`, `created_by`, or `committee_uids` (the full audience list would let a single-committee member enumerate the newsletter's other committees). Clients fetch the rendered body via the project-scoped get, which is reachable for members because the platform model's project `viewer` relation includes all authenticated users (`[user:*]`). |
 | `GET` | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}` | no | Tracking pixel. Records open by recipient hash and returns a GIF. |
 | `GET` | `/newsletters/unsubscribe` | no | One-click unsubscribe via HMAC-signed `t` token. Returns HTML. A direct-service HEAD is a no-op so link previews don't unsubscribe; the gateway ruleset allows only `GET`, so HEAD is blocked at the gateway. |
+| `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/public` | no | Public "View Online" read for a sent newsletter, backing the footer link in the email chrome. No session: a recipient opens it from their mail client. Only ever serves a newsletter once `status='sent'` — a draft, a `sending` row, or a `newsletter_uid`/`project_uid` mismatch all return `404` so the response never distinguishes "wrong project" from "not sent yet". Returns `PublicNewsletterView` (`subject`, `body_html`, `project_name`, `sent_at`) with `Cache-Control: public, max-age=300`. |
 | `POST` | `/newsletters/sendgrid/events` | no | SendGrid signed event webhook (delivered / open / click / bounce / dropped / spamreport / blocked). Authenticity is the ECDSA signature over `timestamp + body` plus a 10-minute freshness window against replay; no user session. Registered whenever `SENDGRID_WEBHOOK_PUBLIC_KEY` is set — independent of `EMAIL_PROVIDER`, so events for historical and scheduled SendGrid sends keep flowing after the outbound provider is flipped back to `email-service`; do not remove or block this route on a provider flip. Returns `204`; `400` on a malformed body, `401` on a bad signature or stale timestamp. The chart routes this path (`httproute.yaml` + an anonymous `ruleset.yaml` rule) whenever `app.send.sendgrid.webhookPublicKeySecretRef.name` is set — independent of the outbound provider, so ingestion survives a flip back to `email-service`. |
 | `GET` | `/projects/{project_uid}/newsletter-opt-outs` | yes | List all unsubscribes for the project — `id`, `email`, and `unsubscribed_at`, ordered by `unsubscribed_at` descending. No pagination (opt-out volumes are small). |
 | `DELETE` | `/projects/{project_uid}/newsletter-opt-outs/{opt_out_id}` | yes | Delete an opt-out entry. Returns `204 No Content` on success, `400` for a malformed `opt_out_id` UUID, `404` for unknown `opt_out_id` or project mismatch. |
@@ -75,6 +76,15 @@ Core state:
 `POST …/schedule` returns `ScheduleNewsletterResponse`: the same shape as `SendNewsletterResponse` plus `scheduled_at` (the value actually armed — the request's override, or the draft's own saved value). `POST …/cancel-schedule` returns `CancelScheduleResponse`: just the reverted newsletter.
 
 **Save-time vs. arm-time validation.** `scheduled_at` on create/update is validated leniently — only that it is in the future. The full arm-time window (minimum lead, and a hard cap at the send provider's horizon — currently 72 hours for SendGrid Mail Send) is validated only when `POST …/schedule` is called, independently of when the value was saved. An author can save a schedule five days out on a draft; arming it fails with `400 invalid_request` until it falls inside the window.
+
+`GET …/newsletters/{newsletter_uid}/public` returns `PublicNewsletterView`, a deliberately narrow, unauthenticated projection — it never includes `id`, `committee_uids`, `ed_reply_email`, `created_by`, or `version`:
+
+| Field | Description |
+| --- | --- |
+| `subject` | Subject line. |
+| `body_html` | Newsletter HTML body. |
+| `project_name` | Owning project's display name, resolved via `project-service`. Falls back to `"this project's"` if resolution fails or returns empty. |
+| `sent_at` | When the newsletter was sent. |
 
 ## Optimistic Locking
 
@@ -113,11 +123,13 @@ Recipient resolution and the provider fan-out are documented in `docs/recipient-
 | --- | --- |
 | `…/newsletters/recipient-count` | Returns unique recipient count after resolving committee members. |
 | `…/newsletters/recipients` | Returns unique recipient emails and first names. |
-| `…/newsletters/test-send` | Validates fields and dispatches a single test email to `to_email` — no persistence, no analytics. The body renders the same compliance footer as a real send: sender attribution, optional reply-to line, the "My Newsletters" link, and a working unsubscribe link minted for `to_email` (clicking it records a real project-scoped opt-out for that address). Returns `{ "ok": true }`. |
+| `…/newsletters/test-send` | Validates fields and dispatches a single test email to `to_email` — no persistence, no analytics. The body renders the same compliance footer as a real send: sender attribution, optional reply-to line, the "My Newsletters" link, and a working unsubscribe link minted for `to_email` (clicking it records a real project-scoped opt-out for that address). It does **not** render a "View Online" link — a test send has no persisted, sent edition for the permalink to point at. Returns `{ "ok": true }`. |
 
 The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sends validate and transition state without dispatching email.
 
 Real sends and test-sends render a compliance footer containing sender attribution, an optional reply-to line, a "My Newsletters" deep link (`<LFX_SELF_SERVE_BASE_URL>/newsletters/my`, default `https://app.lfx.dev/newsletters/my`) so recipients can browse past newsletters in Self-Serve, and the per-recipient unsubscribe small print. The "My Newsletters" line sits above the unsubscribe small print in both the HTML and plain-text bodies. An unset or empty `LFX_SELF_SERVE_BASE_URL` falls back to the production default — no supported configuration omits the line from sends (the renderer omits it only for callers that pass no URL).
+
+Real sends only (never test-sends) also render a "View Online" link pointing at `<LFX_SELF_SERVE_BASE_URL>/newsletters/{project_uid}/{newsletter_uid}/view` — the Self-Serve public page backed by `GET …/newsletters/{newsletter_uid}/public` above. It sits alongside the "My Newsletters" line, above the unsubscribe small print, in both the HTML and plain-text bodies.
 
 ## Analytics, Open Tracking, And Unsubscribe
 

@@ -572,6 +572,69 @@ func TestSendIncludesMyNewslettersLink(t *testing.T) {
 	}
 }
 
+// TestSendIncludesViewOnlineLink asserts a real send embeds the public "View
+// Online" permalink (project + newsletter ID scoped) in both bodies, while a
+// test-send — which has no persisted sent edition to link to — never does.
+func TestSendIncludesViewOnlineLink(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Committee:     committee,
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		Unsubscribe:   unsub,
+		Concurrency:   2,
+		FanoutEnabled: true,
+		// Trailing slash on purpose: NewSendOrchestrator must normalize it so
+		// the rendered link has a single slash before the path.
+		SelfServeBaseURL: "https://app.lfx.dev/",
+	})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	wantURL := "https://app.lfx.dev/newsletters/p1/" + draft.ID.String() + "/view"
+	if !strings.Contains(email.sends[0].HTML, `href="`+wantURL+`"`) {
+		t.Errorf("real-send HTML missing View Online link:\n%s", email.sends[0].HTML)
+	}
+	if !strings.Contains(email.sends[0].Text, wantURL) {
+		t.Errorf("real-send text missing View Online link:\n%s", email.sends[0].Text)
+	}
+
+	// Test-send renders the same compliance footer but must NOT include a
+	// View Online link — there is no persisted sent edition to link to.
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "alice@example.com",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 2 {
+		t.Fatalf("got %d sends after test-send, want 2", len(email.sends))
+	}
+	for _, body := range []string{email.sends[1].HTML, email.sends[1].Text} {
+		if strings.Contains(body, "Trouble viewing this email?") {
+			t.Errorf("test-send unexpectedly contains View Online link:\n%s", body)
+		}
+	}
+}
+
 // TestTestSendRendersComplianceFooterWithRealUnsubscribeLink asserts a
 // test-send body carries the same compliance footer as a real send, with a
 // working unsubscribe link minted directly for the to_email recipient.

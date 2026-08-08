@@ -139,6 +139,11 @@ func (h *Handler) Routes() http.Handler {
 	// HMAC-signed token in the query string.
 	mux.HandleFunc("GET /newsletters/unsubscribe", h.Unsubscribe)
 
+	// Public "View Online" page — intentionally unauthenticated; requested by
+	// a recipient clicking the footer link, which has no session. Only ever
+	// serves a newsletter once it has reached status='sent'; see PublicView.
+	mux.HandleFunc("GET /projects/{project_uid}/newsletters/{newsletter_uid}/public", h.PublicView)
+
 	// SendGrid event webhook — intentionally unauthenticated; SendGrid POSTs
 	// engagement events with no session. Authenticity comes from the ECDSA
 	// signature the handler verifies. Registered only when configured.
