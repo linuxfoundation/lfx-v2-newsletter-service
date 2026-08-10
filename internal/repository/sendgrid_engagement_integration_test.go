@@ -167,6 +167,34 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 		t.Errorf("group records = %d; want 2", len(recs))
 	}
 
+	// RecipientRecordsByGroupID returns the same rows WITH each recipient's
+	// ascending open series and the delivery/failure timestamps, for the
+	// per-recipient analytics endpoint.
+	full, err := store.RecipientRecordsByGroupID(ctx, group)
+	if err != nil {
+		t.Fatalf("RecipientRecordsByGroupID: %v", err)
+	}
+	if len(full) != 2 {
+		t.Fatalf("full group records = %d; want 2", len(full))
+	}
+	byEmailID := map[string]int{full[0].EmailID: 0, full[1].EmailID: 1}
+	f1, f2 := full[byEmailID[m1]], full[byEmailID[m2]]
+	if len(f1.OpenedAtList) != 2 || f1.OpenedAtList[0].After(f1.OpenedAtList[1]) {
+		t.Errorf("m1 OpenedAtList = %v; want 2 ascending timestamps", f1.OpenedAtList)
+	}
+	if !f1.Delivered || f1.DeliveredAt == nil {
+		t.Errorf("m1 = %+v; want delivered with delivered_at set", f1)
+	}
+	if len(f2.OpenedAtList) != 0 {
+		t.Errorf("m2 OpenedAtList = %v; want empty (never opened)", f2.OpenedAtList)
+	}
+	if !f2.Failed || f2.FailedAt == nil {
+		t.Errorf("m2 = %+v; want failed with failed_at set", f2)
+	}
+	if none, err := store.RecipientRecordsByGroupID(ctx, group+"-unknown"); err != nil || len(none) != 0 {
+		t.Errorf("RecipientRecordsByGroupID(unknown group) = %v, %v; want empty, nil error", none, err)
+	}
+
 	// RevertGroup tombstones the group and purges its engagement rows and open
 	// events (cleanup after a fully-failed send reverts), leaving other groups
 	// intact.

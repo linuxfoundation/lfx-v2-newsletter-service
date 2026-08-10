@@ -61,6 +61,9 @@ func (f *fakeStore) Engagement(context.Context, string) (*port.EmailEngagement, 
 func (f *fakeStore) RecipientByEmailID(context.Context, string) (*port.EmailRecipientRecord, error) {
 	return f.byEmailID, nil
 }
+func (f *fakeStore) RecipientRecordsByGroupID(context.Context, string) ([]port.EmailRecipientRecord, error) {
+	return nil, nil
+}
 func (f *fakeStore) GroupEngagementDetail(context.Context, string) (*port.GroupEngagementDetail, error) {
 	return f.detail, nil
 }

@@ -43,11 +43,13 @@ func (r sendgridEngagementRow) toPortRecord(openedAt []time.Time) port.EmailReci
 		To:           r.ToEmail,
 		SentAt:       r.SentAt,
 		Delivered:    r.Delivered,
+		DeliveredAt:  r.DeliveredAt,
 		Opened:       r.Opened,
 		OpenCount:    r.OpenCount,
 		LastOpened:   r.LastOpenedAt,
 		OpenedAtList: openedAt,
 		Failed:       r.Failed,
+		FailedAt:     r.FailedAt,
 	}
 }
 
@@ -284,6 +286,47 @@ func (s *SendGridEngagementStore) RecipientsByGroupID(ctx context.Context, group
 	out := make([]port.EmailRecipientRecord, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, r.toPortRecord(nil))
+	}
+	return out, nil
+}
+
+// RecipientRecordsByGroupID returns every recipient record for a group WITH its
+// ascending open-timestamp series, for the per-recipient analytics endpoint.
+// Recipient count is bounded by the committee audience; each recipient's open
+// series is capped at port.MaxOpensPerRecipient most-recent opens, enforced in SQL
+// (a ROW_NUMBER window in a subquery — Postgres forbids window functions
+// directly in WHERE) so neither transfer nor heap is unbounded. An unknown
+// group returns an empty slice, matching RecipientsByGroupID.
+func (s *SendGridEngagementStore) RecipientRecordsByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
+	var rows []sendgridEngagementRow
+	if err := s.db.NewSelect().Model(&rows).Where("sre.group_id = ?", groupID).Scan(ctx); err != nil {
+		return nil, fmt.Errorf("sendgrid recipient records: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	ranked := s.db.NewSelect().
+		ColumnExpr("soe.sg_event_id, soe.email_id, soe.opened_at").
+		ColumnExpr("ROW_NUMBER() OVER (PARTITION BY soe.email_id ORDER BY soe.opened_at DESC) AS rn").
+		TableExpr("sendgrid_open_events AS soe").
+		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = soe.email_id").
+		Where("sre.group_id = ?", groupID)
+	var evs []sendgridOpenEventRow
+	if err := s.db.NewSelect().
+		ColumnExpr("sg_event_id, email_id, opened_at").
+		TableExpr("(?) AS ranked_events", ranked).
+		Where("rn <= ?", port.MaxOpensPerRecipient).
+		OrderExpr("opened_at ASC").
+		Scan(ctx, &evs); err != nil {
+		return nil, fmt.Errorf("sendgrid recipient open events: %w", err)
+	}
+	opensByEmail := make(map[string][]time.Time, len(rows))
+	for _, ev := range evs {
+		opensByEmail[ev.EmailID] = append(opensByEmail[ev.EmailID], ev.OpenedAt)
+	}
+	out := make([]port.EmailRecipientRecord, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.toPortRecord(opensByEmail[r.EmailID]))
 	}
 	return out, nil
 }

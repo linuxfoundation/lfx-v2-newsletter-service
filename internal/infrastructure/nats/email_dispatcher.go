@@ -89,11 +89,13 @@ func (w emailRecipientWire) toPortRecord() port.EmailRecipientRecord {
 		To:           w.To,
 		SentAt:       &sentAt,
 		Delivered:    w.Delivered,
+		DeliveredAt:  w.DeliveredAt,
 		Opened:       w.Opened,
 		OpenCount:    len(openedAtList),
 		LastOpened:   lastOpened,
 		OpenedAtList: openedAtList,
 		Failed:       w.Failed,
+		FailedAt:     w.FailedAt,
 	}
 }
 
@@ -221,6 +223,14 @@ func (d *EmailDispatcher) GetEngagement(ctx context.Context, groupID string) (*p
 // dispatched under the given group_id. Email-service's by-group reply is a
 // JSON array of EmailRecipientRecord (one per email_id in the group).
 //
+// The email-service by-group status contract is best-effort: missing or
+// malformed recipient KV records are silently omitted from the reply, and the
+// group index may briefly lag a fresh send. Callers that must distinguish a
+// partial read from a complete one compare the record count against their own
+// authoritative audience size (the per-recipient analytics endpoint compares
+// against the newsletter's send-time total_recipients snapshot and surfaces an
+// explicit `complete` marker).
+//
 // Used by AnalyticsService to populate DailyOpens (bucketed by OpenedAt) and
 // UniqueOpens (count of records where Opened == true) — the scalar engagement
 // summary doesn't expose either.
@@ -256,6 +266,13 @@ func (d *EmailDispatcher) GetStatusByGroupID(ctx context.Context, groupID string
 		records = append(records, r.toPortRecord())
 	}
 	return records, nil
+}
+
+// RecipientRecords returns the group's per-recipient engagement records with
+// their full open-timestamp series — email-service's by-group status reply
+// already carries exactly that shape.
+func (d *EmailDispatcher) RecipientRecords(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
+	return d.GetStatusByGroupID(ctx, groupID)
 }
 
 // GroupEngagementDetail returns the group's bounded analytics detail from a

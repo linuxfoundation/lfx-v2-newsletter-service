@@ -115,6 +115,7 @@ type Analytics struct {
 type CommitteeMember struct {
 	Email     string
 	FirstName string
+	LastName  string
 }
 
 // ProjectBranding is the slice of a project used to brand newsletter emails.

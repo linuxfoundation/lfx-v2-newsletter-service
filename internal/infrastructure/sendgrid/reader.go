@@ -38,3 +38,9 @@ func (r *engagementReader) GetStatusByEmailID(ctx context.Context, emailID strin
 func (r *engagementReader) GroupEngagementDetail(ctx context.Context, groupID string) (*port.GroupEngagementDetail, error) {
 	return r.store.GroupEngagementDetail(ctx, groupID)
 }
+
+// RecipientRecords returns the group's per-recipient engagement records with
+// their full open-timestamp series from the store.
+func (r *engagementReader) RecipientRecords(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
+	return r.store.RecipientRecordsByGroupID(ctx, groupID)
+}

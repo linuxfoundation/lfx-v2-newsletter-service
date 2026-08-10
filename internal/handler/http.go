@@ -120,6 +120,7 @@ func (h *Handler) Routes() http.Handler {
 
 	// Per-newsletter analytics — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics", h.withAuth(http.HandlerFunc(h.GetAnalytics)))
+	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients", h.withAuth(http.HandlerFunc(h.GetRecipientEngagement)))
 
 	// Newsletter opt-outs — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletter-opt-outs", h.withAuth(http.HandlerFunc(h.ListOptOuts)))
