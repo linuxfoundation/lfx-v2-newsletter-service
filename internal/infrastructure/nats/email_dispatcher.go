@@ -223,6 +223,12 @@ func (d *EmailDispatcher) GetEngagement(ctx context.Context, groupID string) (*p
 // dispatched under the given group_id. Email-service's by-group reply is a
 // JSON array of EmailRecipientRecord (one per email_id in the group).
 //
+// Email-service's by-group status contract allows missing or malformed recipient
+// KV records to be silently omitted — a best-effort operation. To detect
+// incomplete reads, this function validates the returned record count against the
+// engagement summary: if we received fewer records than TotalSent, the read is
+// incomplete and we return an error rather than a partial list.
+//
 // Used by AnalyticsService to populate DailyOpens (bucketed by OpenedAt) and
 // UniqueOpens (count of records where Opened == true) — the scalar engagement
 // summary doesn't expose either.
@@ -253,6 +259,23 @@ func (d *EmailDispatcher) GetStatusByGroupID(ctx context.Context, groupID string
 	if jsonErr := json.Unmarshal(reply, &out); jsonErr != nil {
 		return nil, pkgerrors.NewUnexpected("malformed email-service group-status reply", jsonErr)
 	}
+
+	// Validate record completeness by comparing the returned record count to the
+	// engagement summary's TotalSent. If we got fewer records than were sent, the
+	// read is incomplete (email-service omitted missing/malformed records). Error
+	// rather than return a partial list — the endpoint promises "who it went to"
+	// and "read failures never look empty".
+	engagement, err := d.GetEngagement(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) < engagement.TotalSent {
+		return nil, pkgerrors.NewServiceUnavailable(
+			fmt.Sprintf("incomplete recipient record read: got %d of %d sent", len(out), engagement.TotalSent),
+			errors.New("email-service omitted missing/malformed recipient records"),
+		)
+	}
+
 	records := make([]port.EmailRecipientRecord, 0, len(out))
 	for _, r := range out {
 		records = append(records, r.toPortRecord())

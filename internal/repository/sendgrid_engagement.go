@@ -292,10 +292,15 @@ func (s *SendGridEngagementStore) RecipientsByGroupID(ctx context.Context, group
 
 // RecipientRecordsByGroupID returns every recipient record for a group WITH its
 // ascending open-timestamp series, for the per-recipient analytics endpoint.
-// Two bounded queries (the group's engagement rows, then its open events joined
-// through them) bucketed in memory — both bounded by the group's audience and
-// its recorded opens. An unknown group returns an empty slice, matching
-// RecipientsByGroupID.
+// Recipient count is bounded by the committee; each recipient's open list is
+// capped at MaxOpensPerRecipient (most recent first). An unknown group returns
+// an empty slice, matching RecipientsByGroupID.
+//
+// Loaded into memory and bucketed by email_id, then truncated per recipient to
+// stay bounded even with high-repeat opens. The committee cap ensures reasonable
+// recipient count; this cap ensures each recipient's open series is bounded.
+const MaxOpensPerRecipient = 500
+
 func (s *SendGridEngagementStore) RecipientRecordsByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
 	var rows []sendgridEngagementRow
 	if err := s.db.NewSelect().Model(&rows).Where("sre.group_id = ?", groupID).Scan(ctx); err != nil {
@@ -316,6 +321,15 @@ func (s *SendGridEngagementStore) RecipientRecordsByGroupID(ctx context.Context,
 	opensByEmail := make(map[string][]time.Time, len(rows))
 	for _, ev := range evs {
 		opensByEmail[ev.EmailID] = append(opensByEmail[ev.EmailID], ev.OpenedAt)
+	}
+	// Cap each recipient's open list to MaxOpensPerRecipient most recent opens.
+	// The response is bounded (at most: recipients × MaxOpensPerRecipient opens),
+	// so it stays serializable even with high-repeat senders.
+	for email, opens := range opensByEmail {
+		if len(opens) > MaxOpensPerRecipient {
+			// Keep the most recent MaxOpensPerRecipient (drops earliest opens).
+			opensByEmail[email] = opens[len(opens)-MaxOpensPerRecipient:]
+		}
 	}
 	out := make([]port.EmailRecipientRecord, 0, len(rows))
 	for _, r := range rows {
