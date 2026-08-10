@@ -750,7 +750,8 @@ func TestAnalyticsRecipients_CommitteeLookupFailureDegrades(t *testing.T) {
 }
 
 // TestRecipients_CapsOpensPerRecipient verifies that the service truncates
-// per-recipient open lists to port.MaxOpensPerRecipient (500 most recent).
+// per-recipient open lists to port.MaxOpensPerRecipient (500 most recent) via
+// copy (not reslice) to release the original backing array from memory.
 func TestRecipients_CapsOpensPerRecipient(t *testing.T) {
 	projectUID := "proj1"
 	newsletterID := uuid.New()

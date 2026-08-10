@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -247,9 +248,12 @@ func (a *AnalyticsService) Recipients(ctx context.Context, projectUID string, ne
 		sort.Slice(r.OpenedAtList, func(i, j int) bool { return r.OpenedAtList[i].Before(r.OpenedAtList[j]) })
 		// Cap per-recipient opens to the most recent MaxOpensPerRecipient to bound
 		// response size provider-independently. The list is ascending (oldest first),
-		// so keep the LAST MaxOpensPerRecipient entries (most recent).
+		// so keep the LAST MaxOpensPerRecipient entries (most recent). Copy instead
+		// of reslicing to release the original backing array from memory.
 		if len(r.OpenedAtList) > port.MaxOpensPerRecipient {
-			r.OpenedAtList = r.OpenedAtList[len(r.OpenedAtList)-port.MaxOpensPerRecipient:]
+			capped := make([]time.Time, port.MaxOpensPerRecipient)
+			copy(capped, r.OpenedAtList[len(r.OpenedAtList)-port.MaxOpensPerRecipient:])
+			r.OpenedAtList = capped
 		}
 		out = append(out, port.RecipientEngagement{
 			Name:   names[strings.ToLower(strings.TrimSpace(r.To))],
