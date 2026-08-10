@@ -218,6 +218,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_unsubscribes_project_email
 -- The SendGrid dispatcher records one row per send below; the SendGrid event
 -- webhook applies delivered / open / failed events. Rows are keyed by the
 -- email_id minted into custom_args on mail/send, which the webhook echoes back.
+--
+-- Retention. These rows hold recipient email addresses (to_email) and are kept
+-- for the sent newsletter's analytics lifetime. A send that fully fails and
+-- reverts to draft purges them (see the reverted-groups tombstone below). A
+-- successful send keeps them, and a sent newsletter is not deletable, so no
+-- delete path clears them. An age-based TTL sweep bounds it. Rows older than
+-- SENDGRID_ENGAGEMENT_RETENTION (default 180 days) are purged (LFXV2-3021).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS sendgrid_recipient_engagement (
     email_id       TEXT        PRIMARY KEY,

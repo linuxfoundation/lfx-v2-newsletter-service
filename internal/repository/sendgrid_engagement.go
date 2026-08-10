@@ -137,6 +137,51 @@ func (s *SendGridEngagementStore) RevertGroup(ctx context.Context, groupID strin
 	})
 }
 
+// PurgeEngagementOlderThan deletes recipient engagement and its open events for
+// sends older than cutoff, so recipient email addresses (to_email) are not kept
+// with no end (see the schema retention note). A row's age is its send time,
+// falling back to the latest event timestamp when a webhook created the row
+// before RecordSent persisted it (GREATEST, so later webhook activity extends the
+// age when send time is absent). The open events for each purged recipient are
+// deleted first, in the same transaction. Returns the number of recipient rows
+// deleted.
+//
+// Unlike RevertGroup this takes no per-group advisory lock and writes no
+// tombstone: an aged-out group is not in flight, so no late self-healing webhook
+// is due. A concurrent open landing in the tiny window between the two deletes
+// could in principle orphan a sendgrid_open_events row, but that table holds only
+// opaque ids (sg_event_id, email_id) and a timestamp — no recipient PII — so a
+// stray orphan is harmless to the retention goal.
+func (s *SendGridEngagementStore) PurgeEngagementOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	const ageExpr = "COALESCE(sent_at, GREATEST(delivered_at, failed_at, last_opened_at))"
+	var deleted int64
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewDelete().
+			Table("sendgrid_open_events").
+			Where("email_id IN (SELECT email_id FROM sendgrid_recipient_engagement WHERE "+ageExpr+" < ?)", cutoff).
+			Exec(ctx); err != nil {
+			return fmt.Errorf("purge open events: %w", err)
+		}
+		res, err := tx.NewDelete().
+			Table("sendgrid_recipient_engagement").
+			Where(ageExpr+" < ?", cutoff).
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("purge engagement: %w", err)
+		}
+		n, affErr := res.RowsAffected()
+		if affErr != nil {
+			return affErr
+		}
+		deleted = n
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("sendgrid purge engagement older than: %w", err)
+	}
+	return deleted, nil
+}
+
 // ApplyDelivered marks the recipient delivered (first delivery wins). It upserts
 // on email_id, so a delivered event still lands its engagement even if RecordSent
 // never persisted the row (e.g. the post-send record write failed) — the row is
@@ -156,6 +201,15 @@ func (s *SendGridEngagementStore) ApplyDelivered(ctx context.Context, emailID, g
 // ApplyFailed marks the recipient failed — bounce / dropped / spamreport (first
 // failure wins). Upserts on email_id for the same self-healing reason as
 // ApplyDelivered.
+//
+// delivered and failed are independent flags, not mutually exclusive. SendGrid
+// can deliver a message and later report a failure for the same email_id (a
+// delivered message that bounces afterward, or one the recipient marks as spam),
+// so both flags can be TRUE for one recipient. That is the intended record.
+// Analytics reports delivered and failed as separate counts against the recipient
+// total (it computes only OpenRate itself; the API exposes the delivered/failed
+// counts alongside total_recipients for consumers to derive rates), so a recipient
+// in both buckets does not inflate any such rate.
 func (s *SendGridEngagementStore) ApplyFailed(ctx context.Context, emailID, groupID, to string, at time.Time) error {
 	row := &sendgridEngagementRow{EmailID: emailID, GroupID: groupID, ToEmail: to, Failed: true, FailedAt: &at}
 	if _, err := s.db.NewInsert().
