@@ -16,6 +16,7 @@ import (
 	"net/mail"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -29,6 +30,9 @@ import (
 // malformed values even if a future caller forgets to validate upstream.
 var recipientHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
+// Length limits are counted in characters (Unicode code points), not bytes, so
+// a subject written in a non-ASCII script gets the same allowance as an ASCII
+// one. The 1 MiB request-body cap in the handler still bounds the raw payload.
 const (
 	maxSubjectLength      = 200
 	maxBodyHTMLLength     = 100_000
@@ -312,7 +316,7 @@ func validateSubject(subject string) error {
 	if trimmed == "" {
 		return fmt.Errorf("%w: subject is required", domain.ErrInvalidRequest)
 	}
-	if len(trimmed) > maxSubjectLength {
+	if utf8.RuneCountInString(trimmed) > maxSubjectLength {
 		return fmt.Errorf("%w: subject exceeds %d characters", domain.ErrInvalidRequest, maxSubjectLength)
 	}
 	return nil
@@ -322,7 +326,7 @@ func validateBodyHTML(bodyHTML string) error {
 	if strings.TrimSpace(bodyHTML) == "" {
 		return fmt.Errorf("%w: body_html is required", domain.ErrInvalidRequest)
 	}
-	if len(bodyHTML) > maxBodyHTMLLength {
+	if utf8.RuneCountInString(bodyHTML) > maxBodyHTMLLength {
 		return fmt.Errorf("%w: body_html exceeds %d characters", domain.ErrInvalidRequest, maxBodyHTMLLength)
 	}
 	return nil
