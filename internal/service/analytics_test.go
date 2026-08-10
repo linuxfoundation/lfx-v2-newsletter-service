@@ -748,3 +748,62 @@ func TestAnalyticsRecipients_CommitteeLookupFailureDegrades(t *testing.T) {
 		t.Errorf("Recipients: got %+v, want one record with empty name", got)
 	}
 }
+
+// TestRecipients_CapsOpensPerRecipient verifies that the service truncates
+// per-recipient open lists to port.MaxOpensPerRecipient (500 most recent).
+func TestRecipients_CapsOpensPerRecipient(t *testing.T) {
+	projectUID := "proj1"
+	newsletterID := uuid.New()
+	groupID := "g1"
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create a record with 501 opens: [0, 1, 2, ..., 500] ascending
+	opens := make([]time.Time, 501)
+	for i := 0; i < 501; i++ {
+		opens[i] = base.Add(time.Duration(i) * time.Second)
+	}
+
+	email := &statusByGroupFake{
+		records: []port.EmailRecipientRecord{
+			{
+				To:           "user@example.com",
+				OpenedAtList: opens,
+				OpenCount:    501, // Provider's raw count, not capped
+			},
+		},
+	}
+	repo := &analyticsRepoFake{
+		newsletter: &model.Newsletter{
+			ID:              newsletterID,
+			ProjectUID:      projectUID,
+			Status:          model.StatusSent,
+			GroupID:         &groupID,
+			TotalRecipients: 1,
+		},
+	}
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	result, err := svc.Recipients(context.Background(), projectUID, newsletterID)
+	if err != nil {
+		t.Fatalf("Recipients: %v", err)
+	}
+	if !result.Complete {
+		t.Errorf("Recipients: Complete = %v, want true", result.Complete)
+	}
+	if len(result.Recipients) != 1 {
+		t.Fatalf("Recipients: got %d recipients, want 1", len(result.Recipients))
+	}
+	rec := result.Recipients[0].Record
+	if len(rec.OpenedAtList) != 500 {
+		t.Errorf("Recipients: OpenedAtList length = %d, want 500", len(rec.OpenedAtList))
+	}
+	if rec.OpenCount != 501 {
+		t.Errorf("Recipients: OpenCount = %d, want 501 (provider's raw count)", rec.OpenCount)
+	}
+	// Verify the kept opens are the most recent 500 (indices 1-500 of the original 0-500)
+	if rec.OpenedAtList[0] != opens[1] {
+		t.Errorf("Recipients: first kept open is %v, want %v (second original open)", rec.OpenedAtList[0], opens[1])
+	}
+	if rec.OpenedAtList[499] != opens[500] {
+		t.Errorf("Recipients: last kept open is %v, want %v (last original open)", rec.OpenedAtList[499], opens[500])
+	}
+}

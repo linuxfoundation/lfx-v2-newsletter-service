@@ -245,6 +245,12 @@ func (a *AnalyticsService) Recipients(ctx context.Context, projectUID string, ne
 		// the email-service reply's ordering is upstream's, so sort defensively
 		// to keep the contract's "ascending" promise provider-independent.
 		sort.Slice(r.OpenedAtList, func(i, j int) bool { return r.OpenedAtList[i].Before(r.OpenedAtList[j]) })
+		// Cap per-recipient opens to the most recent MaxOpensPerRecipient to bound
+		// response size provider-independently. The list is ascending (oldest first),
+		// so keep the LAST MaxOpensPerRecipient entries (most recent).
+		if len(r.OpenedAtList) > port.MaxOpensPerRecipient {
+			r.OpenedAtList = r.OpenedAtList[len(r.OpenedAtList)-port.MaxOpensPerRecipient:]
+		}
 		out = append(out, port.RecipientEngagement{
 			Name:   names[strings.ToLower(strings.TrimSpace(r.To))],
 			Record: r,

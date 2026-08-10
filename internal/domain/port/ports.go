@@ -18,6 +18,11 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 )
 
+// MaxOpensPerRecipient is the per-recipient open-event cap applied
+// provider-independently in the service layer. Each recipient's open
+// list is truncated to the most recent 500 to bound response size.
+const MaxOpensPerRecipient = 500
+
 // ListFilters narrows a newsletter listing query.
 //
 // Statuses is optional: if empty, newsletters in every state are returned.

@@ -290,16 +290,10 @@ func (s *SendGridEngagementStore) RecipientsByGroupID(ctx context.Context, group
 	return out, nil
 }
 
-// MaxOpensPerRecipient caps each recipient's opened_at_list on the
-// per-recipient analytics read. Bounds the query's transfer and memory even
-// for a recipient with pathological repeat opens (mail-client prefetchers);
-// the cap keeps the most recent opens.
-const MaxOpensPerRecipient = 500
-
 // RecipientRecordsByGroupID returns every recipient record for a group WITH its
 // ascending open-timestamp series, for the per-recipient analytics endpoint.
 // Recipient count is bounded by the committee audience; each recipient's open
-// series is capped at MaxOpensPerRecipient most-recent opens, enforced in SQL
+// series is capped at port.MaxOpensPerRecipient most-recent opens, enforced in SQL
 // (a ROW_NUMBER window in a subquery — Postgres forbids window functions
 // directly in WHERE) so neither transfer nor heap is unbounded. An unknown
 // group returns an empty slice, matching RecipientsByGroupID.
@@ -321,7 +315,7 @@ func (s *SendGridEngagementStore) RecipientRecordsByGroupID(ctx context.Context,
 	if err := s.db.NewSelect().
 		ColumnExpr("sg_event_id, email_id, opened_at").
 		TableExpr("(?) AS ranked_events", ranked).
-		Where("rn <= ?", MaxOpensPerRecipient).
+		Where("rn <= ?", port.MaxOpensPerRecipient).
 		OrderExpr("opened_at ASC").
 		Scan(ctx, &evs); err != nil {
 		return nil, fmt.Errorf("sendgrid recipient open events: %w", err)
