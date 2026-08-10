@@ -43,11 +43,13 @@ func (r sendgridEngagementRow) toPortRecord(openedAt []time.Time) port.EmailReci
 		To:           r.ToEmail,
 		SentAt:       r.SentAt,
 		Delivered:    r.Delivered,
+		DeliveredAt:  r.DeliveredAt,
 		Opened:       r.Opened,
 		OpenCount:    r.OpenCount,
 		LastOpened:   r.LastOpenedAt,
 		OpenedAtList: openedAt,
 		Failed:       r.Failed,
+		FailedAt:     r.FailedAt,
 	}
 }
 
@@ -284,6 +286,40 @@ func (s *SendGridEngagementStore) RecipientsByGroupID(ctx context.Context, group
 	out := make([]port.EmailRecipientRecord, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, r.toPortRecord(nil))
+	}
+	return out, nil
+}
+
+// RecipientRecordsByGroupID returns every recipient record for a group WITH its
+// ascending open-timestamp series, for the per-recipient analytics endpoint.
+// Two bounded queries (the group's engagement rows, then its open events joined
+// through them) bucketed in memory — both bounded by the group's audience and
+// its recorded opens. An unknown group returns an empty slice, matching
+// RecipientsByGroupID.
+func (s *SendGridEngagementStore) RecipientRecordsByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
+	var rows []sendgridEngagementRow
+	if err := s.db.NewSelect().Model(&rows).Where("sre.group_id = ?", groupID).Scan(ctx); err != nil {
+		return nil, fmt.Errorf("sendgrid recipient records: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	var evs []sendgridOpenEventRow
+	if err := s.db.NewSelect().
+		Model(&evs).
+		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = soe.email_id").
+		Where("sre.group_id = ?", groupID).
+		OrderExpr("soe.opened_at ASC").
+		Scan(ctx); err != nil {
+		return nil, fmt.Errorf("sendgrid recipient open events: %w", err)
+	}
+	opensByEmail := make(map[string][]time.Time, len(rows))
+	for _, ev := range evs {
+		opensByEmail[ev.EmailID] = append(opensByEmail[ev.EmailID], ev.OpenedAt)
+	}
+	out := make([]port.EmailRecipientRecord, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.toPortRecord(opensByEmail[r.EmailID]))
 	}
 	return out, nil
 }

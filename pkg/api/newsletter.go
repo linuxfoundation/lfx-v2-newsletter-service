@@ -189,6 +189,38 @@ type NewsletterAnalytics struct {
 	LastEventAt      *time.Time             `json:"last_event_at,omitempty"`
 }
 
+// NewsletterRecipientEngagement is one recipient's row in the per-recipient
+// analytics response: who the newsletter went to, the delivery outcome, and
+// every recorded open.
+type NewsletterRecipientEngagement struct {
+	// Name is the recipient's full name, resolved best-effort from the
+	// newsletter's committees at read time. Empty when the member no longer
+	// appears in the committees or has no name on file — clients display Name
+	// when present and fall back to Email.
+	Name         string     `json:"name,omitempty"`
+	Email        string     `json:"email"`
+	SentAt       *time.Time `json:"sent_at,omitempty"`
+	Delivered    bool       `json:"delivered"`
+	DeliveredAt  *time.Time `json:"delivered_at,omitempty"`
+	Failed       bool       `json:"failed"`
+	FailedAt     *time.Time `json:"failed_at,omitempty"`
+	Opened       bool       `json:"opened"`
+	OpenCount    int        `json:"open_count"`
+	LastOpenedAt *time.Time `json:"last_opened_at,omitempty"`
+	// OpenedAtList holds every recorded open timestamp, ascending. Always
+	// present; empty when the recipient never opened.
+	OpenedAtList []time.Time `json:"opened_at_list"`
+}
+
+// NewsletterRecipientEngagementResponse is the body of
+// GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients.
+type NewsletterRecipientEngagementResponse struct {
+	NewsletterID string `json:"newsletter_id"`
+	// Recipients is sorted by email ascending and always present; empty for
+	// drafts or when the sending provider recorded no recipients.
+	Recipients []NewsletterRecipientEngagement `json:"recipients"`
+}
+
 // OptOut is a single entry in the newsletter opt-outs list.
 type OptOut struct {
 	ID             string    `json:"id"`

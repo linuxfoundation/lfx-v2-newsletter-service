@@ -460,6 +460,15 @@ func (d *Dispatcher) GroupEngagementDetail(ctx context.Context, groupID string) 
 	return d.store.GroupEngagementDetail(ctx, groupID)
 }
 
+// RecipientRecords returns the group's per-recipient engagement records with
+// their full open-timestamp series from the store.
+func (d *Dispatcher) RecipientRecords(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
+	if d.store == nil {
+		return nil, pkgerrors.NewUnexpected("sendgrid: RecipientRecords unavailable", errReadNotWired)
+	}
+	return d.store.RecipientRecordsByGroupID(ctx, groupID)
+}
+
 // summarizeError renders SendGrid's error body into a single readable string,
 // falling back to the raw (truncated) body when it isn't the expected shape.
 func summarizeError(status int, body []byte) string {

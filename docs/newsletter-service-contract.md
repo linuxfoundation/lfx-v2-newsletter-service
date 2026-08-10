@@ -36,6 +36,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Resolve committees and return unique recipient preview. |
 | `POST` | `/projects/{project_uid}/newsletters/test-send` | yes | Dispatch a single test email (no persistence, no analytics). |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics` | yes | Return analytics for one newsletter. |
+| `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients` | yes | Per-recipient engagement: who the newsletter went to, delivery outcome, and every recorded open timestamp, with a best-effort display name from the newsletter's committees. |
 | `GET` | `/committees/{committee_uid}/newsletters` | yes | Member-facing: sent newsletters whose audience includes the committee, ordered `sent_at` descending. Supports `page_token`. The gateway gates on `committee:{committee_uid}` `member` OR `auditor` (openfga_or_check), checked per request against OpenFGA — auditor folds in committee writers and project oversight roles so stronger roles never see less than members. Member tuples are maintained by committee-service via fga-sync, so revocation after a membership removal is eventual — normally near-immediate, but tuple removal is asynchronous/best-effort (see committee-service's `docs/fga-contract.md`); this endpoint adds no caching on top of tuple state. Returns `CommitteeNewsletterListResponse` — a reduced DTO without `body_html`, `ed_reply_email`, `group_id`, `created_by`, or `committee_uids` (the full audience list would let a single-committee member enumerate the newsletter's other committees). Clients fetch the rendered body via the project-scoped get, which is reachable for members because the platform model's project `viewer` relation includes all authenticated users (`[user:*]`). |
 | `GET` | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}` | no | Tracking pixel. Records open by recipient hash and returns a GIF. |
 | `GET` | `/newsletters/unsubscribe` | no | One-click unsubscribe via HMAC-signed `t` token. Returns HTML. A direct-service HEAD is a no-op so link previews don't unsubscribe; the gateway ruleset allows only `GET`, so HEAD is blocked at the gateway. |
@@ -116,6 +117,22 @@ Real sends and test-sends render a compliance footer containing sender attributi
 - `failed_recipients`: the lowercased, deduplicated email addresses the sending provider marked failed (synchronous send errors plus async bounce/complaint events), drawn from the per-recipient status records. Always present (empty array when there are no known failures or the per-recipient status fetch fails). Best-effort: because the scalar `failed` count comes from the engagement rollup while the list comes from the per-recipient records, the two may briefly diverge while the group index propagates. No failure reason is exposed (the per-recipient records carry no error string).
 
 The engagement source is routed per newsletter by `send_provider`, so the response shape is identical whether the newsletter was sent via email-service (SES, engagement read over NATS) or SendGrid (engagement read from the local store the SendGrid event webhook populates). See `docs/recipient-resolution.md` § Provider-Routed Analytics.
+
+### Per-Recipient Engagement
+
+`…/newsletters/{newsletter_uid}/analytics/recipients` returns `NewsletterRecipientEngagementResponse`, gated on project ownership like the aggregate endpoint (the gateway rule uses the same `viewer` permissioning model). One row per recipient the sending provider recorded:
+
+- `email`: the recipient address the provider recorded for the send.
+- `name`: the recipient's full name, resolved best-effort at read time by re-querying the newsletter's committees (`lfx.committee-api.list_members`) and matching on lowercased email. Omitted when the member no longer appears in the committees, has no name on file, or the committee lookup fails — clients display `name` when present and fall back to `email`.
+- `delivered` / `delivered_at`, `failed` / `failed_at`: delivery outcome; timestamps omitted when unknown.
+- `opened`, `open_count`, `last_opened_at`, and `opened_at_list` — every recorded open timestamp, ascending. `opened_at_list` is always present (empty array when the recipient never opened).
+
+Semantics and caveats:
+
+- Records come from the provider that dispatched the newsletter, routed by `send_provider` (email-service per-recipient status over NATS, or the local SendGrid store). Local pixel opens are NOT included — they are keyed by recipient hash, which cannot be mapped back to an email address.
+- Drafts, and sent rows without a `group_id`, return `200` with an empty `recipients` array. A provider engagement-read failure is an error response (`503`/`500`), never an empty list — an empty list always means "no records".
+- `recipients` is sorted by lowercased email ascending and returned in full; no pagination (the audience is committee-bounded).
+- Open counts inherit the usual tracking caveats: image blocking undercounts, mail-client prefetching (e.g. Apple Mail privacy protection) can overcount.
 
 `GET /newsletters/unsubscribe?t=<token>` is intentionally unauthenticated; authorization comes from the HMAC-signed token binding `(project_uid, email)`. Invalid tokens return `400` HTML. Successful opt-outs are idempotent and project-scoped. The endpoint always renders HTML, and a HEAD request handled directly by the service is a no-op so mail-client link previews cannot unsubscribe recipients. Note that the gateway ruleset (`charts/lfx-v2-newsletter-service/templates/ruleset.yaml`) allows only `GET` on this path, so HEAD probes are blocked at the gateway and never reach the handler; the handler's HEAD no-op is a defensive fallback for direct-service traffic that bypasses the gateway.
 

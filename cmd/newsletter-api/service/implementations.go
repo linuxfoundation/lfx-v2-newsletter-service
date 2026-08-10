@@ -151,7 +151,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		model.SendProviderEmailService: natsinfra.NewEmailDispatcher(nc),
 		model.SendProviderSendGrid:     sendgridinfra.NewEngagementReader(repository.NewSendGridEngagementStore(bunDB)),
 	}
-	analyticsSvc := service.NewAnalyticsService(repo, engagementReaders, model.SendProviderEmailService)
+	analyticsSvc := service.NewAnalyticsService(repo, engagementReaders, committeeClient, model.SendProviderEmailService)
 
 	// Step 6: recovery sweep for newsletters stranded in 'sending' by a pod
 	// crash mid-fan-out. Runs once at startup (catches strands from previous

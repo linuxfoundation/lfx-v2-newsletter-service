@@ -174,11 +174,23 @@ type EmailRecipientRecord struct {
 	To           string
 	SentAt       *time.Time
 	Delivered    bool
+	DeliveredAt  *time.Time
 	Opened       bool
 	OpenCount    int
 	LastOpened   *time.Time
 	OpenedAtList []time.Time
 	Failed       bool
+	FailedAt     *time.Time
+}
+
+// RecipientEngagement pairs one per-recipient engagement record with the
+// recipient's display name, resolved best-effort from the newsletter's
+// committees at read time. Name is empty when the recipient no longer appears
+// in the committees or has no name on file — callers fall back to the
+// record's email address.
+type RecipientEngagement struct {
+	Name   string
+	Record EmailRecipientRecord
 }
 
 // EmailEngagement is the per-group engagement rollup for a sent newsletter,
@@ -236,16 +248,23 @@ type EngagementReader interface {
 	// opens and distinct recipients per day, ascending), the last open instant,
 	// and the deduplicated failed-recipient addresses. Each provider computes it
 	// its own bounded way — a set of SQL aggregates for the SendGrid store, one
-	// email-service reply bucketed in memory for the NATS reader — so analytics
-	// makes one call and never loads raw per-open data. lastEvent is nil for a
-	// group with no opens.
+	// email-service reply bucketed in memory for the NATS reader — so the
+	// aggregate analytics endpoint makes one call without loading raw per-open
+	// data. lastEvent is nil for a group with no opens.
 	GroupEngagementDetail(ctx context.Context, groupID string) (*GroupEngagementDetail, error)
+	// RecipientRecords returns every per-recipient engagement record for a
+	// group, including each recipient's full open-timestamp series. Bounded by
+	// the group's recipient count (a newsletter's committee audience). Backs
+	// the per-recipient analytics endpoint, which — unlike the aggregate
+	// endpoint — deliberately exposes who engaged and when.
+	RecipientRecords(ctx context.Context, groupID string) ([]EmailRecipientRecord, error)
 }
 
 // GroupEngagementDetail is the bounded per-group analytics detail a reader
-// computes in a single fetch. It replaces returning every per-recipient record
-// (with its raw open timestamps): only aggregated, bounded values cross the
-// boundary.
+// computes in a single fetch. The aggregate analytics endpoint uses it instead
+// of per-recipient records so only aggregated, bounded values cross the
+// boundary there; the per-recipient analytics endpoint uses RecipientRecords
+// when callers explicitly ask for who engaged and when.
 type GroupEngagementDetail struct {
 	UniqueOpens      int
 	DailyOpens       []model.DailyOpens

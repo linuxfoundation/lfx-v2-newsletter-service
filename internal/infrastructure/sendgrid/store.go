@@ -48,6 +48,10 @@ type EngagementStore interface {
 	// opens, the per-UTC-day opens series, the last open instant, and the failed
 	// recipients) with a few SQL aggregates, so no raw per-open data is loaded.
 	GroupEngagementDetail(ctx context.Context, groupID string) (*port.GroupEngagementDetail, error)
+	// RecipientRecordsByGroupID returns every recipient record for a group with
+	// its ascending open-timestamp series, for the per-recipient analytics
+	// endpoint. Bounded by the group's audience and its recorded opens.
+	RecipientRecordsByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error)
 
 	// RevertGroup tombstones a group and purges its engagement rows and open
 	// events, atomically. Used after a fully-failed send reverts to draft and

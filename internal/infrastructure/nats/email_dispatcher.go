@@ -89,11 +89,13 @@ func (w emailRecipientWire) toPortRecord() port.EmailRecipientRecord {
 		To:           w.To,
 		SentAt:       &sentAt,
 		Delivered:    w.Delivered,
+		DeliveredAt:  w.DeliveredAt,
 		Opened:       w.Opened,
 		OpenCount:    len(openedAtList),
 		LastOpened:   lastOpened,
 		OpenedAtList: openedAtList,
 		Failed:       w.Failed,
+		FailedAt:     w.FailedAt,
 	}
 }
 
@@ -256,6 +258,13 @@ func (d *EmailDispatcher) GetStatusByGroupID(ctx context.Context, groupID string
 		records = append(records, r.toPortRecord())
 	}
 	return records, nil
+}
+
+// RecipientRecords returns the group's per-recipient engagement records with
+// their full open-timestamp series — email-service's by-group status reply
+// already carries exactly that shape.
+func (d *EmailDispatcher) RecipientRecords(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
+	return d.GetStatusByGroupID(ctx, groupID)
 }
 
 // GroupEngagementDetail returns the group's bounded analytics detail from a
