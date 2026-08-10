@@ -385,10 +385,12 @@ spec:
             values:
               aud: {{ .Values.app.audience }}
 
-    # Per-newsletter per-recipient engagement. Same permissioning model as the
-    # aggregate analytics rule above: project viewers can already see recipient
-    # emails via the recipients-preview endpoint, so this exposes no identity a
-    # viewer cannot already reach.
+    # Per-newsletter per-recipient engagement. Same `viewer` relation as the
+    # aggregate analytics rule above (project viewers can already see recipient
+    # emails via the recipients-preview endpoint), but because the response
+    # returns PII (recipient email addresses and per-recipient engagement),
+    # the FGA check does NOT fall back to allow_all — it fails closed like the
+    # opt-out rules: unreachable when `openfga.enabled=false`.
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:analytics_recipients"
       allow_encoded_slashes: 'off'
       match:
@@ -402,15 +404,11 @@ spec:
         {{- if .Values.app.use_oidc_contextualizer }}
         - contextualizer: oidc_contextualizer
         {{- end }}
-        {{- if .Values.openfga.enabled }}
         - authorizer: openfga_check
           config:
             values:
               relation: viewer
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
-        {{- else }}
-        - authorizer: allow_all
-        {{- end }}
         - finalizer: create_jwt
           config:
             values:

@@ -120,7 +120,7 @@ The engagement source is routed per newsletter by `send_provider`, so the respon
 
 ### Per-Recipient Engagement
 
-`…/newsletters/{newsletter_uid}/analytics/recipients` returns `NewsletterRecipientEngagementResponse`, gated on project ownership like the aggregate endpoint (the gateway rule uses the same `viewer` permissioning model). One row per recipient the sending provider recorded:
+`…/newsletters/{newsletter_uid}/analytics/recipients` returns `NewsletterRecipientEngagementResponse`, gated on project ownership like the aggregate endpoint. The gateway rule uses the same `viewer` relation as the aggregate analytics rule, but because the response returns PII (recipient email addresses), the FGA check does not fall back to `allow_all` — it fails closed like the opt-out rules and is unreachable when `openfga.enabled=false`. One row per recipient the sending provider recorded:
 
 - `email`: the recipient address the provider recorded for the send.
 - `name`: the recipient's full name, resolved best-effort at read time by re-querying the newsletter's committees (`lfx.committee-api.list_members`) and matching on lowercased email. Omitted when the member no longer appears in the committees, has no name on file, or the committee lookup fails — clients display `name` when present and fall back to `email`.
