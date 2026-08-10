@@ -290,17 +290,19 @@ func (s *SendGridEngagementStore) RecipientsByGroupID(ctx context.Context, group
 	return out, nil
 }
 
-// RecipientRecordsByGroupID returns every recipient record for a group WITH its
-// ascending open-timestamp series, for the per-recipient analytics endpoint.
-// Recipient count is bounded by the committee; each recipient's open list is
-// capped at MaxOpensPerRecipient (most recent first). An unknown group returns
-// an empty slice, matching RecipientsByGroupID.
-//
-// Loaded into memory and bucketed by email_id, then truncated per recipient to
-// stay bounded even with high-repeat opens. The committee cap ensures reasonable
-// recipient count; this cap ensures each recipient's open series is bounded.
+// MaxOpensPerRecipient caps each recipient's opened_at_list on the
+// per-recipient analytics read. Bounds the query's transfer and memory even
+// for a recipient with pathological repeat opens (mail-client prefetchers);
+// the cap keeps the most recent opens.
 const MaxOpensPerRecipient = 500
 
+// RecipientRecordsByGroupID returns every recipient record for a group WITH its
+// ascending open-timestamp series, for the per-recipient analytics endpoint.
+// Recipient count is bounded by the committee audience; each recipient's open
+// series is capped at MaxOpensPerRecipient most-recent opens, enforced in SQL
+// (a ROW_NUMBER window in a subquery — Postgres forbids window functions
+// directly in WHERE) so neither transfer nor heap is unbounded. An unknown
+// group returns an empty slice, matching RecipientsByGroupID.
 func (s *SendGridEngagementStore) RecipientRecordsByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
 	var rows []sendgridEngagementRow
 	if err := s.db.NewSelect().Model(&rows).Where("sre.group_id = ?", groupID).Scan(ctx); err != nil {
@@ -309,21 +311,19 @@ func (s *SendGridEngagementStore) RecipientRecordsByGroupID(ctx context.Context,
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	// Use a window function to limit opens per recipient at the SQL level.
-	// ROW_NUMBER() OVER (PARTITION BY email_id ORDER BY opened_at DESC) ranks
-	// each recipient's opens most-recent-first, and the WHERE clause keeps only
-	// the top MaxOpensPerRecipient per recipient. This bounds the query's transfer
-	// and memory cost; no in-memory truncation needed.
+	ranked := s.db.NewSelect().
+		ColumnExpr("soe.sg_event_id, soe.email_id, soe.opened_at").
+		ColumnExpr("ROW_NUMBER() OVER (PARTITION BY soe.email_id ORDER BY soe.opened_at DESC) AS rn").
+		TableExpr("sendgrid_open_events AS soe").
+		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = soe.email_id").
+		Where("sre.group_id = ?", groupID)
 	var evs []sendgridOpenEventRow
 	if err := s.db.NewSelect().
-		Model(&evs).
-		TableExpr("(SELECT soe.* FROM sendgrid_open_events AS soe "+
-			"JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = soe.email_id "+
-			"WHERE sre.group_id = ? "+
-			"AND (ROW_NUMBER() OVER (PARTITION BY soe.email_id ORDER BY soe.opened_at DESC)) <= ?) AS limited_events",
-			groupID, MaxOpensPerRecipient).
+		ColumnExpr("sg_event_id, email_id, opened_at").
+		TableExpr("(?) AS ranked_events", ranked).
+		Where("rn <= ?", MaxOpensPerRecipient).
 		OrderExpr("opened_at ASC").
-		Scan(ctx); err != nil {
+		Scan(ctx, &evs); err != nil {
 		return nil, fmt.Errorf("sendgrid recipient open events: %w", err)
 	}
 	opensByEmail := make(map[string][]time.Time, len(rows))

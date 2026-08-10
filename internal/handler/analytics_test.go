@@ -55,17 +55,24 @@ func TestToAPIRecipientEngagement(t *testing.T) {
 	opened := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
 
 	t.Run("maps records with names and opens", func(t *testing.T) {
-		dto := toAPIRecipientEngagement(id.String(), []port.RecipientEngagement{
-			{
-				Name: "Ann Ames",
-				Record: port.EmailRecipientRecord{
-					To: "ann@x.dev", Delivered: true, Opened: true, OpenCount: 1,
-					LastOpened: &opened, OpenedAtList: []time.Time{opened},
+		dto := toAPIRecipientEngagement(id.String(), &port.RecipientEngagementResult{
+			TotalRecipients: 1,
+			Complete:        true,
+			Recipients: []port.RecipientEngagement{
+				{
+					Name: "Ann Ames",
+					Record: port.EmailRecipientRecord{
+						To: "ann@x.dev", Delivered: true, Opened: true, OpenCount: 1,
+						LastOpened: &opened, OpenedAtList: []time.Time{opened},
+					},
 				},
 			},
 		})
 		if dto.NewsletterID != id.String() {
 			t.Errorf("NewsletterID: got %q, want %q", dto.NewsletterID, id.String())
+		}
+		if dto.TotalRecipients != 1 || !dto.Complete {
+			t.Errorf("completeness: got total=%d complete=%v, want 1/true", dto.TotalRecipients, dto.Complete)
 		}
 		if len(dto.Recipients) != 1 {
 			t.Fatalf("Recipients: got %d, want 1", len(dto.Recipients))
@@ -80,8 +87,12 @@ func TestToAPIRecipientEngagement(t *testing.T) {
 	})
 
 	t.Run("empty inputs serialize as arrays, optional fields omitted", func(t *testing.T) {
-		dto := toAPIRecipientEngagement(id.String(), []port.RecipientEngagement{
-			{Record: port.EmailRecipientRecord{To: "quiet@x.dev", Delivered: true}},
+		dto := toAPIRecipientEngagement(id.String(), &port.RecipientEngagementResult{
+			TotalRecipients: 2,
+			Complete:        false,
+			Recipients: []port.RecipientEngagement{
+				{Record: port.EmailRecipientRecord{To: "quiet@x.dev", Delivered: true}},
+			},
 		})
 		body, err := json.Marshal(dto)
 		if err != nil {
@@ -91,13 +102,16 @@ func TestToAPIRecipientEngagement(t *testing.T) {
 		if !strings.Contains(s, `"opened_at_list":[]`) {
 			t.Errorf("JSON: want opened_at_list serialized as [], got %s", s)
 		}
+		if !strings.Contains(s, `"complete":false`) {
+			t.Errorf("JSON: want complete always present (even when false), got %s", s)
+		}
 		for _, absent := range []string{`"name"`, `"delivered_at"`, `"failed_at"`, `"last_opened_at"`, `"sent_at"`} {
 			if strings.Contains(s, absent) {
 				t.Errorf("JSON: want %s omitted when unset, got %s", absent, s)
 			}
 		}
 
-		empty := toAPIRecipientEngagement(id.String(), nil)
+		empty := toAPIRecipientEngagement(id.String(), &port.RecipientEngagementResult{Complete: true})
 		body, err = json.Marshal(empty)
 		if err != nil {
 			t.Fatalf("marshal empty: %v", err)

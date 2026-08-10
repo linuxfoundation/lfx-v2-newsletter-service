@@ -216,6 +216,14 @@ type NewsletterRecipientEngagement struct {
 // GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients.
 type NewsletterRecipientEngagementResponse struct {
 	NewsletterID string `json:"newsletter_id"`
+	// TotalRecipients is the newsletter's send-time audience snapshot.
+	TotalRecipients int `json:"total_recipients"`
+	// Complete is false when the sending provider returned fewer per-recipient
+	// records than TotalRecipients — the provider stores are best-effort
+	// (records may be omitted, and a freshly-sent newsletter's records may
+	// still be propagating), so clients must treat an incomplete list as
+	// partial rather than assume absent recipients were never sent to.
+	Complete bool `json:"complete"`
 	// Recipients is sorted by email ascending and always present; empty for
 	// drafts or when the sending provider recorded no recipients.
 	Recipients []NewsletterRecipientEngagement `json:"recipients"`

@@ -120,17 +120,20 @@ The engagement source is routed per newsletter by `send_provider`, so the respon
 
 ### Per-Recipient Engagement
 
-`…/newsletters/{newsletter_uid}/analytics/recipients` returns `NewsletterRecipientEngagementResponse`, gated on project ownership like the aggregate endpoint. The gateway rule uses the same `viewer` relation as the aggregate analytics rule, but because the response returns PII (recipient email addresses), the FGA check does not fall back to `allow_all` — it fails closed like the opt-out rules and is unreachable when `openfga.enabled=false`. One row per recipient the sending provider recorded:
+`…/newsletters/{newsletter_uid}/analytics/recipients` returns `NewsletterRecipientEngagementResponse`, gated on project ownership like the aggregate endpoint. Unlike the aggregate analytics rule, the gateway rule requires the `auditor` relation, fail-closed (no `allow_all` fallback; unreachable when `openfga.enabled=false`) — the platform model's project `viewer` includes the public wildcard `[user:*]`, and this response exposes recipient identities plus per-recipient engagement history, so it takes the same posture as the opt-out list. Response fields:
 
-- `email`: the recipient address the provider recorded for the send.
-- `name`: the recipient's full name, resolved best-effort at read time by re-querying the newsletter's committees (`lfx.committee-api.list_members`) and matching on lowercased email. Omitted when the member no longer appears in the committees, has no name on file, or the committee lookup fails — clients display `name` when present and fall back to `email`.
-- `delivered` / `delivered_at`, `failed` / `failed_at`: delivery outcome; timestamps omitted when unknown.
-- `opened`, `open_count`, `last_opened_at`, and `opened_at_list` — open timestamps, ascending. Per recipient, `opened_at_list` is capped at the 500 most recent recorded opens to bound response size. `open_count` reflects the capped list length, not the raw count from the provider (which may be higher). `opened_at_list` is always present (empty array when the recipient never opened).
+- `total_recipients`: the newsletter's send-time audience snapshot.
+- `complete`: `false` when the provider returned fewer per-recipient records than `total_recipients`. Both providers' per-recipient stores are best-effort — email-service silently omits missing/malformed records and its group index briefly lags a fresh send; the SendGrid store records no row for ambiguous send outcomes — so clients must treat an incomplete list as partial data, not as proof the absent recipients were never sent to.
+- `recipients`: one row per recipient the sending provider recorded, with:
+  - `email`: the recipient address the provider recorded for the send.
+  - `name`: the recipient's full name, resolved best-effort at read time by re-querying the newsletter's committees (`lfx.committee-api.list_members`) and matching on lowercased email. Omitted when the member no longer appears in the committees, has no name on file, or the committee lookup fails — clients display `name` when present and fall back to `email`.
+  - `delivered` / `delivered_at`, `failed` / `failed_at`: delivery outcome; timestamps omitted when unknown.
+  - `opened`, `open_count`, `last_opened_at`, and `opened_at_list` — open timestamps, ascending. Per recipient, `opened_at_list` is capped at the 500 most recent recorded opens (enforced in the query) to bound response size. `open_count` is the provider's total recorded open count and may exceed the capped list length. `opened_at_list` is always present (empty array when the recipient never opened).
 
 Semantics and caveats:
 
 - Records come from the provider that dispatched the newsletter, routed by `send_provider` (email-service per-recipient status over NATS, or the local SendGrid store). Local pixel opens are NOT included — they are keyed by recipient hash, which cannot be mapped back to an email address.
-- Drafts, and sent rows without a `group_id`, return `200` with an empty `recipients` array. A provider engagement-read failure is an error response (`503`/`500`), never an empty list — an empty list always means "no records".
+- Drafts, and sent rows without a `group_id`, return `200` with an empty `recipients` array (`complete: true` — nothing was sent). A provider engagement-read failure is an error response (`503`/`500`), never an empty list — an empty list always means "no records".
 - `recipients` is sorted by lowercased email ascending and returned in full; no pagination (the audience is committee-bounded).
 - Open counts inherit the usual tracking caveats: image blocking undercounts, mail-client prefetching (e.g. Apple Mail privacy protection) can overcount.
 

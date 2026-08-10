@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	emailapi "github.com/linuxfoundation/lfx-v2-email-service/pkg/api"
@@ -225,12 +224,12 @@ func (d *EmailDispatcher) GetEngagement(ctx context.Context, groupID string) (*p
 // JSON array of EmailRecipientRecord (one per email_id in the group).
 //
 // The email-service by-group status contract is best-effort: missing or
-// malformed recipient KV records are silently omitted from the reply. To detect
-// incomplete reads, this function fetches the engagement summary (TotalSent) and
-// compares it to the record count. If fewer records were returned, it logs
-// a warning indicating the read may be incomplete due to propagation lag, then
-// returns the records anyway. This maintains backward compatibility during
-// normal propagation lag while exposing incomplete reads via structured logs.
+// malformed recipient KV records are silently omitted from the reply, and the
+// group index may briefly lag a fresh send. Callers that must distinguish a
+// partial read from a complete one compare the record count against their own
+// authoritative audience size (the per-recipient analytics endpoint compares
+// against the newsletter's send-time total_recipients snapshot and surfaces an
+// explicit `complete` marker).
 //
 // Used by AnalyticsService to populate DailyOpens (bucketed by OpenedAt) and
 // UniqueOpens (count of records where Opened == true) — the scalar engagement
@@ -262,24 +261,6 @@ func (d *EmailDispatcher) GetStatusByGroupID(ctx context.Context, groupID string
 	if jsonErr := json.Unmarshal(reply, &out); jsonErr != nil {
 		return nil, pkgerrors.NewUnexpected("malformed email-service group-status reply", jsonErr)
 	}
-
-	// Check for incomplete reads by comparing record count to engagement TotalSent.
-	// If fewer records than sent, log it so the incomplete nature is visible in
-	// structured logs. This can happen due to:
-	// 1. Propagation lag: the group index hasn't fully synced yet
-	// 2. Transient KV omissions: the email-service contract allows best-effort
-	//    (some recipients' records may be missing/malformed)
-	// We return the records anyway to maintain graceful degradation, but operators
-	// can detect the incomplete nature via the log message.
-	engagement, engErr := d.GetEngagement(ctx, groupID)
-	if engErr == nil && len(out) < engagement.TotalSent {
-		slog.WarnContext(ctx, "email-service by-group status read incomplete",
-			"group_id", groupID,
-			"records_returned", len(out),
-			"total_sent", engagement.TotalSent,
-			"reason", "omitted/malformed recipients or propagation lag")
-	}
-
 	records := make([]port.EmailRecipientRecord, 0, len(out))
 	for _, r := range out {
 		records = append(records, r.toPortRecord())

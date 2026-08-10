@@ -49,19 +49,20 @@ func (h *Handler) GetRecipientEngagement(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	records, err := h.analytics.Recipients(r.Context(), projectUID, id)
+	result, err := h.analytics.Recipients(r.Context(), projectUID, id)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
 
-	writeJSON(r.Context(), w, http.StatusOK, toAPIRecipientEngagement(id.String(), records))
+	writeJSON(r.Context(), w, http.StatusOK, toAPIRecipientEngagement(id.String(), result))
 }
 
-// toAPIRecipientEngagement converts per-recipient engagement records into the
-// public DTO, keeping the always-present-array contract for opened_at_list
-// and recipients.
-func toAPIRecipientEngagement(newsletterID string, records []port.RecipientEngagement) publicapi.NewsletterRecipientEngagementResponse {
+// toAPIRecipientEngagement converts the per-recipient engagement result into
+// the public DTO, keeping the always-present-array contract for
+// opened_at_list and recipients.
+func toAPIRecipientEngagement(newsletterID string, result *port.RecipientEngagementResult) publicapi.NewsletterRecipientEngagementResponse {
+	records := result.Recipients
 	recipients := make([]publicapi.NewsletterRecipientEngagement, 0, len(records))
 	for _, re := range records {
 		opens := re.Record.OpenedAtList
@@ -83,8 +84,10 @@ func toAPIRecipientEngagement(newsletterID string, records []port.RecipientEngag
 		})
 	}
 	return publicapi.NewsletterRecipientEngagementResponse{
-		NewsletterID: newsletterID,
-		Recipients:   recipients,
+		NewsletterID:    newsletterID,
+		TotalRecipients: result.TotalRecipients,
+		Complete:        result.Complete,
+		Recipients:      recipients,
 	}
 }
 

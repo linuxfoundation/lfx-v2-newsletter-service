@@ -199,13 +199,21 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 // Unlike Get there is no local fallback, so a provider read failure is
 // returned as an error rather than an empty list — an empty list must mean
 // "no records", never "the read failed". Drafts and sent rows without a
-// group_id return an empty slice.
+// group_id return an empty result marked complete.
+//
+// The result carries an explicit Complete marker: both providers'
+// per-recipient stores are best-effort (email-service omits missing/malformed
+// records and its group index briefly lags a fresh send; the SendGrid store
+// records no row for ambiguous outcomes), so the record list is compared
+// against the newsletter's send-time total_recipients snapshot and marked
+// incomplete when it trails, letting clients distinguish partial data from a
+// complete audience instead of guessing.
 //
 // Display names are resolved best-effort by re-querying the newsletter's
 // committees: a failed lookup leaves names empty (the email remains the
 // fallback identity) and never fails the request, since membership may have
 // legitimately changed after the send.
-func (a *AnalyticsService) Recipients(ctx context.Context, projectUID string, newsletterID uuid.UUID) ([]port.RecipientEngagement, error) {
+func (a *AnalyticsService) Recipients(ctx context.Context, projectUID string, newsletterID uuid.UUID) (*port.RecipientEngagementResult, error) {
 	if err := validateProjectUID(projectUID); err != nil {
 		return nil, err
 	}
@@ -218,7 +226,7 @@ func (a *AnalyticsService) Recipients(ctx context.Context, projectUID string, ne
 	}
 
 	if n.Status != model.StatusSent || n.GroupID == nil || *n.GroupID == "" {
-		return []port.RecipientEngagement{}, nil
+		return &port.RecipientEngagementResult{Complete: true, Recipients: []port.RecipientEngagement{}}, nil
 	}
 
 	reader := a.readerFor(n.SendProvider)
@@ -245,7 +253,11 @@ func (a *AnalyticsService) Recipients(ctx context.Context, projectUID string, ne
 	sort.Slice(out, func(i, j int) bool {
 		return strings.ToLower(out[i].Record.To) < strings.ToLower(out[j].Record.To)
 	})
-	return out, nil
+	return &port.RecipientEngagementResult{
+		TotalRecipients: n.TotalRecipients,
+		Complete:        len(out) >= n.TotalRecipients,
+		Recipients:      out,
+	}, nil
 }
 
 // recipientNames builds a lowercased-email → "First Last" map from the

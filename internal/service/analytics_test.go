@@ -556,8 +556,11 @@ func TestAnalyticsRecipients_DraftReturnsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Recipients: %v", err)
 	}
-	if got == nil || len(got) != 0 {
-		t.Errorf("Recipients: got %v, want empty non-nil slice", got)
+	if got == nil || got.Recipients == nil || len(got.Recipients) != 0 {
+		t.Errorf("Recipients: got %+v, want empty non-nil recipients slice", got)
+	}
+	if got != nil && !got.Complete {
+		t.Error("Complete: got false for a draft, want true (nothing was sent, nothing can be missing)")
 	}
 }
 
@@ -608,10 +611,11 @@ func TestAnalyticsRecipients_SortsAndEnrichesNames(t *testing.T) {
 		"committee-2": {{Email: "zed@x.dev", FirstName: "Zed"}},
 	}}
 	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, committee, model.SendProviderEmailService)
-	got, err := svc.Recipients(context.Background(), projectUID, newsletterID)
+	result, err := svc.Recipients(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Recipients: %v", err)
 	}
+	got := result.Recipients
 	if len(got) != 3 {
 		t.Fatalf("Recipients: got %d records, want 3", len(got))
 	}
@@ -630,6 +634,49 @@ func TestAnalyticsRecipients_SortsAndEnrichesNames(t *testing.T) {
 	opens := got[2].Record.OpenedAtList
 	if len(opens) != 2 || !opens[0].Equal(t1) || !opens[1].Equal(t2) {
 		t.Errorf("OpenedAtList: got %v, want ascending [%v %v]", opens, t1, t2)
+	}
+}
+
+// TestAnalyticsRecipients_CompletenessMarker verifies the result is marked
+// incomplete when the provider returns fewer records than the send-time
+// total_recipients snapshot, and complete when the counts line up.
+func TestAnalyticsRecipients_CompletenessMarker(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	groupID := "group-xyz"
+	records := []port.EmailRecipientRecord{
+		{EmailID: "e1", To: "ann@x.dev", Delivered: true},
+		{EmailID: "e2", To: "zed@x.dev", Delivered: true},
+	}
+	for _, tc := range []struct {
+		name            string
+		totalRecipients int
+		wantComplete    bool
+	}{
+		{"records match snapshot", 2, true},
+		{"records trail snapshot (propagation lag / omissions)", 3, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newsletterID := uuid.New()
+			repo := &analyticsRepoFake{
+				newsletter: &model.Newsletter{
+					ID: newsletterID, ProjectUID: projectUID, Status: model.StatusSent,
+					GroupID: &groupID, SendProvider: model.SendProviderEmailService,
+					TotalRecipients: tc.totalRecipients,
+				},
+			}
+			email := &statusByGroupFake{records: records}
+			svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+			result, err := svc.Recipients(context.Background(), projectUID, newsletterID)
+			if err != nil {
+				t.Fatalf("Recipients: %v", err)
+			}
+			if result.Complete != tc.wantComplete {
+				t.Errorf("Complete: got %v, want %v (records=%d, snapshot=%d)", result.Complete, tc.wantComplete, len(result.Recipients), tc.totalRecipients)
+			}
+			if result.TotalRecipients != tc.totalRecipients {
+				t.Errorf("TotalRecipients: got %d, want %d", result.TotalRecipients, tc.totalRecipients)
+			}
+		})
 	}
 }
 
@@ -692,10 +739,11 @@ func TestAnalyticsRecipients_CommitteeLookupFailureDegrades(t *testing.T) {
 	email := &statusByGroupFake{records: []port.EmailRecipientRecord{{EmailID: "e1", To: "ann@x.dev", Delivered: true}}}
 	committee := &committeeFake{err: errors.New("committee-service down")}
 	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, committee, model.SendProviderEmailService)
-	got, err := svc.Recipients(context.Background(), projectUID, newsletterID)
+	result, err := svc.Recipients(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Recipients: %v", err)
 	}
+	got := result.Recipients
 	if len(got) != 1 || got[0].Name != "" || got[0].Record.To != "ann@x.dev" {
 		t.Errorf("Recipients: got %+v, want one record with empty name", got)
 	}

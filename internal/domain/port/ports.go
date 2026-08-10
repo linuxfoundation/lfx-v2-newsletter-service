@@ -193,6 +193,20 @@ type RecipientEngagement struct {
 	Record EmailRecipientRecord
 }
 
+// RecipientEngagementResult is the per-recipient analytics read: the records
+// plus an explicit completeness marker, so clients can distinguish a complete
+// audience from a best-effort partial one. Both providers' per-recipient
+// stores are best-effort (email-service silently omits missing/malformed KV
+// records and its group index briefly lags a fresh send; the SendGrid store
+// records no row for ambiguous send outcomes), so Complete is false whenever
+// fewer records came back than TotalRecipients, the newsletter's
+// authoritative send-time audience snapshot.
+type RecipientEngagementResult struct {
+	TotalRecipients int
+	Complete        bool
+	Recipients      []RecipientEngagement
+}
+
 // EmailEngagement is the per-group engagement rollup for a sent newsletter,
 // keyed by group_id. It is provider-agnostic: the email-service (NATS) reader
 // and the SendGrid store-backed reader both return it.
