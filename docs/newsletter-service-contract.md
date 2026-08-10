@@ -125,7 +125,7 @@ The engagement source is routed per newsletter by `send_provider`, so the respon
 - `email`: the recipient address the provider recorded for the send.
 - `name`: the recipient's full name, resolved best-effort at read time by re-querying the newsletter's committees (`lfx.committee-api.list_members`) and matching on lowercased email. Omitted when the member no longer appears in the committees, has no name on file, or the committee lookup fails — clients display `name` when present and fall back to `email`.
 - `delivered` / `delivered_at`, `failed` / `failed_at`: delivery outcome; timestamps omitted when unknown.
-- `opened`, `open_count`, `last_opened_at`, and `opened_at_list` — every recorded open timestamp, ascending. `opened_at_list` is always present (empty array when the recipient never opened).
+- `opened`, `open_count`, `last_opened_at`, and `opened_at_list` — open timestamps, ascending. Per recipient, `opened_at_list` is capped at the 500 most recent recorded opens to bound response size. `open_count` reflects the capped list length, not the raw count from the provider (which may be higher). `opened_at_list` is always present (empty array when the recipient never opened).
 
 Semantics and caveats:
 

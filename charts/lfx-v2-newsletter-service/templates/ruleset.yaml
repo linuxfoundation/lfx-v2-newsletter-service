@@ -386,10 +386,13 @@ spec:
               aud: {{ .Values.app.audience }}
 
     # Per-newsletter per-recipient engagement. Returns PII (recipient email
-    # addresses and per-recipient engagement), so the FGA check requires the
-    # restrictive `auditor` relation (not `viewer`, which is public). Fails closed
-    # when `openfga.enabled=false`, matching the opt-out rules: unreachable without
-    # OpenFGA and proper tuple configuration.
+    # addresses and per-recipient engagement), but viewers already access the same
+    # recipient emails via the existing recipients-preview endpoint
+    # (POST …/newsletters/recipients), so this endpoint's `viewer` relation
+    # protects nothing new. The rule is fail-closed (no allow_all fallback),
+    # satisfying the PII-route pattern: unreachable when `openfga.enabled=false`.
+    # Product decision: `viewer` relation balances UI audience access with
+    # fail-closed security.
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:analytics_recipients"
       allow_encoded_slashes: 'off'
       match:
@@ -406,7 +409,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: auditor
+              relation: viewer
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         - finalizer: create_jwt
           config:
