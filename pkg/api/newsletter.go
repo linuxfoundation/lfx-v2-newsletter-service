@@ -15,7 +15,12 @@ type Status string
 //
 // StatusSending means a send has been accepted and the per-recipient fan-out
 // is running asynchronously. The newsletter settles to StatusSent on
-// completion, or reverts to StatusDraft if no recipient could be delivered to.
+// completion (at least one recipient succeeded or any result is ambiguous),
+// or reverts to StatusDraft if no recipient could be delivered to. A settled
+// Status does NOT guarantee that all recipients were accepted — only that
+// the send was initiated. For scheduling, StatusSending transitions to
+// StatusScheduled once every recipient message is accepted by SendGrid for
+// release at the scheduled_at time.
 const (
 	StatusDraft     Status = "draft"
 	StatusSending   Status = "sending"
@@ -127,10 +132,14 @@ type SendFailure struct {
 // The send is asynchronous: the endpoint returns 202 Accepted as soon as the
 // newsletter transitions to status='sending' (with Sent=0 and no Failures),
 // and the fan-out completes in the background. Callers observe the outcome by
-// re-fetching the newsletter — status settles to 'sent', or reverts to
-// 'draft' when zero recipients could be delivered to. The zero-recipient edge
-// case settles synchronously and returns 200 with status='sent'. Clients
-// should branch on Newsletter.Status rather than the HTTP status code.
+// re-fetching the newsletter — status settles to 'sent' when at least one
+// recipient succeeded or any result is ambiguous, or reverts to 'draft' when
+// zero recipients could be delivered to. A settled status='sent' does NOT
+// guarantee all recipients were accepted — only that the send was initiated.
+// The zero-recipient edge case settles synchronously and returns 200 with
+// status='sent'. Clients should branch on Newsletter.Status rather than the
+// HTTP status code; consult the Failures list and provider engagement metrics
+// for per-recipient delivery outcomes.
 type SendNewsletterResponse struct {
 	Newsletter      Newsletter    `json:"newsletter"`
 	GroupID         string        `json:"group_id"`
@@ -156,8 +165,11 @@ type ScheduleNewsletterRequest struct {
 // Mirrors SendNewsletterResponse: the endpoint returns 202 Accepted as soon
 // as the newsletter transitions to status='sending' with the schedule armed
 // at SendGrid, and the fan-out completes in the background. The newsletter
-// settles to status='scheduled' once every recipient's message has been
-// accepted by SendGrid for release at ScheduledAt.
+// settles to status='scheduled' once at least one recipient's message has been
+// accepted by SendGrid for release at ScheduledAt, or reverts to 'draft' when
+// zero recipients could be scheduled. A settled status='scheduled' does NOT
+// guarantee all recipients were accepted — only that the schedule was armed.
+// Consult the Failures list for per-recipient scheduling outcomes.
 type ScheduleNewsletterResponse struct {
 	Newsletter      Newsletter    `json:"newsletter"`
 	GroupID         string        `json:"group_id"`

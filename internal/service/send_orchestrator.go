@@ -52,7 +52,8 @@ const defaultScheduleMaxHorizon = 72 * time.Hour
 // SendOrchestratorConfig from AppConfig.
 const (
 	defaultScheduleMinLead      = 5 * time.Minute
-	defaultScheduleCancelBuffer = 5 * time.Minute
+	defaultScheduleCancelBuffer = 10 * time.Minute
+	minScheduleCancelBuffer     = 10 * time.Minute
 )
 
 // defaultReplyToAllowedDomains mirrors lfx-v2-email-service's default
@@ -222,6 +223,9 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	scheduleCancelBuffer := cfg.ScheduleCancelBuffer
 	if scheduleCancelBuffer <= 0 {
 		scheduleCancelBuffer = defaultScheduleCancelBuffer
+	}
+	if scheduleCancelBuffer < minScheduleCancelBuffer {
+		scheduleCancelBuffer = minScheduleCancelBuffer
 	}
 	return &SendOrchestrator{
 		repo:                  cfg.Repo,

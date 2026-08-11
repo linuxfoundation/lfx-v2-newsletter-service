@@ -343,6 +343,7 @@ func (r *PostgresNewsletterRepo) RevertSending(ctx context.Context, id uuid.UUID
 		Model((*model.Newsletter)(nil)).
 		Set("status = ?", model.StatusDraft).
 		Set("group_id = NULL").
+		Set("batch_id = NULL").
 		Set("total_recipients = 0").
 		Set("updated_at = now()").
 		Set("version = version + 1").
@@ -418,14 +419,17 @@ func (r *PostgresNewsletterRepo) SettleDueScheduled(ctx context.Context, now tim
 }
 
 // RecoverStuckSending marks sending rows whose updated_at is older than the
-// given age as sent, except rows arming a scheduled release (scheduled_at IS
+// given age as sent, except rows with an armed SendGrid batch (batch_id IS
 // NOT NULL), which settle to scheduled instead (LFXV2-2685): the provider is
 // still holding those messages for a future release, so flipping straight to
 // sent would misreport our display state (and the next SettleDueScheduled
-// sweep will catch up once scheduled_at actually passes). See the port doc
-// for why recovery lands on sent (or scheduled) rather than draft. group_id
-// was persisted at the sending transition, so the status='sent' ⇒ group_id
-// NOT NULL CHECK holds either way.
+// sweep will catch up once scheduled_at actually passes). Keyed off batch_id,
+// not scheduled_at, because MarkSending preserves saved scheduled_at on
+// immediate sends; a crash during MarkSending would misclassify an immediate
+// send with saved-but-unarmed intent as scheduled if we checked scheduled_at
+// instead. See the port doc for why recovery lands on sent (or scheduled)
+// rather than draft. group_id was persisted at the sending transition, so the
+// status='sent' ⇒ group_id NOT NULL CHECK holds either way.
 func (r *PostgresNewsletterRepo) RecoverStuckSending(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-olderThan)
 	res, err := r.db.NewUpdate().
@@ -434,7 +438,7 @@ func (r *PostgresNewsletterRepo) RecoverStuckSending(ctx context.Context, olderT
 		Set("sent_at = now()").
 		Set("updated_at = now()").
 		Set("version = version + 1").
-		Where("status = ? AND updated_at < ? AND scheduled_at IS NULL", model.StatusSending, cutoff).
+		Where("status = ? AND updated_at < ? AND batch_id IS NULL", model.StatusSending, cutoff).
 		Exec(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("recover stuck sending: %w", err)
@@ -449,7 +453,7 @@ func (r *PostgresNewsletterRepo) RecoverStuckSending(ctx context.Context, olderT
 		Set("status = ?", model.StatusScheduled).
 		Set("updated_at = now()").
 		Set("version = version + 1").
-		Where("status = ? AND updated_at < ? AND scheduled_at IS NOT NULL", model.StatusSending, cutoff).
+		Where("status = ? AND updated_at < ? AND batch_id IS NOT NULL", model.StatusSending, cutoff).
 		Exec(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("recover stuck sending (scheduled): %w", err)
