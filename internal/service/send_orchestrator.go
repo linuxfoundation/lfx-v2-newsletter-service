@@ -799,6 +799,8 @@ func (o *SendOrchestrator) CancelScheduled(ctx context.Context, in CancelSchedul
 		// Route engagement purge by the provider that owned this send, not the
 		// active dispatcher. This ensures SendGrid scheduled sends are properly
 		// cleaned up even after a provider switch to email-service (LFXV2-2685).
+		// Use an independent bounded context to ensure cleanup succeeds even if the
+		// request context was cancelled by the client during provider cancellation.
 		var purger port.EngagementPurger
 		switch draft.SendProvider {
 		case model.SendProviderSendGrid:
@@ -807,13 +809,19 @@ func (o *SendOrchestrator) CancelScheduled(ctx context.Context, in CancelSchedul
 			purger, _ = o.email.(port.EngagementPurger)
 		}
 		if purger != nil {
-			if err := purger.PurgeEngagement(ctx, *draft.GroupID); err != nil {
-				slog.WarnContext(ctx, "cancel schedule: failed to purge provider engagement after revert",
+			// Create an independent context for purge so it succeeds even if the
+			// request context is exhausted or cancelled (e.g., client disconnect).
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := purger.PurgeEngagement(cleanupCtx, *draft.GroupID); err != nil {
+				cleanupCancel()
+				slog.WarnContext(context.Background(), "cancel schedule: failed to purge provider engagement after revert",
 					"newsletter_id", draft.ID,
 					"group_id", *draft.GroupID,
 					"provider", draft.SendProvider,
 					"error", err,
 				)
+			} else {
+				cleanupCancel()
 			}
 		}
 	}
