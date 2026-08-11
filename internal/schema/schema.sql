@@ -193,11 +193,18 @@ END$$;
 -- from mutating armed scheduled rows during a rolling deploy. An armed row
 -- (batch_id IS NOT NULL) has been handed to a provider scheduler; only the
 -- new code that understands the scheduler contract should touch it. This guard
--- lets an old pod reject a request gracefully instead of silently corrupting
--- the row. CREATE OR REPLACE + DROP/CREATE keep re-running schema.sql a no-op.
+-- uses a session-local GUC flag to distinguish legitimate app mutations from
+-- legacy pod mutations: the new binary sets 'app.allow_armed_mutation' before
+-- each legitimate update, allowing it to pass; legacy pods never set it and
+-- are unconditionally blocked. CREATE OR REPLACE + DROP/CREATE keep re-running
+-- schema.sql a no-op.
 CREATE OR REPLACE FUNCTION reject_armed_scheduled_mutation() RETURNS trigger AS $$
 BEGIN
-    IF NEW.batch_id IS NOT NULL THEN
+    -- Only reject if the row was armed (OLD.batch_id IS NOT NULL) and the
+    -- caller did not explicitly authorize the mutation via the GUC flag.
+    -- The new binary always sets app.allow_armed_mutation = 'true' before
+    -- legitimate mutations, so it passes; legacy pods never set it and are blocked.
+    IF OLD.batch_id IS NOT NULL AND current_setting('app.allow_armed_mutation', true) IS DISTINCT FROM 'true' THEN
         RAISE EXCEPTION 'cannot mutate armed scheduled row (batch_id is set) — service version mismatch during rolling deploy';
     END IF;
     RETURN NEW;

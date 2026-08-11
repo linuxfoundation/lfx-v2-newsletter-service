@@ -237,22 +237,11 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 // Rejects deletion of armed scheduled rows (batch_id IS NOT NULL) to prevent
 // legacy-pod mutations during rolling deploys (LFXV2-2685).
 func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error {
-	// Check if the row is armed before allowing deletion
-	current := &model.Newsletter{}
-	err := r.db.NewSelect().
-		Model(current).
-		Where("id = ?", id).
-		Scan(ctx)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("check armed status: %w", err)
-	}
-	if err == nil && current.BatchID != nil {
-		return fmt.Errorf("%w: cannot delete armed scheduled row", domain.ErrInvalidRequest)
-	}
-
+	// Atomically delete only if batch_id IS NULL to avoid TOCTOU race where
+	// MarkSending could arm the row between the check and the delete.
 	res, err := r.db.NewDelete().
 		Model((*model.Newsletter)(nil)).
-		Where("id = ?", id).
+		Where("id = ? AND batch_id IS NULL", id).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("delete newsletter: %w", err)
@@ -262,6 +251,24 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 		return fmt.Errorf("delete newsletter rows affected: %w", err)
 	}
 	if n == 0 {
+		// The row doesn't exist OR it's armed (batch_id IS NOT NULL).
+		// Distinguish the error by checking the row.
+		current := &model.Newsletter{}
+		err := r.db.NewSelect().
+			Model(current).
+			Where("id = ?", id).
+			Scan(ctx)
+		if err != nil && errors.Is(err, sql.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("classify delete miss: %w", err)
+		}
+		// Row exists but is armed
+		if current.BatchID != nil {
+			return fmt.Errorf("%w: cannot delete armed scheduled row", domain.ErrInvalidRequest)
+		}
+		// Row exists but version check would have failed (shouldn't happen if delete used batch_id check correctly)
 		return domain.ErrNotFound
 	}
 	return nil
@@ -281,6 +288,14 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 // still leaves RecoverStuckSending enough state to settle to 'scheduled'
 // rather than 'sent'. Nil/empty for an immediate send.
 func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, groupID, sendProvider string, totalRecipients int, expectedVersion int64, scheduledAt *time.Time, batchID string) (*model.Newsletter, error) {
+	// Authorize armed mutations in the trigger by setting the GUC before the update.
+	// This must happen in the same transaction so the trigger sees it.
+	if scheduledAt != nil {
+		if _, err := r.db.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+			return nil, fmt.Errorf("set armed mutation flag: %w", err)
+		}
+	}
+
 	updated := &model.Newsletter{}
 	q := r.db.NewUpdate().
 		Model(updated).
@@ -342,6 +357,11 @@ func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sen
 // already persisted at the sending transition, so only the terminal status
 // remains to be written.
 func (r *PostgresNewsletterRepo) MarkScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64) (*model.Newsletter, error) {
+	// Authorize mutation of an armed row (has batch_id set) in the trigger.
+	if _, err := r.db.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+		return nil, fmt.Errorf("set armed mutation flag: %w", err)
+	}
+
 	updated := &model.Newsletter{}
 	res, err := r.db.NewUpdate().
 		Model(updated).
@@ -369,6 +389,11 @@ func (r *PostgresNewsletterRepo) MarkScheduled(ctx context.Context, id uuid.UUID
 // indistinguishable from one that never attempted a send; the next attempt
 // mints a fresh group_id.
 func (r *PostgresNewsletterRepo) RevertSending(ctx context.Context, id uuid.UUID) error {
+	// Authorize mutation of an armed row (may have batch_id set) in the trigger.
+	if _, err := r.db.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+		return fmt.Errorf("set armed mutation flag: %w", err)
+	}
+
 	res, err := r.db.NewUpdate().
 		Model((*model.Newsletter)(nil)).
 		Set("status = ?", model.StatusDraft).
@@ -401,6 +426,11 @@ func (r *PostgresNewsletterRepo) RevertSending(ctx context.Context, id uuid.UUID
 // scheduled_at: the cancelled newsletter still carries the author's saved
 // intent, which they may edit or re-arm via a fresh /schedule call.
 func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64) (*model.Newsletter, error) {
+	// Authorize mutation of an armed row (has batch_id set) in the trigger.
+	if _, err := r.db.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+		return nil, fmt.Errorf("set armed mutation flag: %w", err)
+	}
+
 	updated := &model.Newsletter{}
 	// Tolerate version bumps from concurrent fan-out settlement, but still require
 	// the status to be in the right state to revert (scheduled or sending).
@@ -442,6 +472,11 @@ func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UU
 // what has (or should have) already happened. group_id was persisted at the
 // sending transition, so the status='sent' ⇒ group_id NOT NULL CHECK holds.
 func (r *PostgresNewsletterRepo) SettleDueScheduled(ctx context.Context, now time.Time) (int64, error) {
+	// Authorize mutation of armed rows (have batch_id set) in the trigger.
+	if _, err := r.db.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+		return 0, fmt.Errorf("set armed mutation flag: %w", err)
+	}
+
 	res, err := r.db.NewUpdate().
 		Model((*model.Newsletter)(nil)).
 		Set("status = ?", model.StatusSent).
