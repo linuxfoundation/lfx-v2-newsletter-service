@@ -207,13 +207,17 @@ BEGIN
     IF OLD.batch_id IS NOT NULL AND current_setting('app.allow_armed_mutation', true) IS DISTINCT FROM 'true' THEN
         RAISE EXCEPTION 'cannot mutate armed scheduled row (batch_id is set) — service version mismatch during rolling deploy';
     END IF;
+    -- For DELETE, return OLD; for UPDATE, return NEW
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_reject_armed_scheduled_mutation ON newsletters;
 CREATE TRIGGER trg_reject_armed_scheduled_mutation
-    BEFORE UPDATE ON newsletters
+    BEFORE UPDATE OR DELETE ON newsletters
     FOR EACH ROW EXECUTE FUNCTION reject_armed_scheduled_mutation();
 
 -- Supports the due-schedule sweep (status = 'scheduled' AND scheduled_at <= now()).
