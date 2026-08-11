@@ -185,6 +185,21 @@ func (r *PostgresNewsletterRepo) ListSentByCommittee(ctx context.Context, commit
 // affected, the method follows up with an existence check to disambiguate
 // ErrNotFound vs ErrVersionMismatch.
 func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter, expectedVersion int64) (*model.Newsletter, error) {
+	// Guard against legacy-pod mutations of armed scheduled rows during rolling
+	// deploys. Armed rows (batch_id IS NOT NULL) are managed by the scheduled-sends
+	// feature and must not be updated by older code paths (LFXV2-2685).
+	current := &model.Newsletter{}
+	err := r.db.NewSelect().
+		Model(current).
+		Where("id = ?", n.ID).
+		Scan(ctx)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("check armed status: %w", err)
+	}
+	if err == nil && current.BatchID != nil {
+		return nil, fmt.Errorf("%w: cannot update armed scheduled row", domain.ErrInvalidRequest)
+	}
+
 	res, err := r.db.NewUpdate().
 		Model(n).
 		Set("subject = ?", n.Subject).
@@ -219,7 +234,22 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 }
 
 // Delete removes a newsletter by id. Returns ErrNotFound if no row was deleted.
+// Rejects deletion of armed scheduled rows (batch_id IS NOT NULL) to prevent
+// legacy-pod mutations during rolling deploys (LFXV2-2685).
 func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error {
+	// Check if the row is armed before allowing deletion
+	current := &model.Newsletter{}
+	err := r.db.NewSelect().
+		Model(current).
+		Where("id = ?", id).
+		Scan(ctx)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check armed status: %w", err)
+	}
+	if err == nil && current.BatchID != nil {
+		return fmt.Errorf("%w: cannot delete armed scheduled row", domain.ErrInvalidRequest)
+	}
+
 	res, err := r.db.NewDelete().
 		Model((*model.Newsletter)(nil)).
 		Where("id = ?", id).
