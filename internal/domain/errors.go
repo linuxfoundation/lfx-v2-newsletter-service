@@ -28,4 +28,14 @@ var (
 	// edited, or deleted until the send settles (sent, or reverted to draft on
 	// total failure).
 	ErrSendInProgress = errors.New("newsletter send in progress")
+
+	// ErrScheduled indicates a newsletter has an armed schedule (status
+	// scheduled) and cannot be edited, deleted, or sent/scheduled again until
+	// it is cancelled back to draft or settles to sent.
+	ErrScheduled = errors.New("newsletter is scheduled")
+
+	// ErrCancelWindowClosed indicates a cancel-schedule request arrived too
+	// close to the newsletter's scheduled_at — inside the configured buffer
+	// where the provider's cancel is no longer reliable.
+	ErrCancelWindowClosed = errors.New("cancel window closed")
 )

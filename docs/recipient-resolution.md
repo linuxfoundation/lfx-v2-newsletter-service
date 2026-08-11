@@ -57,6 +57,8 @@ Current behavior — this service owns the email dispatch behind an `EmailDispat
 - `SEND_FANOUT_ENABLED=false` short-circuits dispatch (validate + transition only) for dev/staging shake-out.
 - Analytics later aggregates engagement by this `group_id` from the provider that sent the newsletter (email-service via `lfx.email-service.get_email_engagement_analytics`, or the local SendGrid store) — see § Provider-Routed Analytics.
 
+**Scheduled sends (LFXV2-2685) are the identical fan-out with two extra fields.** `POST …/schedule` reuses `SendOrchestrator.SendNewsletter` wholesale: the only differences are a `send_at` (UNIX seconds, derived from `scheduled_at`) and `batch_id` (minted via the provider's `CreateBatchID` before the `draft → sending` transition) added to every per-recipient request in the fan-out, identical across every recipient in one send. This is SendGrid-only — scheduling type-asserts the active `EmailDispatcher` against an optional `port.ScheduledSender` interface, and a provider that doesn't implement it (email-service) fails the schedule request with `503 service_unavailable` rather than silently sending immediately. Recipient resolution, per-recipient unsubscribe links, and the open-tracking pixel are unchanged. Cancelling (`POST …/cancel-schedule`) calls the provider's `CancelScheduledBatch` with the same `batch_id` before reverting the row to `draft`.
+
 ## Provider-Routed Analytics
 
 A newsletter's engagement lives in whichever provider dispatched it, so analytics resolves the engagement source per newsletter rather than from a single active provider.

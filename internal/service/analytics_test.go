@@ -72,13 +72,22 @@ func (a *analyticsRepoFake) Update(_ context.Context, n *model.Newsletter, _ int
 	return n, nil
 }
 func (a *analyticsRepoFake) Delete(_ context.Context, _ uuid.UUID) error { return nil }
-func (a *analyticsRepoFake) MarkSending(_ context.Context, _ uuid.UUID, _, _ string, _ int, _ int64) (*model.Newsletter, error) {
+func (a *analyticsRepoFake) MarkSending(_ context.Context, _ uuid.UUID, _, _ string, _ int, _ int64, _ *time.Time, _ string) (*model.Newsletter, error) {
 	return a.newsletter, nil
 }
 func (a *analyticsRepoFake) MarkSent(_ context.Context, _ uuid.UUID, _ time.Time, _ int64) (*model.Newsletter, error) {
 	return a.newsletter, nil
 }
+func (a *analyticsRepoFake) MarkScheduled(_ context.Context, _ uuid.UUID, _ int64) (*model.Newsletter, error) {
+	return a.newsletter, nil
+}
 func (a *analyticsRepoFake) RevertSending(_ context.Context, _ uuid.UUID) error { return nil }
+func (a *analyticsRepoFake) RevertScheduled(_ context.Context, _ uuid.UUID, _ int64, _ *string) (*model.Newsletter, error) {
+	return a.newsletter, nil
+}
+func (a *analyticsRepoFake) SettleDueScheduled(_ context.Context, _ time.Time) (int64, error) {
+	return 0, nil
+}
 func (a *analyticsRepoFake) RecoverStuckSending(_ context.Context, _ time.Duration) (int64, error) {
 	return 0, nil
 }

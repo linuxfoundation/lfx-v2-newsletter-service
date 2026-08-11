@@ -16,6 +16,7 @@ import (
 	"net/mail"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -53,6 +54,8 @@ type CreateDraftInput struct {
 	EDReplyEmail  string
 	CommitteeUIDs []string
 	CreatedBy     string
+	// ScheduledAt is optional save-time intent — see validateScheduledAtSave.
+	ScheduledAt *time.Time
 }
 
 // UpdateDraftInput is the typed input for UpdateDraft.
@@ -63,6 +66,9 @@ type UpdateDraftInput struct {
 	BodyHTML        string
 	EDReplyEmail    string
 	CommitteeUIDs   []string
+	// ScheduledAt is full-replace like every other field here: nil clears a
+	// previously-saved schedule.
+	ScheduledAt *time.Time
 }
 
 // CreateDraft validates the input and inserts a new draft row.
@@ -85,6 +91,9 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	if in.CreatedBy == "" {
 		return nil, fmt.Errorf("%w: createdBy is required", domain.ErrInvalidRequest)
 	}
+	if err := validateScheduledAtSave(in.ScheduledAt); err != nil {
+		return nil, err
+	}
 
 	n := &model.Newsletter{
 		ProjectUID:    in.ProjectUID,
@@ -94,6 +103,7 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 		CommitteeUIDs: normalizeCommitteeUIDs(in.CommitteeUIDs),
 		Status:        model.StatusDraft,
 		CreatedBy:     in.CreatedBy,
+		ScheduledAt:   in.ScheduledAt,
 	}
 
 	if err := s.repo.Create(ctx, n); err != nil {
@@ -148,12 +158,12 @@ func (s *NewsletterService) ListNewsletters(ctx context.Context, in ListNewslett
 	switch in.Status {
 	case "":
 		// No filter — every state.
-	case model.StatusDraft, model.StatusSending:
+	case model.StatusDraft, model.StatusSending, model.StatusScheduled:
 		statuses = []model.Status{in.Status}
 	case model.StatusSent:
 		statuses = []model.Status{model.StatusSent, model.StatusSending}
 	default:
-		return nil, fmt.Errorf("%w: status must be 'draft', 'sending', or 'sent'", domain.ErrInvalidRequest)
+		return nil, fmt.Errorf("%w: status must be 'draft', 'sending', 'scheduled', or 'sent'", domain.ErrInvalidRequest)
 	}
 	return s.repo.ListAll(ctx, port.ListFilters{
 		ProjectUID: in.ProjectUID,
@@ -251,6 +261,9 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	if err := validateCommitteeUIDs(in.CommitteeUIDs); err != nil {
 		return nil, err
 	}
+	if err := validateScheduledAtSave(in.ScheduledAt); err != nil {
+		return nil, err
+	}
 
 	existing, err := s.repo.Get(ctx, in.ID)
 	if err != nil {
@@ -269,11 +282,17 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	if existing.Status == model.StatusSending {
 		return nil, domain.ErrSendInProgress
 	}
+	// A scheduled newsletter is already armed at SendGrid; it must be
+	// cancelled back to draft (POST .../cancel-schedule) before it can be edited.
+	if existing.Status == model.StatusScheduled {
+		return nil, domain.ErrScheduled
+	}
 
 	existing.Subject = strings.TrimSpace(in.Subject)
 	existing.BodyHTML = in.BodyHTML
 	existing.EDReplyEmail = strings.TrimSpace(in.EDReplyEmail)
 	existing.CommitteeUIDs = normalizeCommitteeUIDs(in.CommitteeUIDs)
+	existing.ScheduledAt = in.ScheduledAt
 
 	return s.repo.Update(ctx, existing, in.ExpectedVersion)
 }
@@ -296,6 +315,9 @@ func (s *NewsletterService) DeleteDraft(ctx context.Context, projectUID string, 
 	}
 	if existing.Status == model.StatusSending {
 		return domain.ErrSendInProgress
+	}
+	if existing.Status == model.StatusScheduled {
+		return domain.ErrScheduled
 	}
 	return s.repo.Delete(ctx, id)
 }
@@ -335,6 +357,21 @@ func validateEDReplyEmail(email string) error {
 	}
 	if _, err := mail.ParseAddress(trimmed); err != nil {
 		return fmt.Errorf("%w: ed_reply_email is not a valid email: %v", domain.ErrInvalidRequest, err)
+	}
+	return nil
+}
+
+// validateScheduledAtSave applies the lenient save-time rule: only a future
+// time is required. The full arm-time window (minimum lead, 72h horizon) is
+// validated separately, at schedule time, by
+// SendOrchestrator.validateScheduleWindow — an author drafting today for next
+// week is legitimate; they simply cannot arm it yet.
+func validateScheduledAtSave(scheduledAt *time.Time) error {
+	if scheduledAt == nil {
+		return nil
+	}
+	if !scheduledAt.After(time.Now().UTC()) {
+		return fmt.Errorf("%w: scheduled_at must be in the future", domain.ErrInvalidRequest)
 	}
 	return nil
 }

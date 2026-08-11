@@ -185,6 +185,21 @@ func (r *PostgresNewsletterRepo) ListSentByCommittee(ctx context.Context, commit
 // affected, the method follows up with an existence check to disambiguate
 // ErrNotFound vs ErrVersionMismatch.
 func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter, expectedVersion int64) (*model.Newsletter, error) {
+	// Guard against legacy-pod mutations of armed scheduled rows during rolling
+	// deploys. Armed rows (batch_id IS NOT NULL) are managed by the scheduled-sends
+	// feature and must not be updated by older code paths (LFXV2-2685).
+	current := &model.Newsletter{}
+	err := r.db.NewSelect().
+		Model(current).
+		Where("id = ?", n.ID).
+		Scan(ctx)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("check armed status: %w", err)
+	}
+	if err == nil && current.BatchID != nil {
+		return nil, fmt.Errorf("%w: cannot update armed scheduled row", domain.ErrInvalidRequest)
+	}
+
 	res, err := r.db.NewUpdate().
 		Model(n).
 		Set("subject = ?", n.Subject).
@@ -194,6 +209,9 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		// json-encodes the slice and PG raises a "malformed array literal".
 		Set("committee_uids = ?", pgdialect.Array(n.CommitteeUIDs)).
 		Set("project_uid = ?", n.ProjectUID).
+		// Full replace: an omitted/null scheduled_at clears it, consistent with
+		// every other field here (LFXV2-2685).
+		Set("scheduled_at = ?", n.ScheduledAt).
 		Set("updated_at = now()").
 		Set("version = version + 1").
 		Where("id = ? AND version = ?", n.ID, expectedVersion).
@@ -216,10 +234,18 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 }
 
 // Delete removes a newsletter by id. Returns ErrNotFound if no row was deleted.
+// Rejects deletion of armed scheduled rows (batch_id IS NOT NULL) to prevent
+// legacy-pod mutations during rolling deploys (LFXV2-2685).
 func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error {
+	// Atomically delete only a still-draft row to avoid a TOCTOU race where
+	// MarkSending could claim the row (immediate or scheduled) between the
+	// caller's status check and this delete. batch_id IS NULL alone is not
+	// enough: it only rules out an armed *scheduled* row, but an immediate
+	// send's sending row also has a NULL batch_id and must not be deletable
+	// out from under an in-flight fan-out.
 	res, err := r.db.NewDelete().
 		Model((*model.Newsletter)(nil)).
-		Where("id = ?", id).
+		Where("id = ? AND status = ?", id, model.StatusDraft).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("delete newsletter: %w", err)
@@ -229,7 +255,28 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 		return fmt.Errorf("delete newsletter rows affected: %w", err)
 	}
 	if n == 0 {
-		return domain.ErrNotFound
+		// The row doesn't exist OR it has moved past draft (sending, scheduled,
+		// or sent). Distinguish the error by checking the row.
+		current := &model.Newsletter{}
+		err := r.db.NewSelect().
+			Model(current).
+			Where("id = ?", id).
+			Scan(ctx)
+		if err != nil && errors.Is(err, sql.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("classify delete miss: %w", err)
+		}
+		// Row exists but is no longer a draft (raced past our caller's check).
+		switch current.Status {
+		case model.StatusSent:
+			return domain.ErrAlreadySent
+		case model.StatusScheduled:
+			return domain.ErrScheduled
+		default:
+			return domain.ErrSendInProgress
+		}
 	}
 	return nil
 }
@@ -242,8 +289,55 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 // status='sent' ⇒ group_id NOT NULL CHECK, and so analytics can locate the
 // per-recipient engagement records. The single UPDATE is the duplicate-send
 // guard — a concurrent send observes zero rows affected and is classified.
-func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, groupID, sendProvider string, totalRecipients int, expectedVersion int64) (*model.Newsletter, error) {
+//
+// scheduledAt/batchID (LFXV2-2685) are persisted in the same UPDATE when this
+// fan-out is arming a scheduled release, so a crash immediately afterwards
+// still leaves RecoverStuckSending enough state to settle to 'scheduled'
+// rather than 'sent'. Nil/empty for an immediate send.
+func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, groupID, sendProvider string, totalRecipients int, expectedVersion int64, scheduledAt *time.Time, batchID string) (*model.Newsletter, error) {
 	updated := &model.Newsletter{}
+
+	// Wrap the GUC flag and UPDATE in the same transaction so the trigger sees it.
+	// If scheduling, authorize armed mutations by setting the GUC before the update.
+	if scheduledAt != nil {
+		err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+			// Set the GUC flag in this transaction
+			if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+				return fmt.Errorf("set armed mutation flag: %w", err)
+			}
+			// Now run the UPDATE in the same transaction
+			res, err := tx.NewUpdate().
+				Model(updated).
+				Set("status = ?", model.StatusSending).
+				Set("group_id = ?", groupID).
+				Set("send_provider = ?", sendProvider).
+				Set("total_recipients = ?", totalRecipients).
+				Set("updated_at = now()").
+				Set("version = version + 1").
+				Set("scheduled_at = ?", *scheduledAt).
+				Set("batch_id = ?", batchID).
+				Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusDraft).
+				Returning("*").
+				Exec(ctx)
+			if err != nil {
+				return fmt.Errorf("mark sending: %w", err)
+			}
+			rowsAffected, err := res.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("mark sending rows affected: %w", err)
+			}
+			if rowsAffected == 0 {
+				// Classify through the transaction to avoid pool exhaustion when
+				// concurrent schedule requests all hold transactions waiting for
+				// another pool connection (LFXV2-2685).
+				return r.classifySendTransitionMissWithDB(ctx, tx, id, expectedVersion)
+			}
+			return nil
+		})
+		return updated, err
+	}
+
+	// Non-scheduled send: no GUC needed, just run the UPDATE directly
 	res, err := r.db.NewUpdate().
 		Model(updated).
 		Set("status = ?", model.StatusSending).
@@ -271,28 +365,72 @@ func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, 
 // MarkSent transitions sending → sent, gated on the version produced by
 // MarkSending. group_id and total_recipients were persisted at the sending
 // transition, so only the terminal status and sent_at remain to be written.
+// A zero-recipient scheduled send settles straight to sent with a non-nil
+// batch_id still on the row, so the GUC must be set unconditionally here —
+// same as MarkScheduled/SettleDueScheduled. It is a no-op when batch_id is
+// NULL, since the trigger only checks OLD.batch_id IS NOT NULL.
 func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, expectedVersion int64) (*model.Newsletter, error) {
 	updated := &model.Newsletter{}
-	res, err := r.db.NewUpdate().
-		Model(updated).
-		Set("status = ?", model.StatusSent).
-		Set("sent_at = ?", sentAt).
-		Set("updated_at = now()").
-		Set("version = version + 1").
-		Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusSending).
-		Returning("*").
-		Exec(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("mark sent: %w", err)
-	}
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("mark sent rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return nil, r.classifySendTransitionMiss(ctx, id, expectedVersion)
-	}
-	return updated, nil
+	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set armed mutation flag: %w", err)
+		}
+		res, err := tx.NewUpdate().
+			Model(updated).
+			Set("status = ?", model.StatusSent).
+			Set("sent_at = ?", sentAt).
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusSending).
+			Returning("*").
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("mark sent: %w", err)
+		}
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("mark sent rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			return r.classifySendTransitionMissWithDB(ctx, tx, id, expectedVersion)
+		}
+		return nil
+	})
+	return updated, err
+}
+
+// MarkScheduled transitions sending → scheduled, gated on the version
+// produced by MarkSending (LFXV2-2685). scheduled_at and batch_id were
+// already persisted at the sending transition, so only the terminal status
+// remains to be written.
+func (r *PostgresNewsletterRepo) MarkScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64) (*model.Newsletter, error) {
+	updated := &model.Newsletter{}
+	// Wrap GUC and UPDATE in the same transaction so the trigger sees the flag.
+	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set armed mutation flag: %w", err)
+		}
+		res, err := tx.NewUpdate().
+			Model(updated).
+			Set("status = ?", model.StatusScheduled).
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusSending).
+			Returning("*").
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("mark scheduled: %w", err)
+		}
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("mark scheduled rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			return r.classifySendTransitionMissWithDB(ctx, tx, id, expectedVersion)
+		}
+		return nil
+	})
+	return updated, err
 }
 
 // RevertSending returns a sending newsletter to draft after a total fan-out
@@ -300,32 +438,136 @@ func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sen
 // indistinguishable from one that never attempted a send; the next attempt
 // mints a fresh group_id.
 func (r *PostgresNewsletterRepo) RevertSending(ctx context.Context, id uuid.UUID) error {
-	res, err := r.db.NewUpdate().
-		Model((*model.Newsletter)(nil)).
-		Set("status = ?", model.StatusDraft).
-		Set("group_id = NULL").
-		Set("total_recipients = 0").
-		Set("updated_at = now()").
-		Set("version = version + 1").
-		Where("id = ? AND status = ?", id, model.StatusSending).
-		Exec(ctx)
-	if err != nil {
-		return fmt.Errorf("revert sending: %w", err)
-	}
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("revert sending rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
+	// Wrap GUC and UPDATE in the same transaction so the trigger sees the flag.
+	return r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set armed mutation flag: %w", err)
+		}
+		res, err := tx.NewUpdate().
+			Model((*model.Newsletter)(nil)).
+			Set("status = ?", model.StatusDraft).
+			Set("group_id = NULL").
+			Set("batch_id = NULL").
+			Set("total_recipients = 0").
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("id = ? AND status = ?", id, model.StatusSending).
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("revert sending: %w", err)
+		}
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("revert sending rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			return domain.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// RevertScheduled cancels an armed schedule and returns the newsletter to
+// draft (LFXV2-2685), gated on expectedVersion since this transition is
+// user-initiated (CancelScheduled) rather than a crash-recovery sweep.
+// Accepts both scheduled (waiting at provider) and sending (fan-out in
+// progress) states to handle cancellation of in-flight batches. Clears
+// group_id/batch_id and resets total_recipients, but deliberately RETAINS
+// scheduled_at: the cancelled newsletter still carries the author's saved
+// intent, which they may edit or re-arm via a fresh /schedule call.
+// batchID ties the revert to the specific batch that was cancelled, preventing
+// a delayed duplicate cancel from reverting a newer send (LFXV2-2685).
+func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64, batchID *string) (*model.Newsletter, error) {
+	updated := &model.Newsletter{}
+	// Wrap GUC and UPDATE in the same transaction so the trigger sees the flag.
+	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set armed mutation flag: %w", err)
+		}
+		// Tolerate version bumps from concurrent fan-out settlement, but still require
+		// the status to be in the right state to revert (scheduled or sending).
+		// During a rolling deploy, a cancel request might race against a background
+		// job that's already advanced the version while settling the send. Both must
+		// succeed without corrupting state: if the row is still scheduled/sending,
+		// revert it regardless of version; if it has transitioned to sent, fail with
+		// ErrAlreadySent, not ErrVersionMismatch. Predicate on batch_id to ensure a
+		// delayed duplicate cancel reverts only the same batch, not a newer send.
+		res, err := tx.NewUpdate().
+			Model(updated).
+			Set("status = ?", model.StatusDraft).
+			Set("group_id = NULL").
+			Set("batch_id = NULL").
+			Set("total_recipients = 0").
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("id = ? AND status IN (?, ?) AND batch_id = ?", id, model.StatusScheduled, model.StatusSending, batchID).
+			Returning("*").
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("revert scheduled: %w", err)
+		}
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("revert scheduled rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			// The update didn't match any rows. The row might not exist, might be in
+			// a different status (e.g. sent, draft), or might have been deleted.
+			// Classify the miss to return the appropriate error. Use the transaction
+			// context to avoid holding the transaction while acquiring another pool
+			// connection, which would risk pool exhaustion (LFXV2-2685).
+			return r.classifySendTransitionMissWithDB(ctx, tx, id, expectedVersion)
+		}
+		return nil
+	})
+	return updated, err
+}
+
+// SettleDueScheduled marks scheduled rows whose scheduled_at has passed as
+// sent (LFXV2-2685). Reconciliation of our display state only — SendGrid owns
+// the actual release timing; this just lets the row's status catch up to
+// what has (or should have) already happened. group_id was persisted at the
+// sending transition, so the status='sent' ⇒ group_id NOT NULL CHECK holds.
+func (r *PostgresNewsletterRepo) SettleDueScheduled(ctx context.Context, now time.Time) (int64, error) {
+	var rowsAffected int64
+	// Wrap GUC and UPDATE in the same transaction so the trigger sees the flag.
+	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set armed mutation flag: %w", err)
+		}
+		res, err := tx.NewUpdate().
+			Model((*model.Newsletter)(nil)).
+			Set("status = ?", model.StatusSent).
+			Set("sent_at = scheduled_at").
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("status = ? AND scheduled_at <= ?", model.StatusScheduled, now).
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("settle due scheduled: %w", err)
+		}
+		var err2 error
+		rowsAffected, err2 = res.RowsAffected()
+		if err2 != nil {
+			return fmt.Errorf("settle due scheduled rows affected: %w", err2)
+		}
+		return nil
+	})
+	return rowsAffected, err
 }
 
 // RecoverStuckSending marks sending rows whose updated_at is older than the
-// given age as sent. See the port doc for why recovery lands on sent rather
-// than draft. group_id was persisted at the sending transition, so the
-// status='sent' ⇒ group_id NOT NULL CHECK holds.
+// given age as sent, except rows with an armed SendGrid batch (batch_id IS
+// NOT NULL), which settle to scheduled instead (LFXV2-2685): the provider is
+// still holding those messages for a future release, so flipping straight to
+// sent would misreport our display state (and the next SettleDueScheduled
+// sweep will catch up once scheduled_at actually passes). Keyed off batch_id,
+// not scheduled_at, because MarkSending preserves saved scheduled_at on
+// immediate sends; a crash during MarkSending would misclassify an immediate
+// send with saved-but-unarmed intent as scheduled if we checked scheduled_at
+// instead. See the port doc for why recovery lands on sent (or scheduled)
+// rather than draft. group_id was persisted at the sending transition, so the
+// status='sent' ⇒ group_id NOT NULL CHECK holds either way.
 func (r *PostgresNewsletterRepo) RecoverStuckSending(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-olderThan)
 	res, err := r.db.NewUpdate().
@@ -334,7 +576,7 @@ func (r *PostgresNewsletterRepo) RecoverStuckSending(ctx context.Context, olderT
 		Set("sent_at = now()").
 		Set("updated_at = now()").
 		Set("version = version + 1").
-		Where("status = ? AND updated_at < ?", model.StatusSending, cutoff).
+		Where("status = ? AND updated_at < ? AND batch_id IS NULL", model.StatusSending, cutoff).
 		Exec(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("recover stuck sending: %w", err)
@@ -343,7 +585,35 @@ func (r *PostgresNewsletterRepo) RecoverStuckSending(ctx context.Context, olderT
 	if err != nil {
 		return 0, fmt.Errorf("recover stuck sending rows affected: %w", err)
 	}
-	return rowsAffected, nil
+
+	// This branch touches armed rows (batch_id IS NOT NULL), so the GUC must
+	// be set in the same transaction as the UPDATE or the trigger rejects it —
+	// stranding every crashed scheduled fan-out in 'sending' forever.
+	var scheduledAffected int64
+	err = r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set armed mutation flag: %w", err)
+		}
+		scheduledRes, err := tx.NewUpdate().
+			Model((*model.Newsletter)(nil)).
+			Set("status = ?", model.StatusScheduled).
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("status = ? AND updated_at < ? AND batch_id IS NOT NULL", model.StatusSending, cutoff).
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("recover stuck sending (scheduled): %w", err)
+		}
+		scheduledAffected, err = scheduledRes.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("recover stuck sending (scheduled) rows affected: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return rowsAffected + scheduledAffected, nil
 }
 
 // RecordOpen inserts a single open event. Repeat hits from the same recipient
@@ -531,9 +801,20 @@ func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UU
 // version check because the send-transition UPDATEs bump the version — a row
 // that moved to sending/sent necessarily has a different version too, and the
 // status is the more actionable signal for the caller.
+//
+// Use classifySendTransitionMissWithDB to classify through a transaction,
+// avoiding pool connection exhaustion when classifying within a transaction.
 func (r *PostgresNewsletterRepo) classifySendTransitionMiss(ctx context.Context, id uuid.UUID, expectedVersion int64) error {
+	return r.classifySendTransitionMissWithDB(ctx, r.db, id, expectedVersion)
+}
+
+// classifySendTransitionMissWithDB classifies through an arbitrary bun.IDB
+// (pool or transaction). Use this when classifying within a transaction to
+// avoid holding a transaction open while acquiring another pool connection
+// (pool exhaustion / deadlock risk).
+func (r *PostgresNewsletterRepo) classifySendTransitionMissWithDB(ctx context.Context, db bun.IDB, id uuid.UUID, expectedVersion int64) error {
 	existing := &model.Newsletter{}
-	err := r.db.NewSelect().
+	err := db.NewSelect().
 		Model(existing).
 		Where("id = ?", id).
 		Scan(ctx)
@@ -548,6 +829,9 @@ func (r *PostgresNewsletterRepo) classifySendTransitionMiss(ctx context.Context,
 	}
 	if existing.Status == model.StatusSending {
 		return domain.ErrSendInProgress
+	}
+	if existing.Status == model.StatusScheduled {
+		return domain.ErrScheduled
 	}
 	if existing.Version != expectedVersion {
 		return domain.ErrVersionMismatch
