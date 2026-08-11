@@ -518,3 +518,76 @@ func TestDelete_RejectsSendingImmediateRow(t *testing.T) {
 		t.Fatalf("Status after rejected delete: got %v, want StatusSending", n.Status)
 	}
 }
+
+// TestRevertScheduled_RejectsStaleBatchID covers the interleaving from the
+// LFXV2-2685 follow-up finding: two cancel requests can both read the row
+// while it is armed with batch A. After the first request reverts it and a
+// new send arms a fresh batch B on the same row, a delayed second request for
+// batch A must not match — it is no longer the batch that request actually
+// cancelled — and must leave the newer send untouched.
+func TestRevertScheduled_RejectsStaleBatchID(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	scheduledAt := time.Now().UTC().Add(1 * time.Hour)
+	sendingA, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "sendgrid", 10, 1, &scheduledAt, "batch-A")
+	if err != nil {
+		t.Fatalf("MarkSending (batch A): %v", err)
+	}
+	if _, err := repo.MarkScheduled(ctx, draftID, sendingA.Version); err != nil {
+		t.Fatalf("MarkScheduled (batch A): %v", err)
+	}
+	armedA, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after MarkScheduled (batch A): %v", err)
+	}
+	batchA := "batch-A"
+
+	// First cancel request: reads the row armed with batch A and reverts it.
+	// This is the "already processed" request in the race.
+	reverted, err := repo.RevertScheduled(ctx, draftID, armedA.Version, &batchA)
+	if err != nil {
+		t.Fatalf("RevertScheduled (batch A, first request): %v", err)
+	}
+	if reverted.Status != model.StatusDraft {
+		t.Fatalf("Status after first revert: got %v, want StatusDraft", reverted.Status)
+	}
+
+	// A new send arms a fresh batch B on the same row.
+	sendingB, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "sendgrid", 10, 1, &scheduledAt, "batch-B")
+	if err != nil {
+		t.Fatalf("MarkSending (batch B): %v", err)
+	}
+	if _, err := repo.MarkScheduled(ctx, draftID, sendingB.Version); err != nil {
+		t.Fatalf("MarkScheduled (batch B): %v", err)
+	}
+	armedB, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after MarkScheduled (batch B): %v", err)
+	}
+
+	// Delayed second cancel request: still carries the stale batch A ID (and
+	// the version it read before the first revert). It must not match batch
+	// B's row, even though the row's status (scheduled) is otherwise eligible.
+	_, err = repo.RevertScheduled(ctx, draftID, armedA.Version, &batchA)
+	if !errors.Is(err, domain.ErrScheduled) {
+		t.Fatalf("RevertScheduled (stale batch A, second request): got %v, want ErrScheduled", err)
+	}
+
+	// The newer send (batch B) must be untouched.
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after stale revert attempt: %v", err)
+	}
+	if n.Status != model.StatusScheduled {
+		t.Fatalf("Status after stale revert attempt: got %v, want StatusScheduled", n.Status)
+	}
+	if n.BatchID == nil || *n.BatchID != "batch-B" {
+		t.Fatalf("BatchID after stale revert attempt: got %v, want batch-B", n.BatchID)
+	}
+	if n.Version != armedB.Version {
+		t.Fatalf("Version after stale revert attempt: got %d, want unchanged %d", n.Version, armedB.Version)
+	}
+}
