@@ -19,9 +19,13 @@ import (
 // fan-out in a background job detached from this request. The response is
 // therefore 202 Accepted with the sending-state newsletter (sent=0); clients
 // observe completion by re-fetching the newsletter, whose status settles to
-// 'sent' (or reverts to 'draft' when zero recipients could be delivered to).
-// The zero-recipient edge case settles synchronously and returns 200 with
-// status='sent', preserving the historical contract.
+// 'sent' when at least one recipient succeeds or any result is ambiguous
+// (or reverts to 'draft' when zero recipients could be delivered to).
+// A settled status='sent' does NOT guarantee all recipients were accepted —
+// only that the send was initiated. The zero-recipient edge case settles
+// synchronously and returns 200 with status='sent', preserving the historical
+// contract. Consult the Failures list and provider engagement metrics for
+// per-recipient delivery outcomes.
 func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
 	projectUID := r.PathValue("project_uid")
 	id, err := parseUUID(r.PathValue("newsletter_uid"))
@@ -59,8 +63,11 @@ func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
 // The request body is optional: an override scheduled_at, else the draft's
 // own saved value is used (a 400 if neither exists). Behaves like
 // SendNewsletter otherwise — 202 Accepted with the sending-state newsletter,
-// settling in the background to status='scheduled' once every recipient's
-// message is accepted by SendGrid for release.
+// settling in the background to status='scheduled' when at least one recipient's
+// message is accepted by SendGrid for release (or reverting to 'draft' when zero
+// recipients could be scheduled). A settled status='scheduled' does NOT guarantee
+// all recipients were accepted — only that the schedule was armed. Consult the
+// Failures list for per-recipient scheduling outcomes.
 func (h *Handler) ScheduleNewsletter(w http.ResponseWriter, r *http.Request) {
 	projectUID := r.PathValue("project_uid")
 	id, err := parseUUID(r.PathValue("newsletter_uid"))
