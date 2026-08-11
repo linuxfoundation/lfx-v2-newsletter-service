@@ -400,13 +400,13 @@ func newTestOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClien
 // drive the auth-service NATS lookup deterministically.
 func newTestOrchestratorWithUser(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService, user port.UserMetadataReader) *SendOrchestrator {
 	return NewSendOrchestrator(SendOrchestratorConfig{
-		Repo:          repo,
-		Committee:     committee,
-		Project:       &fakeProjectClient{},
-		Email:         email,
-		UserMetadata:  user,
-		Unsubscribe:   unsub,
-		Concurrency:   2,
+		Repo:         repo,
+		Committee:    committee,
+		Project:      &fakeProjectClient{},
+		Email:        email,
+		UserMetadata: user,
+		Unsubscribe:  unsub,
+		Concurrency:  2,
 		FanoutEnabled: true,
 	})
 }

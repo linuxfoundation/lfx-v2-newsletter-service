@@ -142,6 +142,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		ScheduleMaxHorizon:    cfg.ScheduleMaxHorizon,
 		ScheduleMinLead:       cfg.ScheduleMinLead,
 		ScheduleCancelBuffer:  cfg.ScheduleCancelBuffer,
+		SendGridScheduler:     extractSendGridScheduler(emailDispatcher),
 	})
 	// Analytics routes engagement reads by each newsletter's send_provider, so
 	// register a reader per provider. The email-service (NATS) reader and the
@@ -330,4 +331,14 @@ func newSendGridWebhook(ctx context.Context, cfg AppConfig) (http.Handler, error
 	}
 	slog.InfoContext(ctx, "SendGrid event webhook registered at POST /newsletters/sendgrid/events")
 	return sendgridinfra.NewWebhook(verifier, repository.NewSendGridEngagementStore(bunDB)), nil
+}
+
+// extractSendGridScheduler extracts the SendGrid scheduler from an email
+// dispatcher if it implements port.ScheduledSender. Used to support scheduled
+// send cancellation even after a provider switch (LFXV2-2685).
+func extractSendGridScheduler(dispatcher port.EmailDispatcher) port.ScheduledSender {
+	if scheduler, ok := dispatcher.(port.ScheduledSender); ok {
+		return scheduler
+	}
+	return nil
 }

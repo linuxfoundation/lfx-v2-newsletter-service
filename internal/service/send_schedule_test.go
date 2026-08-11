@@ -70,6 +70,8 @@ func newTestScheduleOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommit
 		Email:                email,
 		Concurrency:          2,
 		FanoutEnabled:        true,
+		SendProvider:         model.SendProviderSendGrid,
+		SendGridScheduler:    email,
 		ScheduleMinLead:      minLead,
 		ScheduleMaxHorizon:   maxHorizon,
 		ScheduleCancelBuffer: cancelBuffer,

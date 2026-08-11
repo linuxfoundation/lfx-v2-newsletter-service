@@ -111,6 +111,10 @@ type SendOrchestrator struct {
 	scheduleMaxHorizon   time.Duration
 	scheduleMinLead      time.Duration
 	scheduleCancelBuffer time.Duration
+	// sendGridScheduler is a cached reference to the SendGrid scheduler (if
+	// available) used to cancel outstanding schedules even after a provider
+	// switch. Nil if the current EMAIL_PROVIDER is not sendgrid (LFXV2-2685).
+	sendGridScheduler port.ScheduledSender
 }
 
 // SendOrchestratorConfig configures a SendOrchestrator.
@@ -167,6 +171,11 @@ type SendOrchestratorConfig struct {
 	// ScheduleCancelBuffer rejects a cancel-schedule request inside this
 	// window before scheduled_at. Zero falls back to 5 minutes.
 	ScheduleCancelBuffer time.Duration
+	// SendGridScheduler is an optional reference to a SendGrid scheduler for
+	// cancelling outstanding scheduled sends even after a provider switch. When
+	// nil, scheduled sends cannot be cancelled if the provider has switched away
+	// from sendgrid (LFXV2-2685). Set when EMAIL_PROVIDER is sendgrid.
+	SendGridScheduler port.ScheduledSender
 }
 
 // NewSendOrchestrator wires a SendOrchestrator.
@@ -246,6 +255,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		scheduleMaxHorizon:    scheduleMaxHorizon,
 		scheduleMinLead:       scheduleMinLead,
 		scheduleCancelBuffer:  scheduleCancelBuffer,
+		sendGridScheduler:     cfg.SendGridScheduler,
 	}
 }
 
@@ -706,9 +716,30 @@ func (o *SendOrchestrator) CancelScheduled(ctx context.Context, in CancelSchedul
 	}
 
 	if draft.BatchID != nil {
-		scheduler, ok := o.email.(port.ScheduledSender)
-		if !ok {
-			return nil, pkgerrors.NewServiceUnavailable("cancelling a schedule requires the SendGrid provider (EMAIL_PROVIDER=sendgrid)")
+		// Route cancellation by the provider that armed this schedule, not the
+		// current EMAIL_PROVIDER. If the provider was switched after scheduling,
+		// we must still support cancellation of outstanding SendGrid batches
+		// (LFXV2-2685). Only SendGrid supports scheduled sends.
+		var scheduler port.ScheduledSender
+		switch draft.SendProvider {
+		case model.SendProviderSendGrid:
+			scheduler = o.sendGridScheduler
+			if scheduler == nil {
+				// The newsletter was originally sent via SendGrid and armed a batch,
+				// but the provider has been switched away (EMAIL_PROVIDER is no longer
+				// sendgrid) and we have no cached reference. The batch is still queued
+				// at SendGrid and cannot be cancelled without provider credentials.
+				return nil, pkgerrors.NewServiceUnavailable(
+					"cancelling this schedule requires the SendGrid provider (EMAIL_PROVIDER=sendgrid); the provider appears to have been switched",
+				)
+			}
+		default:
+			// email-service does not support scheduled sends; a batch_id should never
+			// exist on an email-service send. This is a data corruption issue.
+			return nil, pkgerrors.NewUnexpected(
+				fmt.Sprintf("newsletter has a batch_id but send_provider=%q (which does not support scheduling)", draft.SendProvider),
+				nil,
+			)
 		}
 		if err := scheduler.CancelScheduledBatch(ctx, *draft.BatchID); err != nil {
 			return nil, fmt.Errorf("cancel provider batch: %w", err)
