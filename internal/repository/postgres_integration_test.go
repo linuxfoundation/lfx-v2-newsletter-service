@@ -555,8 +555,9 @@ func TestRevertScheduled_RejectsStaleBatchID(t *testing.T) {
 		t.Fatalf("Status after first revert: got %v, want StatusDraft", reverted.Status)
 	}
 
-	// A new send arms a fresh batch B on the same row.
-	sendingB, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "sendgrid", 10, 1, &scheduledAt, "batch-B")
+	// A new send arms a fresh batch B on the same row. draft.Version has moved
+	// on past the literal 1 used to arm batch A: the revert above bumped it.
+	sendingB, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "sendgrid", 10, reverted.Version, &scheduledAt, "batch-B")
 	if err != nil {
 		t.Fatalf("MarkSending (batch B): %v", err)
 	}
