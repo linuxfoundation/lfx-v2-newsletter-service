@@ -82,7 +82,7 @@ func (a *analyticsRepoFake) MarkScheduled(_ context.Context, _ uuid.UUID, _ int6
 	return a.newsletter, nil
 }
 func (a *analyticsRepoFake) RevertSending(_ context.Context, _ uuid.UUID) error { return nil }
-func (a *analyticsRepoFake) RevertScheduled(_ context.Context, _ uuid.UUID, _ int64) (*model.Newsletter, error) {
+func (a *analyticsRepoFake) RevertScheduled(_ context.Context, _ uuid.UUID, _ int64, _ *string) (*model.Newsletter, error) {
 	return a.newsletter, nil
 }
 func (a *analyticsRepoFake) SettleDueScheduled(_ context.Context, _ time.Time) (int64, error) {

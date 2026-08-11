@@ -472,7 +472,9 @@ func (r *PostgresNewsletterRepo) RevertSending(ctx context.Context, id uuid.UUID
 // group_id/batch_id and resets total_recipients, but deliberately RETAINS
 // scheduled_at: the cancelled newsletter still carries the author's saved
 // intent, which they may edit or re-arm via a fresh /schedule call.
-func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64) (*model.Newsletter, error) {
+// batchID ties the revert to the specific batch that was cancelled, preventing
+// a delayed duplicate cancel from reverting a newer send (LFXV2-2685).
+func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64, batchID *string) (*model.Newsletter, error) {
 	updated := &model.Newsletter{}
 	// Wrap GUC and UPDATE in the same transaction so the trigger sees the flag.
 	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
@@ -485,7 +487,8 @@ func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UU
 		// job that's already advanced the version while settling the send. Both must
 		// succeed without corrupting state: if the row is still scheduled/sending,
 		// revert it regardless of version; if it has transitioned to sent, fail with
-		// ErrAlreadySent, not ErrVersionMismatch.
+		// ErrAlreadySent, not ErrVersionMismatch. Predicate on batch_id to ensure a
+		// delayed duplicate cancel reverts only the same batch, not a newer send.
 		res, err := tx.NewUpdate().
 			Model(updated).
 			Set("status = ?", model.StatusDraft).
@@ -494,7 +497,7 @@ func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UU
 			Set("total_recipients = 0").
 			Set("updated_at = now()").
 			Set("version = version + 1").
-			Where("id = ? AND status IN (?, ?)", id, model.StatusScheduled, model.StatusSending).
+			Where("id = ? AND status IN (?, ?) AND batch_id = ?", id, model.StatusScheduled, model.StatusSending, batchID).
 			Returning("*").
 			Exec(ctx)
 		if err != nil {

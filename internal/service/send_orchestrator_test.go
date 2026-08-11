@@ -278,7 +278,7 @@ func (r *fakeNewsletterRepo) RevertSending(_ context.Context, id uuid.UUID) erro
 	n.Version++
 	return nil
 }
-func (r *fakeNewsletterRepo) RevertScheduled(_ context.Context, id uuid.UUID, expectedVersion int64) (*model.Newsletter, error) {
+func (r *fakeNewsletterRepo) RevertScheduled(_ context.Context, id uuid.UUID, expectedVersion int64, batchID *string) (*model.Newsletter, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	n, ok := r.drafts[id]
@@ -287,6 +287,11 @@ func (r *fakeNewsletterRepo) RevertScheduled(_ context.Context, id uuid.UUID, ex
 	}
 	if n.Status != model.StatusScheduled || n.Version != expectedVersion {
 		return nil, domain.ErrVersionMismatch
+	}
+	// Ensure we're reverting the same batch that was cancelled to prevent
+	// delayed duplicate cancels from reverting the wrong row.
+	if (batchID == nil && n.BatchID != nil) || (batchID != nil && (n.BatchID == nil || *batchID != *n.BatchID)) {
+		return nil, domain.ErrVersionMismatch // Batch mismatch = no match
 	}
 	n.Status = model.StatusDraft
 	n.GroupID = nil

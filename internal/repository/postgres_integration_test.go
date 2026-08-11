@@ -296,8 +296,9 @@ func TestArmedMutations_AllMethodsSucceed(t *testing.T) {
 		t.Fatalf("Get after MarkScheduled for revert: %v", err)
 	}
 
-	// Now revert the scheduled row (armed) back to draft
-	_, err = repo.RevertScheduled(ctx, scheduledID, n.Version)
+	// Now revert the scheduled row (armed) back to draft, passing the batch_id
+	// that was armed so a delayed duplicate cancel won't revert a newer send
+	_, err = repo.RevertScheduled(ctx, scheduledID, n.Version, n.BatchID)
 	if err != nil {
 		t.Fatalf("RevertScheduled on armed row: %v", err)
 	}

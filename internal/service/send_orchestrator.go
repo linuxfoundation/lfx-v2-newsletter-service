@@ -785,10 +785,12 @@ func (o *SendOrchestrator) CancelScheduled(ctx context.Context, in CancelSchedul
 
 	// Use a fresh context with timeout independent of the request context. The
 	// request context may already be exhausted from the provider cancellation
-	// call above, but reverting to draft must persist reliably.
+	// call above, but reverting to draft must persist reliably. Pass the batch_id
+	// that was cancelled so the revert predicates on that same batch, preventing a
+	// delayed duplicate cancel from reverting a newer send (LFXV2-2685).
 	revertCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reverted, err := o.repo.RevertScheduled(revertCtx, draft.ID, draft.Version)
+	reverted, err := o.repo.RevertScheduled(revertCtx, draft.ID, draft.Version, draft.BatchID)
 	if err != nil {
 		return nil, fmt.Errorf("revert scheduled: %w", err)
 	}

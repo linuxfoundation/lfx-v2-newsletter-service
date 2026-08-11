@@ -91,8 +91,9 @@ type NewsletterRepository interface {
 	// (LFXV2-2685) rather than a crash-recovery sweep. Clears group_id/batch_id
 	// and resets total_recipients, but deliberately RETAINS scheduled_at — the
 	// cancelled newsletter still carries the author's saved intent, which they
-	// may edit or re-arm.
-	RevertScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64) (*model.Newsletter, error)
+	// may edit or re-arm. batchID ties the revert to the specific batch that was
+	// cancelled, preventing a delayed duplicate cancel from reverting a newer send.
+	RevertScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64, batchID *string) (*model.Newsletter, error)
 	// SettleDueScheduled marks scheduled rows whose scheduled_at has passed as
 	// sent (LFXV2-2685). Reconciliation of our display state only — SendGrid
 	// owns the actual release timing. Returns the number of settled rows.
