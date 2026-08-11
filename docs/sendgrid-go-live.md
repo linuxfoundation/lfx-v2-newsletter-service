@@ -150,10 +150,10 @@ the endpoint returns `503 service_unavailable`.
   them. There is no "resume" after a cancel; re-scheduling means re-arming a new
   `/schedule` call (the draft's `scheduled_at` survives the cancel for exactly this).
   A re-cancel of an already-cancelled batch is tolerated (idempotent).
-- **Cancel window.** `NEWSLETTER_SCHEDULE_CANCEL_BUFFER` (default `5m`) rejects a cancel
-  request too close to `scheduled_at`, since SendGrid's own cancel is best-effort near
-  release — a batch might already be past the point SendGrid can pull it back even
-  though the API accepted the cancel call.
+- **Cancel window.** `NEWSLETTER_SCHEDULE_CANCEL_BUFFER` (default `10m`, minimum `10m`)
+  rejects a cancel request too close to `scheduled_at` — SendGrid's API does not permit
+  cancellation within 10 minutes of `send_at`. A batch requested for cancellation in the
+  5-10 minute window before release is rejected upstream.
 - **Minimum lead.** `NEWSLETTER_SCHEDULE_MIN_LEAD` (default `5m`) rejects arming a
   schedule too close to now, for the same reason in reverse.
 

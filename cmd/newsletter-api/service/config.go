@@ -154,7 +154,7 @@ const (
 	// startup rather than silently clamped, since SendGrid enforces it anyway.
 	maxScheduleHorizon          = 72 * time.Hour
 	defaultScheduleMinLead      = 5 * time.Minute
-	defaultScheduleCancelBuffer = 5 * time.Minute
+	defaultScheduleCancelBuffer = 10 * time.Minute
 	// minStuckSendSlack is the minimum margin enforced between SendJobTimeout
 	// and StuckSendTTL so the recovery sweep never marks a row 'sent' while
 	// its fan-out job is still running.

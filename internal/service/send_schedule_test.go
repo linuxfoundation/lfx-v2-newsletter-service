@@ -189,7 +189,7 @@ func TestValidateScheduleWindow(t *testing.T) {
 	email := &fakeScheduledEmailDispatcher{}
 	minLead := 5 * time.Minute
 	maxHorizon := 72 * time.Hour
-	orch := newTestScheduleOrchestrator(repo, &fakeCommitteeClient{}, email, minLead, maxHorizon, 5*time.Minute)
+	orch := newTestScheduleOrchestrator(repo, &fakeCommitteeClient{}, email, minLead, maxHorizon, 10*time.Minute)
 
 	tests := []struct {
 		name    string
