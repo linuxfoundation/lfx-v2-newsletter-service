@@ -169,7 +169,8 @@ type SendOrchestratorConfig struct {
 	// clear. Zero falls back to 5 minutes.
 	ScheduleMinLead time.Duration
 	// ScheduleCancelBuffer rejects a cancel-schedule request inside this
-	// window before scheduled_at. Zero falls back to 5 minutes.
+	// window before scheduled_at (SendGrid API requires minimum 10m). Zero
+	// falls back to 10 minutes.
 	ScheduleCancelBuffer time.Duration
 	// SendGridScheduler is an optional reference to a SendGrid scheduler for
 	// cancelling outstanding scheduled sends even after a provider switch. When

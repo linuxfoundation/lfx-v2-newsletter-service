@@ -365,9 +365,11 @@ func (r *PostgresNewsletterRepo) RevertSending(ctx context.Context, id uuid.UUID
 // RevertScheduled cancels an armed schedule and returns the newsletter to
 // draft (LFXV2-2685), gated on expectedVersion since this transition is
 // user-initiated (CancelScheduled) rather than a crash-recovery sweep.
-// Clears group_id/batch_id and resets total_recipients, but deliberately
-// RETAINS scheduled_at: the cancelled newsletter still carries the author's
-// saved intent, which they may edit or re-arm via a fresh /schedule call.
+// Accepts both scheduled (waiting at provider) and sending (fan-out in
+// progress) states to handle cancellation of in-flight batches. Clears
+// group_id/batch_id and resets total_recipients, but deliberately RETAINS
+// scheduled_at: the cancelled newsletter still carries the author's saved
+// intent, which they may edit or re-arm via a fresh /schedule call.
 func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64) (*model.Newsletter, error) {
 	updated := &model.Newsletter{}
 	res, err := r.db.NewUpdate().
@@ -378,7 +380,7 @@ func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UU
 		Set("total_recipients = 0").
 		Set("updated_at = now()").
 		Set("version = version + 1").
-		Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusScheduled).
+		Where("id = ? AND version = ? AND status IN (?, ?)", id, expectedVersion, model.StatusScheduled, model.StatusSending).
 		Returning("*").
 		Exec(ctx)
 	if err != nil {

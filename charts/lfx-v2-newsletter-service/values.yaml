@@ -129,8 +129,8 @@ app:
       minLead: ""
       # cancelBuffer rejects a cancel-schedule request inside this window
       # before the armed scheduled_at, since SendGrid cancel is best-effort
-      # near release (Go duration string). Empty falls back to the app
-      # default (5m).
+      # near release (Go duration string). Minimum 10m enforced by SendGrid API.
+      # Empty falls back to the app default (10m).
       cancelBuffer: ""
 
     # provider selects the OUTBOUND send provider: "email-service" (default;

@@ -17,10 +17,12 @@ type Status string
 // is running asynchronously. The newsletter settles to StatusSent on
 // completion (at least one recipient succeeded or any result is ambiguous),
 // or reverts to StatusDraft if no recipient could be delivered to. A settled
-// Status does NOT guarantee that all recipients were accepted — only that
+// StatusSent does NOT guarantee that all recipients were accepted — only that
 // the send was initiated. For scheduling, StatusSending transitions to
-// StatusScheduled once every recipient message is accepted by SendGrid for
-// release at the scheduled_at time.
+// StatusScheduled once at least one recipient message is accepted by SendGrid
+// for release at the scheduled_at time. A settled StatusScheduled also does
+// NOT guarantee all recipients were accepted — only that the schedule was
+// armed.
 const (
 	StatusDraft     Status = "draft"
 	StatusSending   Status = "sending"
