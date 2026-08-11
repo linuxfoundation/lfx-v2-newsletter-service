@@ -702,10 +702,18 @@ func (o *SendOrchestrator) CancelScheduled(ctx context.Context, in CancelSchedul
 	if draft.ProjectUID != in.ProjectUID {
 		return nil, domain.ErrNotFound
 	}
-	if draft.Status != model.StatusScheduled {
+	// Allow cancellation of both scheduled (sent to provider, waiting) and sending
+	// (fan-out in progress with an armed batch_id) rows. This permits race-safe
+	// cancellation of in-flight batches before the recovery sweep runs (LFXV2-2685).
+	if draft.Status != model.StatusScheduled && draft.Status != model.StatusSending {
 		if draft.Status == model.StatusSent {
 			return nil, domain.ErrAlreadySent
 		}
+		return nil, fmt.Errorf("%w: newsletter is not scheduled", domain.ErrInvalidRequest)
+	}
+	// A sending row with a batch_id can be cancelled, but a sending row WITHOUT one
+	// (immediate send in progress) cannot — only the recovery sweep can deal with it.
+	if draft.Status == model.StatusSending && draft.BatchID == nil {
 		return nil, fmt.Errorf("%w: newsletter is not scheduled", domain.ErrInvalidRequest)
 	}
 	if in.ExpectedVersion != 0 && draft.Version != in.ExpectedVersion {
