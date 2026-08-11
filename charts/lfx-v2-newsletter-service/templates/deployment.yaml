@@ -138,16 +138,6 @@ spec:
                  empty list would disable the From-domain guard. Mirrors the API-key guard. */}}
             {{- required "app.send.sendgrid.authenticatedDomains is required when app.send.provider=sendgrid" "" }}
             {{- end }}
-            {{- if .Values.app.send.sendgrid.apiKeySecretRef.name }}
-            - name: SENDGRID_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.app.send.sendgrid.apiKeySecretRef.name }}
-                  key: {{ .Values.app.send.sendgrid.apiKeySecretRef.key }}
-            {{- else }}
-            {{/* Fail the install rather than let every pod CrashLoop in AppConfigFromEnv on a missing key. */}}
-            {{- required "app.send.sendgrid.apiKeySecretRef.name is required when app.send.provider=sendgrid" "" }}
-            {{- end }}
             {{- if not .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
             {{/* A SendGrid provider needs its event webhook to populate engagement
                  analytics; without the public key the webhook route is never registered
@@ -157,6 +147,18 @@ spec:
                  back to email-service. */}}
             {{- required "app.send.sendgrid.webhookPublicKeySecretRef.name is required when app.send.provider=sendgrid" "" }}
             {{- end }}
+            {{- end }}
+            {{- if .Values.app.send.sendgrid.apiKeySecretRef.name }}
+            # SendGrid API key is wired independently of the active outbound provider
+            # to support the independently-wired scheduler that handles cancellations
+            # of scheduled sends even after a provider rollback to email-service
+            # (LFXV2-2685). Credentials are NOT required when provider=email-service
+            # but MUST be configured when scheduled sends need to be cancelable.
+            - name: SENDGRID_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.send.sendgrid.apiKeySecretRef.name }}
+                  key: {{ .Values.app.send.sendgrid.apiKeySecretRef.key }}
             {{- end }}
             {{- if .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
             # Webhook ingestion is independent of the active outbound provider: the
