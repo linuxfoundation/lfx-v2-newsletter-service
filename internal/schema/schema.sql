@@ -126,6 +126,73 @@ BEGIN
     END IF;
 END$$;
 
+-- scheduled_at / batch_id support scheduled sends (LFXV2-2685). scheduled_at
+-- carries two meanings depending on status: while draft, it is the author's
+-- saved intent (set on create/update, does not by itself send anything);
+-- once a schedule is armed it is the committed release time handed to the
+-- provider as send_at, and batch_id is the provider batch identifier shared
+-- by every recipient in that fan-out so the provider releases them together
+-- and the whole batch can be cancelled.
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS batch_id TEXT;
+
+-- Widen the status CHECK to add 'scheduled', mirroring the 'sending' widening
+-- above: additive for existing rows, a no-op once the constraint already
+-- mentions 'scheduled'.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'newsletters_status_check'
+          AND conrelid = 'newsletters'::regclass
+          AND pg_get_constraintdef(oid) NOT LIKE '%scheduled%'
+    ) THEN
+        ALTER TABLE newsletters DROP CONSTRAINT newsletters_status_check;
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_status_check
+            CHECK (status IN ('draft','sending','scheduled','sent'));
+    END IF;
+END$$;
+
+-- A scheduled row is armed for exactly one provider batch, so it needs a
+-- group_id too — widen the sent-only invariant to cover it. Drop-and-re-add
+-- inside a definition-guarded block so re-running schema.sql is a no-op.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'newsletters_sent_requires_group_id'
+          AND conrelid = 'newsletters'::regclass
+          AND pg_get_constraintdef(oid) NOT LIKE '%scheduled%'
+    ) THEN
+        ALTER TABLE newsletters DROP CONSTRAINT newsletters_sent_requires_group_id;
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_sent_requires_group_id
+            CHECK (status NOT IN ('sent','scheduled') OR group_id IS NOT NULL);
+    END IF;
+END$$;
+
+-- A scheduled row must carry both the release time and the provider batch
+-- id — that pair is what "armed" means. Deliberately one-directional: a draft
+-- may carry scheduled_at with no batch_id (the author's saved-but-unarmed
+-- intent), which this constraint permits.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_scheduled_requires_schedule'
+    ) THEN
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_scheduled_requires_schedule
+            CHECK (status <> 'scheduled' OR (scheduled_at IS NOT NULL AND batch_id IS NOT NULL));
+    END IF;
+END$$;
+
+-- Supports the due-schedule sweep (status = 'scheduled' AND scheduled_at <= now()).
+CREATE INDEX IF NOT EXISTS idx_newsletters_scheduled_due
+    ON newsletters (scheduled_at) WHERE status = 'scheduled';
+
 -- Replace the old (context_type, context_uid) indexes with project-scoped
 -- equivalents. The composite list index supports the (project_uid, updated_at
 -- DESC, id DESC) keyset pagination used by ListAll.

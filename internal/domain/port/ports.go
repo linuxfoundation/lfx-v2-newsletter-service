@@ -68,15 +68,39 @@ type NewsletterRepository interface {
 	// replicas: a zero-row result is classified as domain.ErrNotFound,
 	// domain.ErrAlreadySent, domain.ErrSendInProgress, or
 	// domain.ErrVersionMismatch.
-	MarkSending(ctx context.Context, id uuid.UUID, groupID, sendProvider string, totalRecipients int, expectedVersion int64) (*model.Newsletter, error)
+	//
+	// scheduledAt/batchID are non-nil/non-empty only when this fan-out is
+	// arming a scheduled release (LFXV2-2685); both persist atomically with the
+	// draft → sending claim so a crash immediately after this UPDATE still
+	// carries enough state for RecoverStuckSending to settle the right way.
+	MarkSending(ctx context.Context, id uuid.UUID, groupID, sendProvider string, totalRecipients int, expectedVersion int64, scheduledAt *time.Time, batchID string) (*model.Newsletter, error)
 	// MarkSent transitions sending → sent, gated on the version returned by
 	// MarkSending. group_id and total_recipients were already persisted at the
 	// sending transition.
 	MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, expectedVersion int64) (*model.Newsletter, error)
+	// MarkScheduled transitions sending → scheduled, gated on the version
+	// returned by MarkSending (LFXV2-2685). Used instead of MarkSent when the
+	// fan-out just armed a scheduled release: scheduled_at and batch_id were
+	// already persisted at the sending transition.
+	MarkScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64) (*model.Newsletter, error)
 	// RevertSending returns a sending newsletter to draft after a total
 	// fan-out failure (zero recipients delivered) so the operator can retry.
 	RevertSending(ctx context.Context, id uuid.UUID) error
-	// RecoverStuckSending marks sending rows older than the given age as sent.
+	// RevertScheduled cancels an armed schedule and returns the newsletter to
+	// draft, gated on expectedVersion since this transition is user-initiated
+	// (LFXV2-2685) rather than a crash-recovery sweep. Clears group_id/batch_id
+	// and resets total_recipients, but deliberately RETAINS scheduled_at — the
+	// cancelled newsletter still carries the author's saved intent, which they
+	// may edit or re-arm.
+	RevertScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64) (*model.Newsletter, error)
+	// SettleDueScheduled marks scheduled rows whose scheduled_at has passed as
+	// sent (LFXV2-2685). Reconciliation of our display state only — SendGrid
+	// owns the actual release timing. Returns the number of settled rows.
+	SettleDueScheduled(ctx context.Context, now time.Time) (int64, error)
+	// RecoverStuckSending marks sending rows older than the given age as sent,
+	// except rows arming a scheduled release (scheduled_at IS NOT NULL), which
+	// settle to scheduled instead (LFXV2-2685) — flipping those straight to
+	// sent would be wrong since the provider is still holding the release.
 	// Crash recovery: a pod dying mid-fan-out leaves status='sending' forever;
 	// after the TTL an unknown number of emails may already have gone out, so
 	// re-arming Send would guarantee duplicates — marking sent at worst
@@ -163,6 +187,13 @@ type SendEmailInput struct {
 	FromDisplayName string
 	ReplyTo         string
 	GroupID         string
+	// SendAt and BatchID arm a scheduled release: when SendAt is non-nil, every
+	// recipient in the fan-out carries the same SendAt/BatchID so the provider
+	// holds and releases them together (LFXV2-2685). Nil/empty means send
+	// immediately — the historical behavior. Only a dispatcher implementing
+	// ScheduledSender can be asked to populate these.
+	SendAt  *time.Time
+	BatchID string
 }
 
 // EmailRecipientRecord mirrors lfx-v2-email-service's per-recipient state, used
@@ -252,6 +283,23 @@ var ErrAmbiguousSend = errors.New("send outcome ambiguous: provider may have acc
 // not implement it; the orchestrator type-asserts for it.
 type EngagementPurger interface {
 	PurgeEngagement(ctx context.Context, groupID string) error
+}
+
+// ScheduledSender optionally lets a dispatcher arm and cancel a native
+// provider-side scheduled send (LFXV2-2685). Only the SendGrid dispatcher
+// implements it — Mail Send's send_at/batch_id have no NATS/email-service
+// analogue — so the orchestrator type-asserts for it and rejects a schedule
+// request with a clear error when the active provider does not support it,
+// rather than silently sending immediately.
+type ScheduledSender interface {
+	// CreateBatchID mints a new provider batch identifier (SendGrid POST
+	// /v3/mail/batch) to be shared by every recipient in one scheduled
+	// fan-out.
+	CreateBatchID(ctx context.Context) (batchID string, err error)
+	// CancelScheduledBatch cancels a previously armed batch so the provider
+	// discards it at release time instead of sending. Idempotent: cancelling
+	// an already-cancelled batch is not an error.
+	CancelScheduledBatch(ctx context.Context, batchID string) error
 }
 
 // EngagementReader reads per-newsletter engagement for analytics, keyed by the

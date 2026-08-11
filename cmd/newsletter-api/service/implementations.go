@@ -139,6 +139,9 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		SelfServeBaseURL:      cfg.SelfServeBaseURL,
 		SendJobTimeout:        cfg.SendJobTimeout,
 		SendProvider:          cfg.EmailProvider,
+		ScheduleMaxHorizon:    cfg.ScheduleMaxHorizon,
+		ScheduleMinLead:       cfg.ScheduleMinLead,
+		ScheduleCancelBuffer:  cfg.ScheduleCancelBuffer,
 	})
 	// Analytics routes engagement reads by each newsletter's send_provider, so
 	// register a reader per provider. The email-service (NATS) reader and the
@@ -188,6 +191,7 @@ func SQLDB() *sql.DB { return sqlDB }
 // stuckSendRecoverer is the narrow repository slice the recovery sweep needs.
 type stuckSendRecoverer interface {
 	RecoverStuckSending(ctx context.Context, olderThan time.Duration) (int64, error)
+	SettleDueScheduled(ctx context.Context, now time.Time) (int64, error)
 }
 
 // startStuckSendRecovery launches the background sweep that settles
@@ -209,6 +213,21 @@ func startStuckSendRecovery(repo stuckSendRecoverer, ttl time.Duration) {
 				slog.WarnContext(ctx, "stuck-sending recovery sweep settled stranded newsletters",
 					"recovered", recovered,
 					"ttl", ttl.String(),
+				)
+			}
+
+			// Same sweep, second responsibility: flip any 'scheduled' rows whose
+			// scheduled_at has passed to 'sent'. SendGrid owns the actual release
+			// timing; this only reconciles our display state, and is safe from
+			// multiple pods since the UPDATE is status+time gated.
+			settled, err := repo.SettleDueScheduled(ctx, time.Now().UTC())
+			if err != nil {
+				slog.ErrorContext(ctx, "due-scheduled settlement sweep failed", "error", err)
+				return
+			}
+			if settled > 0 {
+				slog.InfoContext(ctx, "due-scheduled settlement sweep settled newsletters",
+					"settled", settled,
 				)
 			}
 		}

@@ -109,6 +109,18 @@ spec:
             - name: EMAIL_REPLY_TO_ALLOWED_DOMAINS
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.app.send.schedule.maxHorizon }}
+            - name: NEWSLETTER_SCHEDULE_MAX_HORIZON
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.schedule.minLead }}
+            - name: NEWSLETTER_SCHEDULE_MIN_LEAD
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.schedule.cancelBuffer }}
+            - name: NEWSLETTER_SCHEDULE_CANCEL_BUFFER
+              value: {{ . | quote }}
+            {{- end }}
             {{- if and (ne .Values.app.send.provider "email-service") (ne .Values.app.send.provider "sendgrid") }}
             {{- fail (printf "app.send.provider must be \"email-service\" or \"sendgrid\", got %q" .Values.app.send.provider) }}
             {{- end }}

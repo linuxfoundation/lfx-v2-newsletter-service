@@ -5,6 +5,7 @@ package handler
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
@@ -51,6 +52,82 @@ func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("ETag", formatETag(result.Newsletter.Version))
 	writeJSON(r.Context(), w, status, toAPISendResponse(result))
+}
+
+// ScheduleNewsletter handles POST /projects/{project_uid}/newsletters/{newsletter_uid}/schedule.
+//
+// The request body is optional: an override scheduled_at, else the draft's
+// own saved value is used (a 400 if neither exists). Behaves like
+// SendNewsletter otherwise — 202 Accepted with the sending-state newsletter,
+// settling in the background to status='scheduled' once every recipient's
+// message is accepted by SendGrid for release.
+func (h *Handler) ScheduleNewsletter(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
+	id, err := parseUUID(r.PathValue("newsletter_uid"))
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+	expectedVersion, err := requireIfMatch(r)
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+
+	var body publicapi.ScheduleNewsletterRequest
+	if err := decodeJSONOptional(r, &body); err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+
+	result, err := h.send.SendNewsletter(r.Context(), service.SendNewsletterInput{
+		ProjectUID:      projectUID,
+		NewsletterID:    id,
+		ExpectedVersion: expectedVersion,
+		Principal:       UserFromContext(r.Context()),
+		Schedule:        true,
+		ScheduledAt:     body.ScheduledAt,
+	})
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+
+	status := http.StatusOK
+	if result.Newsletter.Status == model.StatusSending {
+		status = http.StatusAccepted
+	}
+	w.Header().Set("ETag", formatETag(result.Newsletter.Version))
+	writeJSON(r.Context(), w, status, toAPIScheduleResponse(result))
+}
+
+// CancelScheduleNewsletter handles POST
+// /projects/{project_uid}/newsletters/{newsletter_uid}/cancel-schedule.
+func (h *Handler) CancelScheduleNewsletter(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
+	id, err := parseUUID(r.PathValue("newsletter_uid"))
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+	expectedVersion, err := requireIfMatch(r)
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+
+	reverted, err := h.send.CancelScheduled(r.Context(), service.CancelScheduledInput{
+		ProjectUID:      projectUID,
+		NewsletterID:    id,
+		ExpectedVersion: expectedVersion,
+	})
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+
+	w.Header().Set("ETag", formatETag(reverted.Version))
+	writeJSON(r.Context(), w, http.StatusOK, publicapi.CancelScheduleResponse{Newsletter: *toAPINewsletter(reverted)})
 }
 
 // RecipientCount handles POST /projects/{project_uid}/newsletters/recipient-count.
@@ -112,6 +189,30 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(r.Context(), w, http.StatusOK, publicapi.TestSendResponse{OK: true})
+}
+
+// toAPIScheduleResponse converts a service SendResult into the schedule
+// response DTO. ScheduledAt is read off the settled newsletter so the
+// response always reflects the value actually persisted (the request's
+// override, or the draft's own saved value when the request body was empty).
+func toAPIScheduleResponse(result *service.SendResult) publicapi.ScheduleNewsletterResponse {
+	failures := make([]publicapi.SendFailure, 0, len(result.Failures))
+	for _, f := range result.Failures {
+		failures = append(failures, publicapi.SendFailure{Email: f.Email, Error: f.Error})
+	}
+	var scheduledAt time.Time
+	if result.Newsletter.ScheduledAt != nil {
+		scheduledAt = *result.Newsletter.ScheduledAt
+	}
+	return publicapi.ScheduleNewsletterResponse{
+		Newsletter:      *toAPINewsletter(result.Newsletter),
+		GroupID:         result.GroupID,
+		ScheduledAt:     scheduledAt,
+		TotalRecipients: result.TotalRecipients,
+		Sent:            result.Sent,
+		Failed:          result.Failed,
+		Failures:        failures,
+	}
 }
 
 // toAPISendResponse converts a service SendResult into the public API DTO.

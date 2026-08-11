@@ -17,9 +17,10 @@ type Status string
 // is running asynchronously. The newsletter settles to StatusSent on
 // completion, or reverts to StatusDraft if no recipient could be delivered to.
 const (
-	StatusDraft   Status = "draft"
-	StatusSending Status = "sending"
-	StatusSent    Status = "sent"
+	StatusDraft     Status = "draft"
+	StatusSending   Status = "sending"
+	StatusScheduled Status = "scheduled"
+	StatusSent      Status = "sent"
 )
 
 // Newsletter is the response shape returned by single-resource endpoints.
@@ -34,12 +35,18 @@ type Newsletter struct {
 	SentAt        *time.Time `json:"sent_at,omitempty"`
 	// GroupID is the lfx-v2-email-service correlation identifier, set when
 	// the newsletter is sent. Null on drafts.
-	GroupID         *string   `json:"group_id,omitempty"`
-	TotalRecipients int       `json:"total_recipients"`
-	CreatedBy       string    `json:"created_by"`
-	Version         int64     `json:"version"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	GroupID *string `json:"group_id,omitempty"`
+	// ScheduledAt carries two meanings depending on Status: while the
+	// newsletter is a draft, it is the author's saved intent — saving it does
+	// not by itself contact SendGrid. Once the newsletter is scheduled (via
+	// POST .../schedule), it is the committed release time. Null when no
+	// schedule has ever been set.
+	ScheduledAt     *time.Time `json:"scheduled_at,omitempty"`
+	TotalRecipients int        `json:"total_recipients"`
+	CreatedBy       string     `json:"created_by"`
+	Version         int64      `json:"version"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // CreateNewsletterRequest is the body of POST /projects/{project_uid}/newsletters.
@@ -48,14 +55,22 @@ type CreateNewsletterRequest struct {
 	BodyHTML      string   `json:"body_html"`
 	EDReplyEmail  string   `json:"ed_reply_email"`
 	CommitteeUIDs []string `json:"committee_uids"`
+	// ScheduledAt is optional. When set, only a future time is required at
+	// save time — arming the schedule (72h horizon, minimum lead) is
+	// validated separately by POST .../schedule.
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
 }
 
 // UpdateNewsletterRequest is the body of PUT /projects/{project_uid}/newsletters/{newsletter_uid}.
+//
+// Full-replace semantics apply to ScheduledAt like every other field here: an
+// omitted value clears a previously-saved schedule.
 type UpdateNewsletterRequest struct {
-	Subject       string   `json:"subject"`
-	BodyHTML      string   `json:"body_html"`
-	EDReplyEmail  string   `json:"ed_reply_email"`
-	CommitteeUIDs []string `json:"committee_uids"`
+	Subject       string     `json:"subject"`
+	BodyHTML      string     `json:"body_html"`
+	EDReplyEmail  string     `json:"ed_reply_email"`
+	CommitteeUIDs []string   `json:"committee_uids"`
+	ScheduledAt   *time.Time `json:"scheduled_at,omitempty"`
 }
 
 // RecipientCountRequest is the body of POST /projects/{project_uid}/newsletters/recipient-count.
@@ -123,6 +138,42 @@ type SendNewsletterResponse struct {
 	Sent            int           `json:"sent"`
 	Failed          int           `json:"failed"`
 	Failures        []SendFailure `json:"failures,omitempty"`
+}
+
+// ScheduleNewsletterRequest is the body of
+// POST /projects/{project_uid}/newsletters/{newsletter_uid}/schedule.
+//
+// ScheduledAt is optional: when omitted, the draft's previously-saved
+// scheduled_at is used. When neither exists, the request is rejected with a
+// 400. When present, it overrides the saved value for this arm.
+type ScheduleNewsletterRequest struct {
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+}
+
+// ScheduleNewsletterResponse is the body of
+// POST /projects/{project_uid}/newsletters/{newsletter_uid}/schedule.
+//
+// Mirrors SendNewsletterResponse: the endpoint returns 202 Accepted as soon
+// as the newsletter transitions to status='sending' with the schedule armed
+// at SendGrid, and the fan-out completes in the background. The newsletter
+// settles to status='scheduled' once every recipient's message has been
+// accepted by SendGrid for release at ScheduledAt.
+type ScheduleNewsletterResponse struct {
+	Newsletter      Newsletter    `json:"newsletter"`
+	GroupID         string        `json:"group_id"`
+	ScheduledAt     time.Time     `json:"scheduled_at"`
+	TotalRecipients int           `json:"total_recipients"`
+	Sent            int           `json:"sent"`
+	Failed          int           `json:"failed"`
+	Failures        []SendFailure `json:"failures,omitempty"`
+}
+
+// CancelScheduleResponse is the body of
+// POST /projects/{project_uid}/newsletters/{newsletter_uid}/cancel-schedule.
+// The reverted newsletter is back to status='draft', retaining scheduled_at
+// as the author's saved intent while group_id and batch_id are cleared.
+type CancelScheduleResponse struct {
+	Newsletter Newsletter `json:"newsletter"`
 }
 
 // NewsletterListItem is one row in the unified list response. Inherits the

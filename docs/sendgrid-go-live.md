@@ -133,6 +133,30 @@ Notes:
 Rollback is a single change. Set `EMAIL_PROVIDER` back to `email-service`. The SES DNS
 is untouched, so it reverts immediately.
 
+## 5. Scheduled sends (LFXV2-2685)
+
+Scheduling (`POST …/newsletters/{newsletter_uid}/schedule`) is available only on the
+SendGrid provider — it uses SendGrid's native Mail Send scheduling parameters
+(`send_at` + `batch_id`), not an in-service scheduler. On `EMAIL_PROVIDER=email-service`
+the endpoint returns `503 service_unavailable`.
+
+- **72-hour hard cap.** SendGrid's Mail Send `send_at` accepts at most 72 hours in the
+  future. `NEWSLETTER_SCHEDULE_MAX_HORIZON` (default and ceiling: `72h`) enforces this
+  at arm time; a value above 72h fails app startup validation. Saving a `scheduled_at`
+  on a draft has no such cap — only arming does.
+- **Batch cancel.** Cancelling (`POST …/cancel-schedule`) calls
+  `POST /v3/user/scheduled_sends` with `{"batch_id": ..., "status": "cancel"}`. This
+  **discards** every message in the batch at release time — it does not pause or defer
+  them. There is no "resume" after a cancel; re-scheduling means re-arming a new
+  `/schedule` call (the draft's `scheduled_at` survives the cancel for exactly this).
+  A re-cancel of an already-cancelled batch is tolerated (idempotent).
+- **Cancel window.** `NEWSLETTER_SCHEDULE_CANCEL_BUFFER` (default `5m`) rejects a cancel
+  request too close to `scheduled_at`, since SendGrid's own cancel is best-effort near
+  release — a batch might already be past the point SendGrid can pull it back even
+  though the API accepted the cancel call.
+- **Minimum lead.** `NEWSLETTER_SCHEDULE_MIN_LEAD` (default `5m`) rejects arming a
+  schedule too close to now, for the same reason in reverse.
+
 ## Blockers that depend on people outside this repo
 
 - SendGrid account **off trial** (contract or upgrade).

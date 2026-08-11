@@ -20,10 +20,16 @@ type Status string
 // guard: the draft → sending transition is a single optimistically-locked
 // UPDATE, so a concurrent or repeated send request observes the row is no
 // longer a draft and is rejected with ErrSendInProgress.
+// StatusScheduled means every recipient's message has been accepted by the
+// send provider and is being held for release at ScheduledAt. It sits between
+// StatusSending (the fan-out that arms the schedule) and StatusSent (which the
+// recovery sweep settles it to once ScheduledAt passes — reconciliation of our
+// display state only; the provider owns the actual delivery timing).
 const (
-	StatusDraft   Status = "draft"
-	StatusSending Status = "sending"
-	StatusSent    Status = "sent"
+	StatusDraft     Status = "draft"
+	StatusSending   Status = "sending"
+	StatusScheduled Status = "scheduled"
+	StatusSent      Status = "sent"
 )
 
 // Send provider values persisted in newsletters.send_provider. They record
@@ -65,11 +71,22 @@ type Newsletter struct {
 	// sending transition. Analytics routes engagement reads by this value so a
 	// newsletter's stats always come from the store that holds them, regardless
 	// of the currently-active provider. Defaults to 'email-service'.
-	SendProvider string    `bun:"send_provider,notnull,default:'email-service'" json:"sendProvider"`
-	CreatedBy    string    `bun:"created_by,notnull" json:"createdBy"`
-	Version      int64     `bun:"version,notnull,default:1" json:"version"`
-	CreatedAt    time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
-	UpdatedAt    time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
+	SendProvider string `bun:"send_provider,notnull,default:'email-service'" json:"sendProvider"`
+	// ScheduledAt has two meanings depending on Status. While the row is
+	// draft, it is the author's saved intent — set on create/update, not yet
+	// armed, and does not by itself cause any send. Once Status is scheduled
+	// (or sending en route to it), it is the committed release time handed to
+	// the provider as send_at.
+	ScheduledAt *time.Time `bun:"scheduled_at" json:"scheduledAt,omitempty"`
+	// BatchID is the provider batch identifier minted when a schedule is
+	// armed (SendGrid POST /v3/mail/batch). Every recipient in the fan-out
+	// carries the same BatchID and ScheduledAt so the provider releases them
+	// together, and it is what makes the batch cancellable.
+	BatchID   *string   `bun:"batch_id" json:"-"`
+	CreatedBy string    `bun:"created_by,notnull" json:"createdBy"`
+	Version   int64     `bun:"version,notnull,default:1" json:"version"`
+	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
+	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
 }
 
 // NewsletterOpen records a single open event for a sent newsletter.

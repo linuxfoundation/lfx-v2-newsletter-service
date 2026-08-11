@@ -221,6 +221,66 @@ spec:
               aud: {{ .Values.app.audience }}
 
     # ---------------------------------------------------------------------
+    # Scheduled sends (LFXV2-2685): arming and cancelling a schedule carry
+    # exactly the authority `send` already carries — same actor, same blast
+    # radius, no new data exposure — so both rules are copied verbatim from
+    # `newsletters:send` above, changing only id and path.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:schedule"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/schedule
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:cancel_schedule"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/cancel-schedule
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # ---------------------------------------------------------------------
     # Recipient resolution + test send. Recipient queries are reads (viewer);
     # test-send is a write (writer).
     # ---------------------------------------------------------------------
