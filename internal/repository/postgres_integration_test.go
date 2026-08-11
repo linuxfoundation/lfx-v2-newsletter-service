@@ -448,11 +448,21 @@ func TestRecoverStuckSending_RecoversArmedRow(t *testing.T) {
 	}
 
 	// Backdate updated_at directly so the row looks stuck past the recovery
-	// threshold; MarkSending itself always sets updated_at = now().
-	if _, err := repo.db.NewRaw(
-		"UPDATE newsletters SET updated_at = ? WHERE id = ?",
-		time.Now().UTC().Add(-1*time.Hour), draftID,
-	).Exec(ctx); err != nil {
+	// threshold; MarkSending itself always sets updated_at = now(). This row
+	// is armed (batch_id set), so this raw UPDATE must set the GUC in the
+	// same transaction or the trigger rejects it just like any other armed
+	// mutation.
+	err = repo.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+			return err
+		}
+		_, err := tx.NewRaw(
+			"UPDATE newsletters SET updated_at = ? WHERE id = ?",
+			time.Now().UTC().Add(-1*time.Hour), draftID,
+		).Exec(ctx)
+		return err
+	})
+	if err != nil {
 		t.Fatalf("backdate updated_at: %v", err)
 	}
 
