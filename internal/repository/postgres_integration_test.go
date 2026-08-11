@@ -213,3 +213,189 @@ func ids(rows []*model.Newsletter) []uuid.UUID {
 	}
 	return out
 }
+
+func TestArmedMutations_AllMethodsSucceed(t *testing.T) {
+	repo := newIntegrationRepo(t)
+
+	// Create a draft newsletter to be armed
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	ctx := context.Background()
+
+	// Transition to sending with batch_id armed (scheduled send)
+	scheduledAt := time.Now().UTC().Add(1 * time.Hour)
+	_, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "sendgrid", 100, 1, &scheduledAt, "batch-123")
+	if err != nil {
+		t.Fatalf("MarkSending with batch_id: %v", err)
+	}
+
+	// Get the newsletter to find the new version after MarkSending
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after MarkSending: %v", err)
+	}
+	if n.Status != model.StatusSending {
+		t.Fatalf("Status: got %v, want StatusSending", n.Status)
+	}
+	if n.BatchID == nil || *n.BatchID == "" {
+		t.Fatalf("BatchID: got nil or empty, want 'batch-123'")
+	}
+
+	// Test MarkScheduled: armed row -> scheduled
+	_, err = repo.MarkScheduled(ctx, draftID, n.Version)
+	if err != nil {
+		t.Fatalf("MarkScheduled on armed row: %v", err)
+	}
+
+	// Get the newsletter to find the new version after MarkScheduled
+	n, err = repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after MarkScheduled: %v", err)
+	}
+	if n.Status != model.StatusScheduled {
+		t.Fatalf("Status after MarkScheduled: got %v, want StatusScheduled", n.Status)
+	}
+
+	// Test SettleDueScheduled: scheduled with past scheduled_at -> sent
+	settled, err := repo.SettleDueScheduled(ctx, time.Now().UTC().Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("SettleDueScheduled: %v", err)
+	}
+	if settled != 1 {
+		t.Fatalf("SettleDueScheduled rows affected: got %d, want 1", settled)
+	}
+
+	// Verify row is now sent
+	n, err = repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after SettleDueScheduled: %v", err)
+	}
+	if n.Status != model.StatusSent {
+		t.Fatalf("Status after SettleDueScheduled: got %v, want StatusSent", n.Status)
+	}
+
+	// Test RevertScheduled: revert a scheduled row back to draft
+	scheduledID := seed(t, repo, model.StatusDraft, []string{"committee-b"}, nil)
+	_, err = repo.MarkSending(ctx, scheduledID, uuid.NewString(), "sendgrid", 50, 1, &scheduledAt, "batch-456")
+	if err != nil {
+		t.Fatalf("MarkSending for RevertScheduled test: %v", err)
+	}
+
+	n, err = repo.Get(ctx, scheduledID)
+	if err != nil {
+		t.Fatalf("Get for RevertScheduled setup: %v", err)
+	}
+
+	_, err = repo.MarkScheduled(ctx, scheduledID, n.Version)
+	if err != nil {
+		t.Fatalf("MarkScheduled for RevertScheduled test: %v", err)
+	}
+
+	n, err = repo.Get(ctx, scheduledID)
+	if err != nil {
+		t.Fatalf("Get after MarkScheduled for revert: %v", err)
+	}
+
+	// Now revert the scheduled row (armed) back to draft
+	_, err = repo.RevertScheduled(ctx, scheduledID, n.Version)
+	if err != nil {
+		t.Fatalf("RevertScheduled on armed row: %v", err)
+	}
+
+	n, err = repo.Get(ctx, scheduledID)
+	if err != nil {
+		t.Fatalf("Get after RevertScheduled: %v", err)
+	}
+	if n.Status != model.StatusDraft {
+		t.Fatalf("Status after RevertScheduled: got %v, want StatusDraft", n.Status)
+	}
+
+	// Test RevertSending: revert a sending row (with batch_id) back to draft
+	sendingID := seed(t, repo, model.StatusDraft, []string{"committee-c"}, nil)
+	_, err = repo.MarkSending(ctx, sendingID, uuid.NewString(), "sendgrid", 75, 1, &scheduledAt, "batch-789")
+	if err != nil {
+		t.Fatalf("MarkSending for RevertSending test: %v", err)
+	}
+
+	n, err = repo.Get(ctx, sendingID)
+	if err != nil {
+		t.Fatalf("Get for RevertSending setup: %v", err)
+	}
+	if n.Status != model.StatusSending {
+		t.Fatalf("Status before RevertSending: got %v, want StatusSending", n.Status)
+	}
+
+	// Revert the sending row (armed) back to draft
+	err = repo.RevertSending(ctx, sendingID)
+	if err != nil {
+		t.Fatalf("RevertSending on armed row: %v", err)
+	}
+
+	n, err = repo.Get(ctx, sendingID)
+	if err != nil {
+		t.Fatalf("Get after RevertSending: %v", err)
+	}
+	if n.Status != model.StatusDraft {
+		t.Fatalf("Status after RevertSending: got %v, want StatusDraft", n.Status)
+	}
+	if n.BatchID != nil && *n.BatchID != "" {
+		t.Fatalf("BatchID after RevertSending: got %q, want nil/empty", *n.BatchID)
+	}
+}
+
+func TestArmedMutations_TriggerRejectsUnauthorized(t *testing.T) {
+	repo := newIntegrationRepo(t)
+
+	ctx := context.Background()
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	// Arm the row by transitioning to sending with batch_id
+	scheduledAt := time.Now().UTC().Add(1 * time.Hour)
+	_, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "sendgrid", 100, 1, &scheduledAt, "batch-123")
+	if err != nil {
+		t.Fatalf("MarkSending to arm row: %v", err)
+	}
+
+	// Verify the row is armed
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get armed row: %v", err)
+	}
+	if n.BatchID == nil || *n.BatchID == "" {
+		t.Fatalf("Row should be armed but BatchID is nil/empty")
+	}
+
+	// Get the underlying bun.DB to run raw SQL that bypasses the GUC flag
+	db := repo.db
+
+	// Test 1: Raw UPDATE without GUC flag should be rejected by trigger
+	// Attempt to update status without setting app.allow_armed_mutation
+	_, err = db.NewRaw("UPDATE newsletters SET status = ? WHERE id = ?", "draft", draftID).Exec(ctx)
+	if err == nil {
+		t.Fatalf("Raw UPDATE should have been rejected by trigger but succeeded")
+	}
+	if !strings.Contains(err.Error(), "cannot mutate armed scheduled row") && !strings.Contains(err.Error(), "service version mismatch") {
+		t.Fatalf("UPDATE error message unexpected: %v", err)
+	}
+
+	// Test 2: Raw DELETE without GUC flag should be rejected by trigger
+	_, err = db.NewRaw("DELETE FROM newsletters WHERE id = ?", draftID).Exec(ctx)
+	if err == nil {
+		t.Fatalf("Raw DELETE should have been rejected by trigger but succeeded")
+	}
+	if !strings.Contains(err.Error(), "cannot mutate armed scheduled row") && !strings.Contains(err.Error(), "service version mismatch") {
+		t.Fatalf("DELETE error message unexpected: %v", err)
+	}
+
+	// Verify the row still exists and is still armed (mutations were rejected)
+	n, err = repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after failed mutations: %v", err)
+	}
+	if n.Status != model.StatusSending {
+		t.Fatalf("Status should be unchanged to StatusSending, got %v", n.Status)
+	}
+	if n.BatchID == nil || *n.BatchID == "" {
+		t.Fatalf("BatchID should still be armed")
+	}
+}
