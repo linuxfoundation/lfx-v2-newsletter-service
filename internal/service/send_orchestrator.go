@@ -50,10 +50,14 @@ const defaultScheduleMaxHorizon = 72 * time.Hour
 // schedule-window settings used when the orchestrator is constructed without
 // explicit config (e.g. tests). Production wiring always sets these through
 // SendOrchestratorConfig from AppConfig.
+// defaultScheduleMinLead is 30m to ensure all per-recipient provider arming
+// calls complete before scheduled_at, bounded by the 30m default SendJobTimeout
+// worst case (LFXV2-2685).
 const (
-	defaultScheduleMinLead      = 5 * time.Minute
+	defaultScheduleMinLead      = 30 * time.Minute
 	defaultScheduleCancelBuffer = 10 * time.Minute
 	minScheduleCancelBuffer     = 10 * time.Minute
+	minScheduleMinLead          = 30 * time.Minute
 )
 
 // defaultReplyToAllowedDomains mirrors lfx-v2-email-service's default
@@ -170,7 +174,9 @@ type SendOrchestratorConfig struct {
 	// (LFXV2-2685). Zero falls back to the 72h SendGrid Mail Send limit.
 	ScheduleMaxHorizon time.Duration
 	// ScheduleMinLead is the minimum lead time a newly-armed schedule must
-	// clear. Zero falls back to 5 minutes.
+	// clear before scheduled_at. Zero falls back to 30 minutes, and any value
+	// below 30 minutes is capped to 30m to ensure all per-recipient provider
+	// arming calls complete before scheduled release time (LFXV2-2685).
 	ScheduleMinLead time.Duration
 	// ScheduleCancelBuffer rejects a cancel-schedule request inside this
 	// window before scheduled_at (SendGrid API requires minimum 10m). Zero
@@ -240,6 +246,9 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	scheduleMinLead := cfg.ScheduleMinLead
 	if scheduleMinLead <= 0 {
 		scheduleMinLead = defaultScheduleMinLead
+	}
+	if scheduleMinLead < minScheduleMinLead {
+		scheduleMinLead = minScheduleMinLead
 	}
 	scheduleCancelBuffer := cfg.ScheduleCancelBuffer
 	if scheduleCancelBuffer <= 0 {

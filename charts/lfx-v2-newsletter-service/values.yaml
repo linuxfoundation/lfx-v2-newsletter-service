@@ -124,8 +124,11 @@ app:
       # ceiling enforced by SendGrid's Mail Send send_at. A value above 72h
       # fails Helm-adjacent app startup validation.
       maxHorizon: ""
-      # minLead is the minimum lead time required to arm a new schedule (Go
-      # duration string). Empty falls back to the app default (5m).
+      # minLead is the minimum lead time required before scheduled_at to arm a
+      # new schedule (Go duration string). Minimum 30m enforced to ensure all
+      # per-recipient provider arming calls complete before scheduled release.
+      # Empty falls back to the app default (30m). Any value below 30m is
+      # automatically capped to 30m at startup.
       minLead: ""
       # cancelBuffer rejects a cancel-schedule request inside this window
       # before the armed scheduled_at, since SendGrid cancel is best-effort
