@@ -651,6 +651,21 @@ func TestCancelScheduledBatch_Success(t *testing.T) {
 	}
 }
 
+func TestCancelScheduledBatch_AcceptsAlternateSuccessStatuses(t *testing.T) {
+	// SendGrid's documented response for this endpoint is 201, but 200 and 204
+	// have also been observed for the same successful cancellation.
+	for _, status := range []int{http.StatusOK, http.StatusNoContent} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			d := newTestDispatcher(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+			})
+			if err := d.CancelScheduledBatch(context.Background(), "batch-789"); err != nil {
+				t.Fatalf("CancelScheduledBatch with status %d: %v", status, err)
+			}
+		})
+	}
+}
+
 func TestCancelScheduledBatch_Idempotent(t *testing.T) {
 	// Re-cancelling an already-cancelled batch is treated as success
 	// (the SendGrid API returns a BadRequest with "already exists in the cancel").

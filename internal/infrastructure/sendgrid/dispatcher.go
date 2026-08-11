@@ -469,7 +469,12 @@ func (d *Dispatcher) CancelScheduledBatch(ctx context.Context, batchID string) e
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode == http.StatusCreated {
+	// SendGrid's documented response for this endpoint is 201 Created with the
+	// cancellation record, but the API has also been observed returning 200 OK
+	// and 204 No Content for the same successful cancellation. Accept all three
+	// rather than pinning to one status code the API contract doesn't guarantee.
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
 		return nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))

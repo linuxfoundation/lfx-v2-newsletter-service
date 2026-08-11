@@ -472,3 +472,38 @@ func TestRecoverStuckSending_RecoversArmedRow(t *testing.T) {
 		t.Fatalf("Status after RecoverStuckSending: got %v, want StatusScheduled", n.Status)
 	}
 }
+
+// TestDelete_RejectsSendingImmediateRow covers the TOCTOU race the atomic
+// Delete predicate must close for an *immediate* send: batch_id stays NULL
+// for an immediate send, so a predicate gated on batch_id IS NULL alone would
+// still let a caller delete the row out from under an in-flight fan-out once
+// MarkSending has claimed it. The predicate must also require status=draft
+// (LFXV2-2685 follow-up finding).
+func TestDelete_RejectsSendingImmediateRow(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	sending, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "sendgrid", 1, 1, nil, "")
+	if err != nil {
+		t.Fatalf("MarkSending (immediate): %v", err)
+	}
+	if sending.BatchID != nil {
+		t.Fatalf("BatchID should stay nil for an immediate send, got %v", *sending.BatchID)
+	}
+
+	err = repo.Delete(ctx, draftID)
+	if !errors.Is(err, domain.ErrSendInProgress) {
+		t.Fatalf("Delete on sending immediate row: got %v, want ErrSendInProgress", err)
+	}
+
+	// The row must still exist, untouched.
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after rejected delete: %v", err)
+	}
+	if n.Status != model.StatusSending {
+		t.Fatalf("Status after rejected delete: got %v, want StatusSending", n.Status)
+	}
+}

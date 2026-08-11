@@ -237,11 +237,15 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 // Rejects deletion of armed scheduled rows (batch_id IS NOT NULL) to prevent
 // legacy-pod mutations during rolling deploys (LFXV2-2685).
 func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error {
-	// Atomically delete only if batch_id IS NULL to avoid TOCTOU race where
-	// MarkSending could arm the row between the check and the delete.
+	// Atomically delete only a still-draft row to avoid a TOCTOU race where
+	// MarkSending could claim the row (immediate or scheduled) between the
+	// caller's status check and this delete. batch_id IS NULL alone is not
+	// enough: it only rules out an armed *scheduled* row, but an immediate
+	// send's sending row also has a NULL batch_id and must not be deletable
+	// out from under an in-flight fan-out.
 	res, err := r.db.NewDelete().
 		Model((*model.Newsletter)(nil)).
-		Where("id = ? AND batch_id IS NULL", id).
+		Where("id = ? AND status = ?", id, model.StatusDraft).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("delete newsletter: %w", err)
@@ -251,8 +255,8 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 		return fmt.Errorf("delete newsletter rows affected: %w", err)
 	}
 	if n == 0 {
-		// The row doesn't exist OR it's armed (batch_id IS NOT NULL).
-		// Distinguish the error by checking the row.
+		// The row doesn't exist OR it has moved past draft (sending, scheduled,
+		// or sent). Distinguish the error by checking the row.
 		current := &model.Newsletter{}
 		err := r.db.NewSelect().
 			Model(current).
@@ -264,12 +268,15 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 		if err != nil {
 			return fmt.Errorf("classify delete miss: %w", err)
 		}
-		// Row exists but is armed
-		if current.BatchID != nil {
-			return fmt.Errorf("%w: cannot delete armed scheduled row", domain.ErrInvalidRequest)
+		// Row exists but is no longer a draft (raced past our caller's check).
+		switch current.Status {
+		case model.StatusSent:
+			return domain.ErrAlreadySent
+		case model.StatusScheduled:
+			return domain.ErrScheduled
+		default:
+			return domain.ErrSendInProgress
 		}
-		// Row exists but version check would have failed (shouldn't happen if delete used batch_id check correctly)
-		return domain.ErrNotFound
 	}
 	return nil
 }
