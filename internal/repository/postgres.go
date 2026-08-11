@@ -327,7 +327,10 @@ func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, 
 				return fmt.Errorf("mark sending rows affected: %w", err)
 			}
 			if rowsAffected == 0 {
-				return r.classifySendTransitionMiss(ctx, id, expectedVersion)
+				// Classify through the transaction to avoid pool exhaustion when
+				// concurrent schedule requests all hold transactions waiting for
+				// another pool connection (LFXV2-2685).
+				return r.classifySendTransitionMissWithDB(ctx, tx, id, expectedVersion)
 			}
 			return nil
 		})
