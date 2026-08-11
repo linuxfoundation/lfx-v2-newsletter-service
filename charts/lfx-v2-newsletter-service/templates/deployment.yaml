@@ -138,6 +138,13 @@ spec:
                  empty list would disable the From-domain guard. Mirrors the API-key guard. */}}
             {{- required "app.send.sendgrid.authenticatedDomains is required when app.send.provider=sendgrid" "" }}
             {{- end }}
+            {{- if not .Values.app.send.sendgrid.apiKeySecretRef.name }}
+            {{/* A SendGrid provider needs the API key to arm scheduled sends and
+                 to support cancellation of outstanding batches even after a
+                 provider switch back to email-service (LFXV2-2685). Require the ref
+                 for provider=sendgrid. */}}
+            {{- required "app.send.sendgrid.apiKeySecretRef.name is required when app.send.provider=sendgrid" "" }}
+            {{- end }}
             {{- if not .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
             {{/* A SendGrid provider needs its event webhook to populate engagement
                  analytics; without the public key the webhook route is never registered

@@ -402,6 +402,13 @@ func (r *PostgresNewsletterRepo) RevertSending(ctx context.Context, id uuid.UUID
 // intent, which they may edit or re-arm via a fresh /schedule call.
 func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64) (*model.Newsletter, error) {
 	updated := &model.Newsletter{}
+	// Tolerate version bumps from concurrent fan-out settlement, but still require
+	// the status to be in the right state to revert (scheduled or sending).
+	// During a rolling deploy, a cancel request might race against a background
+	// job that's already advanced the version while settling the send. Both must
+	// succeed without corrupting state: if the row is still scheduled/sending,
+	// revert it regardless of version; if it has transitioned to sent, fail with
+	// ErrAlreadySent, not ErrVersionMismatch.
 	res, err := r.db.NewUpdate().
 		Model(updated).
 		Set("status = ?", model.StatusDraft).
@@ -410,7 +417,7 @@ func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UU
 		Set("total_recipients = 0").
 		Set("updated_at = now()").
 		Set("version = version + 1").
-		Where("id = ? AND version = ? AND status IN (?, ?)", id, expectedVersion, model.StatusScheduled, model.StatusSending).
+		Where("id = ? AND status IN (?, ?)", id, model.StatusScheduled, model.StatusSending).
 		Returning("*").
 		Exec(ctx)
 	if err != nil {
@@ -421,6 +428,9 @@ func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UU
 		return nil, fmt.Errorf("revert scheduled rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
+		// The update didn't match any rows. The row might not exist, might be in
+		// a different status (e.g. sent, draft), or might have been deleted.
+		// Classify the miss to return the appropriate error.
 		return nil, r.classifySendTransitionMiss(ctx, id, expectedVersion)
 	}
 	return updated, nil

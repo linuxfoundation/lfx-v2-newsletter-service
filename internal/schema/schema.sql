@@ -189,6 +189,26 @@ BEGIN
     END IF;
 END$$;
 
+-- Prevent legacy pods (running old code before the scheduled-sends feature)
+-- from mutating armed scheduled rows during a rolling deploy. An armed row
+-- (batch_id IS NOT NULL) has been handed to a provider scheduler; only the
+-- new code that understands the scheduler contract should touch it. This guard
+-- lets an old pod reject a request gracefully instead of silently corrupting
+-- the row. CREATE OR REPLACE + DROP/CREATE keep re-running schema.sql a no-op.
+CREATE OR REPLACE FUNCTION reject_armed_scheduled_mutation() RETURNS trigger AS $$
+BEGIN
+    IF NEW.batch_id IS NOT NULL THEN
+        RAISE EXCEPTION 'cannot mutate armed scheduled row (batch_id is set) — service version mismatch during rolling deploy';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_reject_armed_scheduled_mutation ON newsletters;
+CREATE TRIGGER trg_reject_armed_scheduled_mutation
+    BEFORE UPDATE ON newsletters
+    FOR EACH ROW EXECUTE FUNCTION reject_armed_scheduled_mutation();
+
 -- Supports the due-schedule sweep (status = 'scheduled' AND scheduled_at <= now()).
 CREATE INDEX IF NOT EXISTS idx_newsletters_scheduled_due
     ON newsletters (scheduled_at) WHERE status = 'scheduled';

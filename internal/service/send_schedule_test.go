@@ -355,22 +355,23 @@ func TestCancelScheduledHappyPath(t *testing.T) {
 }
 
 // TestCancelScheduledRejectsInsideBuffer verifies that cancels too close to
-// scheduled_at are rejected by the buffer window. With the 30m minimum lead,
-// practical testing of the buffer requires sleeping or time mocking; this test
-// instead verifies that cancellation is properly gated on the buffer constraint.
+// scheduled_at are rejected by the buffer window. With the 35m minimum lead
+// (30m job timeout + 5m safety margin), practical testing of the buffer requires
+// sleeping or time mocking; this test instead verifies that cancellation is
+// properly gated on the buffer constraint.
 func TestCancelScheduledRejectsInsideBuffer(t *testing.T) {
 	repo := newFakeRepo()
 	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
 		"c1": {{Email: "a@example.com"}},
 	}}
 	email := &fakeScheduledEmailDispatcher{}
-	// Schedule with 10m lead and 5m buffer. The minimum lead (30m) will be
-	// enforced at startup, so actual scheduled_at will be 30m+ from now.
+	// The minimum lead is computed as max(configuredMinLead, jobTimeout + safetyMargin).
+	// With default job timeout (30m) and 5m safety margin, the actual minimum is 35m.
 	// This test documents the buffer guard without requiring time mocking.
 	orch := newTestScheduleOrchestrator(repo, committee, email, 30*time.Minute, 72*time.Hour, 5*time.Minute)
 	draft := repo.addDraft("p1", []string{"c1"})
-	// Schedule just beyond 30m to satisfy the > 30m requirement
-	scheduledAt := time.Now().UTC().Add(31 * time.Minute)
+	// Schedule just beyond 35m to satisfy the computed minimum (30m job timeout + 5m safety margin)
+	scheduledAt := time.Now().UTC().Add(36 * time.Minute)
 
 	if _, err := orch.SendNewsletter(context.Background(), SendNewsletterInput{
 		ProjectUID:   "p1",
@@ -382,8 +383,8 @@ func TestCancelScheduledRejectsInsideBuffer(t *testing.T) {
 	}
 	scheduled := waitForStatus(t, repo, draft.ID, model.StatusScheduled)
 
-	// Cancel outside the buffer window should succeed (scheduled_at is 30m away,
-	// buffer is 5m, so buffer window is from 25m to 30m; we're at 0m).
+	// Cancel outside the buffer window should succeed (scheduled_at is 36m away,
+	// buffer is 5m, so buffer window is from 31m to 36m; we're at 0m).
 	_, err := orch.CancelScheduled(context.Background(), CancelScheduledInput{
 		ProjectUID:      "p1",
 		NewsletterID:    draft.ID,

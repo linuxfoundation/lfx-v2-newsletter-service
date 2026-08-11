@@ -46,18 +46,18 @@ const defaultFromAddress = "newsletter@lfx.linuxfoundation.org"
 // explicit ScheduleMaxHorizon (e.g. tests).
 const defaultScheduleMaxHorizon = 72 * time.Hour
 
-// defaultScheduleMinLead/defaultScheduleCancelBuffer are the fallback
-// schedule-window settings used when the orchestrator is constructed without
-// explicit config (e.g. tests). Production wiring always sets these through
-// SendOrchestratorConfig from AppConfig.
-// defaultScheduleMinLead is 30m to ensure all per-recipient provider arming
-// calls complete before scheduled_at, bounded by the 30m default SendJobTimeout
-// worst case (LFXV2-2685).
+// defaultScheduleCancelBuffer is the fallback schedule-window setting used
+// when the orchestrator is constructed without explicit config (e.g. tests).
+// Production wiring always sets this through SendOrchestratorConfig from AppConfig.
+// ScheduleMinLead is computed dynamically from SendJobTimeout to ensure the
+// fan-out has time to complete before scheduled_at.
 const (
-	defaultScheduleMinLead      = 30 * time.Minute
 	defaultScheduleCancelBuffer = 10 * time.Minute
 	minScheduleCancelBuffer     = 10 * time.Minute
-	minScheduleMinLead          = 30 * time.Minute
+	// minScheduleMinLeadSafetyMargin is added to the SendJobTimeout to compute
+	// the minimum schedule lead. The total (SendJobTimeout + margin) ensures
+	// all per-recipient provider arming calls complete before scheduled_at.
+	minScheduleMinLeadSafetyMargin = 5 * time.Minute
 )
 
 // defaultReplyToAllowedDomains mirrors lfx-v2-email-service's default
@@ -243,12 +243,16 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	if scheduleMaxHorizon <= 0 {
 		scheduleMaxHorizon = defaultScheduleMaxHorizon
 	}
+	// Compute minimum schedule lead based on actual job timeout: the scheduler
+	// must give the fan-out enough time to complete provider arming calls before
+	// scheduled_at arrives. If config provides an explicit lead, use it; otherwise
+	// derive from the job timeout + safety margin.
+	minComputedLead := jobTimeout + minScheduleMinLeadSafetyMargin
 	scheduleMinLead := cfg.ScheduleMinLead
 	if scheduleMinLead <= 0 {
-		scheduleMinLead = defaultScheduleMinLead
-	}
-	if scheduleMinLead < minScheduleMinLead {
-		scheduleMinLead = minScheduleMinLead
+		scheduleMinLead = minComputedLead
+	} else if scheduleMinLead < minComputedLead {
+		scheduleMinLead = minComputedLead
 	}
 	scheduleCancelBuffer := cfg.ScheduleCancelBuffer
 	if scheduleCancelBuffer <= 0 {
@@ -360,12 +364,13 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		return nil, domain.ErrVersionMismatch
 	}
 
-	// Resolve and validate the schedule BEFORE doing any recipient-resolution
-	// or rendering work, so an invalid schedule fails fast. Schedule is the
-	// sole discriminator (LFXV2-2685): a plain send (Schedule=false) never
-	// consults ScheduledAt — not in.ScheduledAt, and not draft.ScheduledAt —
-	// so a draft carrying a saved-but-unarmed schedule still sends
-	// immediately when POST .../send is called directly.
+	// Resolve the schedule BEFORE doing any recipient-resolution or rendering
+	// work, but defer the window validation until immediately before CreateBatchID
+	// so the validation accounts for time consumed by recipient resolution and
+	// rendering (LFXV2-2685). Schedule is the sole discriminator: a plain send
+	// (Schedule=false) never consults ScheduledAt — not in.ScheduledAt, and not
+	// draft.ScheduledAt — so a draft carrying a saved-but-unarmed schedule still
+	// sends immediately when POST .../send is called directly.
 	var scheduledAt *time.Time
 	var scheduler port.ScheduledSender
 	if in.Schedule {
@@ -375,9 +380,6 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		}
 		if effective == nil {
 			return nil, fmt.Errorf("%w: scheduled_at is required (not set on the draft or in the request)", domain.ErrInvalidRequest)
-		}
-		if err := o.validateScheduleWindow(*effective); err != nil {
-			return nil, err
 		}
 		var ok bool
 		scheduler, ok = o.email.(port.ScheduledSender)
@@ -444,8 +446,13 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// batch_id can be persisted atomically with the draft → sending transition
 	// (LFXV2-2685). Every recipient in the fan-out below carries this same
 	// SendAt/BatchID so the provider releases them together.
+	// Validate the schedule window immediately before arming so the check accounts
+	// for time consumed by recipient resolution and rendering (LFXV2-2685).
 	var batchID string
 	if scheduledAt != nil {
+		if err := o.validateScheduleWindow(*scheduledAt); err != nil {
+			return nil, err
+		}
 		batchID, err = scheduler.CreateBatchID(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("mint schedule batch id: %w", err)
@@ -776,7 +783,12 @@ func (o *SendOrchestrator) CancelScheduled(ctx context.Context, in CancelSchedul
 		}
 	}
 
-	reverted, err := o.repo.RevertScheduled(ctx, draft.ID, draft.Version)
+	// Use a fresh context with timeout independent of the request context. The
+	// request context may already be exhausted from the provider cancellation
+	// call above, but reverting to draft must persist reliably.
+	revertCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	reverted, err := o.repo.RevertScheduled(revertCtx, draft.ID, draft.Version)
 	if err != nil {
 		return nil, fmt.Errorf("revert scheduled: %w", err)
 	}
