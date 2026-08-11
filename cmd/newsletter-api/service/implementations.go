@@ -97,11 +97,12 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	if err != nil {
 		return err
 	}
-	// Wire a SendGrid scheduler independently of the active dispatcher so
-	// cancellation of outstanding SendGrid batches works even after a provider
-	// rollback to email-service (LFXV2-2685). This scheduler is created only
-	// when SendGrid credentials are configured.
+	// Wire a SendGrid scheduler and purger independently of the active dispatcher so
+	// cancellation and engagement cleanup for outstanding SendGrid batches works
+	// even after a provider rollback to email-service (LFXV2-2685). These are
+	// created only when SendGrid credentials are configured.
 	var sendGridScheduler port.ScheduledSender
+	var sendGridDispatcher port.EngagementPurger
 	if cfg.SendGridAPIKey != "" {
 		sg, err := sendgridinfra.NewDispatcher(sendgridinfra.Config{
 			APIKey:                cfg.SendGridAPIKey,
@@ -114,6 +115,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 			return fmt.Errorf("independent sendgrid scheduler: %w", err)
 		}
 		sendGridScheduler = sg
+		sendGridDispatcher = sg
 	}
 	userMetadataClient := natsinfra.NewUserMetadataClient(nc)
 
@@ -161,6 +163,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		ScheduleMinLead:       cfg.ScheduleMinLead,
 		ScheduleCancelBuffer:  cfg.ScheduleCancelBuffer,
 		SendGridScheduler:     sendGridScheduler,
+		SendGridDispatcher:    sendGridDispatcher,
 	})
 	// Analytics routes engagement reads by each newsletter's send_provider, so
 	// register a reader per provider. The email-service (NATS) reader and the

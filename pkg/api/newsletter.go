@@ -20,9 +20,10 @@ type Status string
 // StatusSent does NOT guarantee that all recipients were accepted — only that
 // the send was initiated. For scheduling, StatusSending transitions to
 // StatusScheduled once at least one recipient message is accepted by SendGrid
-// for release at the scheduled_at time. A settled StatusScheduled also does
-// NOT guarantee all recipients were accepted — only that the schedule was
-// armed.
+// for release at the scheduled_at time, or if any scheduling outcome is
+// ambiguous. A settled StatusScheduled does NOT guarantee all recipients were
+// accepted — only that the schedule was armed at the provider or its outcome
+// was unknown.
 const (
 	StatusDraft     Status = "draft"
 	StatusSending   Status = "sending"

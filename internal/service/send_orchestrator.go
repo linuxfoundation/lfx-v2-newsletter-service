@@ -115,6 +115,10 @@ type SendOrchestrator struct {
 	// available) used to cancel outstanding schedules even after a provider
 	// switch. Nil if the current EMAIL_PROVIDER is not sendgrid (LFXV2-2685).
 	sendGridScheduler port.ScheduledSender
+	// sendGridDispatcher is a cached reference to the SendGrid dispatcher's
+	// engagement purger, used to purge engagement records for scheduled sends
+	// even after a provider switch. Nil if SendGrid credentials are not configured.
+	sendGridDispatcher port.EngagementPurger
 }
 
 // SendOrchestratorConfig configures a SendOrchestrator.
@@ -177,6 +181,13 @@ type SendOrchestratorConfig struct {
 	// nil, scheduled sends cannot be cancelled if the provider has switched away
 	// from sendgrid (LFXV2-2685). Set when EMAIL_PROVIDER is sendgrid.
 	SendGridScheduler port.ScheduledSender
+	// SendGridDispatcher is an optional reference to a SendGrid engagement purger
+	// for purging engagement records after scheduled sends are cancelled. Used to
+	// route purge calls by draft.SendProvider instead of the active dispatcher, so
+	// engagements from SendGrid schedules are cleaned up even after a provider
+	// rollback to email-service (LFXV2-2685). Set when SendGrid credentials are
+	// configured.
+	SendGridDispatcher port.EngagementPurger
 }
 
 // NewSendOrchestrator wires a SendOrchestrator.
@@ -257,6 +268,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		scheduleMinLead:       scheduleMinLead,
 		scheduleCancelBuffer:  scheduleCancelBuffer,
 		sendGridScheduler:     cfg.SendGridScheduler,
+		sendGridDispatcher:    cfg.SendGridDispatcher,
 	}
 }
 
@@ -761,11 +773,22 @@ func (o *SendOrchestrator) CancelScheduled(ctx context.Context, in CancelSchedul
 	}
 
 	if draft.GroupID != nil {
-		if purger, ok := o.email.(port.EngagementPurger); ok {
+		// Route engagement purge by the provider that owned this send, not the
+		// active dispatcher. This ensures SendGrid scheduled sends are properly
+		// cleaned up even after a provider switch to email-service (LFXV2-2685).
+		var purger port.EngagementPurger
+		switch draft.SendProvider {
+		case model.SendProviderSendGrid:
+			purger = o.sendGridDispatcher
+		default:
+			purger, _ = o.email.(port.EngagementPurger)
+		}
+		if purger != nil {
 			if err := purger.PurgeEngagement(ctx, *draft.GroupID); err != nil {
 				slog.WarnContext(ctx, "cancel schedule: failed to purge provider engagement after revert",
 					"newsletter_id", draft.ID,
 					"group_id", *draft.GroupID,
+					"provider", draft.SendProvider,
 					"error", err,
 				)
 			}
