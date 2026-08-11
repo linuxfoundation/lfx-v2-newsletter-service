@@ -97,6 +97,24 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	if err != nil {
 		return err
 	}
+	// Wire a SendGrid scheduler independently of the active dispatcher so
+	// cancellation of outstanding SendGrid batches works even after a provider
+	// rollback to email-service (LFXV2-2685). This scheduler is created only
+	// when SendGrid credentials are configured.
+	var sendGridScheduler port.ScheduledSender
+	if cfg.SendGridAPIKey != "" {
+		sg, err := sendgridinfra.NewDispatcher(sendgridinfra.Config{
+			APIKey:                cfg.SendGridAPIKey,
+			DefaultFrom:           cfg.EmailFromAddress,
+			Store:                 repository.NewSendGridEngagementStore(bunDB),
+			AuthenticatedDomains:  cfg.SendGridAuthenticatedDomains,
+			ReplyToAllowedDomains: cfg.EmailReplyToAllowedDomains,
+		})
+		if err != nil {
+			return fmt.Errorf("independent sendgrid scheduler: %w", err)
+		}
+		sendGridScheduler = sg
+	}
 	userMetadataClient := natsinfra.NewUserMetadataClient(nc)
 
 	// Step 4: auth.
@@ -142,7 +160,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		ScheduleMaxHorizon:    cfg.ScheduleMaxHorizon,
 		ScheduleMinLead:       cfg.ScheduleMinLead,
 		ScheduleCancelBuffer:  cfg.ScheduleCancelBuffer,
-		SendGridScheduler:     extractSendGridScheduler(emailDispatcher),
+		SendGridScheduler:     sendGridScheduler,
 	})
 	// Analytics routes engagement reads by each newsletter's send_provider, so
 	// register a reader per provider. The email-service (NATS) reader and the
@@ -336,9 +354,3 @@ func newSendGridWebhook(ctx context.Context, cfg AppConfig) (http.Handler, error
 // extractSendGridScheduler extracts the SendGrid scheduler from an email
 // dispatcher if it implements port.ScheduledSender. Used to support scheduled
 // send cancellation even after a provider switch (LFXV2-2685).
-func extractSendGridScheduler(dispatcher port.EmailDispatcher) port.ScheduledSender {
-	if scheduler, ok := dispatcher.(port.ScheduledSender); ok {
-		return scheduler
-	}
-	return nil
-}
