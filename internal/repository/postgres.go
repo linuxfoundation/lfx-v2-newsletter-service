@@ -355,28 +355,38 @@ func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, 
 // MarkSent transitions sending → sent, gated on the version produced by
 // MarkSending. group_id and total_recipients were persisted at the sending
 // transition, so only the terminal status and sent_at remain to be written.
+// A zero-recipient scheduled send settles straight to sent with a non-nil
+// batch_id still on the row, so the GUC must be set unconditionally here —
+// same as MarkScheduled/SettleDueScheduled. It is a no-op when batch_id is
+// NULL, since the trigger only checks OLD.batch_id IS NOT NULL.
 func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, expectedVersion int64) (*model.Newsletter, error) {
 	updated := &model.Newsletter{}
-	res, err := r.db.NewUpdate().
-		Model(updated).
-		Set("status = ?", model.StatusSent).
-		Set("sent_at = ?", sentAt).
-		Set("updated_at = now()").
-		Set("version = version + 1").
-		Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusSending).
-		Returning("*").
-		Exec(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("mark sent: %w", err)
-	}
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("mark sent rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return nil, r.classifySendTransitionMiss(ctx, id, expectedVersion)
-	}
-	return updated, nil
+	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set armed mutation flag: %w", err)
+		}
+		res, err := tx.NewUpdate().
+			Model(updated).
+			Set("status = ?", model.StatusSent).
+			Set("sent_at = ?", sentAt).
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusSending).
+			Returning("*").
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("mark sent: %w", err)
+		}
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("mark sent rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			return r.classifySendTransitionMiss(ctx, id, expectedVersion)
+		}
+		return nil
+	})
+	return updated, err
 }
 
 // MarkScheduled transitions sending → scheduled, gated on the version
@@ -561,19 +571,32 @@ func (r *PostgresNewsletterRepo) RecoverStuckSending(ctx context.Context, olderT
 		return 0, fmt.Errorf("recover stuck sending rows affected: %w", err)
 	}
 
-	scheduledRes, err := r.db.NewUpdate().
-		Model((*model.Newsletter)(nil)).
-		Set("status = ?", model.StatusScheduled).
-		Set("updated_at = now()").
-		Set("version = version + 1").
-		Where("status = ? AND updated_at < ? AND batch_id IS NOT NULL", model.StatusSending, cutoff).
-		Exec(ctx)
+	// This branch touches armed rows (batch_id IS NOT NULL), so the GUC must
+	// be set in the same transaction as the UPDATE or the trigger rejects it —
+	// stranding every crashed scheduled fan-out in 'sending' forever.
+	var scheduledAffected int64
+	err = r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set armed mutation flag: %w", err)
+		}
+		scheduledRes, err := tx.NewUpdate().
+			Model((*model.Newsletter)(nil)).
+			Set("status = ?", model.StatusScheduled).
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("status = ? AND updated_at < ? AND batch_id IS NOT NULL", model.StatusSending, cutoff).
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("recover stuck sending (scheduled): %w", err)
+		}
+		scheduledAffected, err = scheduledRes.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("recover stuck sending (scheduled) rows affected: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("recover stuck sending (scheduled): %w", err)
-	}
-	scheduledAffected, err := scheduledRes.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("recover stuck sending (scheduled) rows affected: %w", err)
+		return 0, err
 	}
 	return rowsAffected + scheduledAffected, nil
 }

@@ -399,3 +399,76 @@ func TestArmedMutations_TriggerRejectsUnauthorized(t *testing.T) {
 		t.Fatalf("BatchID should still be armed")
 	}
 }
+
+// TestMarkSent_ArmedRow covers a zero-recipient scheduled send: MarkSending
+// arms the row with a non-nil batch_id, and the zero-recipient branch of
+// SendNewsletter settles straight to sent via MarkSent without ever calling
+// MarkScheduled. MarkSent must set the GUC itself or the trigger rejects the
+// update, stranding the row in 'sending' (LFXV2-2685 follow-up finding).
+func TestMarkSent_ArmedRow(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	scheduledAt := time.Now().UTC().Add(1 * time.Hour)
+	sending, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "sendgrid", 0, 1, &scheduledAt, "batch-zero-recipient")
+	if err != nil {
+		t.Fatalf("MarkSending with batch_id: %v", err)
+	}
+	if sending.BatchID == nil || *sending.BatchID == "" {
+		t.Fatalf("BatchID should be armed before MarkSent")
+	}
+
+	sent, err := repo.MarkSent(ctx, draftID, time.Now().UTC(), sending.Version)
+	if err != nil {
+		t.Fatalf("MarkSent on armed row: %v", err)
+	}
+	if sent.Status != model.StatusSent {
+		t.Fatalf("Status after MarkSent: got %v, want StatusSent", sent.Status)
+	}
+}
+
+// TestRecoverStuckSending_RecoversArmedRow covers crash recovery for a
+// scheduled fan-out: a 'sending' row whose batch_id is non-nil (armed) but
+// whose updated_at is stale must be recoverable to 'scheduled' by the sweep.
+// The recovery UPDATE touches an armed row, so it must set the GUC in the
+// same transaction or the trigger rejects it, stranding the row in 'sending'
+// forever (LFXV2-2685 follow-up finding).
+func TestRecoverStuckSending_RecoversArmedRow(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	scheduledAt := time.Now().UTC().Add(1 * time.Hour)
+	_, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "sendgrid", 50, 1, &scheduledAt, "batch-stuck")
+	if err != nil {
+		t.Fatalf("MarkSending to arm row: %v", err)
+	}
+
+	// Backdate updated_at directly so the row looks stuck past the recovery
+	// threshold; MarkSending itself always sets updated_at = now().
+	if _, err := repo.db.NewRaw(
+		"UPDATE newsletters SET updated_at = ? WHERE id = ?",
+		time.Now().UTC().Add(-1*time.Hour), draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("backdate updated_at: %v", err)
+	}
+
+	recovered, err := repo.RecoverStuckSending(ctx, 30*time.Minute)
+	if err != nil {
+		t.Fatalf("RecoverStuckSending: %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("RecoverStuckSending rows affected: got %d, want 1", recovered)
+	}
+
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after RecoverStuckSending: %v", err)
+	}
+	if n.Status != model.StatusScheduled {
+		t.Fatalf("Status after RecoverStuckSending: got %v, want StatusScheduled", n.Status)
+	}
+}
