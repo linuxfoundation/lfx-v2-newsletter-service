@@ -389,7 +389,7 @@ func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sen
 			return fmt.Errorf("mark sent rows affected: %w", err)
 		}
 		if rowsAffected == 0 {
-			return r.classifySendTransitionMiss(ctx, id, expectedVersion)
+			return r.classifySendTransitionMissWithDB(ctx, tx, id, expectedVersion)
 		}
 		return nil
 	})
@@ -423,7 +423,7 @@ func (r *PostgresNewsletterRepo) MarkScheduled(ctx context.Context, id uuid.UUID
 			return fmt.Errorf("mark scheduled rows affected: %w", err)
 		}
 		if rowsAffected == 0 {
-			return r.classifySendTransitionMiss(ctx, id, expectedVersion)
+			return r.classifySendTransitionMissWithDB(ctx, tx, id, expectedVersion)
 		}
 		return nil
 	})
@@ -510,8 +510,10 @@ func (r *PostgresNewsletterRepo) RevertScheduled(ctx context.Context, id uuid.UU
 		if rowsAffected == 0 {
 			// The update didn't match any rows. The row might not exist, might be in
 			// a different status (e.g. sent, draft), or might have been deleted.
-			// Classify the miss to return the appropriate error.
-			return r.classifySendTransitionMiss(ctx, id, expectedVersion)
+			// Classify the miss to return the appropriate error. Use the transaction
+			// context to avoid holding the transaction while acquiring another pool
+			// connection, which would risk pool exhaustion (LFXV2-2685).
+			return r.classifySendTransitionMissWithDB(ctx, tx, id, expectedVersion)
 		}
 		return nil
 	})
@@ -796,9 +798,20 @@ func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UU
 // version check because the send-transition UPDATEs bump the version — a row
 // that moved to sending/sent necessarily has a different version too, and the
 // status is the more actionable signal for the caller.
+//
+// Use classifySendTransitionMissWithDB to classify through a transaction,
+// avoiding pool connection exhaustion when classifying within a transaction.
 func (r *PostgresNewsletterRepo) classifySendTransitionMiss(ctx context.Context, id uuid.UUID, expectedVersion int64) error {
+	return r.classifySendTransitionMissWithDB(ctx, r.db, id, expectedVersion)
+}
+
+// classifySendTransitionMissWithDB classifies through an arbitrary bun.IDB
+// (pool or transaction). Use this when classifying within a transaction to
+// avoid holding a transaction open while acquiring another pool connection
+// (pool exhaustion / deadlock risk).
+func (r *PostgresNewsletterRepo) classifySendTransitionMissWithDB(ctx context.Context, db bun.IDB, id uuid.UUID, expectedVersion int64) error {
 	existing := &model.Newsletter{}
-	err := r.db.NewSelect().
+	err := db.NewSelect().
 		Model(existing).
 		Where("id = ?", id).
 		Scan(ctx)
