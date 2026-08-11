@@ -169,10 +169,12 @@ type ScheduleNewsletterRequest struct {
 // as the newsletter transitions to status='sending' with the schedule armed
 // at SendGrid, and the fan-out completes in the background. The newsletter
 // settles to status='scheduled' once at least one recipient's message has been
-// accepted by SendGrid for release at ScheduledAt, or reverts to 'draft' when
-// zero recipients could be scheduled. A settled status='scheduled' does NOT
-// guarantee all recipients were accepted — only that the schedule was armed.
-// Consult the Failures list for per-recipient scheduling outcomes.
+// accepted by SendGrid for release at ScheduledAt, or if any scheduling outcome
+// is ambiguous (unknown result from the provider). It reverts to 'draft' only
+// when zero recipients could be scheduled and no outcome was ambiguous. A
+// settled status='scheduled' does NOT guarantee all recipients were accepted
+// — only that the schedule was armed. Consult the Failures list for
+// per-recipient scheduling outcomes.
 type ScheduleNewsletterResponse struct {
 	Newsletter      Newsletter    `json:"newsletter"`
 	GroupID         string        `json:"group_id"`

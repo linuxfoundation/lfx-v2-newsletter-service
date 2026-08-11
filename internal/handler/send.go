@@ -64,8 +64,9 @@ func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
 // own saved value is used (a 400 if neither exists). Behaves like
 // SendNewsletter otherwise — 202 Accepted with the sending-state newsletter,
 // settling in the background to status='scheduled' when at least one recipient's
-// message is accepted by SendGrid for release (or reverting to 'draft' when zero
-// recipients could be scheduled). A settled status='scheduled' does NOT guarantee
+// message is accepted by SendGrid for release, or if any scheduling outcome is
+// ambiguous. It reverts to 'draft' only when zero recipients could be scheduled
+// and no outcome was ambiguous. A settled status='scheduled' does NOT guarantee
 // all recipients were accepted — only that the schedule was armed. Consult the
 // Failures list for per-recipient scheduling outcomes.
 func (h *Handler) ScheduleNewsletter(w http.ResponseWriter, r *http.Request) {
