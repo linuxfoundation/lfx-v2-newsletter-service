@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -115,19 +116,22 @@ const maxClickURLLen = 2048
 
 // trimURLToMaxLen trims url to at most maxClickURLLen bytes, respecting UTF-8
 // rune boundaries. If trimming cuts through a multi-byte UTF-8 sequence, the
-// partial rune is removed to avoid invalid UTF-8.
+// partial rune and its incomplete lead byte are removed to avoid invalid UTF-8.
 func trimURLToMaxLen(url string) string {
 	if len(url) <= maxClickURLLen {
 		return url
 	}
-	// Trim to maxClickURLLen bytes, then walk back to find a valid UTF-8 boundary.
+	// Trim to maxClickURLLen bytes. If the last character is an incomplete
+	// multi-byte rune, DecodeLastRune returns RuneError; discard incomplete
+	// bytes until we have a complete, valid rune at the boundary.
 	trimmed := url[:maxClickURLLen]
-	// Walk backwards from the end: if the last byte is a continuation byte
-	// (10xxxxxx), keep walking back until we find a non-continuation byte
-	// or reach the start. If that byte is a valid rune start (0xxxxxxx or 11xxxxxx),
-	// keep it and the bytes before it. Otherwise, the rune was incomplete, so trim
-	// those bytes as well.
-	for len(trimmed) > 0 && (trimmed[len(trimmed)-1]&0xc0) == 0x80 {
+	for len(trimmed) > 0 {
+		r, _ := utf8.DecodeLastRune([]byte(trimmed))
+		if r != utf8.RuneError {
+			// Last rune is valid and complete.
+			return trimmed
+		}
+		// Last rune is invalid or incomplete; remove its lead byte and retry.
 		trimmed = trimmed[:len(trimmed)-1]
 	}
 	return trimmed

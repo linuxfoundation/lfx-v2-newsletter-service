@@ -15,8 +15,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // nowTS returns the current Unix time as the string the SendGrid signed webhook
@@ -216,5 +218,53 @@ func TestWebhook_StoreErrorRequestsRedelivery(t *testing.T) {
 	// (application is idempotent, so reapply is safe).
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", rec.Code)
+	}
+}
+
+func TestTrimURLToMaxLen_MultibyteBoundary(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantLen int // want the output to be validly <= this many bytes
+	}{
+		{
+			// ASCII only: no multi-byte runes, trim cleanly at 2048
+			name:    "ascii_within_limit",
+			input:   "https://example.com/a",
+			wantLen: 2048, // well under limit
+		},
+		{
+			// URL with multi-byte UTF-8 runes (Chinese characters) such that
+			// a naive byte-at-2048 trim would split a 3-byte rune.
+			name: "unicode_at_boundary",
+			// Construct a URL that's ASCII + a multi-byte character right at position 2046-2048.
+			// A 3-byte UTF-8 character like '中' (U+4E2D) encodes as E4 B8 AD.
+			// If we naively trim at position 2046, we might cut it as "...E4 B8" (incomplete).
+			input:   "https://example.com/" + strings.Repeat("a", 2035) + "中国语言",
+			wantLen: 2048,
+		},
+		{
+			// Ensure the output is valid UTF-8 even if the input would force trimming
+			// into the middle of a multi-byte sequence.
+			name:    "4byte_at_boundary",
+			input:   "https://example.com/" + strings.Repeat("x", 2040) + "😀😀😀",
+			wantLen: 2048,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := trimURLToMaxLen(tt.input)
+			if len(got) > maxClickURLLen {
+				t.Errorf("trimURLToMaxLen output is %d bytes, exceeds maxClickURLLen %d", len(got), maxClickURLLen)
+			}
+			// Validate UTF-8 by checking if we can decode every rune without error.
+			for i, r := range got {
+				if r == utf8.RuneError {
+					t.Errorf("trimURLToMaxLen output contains invalid UTF-8 at position %d", i)
+					break
+				}
+			}
+		})
 	}
 }
