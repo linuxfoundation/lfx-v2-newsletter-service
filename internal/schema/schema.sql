@@ -384,3 +384,32 @@ DROP TRIGGER IF EXISTS trg_sg_reject_reverted_engagement ON sendgrid_recipient_e
 CREATE TRIGGER trg_sg_reject_reverted_engagement
     BEFORE INSERT ON sendgrid_recipient_engagement
     FOR EACH ROW EXECUTE FUNCTION sendgrid_reject_reverted_engagement();
+
+-- Click tracking (clicks parity with opens). clicked/click_count/last_clicked_at
+-- mirror the opened/open_count/last_opened_at columns above; ADD COLUMN ...
+-- NOT NULL DEFAULT is metadata-only on the PG12+ this schema already requires,
+-- so this is safe against a live cluster.
+ALTER TABLE sendgrid_recipient_engagement
+    ADD COLUMN IF NOT EXISTS clicked BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sendgrid_recipient_engagement
+    ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sendgrid_recipient_engagement
+    ADD COLUMN IF NOT EXISTS last_clicked_at TIMESTAMPTZ;
+
+-- Individual click events, mirroring sendgrid_open_events. Deduplicated by
+-- sg_event_id so a webhook redelivery is a no-op. url is the clicked link
+-- (truncated defensively at the application layer); group_id is derived by
+-- joining to sendgrid_recipient_engagement on email_id, same as opens.
+--
+-- Like sendgrid_open_events, this table carries no group_id, so it is NOT
+-- covered by trg_sg_reject_reverted_engagement (that trigger only fires on
+-- sendgrid_recipient_engagement). ApplyClick and RevertGroup handle the
+-- tombstone check and cleanup explicitly, the same way ApplyOpen does today.
+CREATE TABLE IF NOT EXISTS sendgrid_click_events (
+    sg_event_id TEXT        PRIMARY KEY,
+    email_id    TEXT        NOT NULL,
+    url         TEXT        NOT NULL DEFAULT '',
+    clicked_at  TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sg_click_events_email ON sendgrid_click_events (email_id);

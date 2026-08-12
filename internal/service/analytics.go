@@ -146,6 +146,15 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 		// observed, surface the bigger number.
 		local.TotalOpens = engagement.Opened
 	}
+	// Clicks have no local source today (unlike opens' tracking pixel), so the
+	// provider's scalars always win here; the max keeps the overlay rule
+	// uniform with opens rather than special-casing an always-zero local side.
+	if engagement.UniqueClicks > local.UniqueClicks {
+		local.UniqueClicks = engagement.UniqueClicks
+	}
+	if engagement.Clicked > local.TotalClicks {
+		local.TotalClicks = engagement.Clicked
+	}
 
 	// The engagement summary is scalar-only. GroupEngagementDetail is a single
 	// bounded fetch (SQL aggregates for SendGrid, one email-service reply bucketed
@@ -169,8 +178,17 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 		if detail.UniqueOpens > local.UniqueOpens {
 			local.UniqueOpens = detail.UniqueOpens
 		}
+		if detail.UniqueClicks > local.UniqueClicks {
+			local.UniqueClicks = detail.UniqueClicks
+		}
 		if len(detail.DailyOpens) > 0 {
 			local.DailyOpens = detail.DailyOpens
+		}
+		if len(detail.DailyClicks) > 0 {
+			local.DailyClicks = detail.DailyClicks
+		}
+		if len(detail.TopLinks) > 0 {
+			local.TopLinks = detail.TopLinks
 		}
 		if len(detail.FailedRecipients) > 0 {
 			local.FailedRecipients = detail.FailedRecipients
@@ -186,6 +204,10 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 	}
 	if denominator > 0 {
 		local.OpenRate = float64(local.UniqueOpens) / float64(denominator)
+		local.ClickRate = float64(local.UniqueClicks) / float64(denominator)
+	}
+	if local.UniqueOpens > 0 {
+		local.ClickToOpenRate = float64(local.UniqueClicks) / float64(local.UniqueOpens)
 	}
 	return local, nil
 }
@@ -254,6 +276,13 @@ func (a *AnalyticsService) Recipients(ctx context.Context, projectUID string, ne
 			capped := make([]time.Time, port.MaxOpensPerRecipient)
 			copy(capped, r.OpenedAtList[len(r.OpenedAtList)-port.MaxOpensPerRecipient:])
 			r.OpenedAtList = capped
+		}
+		// Same defensive sort + cap for clicks, mirroring the opens handling above.
+		sort.Slice(r.ClickedAtList, func(i, j int) bool { return r.ClickedAtList[i].Before(r.ClickedAtList[j]) })
+		if len(r.ClickedAtList) > port.MaxClicksPerRecipient {
+			capped := make([]time.Time, port.MaxClicksPerRecipient)
+			copy(capped, r.ClickedAtList[len(r.ClickedAtList)-port.MaxClicksPerRecipient:])
+			r.ClickedAtList = capped
 		}
 		out = append(out, port.RecipientEngagement{
 			Name:   names[strings.ToLower(strings.TrimSpace(r.To))],

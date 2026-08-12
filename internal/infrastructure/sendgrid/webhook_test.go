@@ -82,6 +82,7 @@ func TestWebhook_AppliesVerifiedEvents(t *testing.T) {
 	body := []byte(`[
 	  {"event":"delivered","email":"a@x.io","timestamp":1700000000,"sg_event_id":"e1","email_id":"m1","group_id":"g"},
 	  {"event":"open","email":"a@x.io","timestamp":1700000100,"sg_event_id":"e2","email_id":"m1","group_id":"g"},
+	  {"event":"click","email":"a@x.io","timestamp":1700000150,"sg_event_id":"e6","email_id":"m1","group_id":"g","url":"https://example.com/content"},
 	  {"event":"bounce","email":"b@x.io","timestamp":1700000200,"sg_event_id":"e3","email_id":"m2","group_id":"g"},
 	  {"event":"processed","email":"c@x.io","timestamp":1700000300,"sg_event_id":"e4","email_id":"m3","group_id":"g"},
 	  {"event":"open","email":"d@x.io","timestamp":1700000400,"sg_event_id":"e5","group_id":"g"}
@@ -108,6 +109,9 @@ func TestWebhook_AppliesVerifiedEvents(t *testing.T) {
 	if len(store.opens) != 1 || store.opens[0] != "e2|m1" {
 		t.Errorf("opens = %v, want [e2|m1]", store.opens)
 	}
+	if len(store.clicks) != 1 || store.clicks[0] != "e6|m1|https://example.com/content" {
+		t.Errorf("clicks = %v, want [e6|m1|https://example.com/content]", store.clicks)
+	}
 }
 
 func TestWebhook_SkipsIncompleteTrackedEvents(t *testing.T) {
@@ -123,6 +127,8 @@ func TestWebhook_SkipsIncompleteTrackedEvents(t *testing.T) {
 	  {"event":"delivered","email":"a@x.io","timestamp":1700000000,"sg_event_id":"e1","email_id":"m1","group_id":""},
 	  {"event":"bounce","email":"b@x.io","timestamp":1700000100,"sg_event_id":"e2","email_id":"m2","group_id":""},
 	  {"event":"open","email":"c@x.io","timestamp":1700000200,"sg_event_id":"","email_id":"m3","group_id":"g"},
+	  {"event":"click","email":"e@x.io","timestamp":1700000250,"sg_event_id":"","email_id":"m5","group_id":"g","url":"https://example.com"},
+	  {"event":"click","email":"f@x.io","timestamp":1700000260,"sg_event_id":"e6","email_id":"m6","group_id":"","url":"https://example.com"},
 	  {"event":"delivered","email":"d@x.io","timestamp":1700000300,"sg_event_id":"e4","email_id":"m4","group_id":"g"}
 	]`)
 	ts := nowTS()
@@ -146,6 +152,11 @@ func TestWebhook_SkipsIncompleteTrackedEvents(t *testing.T) {
 	}
 	if len(store.opens) != 0 {
 		t.Errorf("opens = %v, want [] (empty sg_event_id must be skipped)", store.opens)
+	}
+	// The click missing sg_event_id and the click missing group_id are both
+	// skipped, same reasoning as opens/delivered above.
+	if len(store.clicks) != 0 {
+		t.Errorf("clicks = %v, want [] (empty sg_event_id/group_id must be skipped)", store.clicks)
 	}
 }
 

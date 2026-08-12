@@ -106,6 +106,24 @@ type DailyOpens struct {
 	UniqueOpens int       `json:"uniqueOpens"`
 }
 
+// DailyClicks is one bucket of clicks for an analytics time-series, mirroring
+// DailyOpens.
+type DailyClicks struct {
+	Date         time.Time `json:"date"`
+	Clicks       int       `json:"clicks"`
+	UniqueClicks int       `json:"uniqueClicks"`
+}
+
+// LinkClicks is one entry in the top-clicked-links breakdown: a URL and how
+// many total/unique clicks it received. Chrome/compliance links (unsubscribe,
+// My Newsletters) are excluded at the source via clicktracking="off", so this
+// reflects engagement with author content only.
+type LinkClicks struct {
+	URL          string `json:"url"`
+	Clicks       int    `json:"clicks"`
+	UniqueClicks int    `json:"uniqueClicks"`
+}
+
 // Analytics aggregates engagement metrics for a sent newsletter.
 type Analytics struct {
 	NewsletterID    uuid.UUID  `json:"newsletterId"`
@@ -125,7 +143,18 @@ type Analytics struct {
 	UniqueOpens      int          `json:"uniqueOpens"`
 	OpenRate         float64      `json:"openRate"`
 	DailyOpens       []DailyOpens `json:"dailyOpens"`
-	LastEventAt      *time.Time   `json:"lastEventAt,omitempty"`
+	// TotalClicks / UniqueClicks / ClickRate / ClickToOpenRate / DailyClicks /
+	// TopLinks are SendGrid-only (see docs/newsletter-service-contract.md): a
+	// newsletter dispatched via send_provider='email-service' (SES) always
+	// reports zero/empty here, since SES click tracking is a documented
+	// follow-up, not implemented by this service.
+	TotalClicks     int           `json:"totalClicks"`
+	UniqueClicks    int           `json:"uniqueClicks"`
+	ClickRate       float64       `json:"clickRate"`
+	ClickToOpenRate float64       `json:"clickToOpenRate"`
+	DailyClicks     []DailyClicks `json:"dailyClicks"`
+	TopLinks        []LinkClicks  `json:"topLinks"`
+	LastEventAt     *time.Time    `json:"lastEventAt,omitempty"`
 }
 
 // CommitteeMember is the slice of a committee member the newsletter needs for personalization.

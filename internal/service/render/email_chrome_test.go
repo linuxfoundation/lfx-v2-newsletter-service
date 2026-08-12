@@ -82,6 +82,34 @@ func TestEmailHTMLMyNewslettersLineAboveUnsubscribe(t *testing.T) {
 	}
 }
 
+// TestEmailHTMLChromeLinksDisableClickTracking verifies the Unsubscribe and My
+// Newsletters anchors both carry clicktracking="off" (so the HMAC-signed
+// unsubscribe link is not proxied through the provider's click-tracking
+// redirect, and neither counts toward click_rate), and that the rendered
+// unsubscribe URL itself is unchanged.
+func TestEmailHTMLChromeLinksDisableClickTracking(t *testing.T) {
+	const unsubURL = "https://api.example/newsletters/unsubscribe?t=tok"
+	html := EmailHTML(Chrome{
+		Subject:                 "Hello",
+		BodyHTML:                "<p>Body</p>",
+		DisplayName:             "Kubernetes",
+		IncludeComplianceFooter: true,
+		UnsubscribeURL:          unsubURL,
+		MyNewslettersURL:        testMyNewslettersURL,
+	})
+	if !strings.Contains(html, `href="`+unsubURL+`" clicktracking="off"`) {
+		t.Errorf("Unsubscribe anchor missing clicktracking=\"off\" immediately after href:\n%s", html)
+	}
+	if !strings.Contains(html, `href="`+testMyNewslettersURL+`" clicktracking="off"`) {
+		t.Errorf("My Newsletters anchor missing clicktracking=\"off\" immediately after href:\n%s", html)
+	}
+	// The unsubscribe URL itself must still render exactly as given — the
+	// exclusion is an anchor attribute, not a URL transformation.
+	if !strings.Contains(html, `href="`+unsubURL+`"`) {
+		t.Errorf("Unsubscribe URL rendered incorrectly:\n%s", html)
+	}
+}
+
 func TestEmailHTMLMyNewslettersURLEscaped(t *testing.T) {
 	html := EmailHTML(Chrome{
 		Subject:                 "Hello",

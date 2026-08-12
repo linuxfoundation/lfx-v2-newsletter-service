@@ -62,18 +62,27 @@ both `lfx.linuxfoundation.org` and `lfx.aaif.io`.
    links instead of `sendgrid.net`. Produces 2 more CNAMEs per domain.
 4. **Create an API key** for `SENDGRID_API_KEY`. A restricted key with **Mail Send**
    permission is sufficient. When using subusers, use a subuser-scoped key.
-5. **Mail Settings, Event Webhook:**
+5. **Tracking Settings, Click Tracking = ON** (account-wide, or per-subuser). The
+   service does not set `tracking_settings` on the send request — it relies on this
+   dashboard setting to rewrite links, exactly as it already relies on the dashboard
+   for open tracking. Leaving it off means the click event webhook below never fires
+   for any newsletter, since there is nothing to rewrite the recipient's click through.
+6. **Mail Settings, Event Webhook:**
    - **POST URL:** `https://lfx-api.<env-domain>/newsletters/sendgrid/events`
      (dev: `https://lfx-api.dev.v2.cluster.linuxfound.info/newsletters/sendgrid/events`).
-   - **Events:** Delivered, Bounced, Dropped, Spam Reports, Blocked, Opened.
-     (Clicks and Unsubscribes may stay off; the service ignores them.)
+   - **Events:** Delivered, Bounced, Dropped, Spam Reports, Blocked, Opened, **Clicked**.
+     **Clicked must now be on** — the service tracks per-recipient clicks and a
+     top-links breakdown from this event, and click metrics read zero without it.
+     (Unsubscribe may stay off; the service ignores it — the compliance footer's own
+     unsubscribe link is excluded from click tracking and handled by this service's
+     own `/newsletters/unsubscribe` endpoint instead.)
    - **Signed Event Webhook = ON.** The generated **Verification Key** is
      `SENDGRID_WEBHOOK_PUBLIC_KEY`. The service verifies the ECDSA signature and a
      freshness window on every event. A subuser that sends has its own webhook and key.
-6. **Subscription Tracking = OFF.** The service manages its own one-click unsubscribe
+7. **Subscription Tracking = OFF.** The service manages its own one-click unsubscribe
    (compliance-footer link to `newsletter_unsubscribes`), so leaving SendGrid's own
    unsubscribe injection off avoids two competing mechanisms.
-7. **Subusers (optional, recommended for reputation isolation).** A subuser per
+8. **Subusers (optional, recommended for reputation isolation).** A subuser per
    newsletter keeps each publication's sender reputation separate. Each subuser sends
    from the shared authenticated domains (associate the parent's domain authentication
    with the subuser) and has its own signed event webhook and Mail-Send key. Because

@@ -97,6 +97,7 @@ func freshTimestamp(ts string, now time.Time) bool {
 
 // event is one entry in a SendGrid event-webhook batch. email_id / group_id are
 // the custom_args set at send time, echoed back at the top level of each event.
+// URL is only present on click events.
 type event struct {
 	Email     string `json:"email"`
 	Event     string `json:"event"`
@@ -104,7 +105,13 @@ type event struct {
 	SGEventID string `json:"sg_event_id"`
 	EmailID   string `json:"email_id"`
 	GroupID   string `json:"group_id"`
+	URL       string `json:"url"`
 }
+
+// maxClickURLLen bounds how much of a click event's url we persist. SendGrid's
+// click-tracking redirect URLs are short, but this is a defensive cap against a
+// pathologically long author-authored link rather than a limit we expect to hit.
+const maxClickURLLen = 2048
 
 // Webhook is the HTTP handler for SendGrid's event webhook. It verifies the
 // signature, parses the batch, and applies delivered / open / failure events to
@@ -196,10 +203,21 @@ func (wh *Webhook) apply(ctx context.Context, ev event) error {
 			return nil
 		}
 		return wh.store.ApplyOpen(ctx, ev.SGEventID, ev.EmailID, ev.GroupID, ev.Email, at)
+	case "click":
+		// sg_event_id is the dedup key, same reasoning as the open case.
+		if ev.SGEventID == "" {
+			slog.DebugContext(ctx, "sendgrid webhook: click event without sg_event_id, skipping", "email_id", ev.EmailID)
+			return nil
+		}
+		url := ev.URL
+		if len(url) > maxClickURLLen {
+			url = url[:maxClickURLLen]
+		}
+		return wh.store.ApplyClick(ctx, ev.SGEventID, ev.EmailID, ev.GroupID, ev.Email, url, at)
 	case "bounce", "dropped", "spamreport", "blocked":
 		return wh.store.ApplyFailed(ctx, ev.EmailID, ev.GroupID, ev.Email, at)
 	default:
-		// processed / deferred / click / unsubscribe / group_* — not tracked here.
+		// processed / deferred / unsubscribe / group_* — not tracked here.
 		return nil
 	}
 }

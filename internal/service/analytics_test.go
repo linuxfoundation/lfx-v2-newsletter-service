@@ -537,6 +537,176 @@ func TestAnalyticsGet_PreservesLocalDailyOpensWhenProviderDetailEmpty(t *testing
 	}
 }
 
+// sendgridDetailFake is a minimal port.EngagementReader with a directly
+// configurable GroupEngagementDetail, standing in for the SendGrid store-backed
+// reader (whose detail includes click fields the email-service reader's
+// GroupDetailFromRecords never populates).
+type sendgridDetailFake struct {
+	engagement    *port.EmailEngagement
+	engagementErr error
+	detail        *port.GroupEngagementDetail
+	detailErr     error
+}
+
+func (s *sendgridDetailFake) GetEngagement(_ context.Context, _ string) (*port.EmailEngagement, error) {
+	return s.engagement, s.engagementErr
+}
+func (s *sendgridDetailFake) GetStatusByEmailID(_ context.Context, _ string) (*port.EmailRecipientRecord, error) {
+	return nil, nil
+}
+func (s *sendgridDetailFake) GroupEngagementDetail(_ context.Context, _ string) (*port.GroupEngagementDetail, error) {
+	return s.detail, s.detailErr
+}
+func (s *sendgridDetailFake) RecipientRecords(_ context.Context, _ string) ([]port.EmailRecipientRecord, error) {
+	return nil, nil
+}
+
+// TestAnalyticsGet_ClickRateArithmetic verifies ClickRate and ClickToOpenRate
+// are computed from the overlaid UniqueClicks/UniqueOpens against the same
+// denominator as OpenRate, and that both stay 0 (not NaN/+Inf) when their
+// divisor is zero.
+func TestAnalyticsGet_ClickRateArithmetic(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	groupID := "group-click"
+	sentAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name                string
+		totalRecipients     int
+		uniqueOpens         int
+		uniqueClicks        int
+		wantClickRate       float64
+		wantClickToOpenRate float64
+	}{
+		{
+			name: "normal", totalRecipients: 10, uniqueOpens: 4, uniqueClicks: 2,
+			wantClickRate: 0.2, wantClickToOpenRate: 0.5,
+		},
+		{
+			name: "zero opens keeps click-to-open at zero", totalRecipients: 10, uniqueOpens: 0, uniqueClicks: 0,
+			wantClickRate: 0, wantClickToOpenRate: 0,
+		},
+		{
+			name: "zero denominator keeps click rate at zero", totalRecipients: 0, uniqueOpens: 0, uniqueClicks: 0,
+			wantClickRate: 0, wantClickToOpenRate: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			newsletterID := uuid.New()
+			repo := &analyticsRepoFake{
+				newsletter: &model.Newsletter{
+					ID: newsletterID, ProjectUID: projectUID, Status: model.StatusSent,
+					GroupID: &groupID, SendProvider: model.SendProviderSendGrid,
+					SentAt: &sentAt, TotalRecipients: tt.totalRecipients,
+				},
+				base: &model.Analytics{
+					NewsletterID: newsletterID, Status: model.StatusSent, SentAt: &sentAt,
+					TotalRecipients: tt.totalRecipients,
+				},
+			}
+			reader := &sendgridDetailFake{
+				engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: tt.totalRecipients, UniqueOpens: tt.uniqueOpens, UniqueClicks: tt.uniqueClicks},
+				detail:     &port.GroupEngagementDetail{FailedRecipients: []string{}, UniqueOpens: tt.uniqueOpens, UniqueClicks: tt.uniqueClicks},
+			}
+			svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderSendGrid: reader}, nil, model.SendProviderEmailService)
+			got, err := svc.Get(context.Background(), projectUID, newsletterID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.ClickRate != tt.wantClickRate {
+				t.Errorf("ClickRate: got %v, want %v", got.ClickRate, tt.wantClickRate)
+			}
+			if got.ClickToOpenRate != tt.wantClickToOpenRate {
+				t.Errorf("ClickToOpenRate: got %v, want %v", got.ClickToOpenRate, tt.wantClickToOpenRate)
+			}
+		})
+	}
+}
+
+// TestAnalyticsGet_PreservesLocalDailyClicksAndTopLinksWhenProviderDetailEmpty
+// mirrors TestAnalyticsGet_PreservesLocalDailyOpensWhenProviderDetailEmpty for
+// clicks: an empty provider detail must not clobber a non-empty local series.
+func TestAnalyticsGet_PreservesLocalDailyClicksAndTopLinksWhenProviderDetailEmpty(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	groupID := "group-click-empty"
+	sentAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	localDay := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	reader := &sendgridDetailFake{
+		engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: 5},
+		detail:     &port.GroupEngagementDetail{FailedRecipients: []string{}},
+	}
+	newsletterID := uuid.New()
+	repo := &analyticsRepoFake{
+		newsletter: &model.Newsletter{
+			ID: newsletterID, ProjectUID: projectUID, Status: model.StatusSent,
+			GroupID: &groupID, SendProvider: model.SendProviderSendGrid,
+			SentAt: &sentAt, TotalRecipients: 5,
+		},
+		base: &model.Analytics{
+			NewsletterID: newsletterID, Status: model.StatusSent, SentAt: &sentAt,
+			TotalRecipients: 5,
+			DailyClicks:     []model.DailyClicks{{Date: localDay, Clicks: 3, UniqueClicks: 2}},
+			TopLinks:        []model.LinkClicks{{URL: "https://example.com", Clicks: 3, UniqueClicks: 2}},
+		},
+	}
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderSendGrid: reader}, nil, model.SendProviderEmailService)
+	got, err := svc.Get(context.Background(), projectUID, newsletterID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.DailyClicks) != 1 || got.DailyClicks[0].Clicks != 3 {
+		t.Errorf("DailyClicks: got %+v, want the preserved local series", got.DailyClicks)
+	}
+	if len(got.TopLinks) != 1 || got.TopLinks[0].URL != "https://example.com" {
+		t.Errorf("TopLinks: got %+v, want the preserved local series", got.TopLinks)
+	}
+}
+
+// TestAnalyticsGet_EmailServiceProviderReturnsZeroClicks verifies an
+// email-service (SES) newsletter reports zero/empty click metrics without
+// erroring — GroupDetailFromRecords never populates click fields, and the
+// service must not panic or divide incorrectly on the always-zero values.
+func TestAnalyticsGet_EmailServiceProviderReturnsZeroClicks(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	groupID := "group-ses"
+	sentAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+
+	newsletterID := uuid.New()
+	repo := &analyticsRepoFake{
+		newsletter: &model.Newsletter{
+			ID: newsletterID, ProjectUID: projectUID, Status: model.StatusSent,
+			GroupID: &groupID, SendProvider: model.SendProviderEmailService,
+			SentAt: &sentAt, TotalRecipients: 5,
+		},
+		base: &model.Analytics{
+			NewsletterID: newsletterID, Status: model.StatusSent, SentAt: &sentAt,
+			TotalRecipients: 5,
+		},
+	}
+	email := &statusByGroupFake{
+		engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: 5, Delivered: 5, Opened: 2, UniqueOpens: 2},
+		records: []port.EmailRecipientRecord{
+			{EmailID: "rA", To: "a@x", Delivered: true, Opened: true, OpenedAtList: []time.Time{sentAt}},
+		},
+	}
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	got, err := svc.Get(context.Background(), projectUID, newsletterID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.TotalClicks != 0 || got.UniqueClicks != 0 {
+		t.Errorf("TotalClicks/UniqueClicks: got %d/%d, want 0/0 for email-service", got.TotalClicks, got.UniqueClicks)
+	}
+	if got.ClickRate != 0 || got.ClickToOpenRate != 0 {
+		t.Errorf("ClickRate/ClickToOpenRate: got %v/%v, want 0/0 for email-service", got.ClickRate, got.ClickToOpenRate)
+	}
+	if len(got.DailyClicks) != 0 || len(got.TopLinks) != 0 {
+		t.Errorf("DailyClicks/TopLinks: got %v/%v, want empty for email-service", got.DailyClicks, got.TopLinks)
+	}
+}
+
 // committeeFake is a minimal port.CommitteeClient for name-enrichment tests.
 type committeeFake struct {
 	members map[string][]model.CommitteeMember
@@ -815,5 +985,60 @@ func TestRecipients_CapsOpensPerRecipient(t *testing.T) {
 	}
 	if rec.OpenedAtList[499] != opens[500] {
 		t.Errorf("Recipients: last kept open is %v, want %v (last original open)", rec.OpenedAtList[499], opens[500])
+	}
+}
+
+// TestRecipients_CapsClicksPerRecipient mirrors TestRecipients_CapsOpensPerRecipient
+// for clicks: the service truncates per-recipient click lists to
+// port.MaxClicksPerRecipient (500 most recent).
+func TestRecipients_CapsClicksPerRecipient(t *testing.T) {
+	projectUID := "proj1"
+	newsletterID := uuid.New()
+	groupID := "g1"
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	clicks := make([]time.Time, 501)
+	for i := range 501 {
+		clicks[i] = base.Add(time.Duration(i) * time.Second)
+	}
+
+	email := &statusByGroupFake{
+		records: []port.EmailRecipientRecord{
+			{
+				To:            "user@example.com",
+				ClickedAtList: clicks,
+				ClickCount:    501, // Provider's raw count, not capped
+			},
+		},
+	}
+	repo := &analyticsRepoFake{
+		newsletter: &model.Newsletter{
+			ID:              newsletterID,
+			ProjectUID:      projectUID,
+			Status:          model.StatusSent,
+			GroupID:         &groupID,
+			TotalRecipients: 1,
+		},
+	}
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	result, err := svc.Recipients(context.Background(), projectUID, newsletterID)
+	if err != nil {
+		t.Fatalf("Recipients: %v", err)
+	}
+	if len(result.Recipients) != 1 {
+		t.Fatalf("Recipients: got %d recipients, want 1", len(result.Recipients))
+	}
+	rec := result.Recipients[0].Record
+	if len(rec.ClickedAtList) != 500 {
+		t.Errorf("Recipients: ClickedAtList length = %d, want 500", len(rec.ClickedAtList))
+	}
+	if rec.ClickCount != 501 {
+		t.Errorf("Recipients: ClickCount = %d, want 501 (provider's raw count)", rec.ClickCount)
+	}
+	if rec.ClickedAtList[0] != clicks[1] {
+		t.Errorf("Recipients: first kept click is %v, want %v (second original click)", rec.ClickedAtList[0], clicks[1])
+	}
+	if rec.ClickedAtList[499] != clicks[500] {
+		t.Errorf("Recipients: last kept click is %v, want %v (last original click)", rec.ClickedAtList[499], clicks[500])
 	}
 }
