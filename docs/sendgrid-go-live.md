@@ -62,11 +62,18 @@ both `lfx.linuxfoundation.org` and `lfx.aaif.io`.
    links instead of `sendgrid.net`. Produces 2 more CNAMEs per domain.
 4. **Create an API key** for `SENDGRID_API_KEY`. A restricted key with **Mail Send**
    permission is sufficient. When using subusers, use a subuser-scoped key.
-5. **Tracking Settings, Click Tracking = ON** (account-wide, or per-subuser). The
-   service does not set `tracking_settings` on the send request — it relies on this
-   dashboard setting to rewrite links, exactly as it already relies on the dashboard
-   for open tracking. Leaving it off means the click event webhook below never fires
-   for any newsletter, since there is nothing to rewrite the recipient's click through.
+5. **Tracking Settings:**
+   - **Click Tracking = ON** (account-wide, or per-subuser). The service does not
+     set `tracking_settings` on the send request — it relies on this dashboard
+     setting to rewrite links, exactly as it already relies on the dashboard for
+     open tracking. Leaving it off means the click event webhook below never fires
+     for any newsletter, since there is nothing to rewrite the recipient's click
+     through.
+   - **Click Tracking subcategories: HTML ON, Plain Text OFF.** Newsletters emit
+     a plain-text copy with unsubscribe and My Newsletters links. If plain-text
+     click tracking is enabled, SendGrid rewriting will incorrectly track these
+     compliance links as user interactions, breaking analytics and consent
+     contracts. Plain Text must be OFF to exclude them from tracking.
 6. **Mail Settings, Event Webhook:**
    - **POST URL:** `https://lfx-api.<env-domain>/newsletters/sendgrid/events`
      (dev: `https://lfx-api.dev.v2.cluster.linuxfound.info/newsletters/sendgrid/events`).

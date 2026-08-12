@@ -383,15 +383,17 @@ func TestSchemaMigration_SendProviderUpgradePath(t *testing.T) {
 
 	id := "mig-row"
 
-	// Simulate a pre-click-tracking database: drop the click columns/table that
-	// schema.Apply just created, plus a pre-existing engagement + open row with
-	// no click data — the shape a real upgrade encounters.
+	// Simulate a pre-click-tracking database: first seed engagement + open rows
+	// with the current schema (full click columns), then drop the click columns/table
+	// to create the pre-upgrade shape. This ensures schema.Apply is the first caller
+	// that must handle the columns.
 	group, emailID, evID := "mig-click-grp", "mig-click-m", "mig-click-ev"
+	preUpgradeStore := repository.NewSendGridEngagementStore(db)
+	must(t, preUpgradeStore.ApplyDelivered(ctx, emailID, group, "a@x.io", time.Now().UTC()))
+	must(t, preUpgradeStore.ApplyOpen(ctx, evID, emailID, group, "a@x.io", time.Now().UTC()))
+	// Now drop the click-only schema objects to simulate a pre-click-tracking database.
 	must(t, exec(ctx, db, `DROP TABLE IF EXISTS sendgrid_click_events`))
 	must(t, exec(ctx, db, `ALTER TABLE sendgrid_recipient_engagement DROP COLUMN IF EXISTS clicked, DROP COLUMN IF EXISTS click_count, DROP COLUMN IF EXISTS last_clicked_at`))
-	preStore := repository.NewSendGridEngagementStore(db)
-	must(t, preStore.ApplyDelivered(ctx, emailID, group, "a@x.io", time.Now().UTC()))
-	must(t, preStore.ApplyOpen(ctx, evID, emailID, group, "a@x.io", time.Now().UTC()))
 
 	// Simulate a prior partial run: column nullable, no default, no CHECK, plus a
 	// legacy row with a NULL provider.

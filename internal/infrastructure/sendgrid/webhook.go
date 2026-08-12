@@ -113,6 +113,26 @@ type event struct {
 // pathologically long author-authored link rather than a limit we expect to hit.
 const maxClickURLLen = 2048
 
+// trimURLToMaxLen trims url to at most maxClickURLLen bytes, respecting UTF-8
+// rune boundaries. If trimming cuts through a multi-byte UTF-8 sequence, the
+// partial rune is removed to avoid invalid UTF-8.
+func trimURLToMaxLen(url string) string {
+	if len(url) <= maxClickURLLen {
+		return url
+	}
+	// Trim to maxClickURLLen bytes, then walk back to find a valid UTF-8 boundary.
+	trimmed := url[:maxClickURLLen]
+	// Walk backwards from the end: if the last byte is a continuation byte
+	// (10xxxxxx), keep walking back until we find a non-continuation byte
+	// or reach the start. If that byte is a valid rune start (0xxxxxxx or 11xxxxxx),
+	// keep it and the bytes before it. Otherwise, the rune was incomplete, so trim
+	// those bytes as well.
+	for len(trimmed) > 0 && (trimmed[len(trimmed)-1]&0xc0) == 0x80 {
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	return trimmed
+}
+
 // Webhook is the HTTP handler for SendGrid's event webhook. It verifies the
 // signature, parses the batch, and applies delivered / open / failure events to
 // the engagement store. Application is idempotent (the store dedups opens by
@@ -209,10 +229,7 @@ func (wh *Webhook) apply(ctx context.Context, ev event) error {
 			slog.DebugContext(ctx, "sendgrid webhook: click event without sg_event_id, skipping", "email_id", ev.EmailID)
 			return nil
 		}
-		url := ev.URL
-		if len(url) > maxClickURLLen {
-			url = url[:maxClickURLLen]
-		}
+		url := trimURLToMaxLen(ev.URL)
 		return wh.store.ApplyClick(ctx, ev.SGEventID, ev.EmailID, ev.GroupID, ev.Email, url, at)
 	case "bounce", "dropped", "spamreport", "blocked":
 		return wh.store.ApplyFailed(ctx, ev.EmailID, ev.GroupID, ev.Email, at)
