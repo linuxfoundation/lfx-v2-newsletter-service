@@ -208,6 +208,12 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 	}
 	if local.UniqueOpens > 0 {
 		local.ClickToOpenRate = float64(local.UniqueClicks) / float64(local.UniqueOpens)
+		// Cap at 1.0: UniqueClicks can exceed UniqueOpens if a recipient clicks
+		// without opening (e.g., open pixel was blocked). This is legitimate behavior,
+		// but the contract specifies capped 1.0 to avoid surprising API clients.
+		if local.ClickToOpenRate > 1.0 {
+			local.ClickToOpenRate = 1.0
+		}
 	}
 	return local, nil
 }

@@ -97,11 +97,11 @@ func TestEmailHTMLChromeLinksDisableClickTracking(t *testing.T) {
 		UnsubscribeURL:          unsubURL,
 		MyNewslettersURL:        testMyNewslettersURL,
 	})
-	if !strings.Contains(html, `href="`+unsubURL+`" clicktracking="off"`) {
-		t.Errorf("Unsubscribe anchor missing clicktracking=\"off\" immediately after href:\n%s", html)
+	if !strings.Contains(html, `clicktracking="off" href="`+unsubURL+`"`) {
+		t.Errorf("Unsubscribe anchor missing clicktracking=\"off\" attribute appearing before href:\n%s", html)
 	}
-	if !strings.Contains(html, `href="`+testMyNewslettersURL+`" clicktracking="off"`) {
-		t.Errorf("My Newsletters anchor missing clicktracking=\"off\" immediately after href:\n%s", html)
+	if !strings.Contains(html, `clicktracking="off" href="`+testMyNewslettersURL+`"`) {
+		t.Errorf("My Newsletters anchor missing clicktracking=\"off\" attribute appearing before href:\n%s", html)
 	}
 	// The unsubscribe URL itself must still render exactly as given — the
 	// exclusion is an anchor attribute, not a URL transformation.

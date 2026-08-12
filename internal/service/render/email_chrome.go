@@ -256,14 +256,16 @@ func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
 		// clicktracking="off": this is an HMAC-signed one-click opt-out link, so it
 		// must not be proxied through the provider's click-tracking redirect, and
 		// it must not count toward click_rate (which measures engagement with
-		// author content).
-		unsubLine = `<a href="` + escapeHTML(input.UnsubscribeURL) + `" clicktracking="off" style="color:` + colorBlue500 + `;text-decoration:underline;">Unsubscribe</a> from ` + displayNameSafe + ` newsletters.`
+		// author content). SendGrid honors clicktracking="off" only when the
+		// attribute appears BEFORE href.
+		unsubLine = `<a clicktracking="off" href="` + escapeHTML(input.UnsubscribeURL) + `" style="color:` + colorBlue500 + `;text-decoration:underline;">Unsubscribe</a> from ` + displayNameSafe + ` newsletters.`
 	}
 	myNewslettersLine := ""
 	if input.MyNewslettersURL != "" {
 		// clicktracking="off" for the same reason as the Unsubscribe link above:
 		// chrome/compliance links should not be proxied or counted as clicks.
-		myNewslettersLine = `<div style="margin-bottom:6px;">Missed an issue? View past newsletters any time in <a href="` + escapeHTML(input.MyNewslettersURL) + `" clicktracking="off" style="color:` + colorBlue500 + `;text-decoration:underline;">My Newsletters</a>.</div>`
+		// SendGrid honors clicktracking="off" only when the attribute appears BEFORE href.
+		myNewslettersLine = `<div style="margin-bottom:6px;">Missed an issue? View past newsletters any time in <a clicktracking="off" href="` + escapeHTML(input.MyNewslettersURL) + `" style="color:` + colorBlue500 + `;text-decoration:underline;">My Newsletters</a>.</div>`
 	}
 	return `<tr>
 <td class="lfx-pad" style="background-color:` + colorGray50 + `;border-top:1px solid ` + colorGray200 + `;padding:24px 24px;font-size:12px;color:` + colorGray500 + `;font-family:` + fontStack + `;">
