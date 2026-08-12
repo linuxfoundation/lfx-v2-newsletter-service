@@ -69,18 +69,26 @@ func toAPIRecipientEngagement(newsletterID string, result *port.RecipientEngagem
 		if opens == nil {
 			opens = []time.Time{}
 		}
+		clicks := re.Record.ClickedAtList
+		if clicks == nil {
+			clicks = []time.Time{}
+		}
 		recipients = append(recipients, publicapi.NewsletterRecipientEngagement{
-			Name:         re.Name,
-			Email:        re.Record.To,
-			SentAt:       re.Record.SentAt,
-			Delivered:    re.Record.Delivered,
-			DeliveredAt:  re.Record.DeliveredAt,
-			Failed:       re.Record.Failed,
-			FailedAt:     re.Record.FailedAt,
-			Opened:       re.Record.Opened,
-			OpenCount:    re.Record.OpenCount,
-			LastOpenedAt: re.Record.LastOpened,
-			OpenedAtList: opens,
+			Name:          re.Name,
+			Email:         re.Record.To,
+			SentAt:        re.Record.SentAt,
+			Delivered:     re.Record.Delivered,
+			DeliveredAt:   re.Record.DeliveredAt,
+			Failed:        re.Record.Failed,
+			FailedAt:      re.Record.FailedAt,
+			Opened:        re.Record.Opened,
+			OpenCount:     re.Record.OpenCount,
+			LastOpenedAt:  re.Record.LastOpened,
+			OpenedAtList:  opens,
+			Clicked:       re.Record.Clicked,
+			ClickCount:    re.Record.ClickCount,
+			LastClickedAt: re.Record.LastClicked,
+			ClickedAtList: clicks,
 		})
 	}
 	return publicapi.NewsletterRecipientEngagementResponse{
@@ -101,6 +109,22 @@ func toAPIAnalytics(a *model.Analytics) publicapi.NewsletterAnalytics {
 			UniqueOpens: d.UniqueOpens,
 		})
 	}
+	dailyClicks := make([]publicapi.NewsletterDailyClicks, 0, len(a.DailyClicks))
+	for _, d := range a.DailyClicks {
+		dailyClicks = append(dailyClicks, publicapi.NewsletterDailyClicks{
+			Date:         d.Date.UTC().Format("2006-01-02"),
+			Clicks:       d.Clicks,
+			UniqueClicks: d.UniqueClicks,
+		})
+	}
+	topLinks := make([]publicapi.NewsletterLinkClicks, 0, len(a.TopLinks))
+	for _, l := range a.TopLinks {
+		topLinks = append(topLinks, publicapi.NewsletterLinkClicks{
+			URL:          l.URL,
+			Clicks:       l.Clicks,
+			UniqueClicks: l.UniqueClicks,
+		})
+	}
 	failedRecipients := a.FailedRecipients
 	if failedRecipients == nil {
 		failedRecipients = []string{}
@@ -118,6 +142,12 @@ func toAPIAnalytics(a *model.Analytics) publicapi.NewsletterAnalytics {
 		UniqueOpens:      a.UniqueOpens,
 		OpenRate:         a.OpenRate,
 		DailyOpens:       daily,
+		TotalClicks:      a.TotalClicks,
+		UniqueClicks:     a.UniqueClicks,
+		ClickRate:        a.ClickRate,
+		ClickToOpenRate:  a.ClickToOpenRate,
+		DailyClicks:      dailyClicks,
+		TopLinks:         topLinks,
 		LastEventAt:      a.LastEventAt,
 	}
 }

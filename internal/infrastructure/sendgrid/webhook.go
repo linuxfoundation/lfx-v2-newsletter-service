@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -97,6 +98,7 @@ func freshTimestamp(ts string, now time.Time) bool {
 
 // event is one entry in a SendGrid event-webhook batch. email_id / group_id are
 // the custom_args set at send time, echoed back at the top level of each event.
+// URL is only present on click events.
 type event struct {
 	Email     string `json:"email"`
 	Event     string `json:"event"`
@@ -104,6 +106,35 @@ type event struct {
 	SGEventID string `json:"sg_event_id"`
 	EmailID   string `json:"email_id"`
 	GroupID   string `json:"group_id"`
+	URL       string `json:"url"`
+}
+
+// maxClickURLLen bounds how much of a click event's url we persist. SendGrid's
+// click-tracking redirect URLs are short, but this is a defensive cap against a
+// pathologically long author-authored link rather than a limit we expect to hit.
+const maxClickURLLen = 2048
+
+// trimURLToMaxLen trims url to at most maxClickURLLen bytes, respecting UTF-8
+// rune boundaries. If trimming cuts through a multi-byte UTF-8 sequence, the
+// partial rune and its incomplete lead byte are removed to avoid invalid UTF-8.
+func trimURLToMaxLen(url string) string {
+	if len(url) <= maxClickURLLen {
+		return url
+	}
+	// Trim to maxClickURLLen bytes. If the last character is an incomplete
+	// multi-byte rune, DecodeLastRune returns RuneError; discard incomplete
+	// bytes until we have a complete, valid rune at the boundary.
+	trimmed := url[:maxClickURLLen]
+	for len(trimmed) > 0 {
+		r, _ := utf8.DecodeLastRune([]byte(trimmed))
+		if r != utf8.RuneError {
+			// Last rune is valid and complete.
+			return trimmed
+		}
+		// Last rune is invalid or incomplete; remove its lead byte and retry.
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	return trimmed
 }
 
 // Webhook is the HTTP handler for SendGrid's event webhook. It verifies the
@@ -196,10 +227,18 @@ func (wh *Webhook) apply(ctx context.Context, ev event) error {
 			return nil
 		}
 		return wh.store.ApplyOpen(ctx, ev.SGEventID, ev.EmailID, ev.GroupID, ev.Email, at)
+	case "click":
+		// sg_event_id is the dedup key, same reasoning as the open case.
+		if ev.SGEventID == "" {
+			slog.DebugContext(ctx, "sendgrid webhook: click event without sg_event_id, skipping", "email_id", ev.EmailID)
+			return nil
+		}
+		url := trimURLToMaxLen(ev.URL)
+		return wh.store.ApplyClick(ctx, ev.SGEventID, ev.EmailID, ev.GroupID, ev.Email, url, at)
 	case "bounce", "dropped", "spamreport", "blocked":
 		return wh.store.ApplyFailed(ctx, ev.EmailID, ev.GroupID, ev.Email, at)
 	default:
-		// processed / deferred / click / unsubscribe / group_* — not tracked here.
+		// processed / deferred / unsubscribe / group_* — not tracked here.
 		return nil
 	}
 }

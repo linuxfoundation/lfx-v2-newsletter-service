@@ -28,6 +28,7 @@ type fakeStore struct {
 	delivered  []string // emailIDs
 	failed     []string // emailIDs
 	opens      []string // "sgEventID|emailID"
+	clicks     []string // "sgEventID|emailID|url"
 	deleted    []string // groupIDs passed to RevertGroup
 	applyErr   error    // when set, the Apply* methods return it
 	engagement *port.EmailEngagement
@@ -49,6 +50,10 @@ func (f *fakeStore) ApplyDelivered(_ context.Context, emailID, _, _ string, _ ti
 }
 func (f *fakeStore) ApplyOpen(_ context.Context, sgEventID, emailID, _, _ string, _ time.Time) error {
 	f.opens = append(f.opens, sgEventID+"|"+emailID)
+	return f.applyErr
+}
+func (f *fakeStore) ApplyClick(_ context.Context, sgEventID, emailID, _, _, url string, _ time.Time) error {
+	f.clicks = append(f.clicks, sgEventID+"|"+emailID+"|"+url)
 	return f.applyErr
 }
 func (f *fakeStore) ApplyFailed(_ context.Context, emailID, _, _ string, _ time.Time) error {

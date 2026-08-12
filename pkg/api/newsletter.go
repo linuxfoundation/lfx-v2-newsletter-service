@@ -235,6 +235,21 @@ type NewsletterDailyOpens struct {
 	UniqueOpens int    `json:"unique_opens"`
 }
 
+// NewsletterDailyClicks is one bucket of the daily-clicks time series,
+// mirroring NewsletterDailyOpens.
+type NewsletterDailyClicks struct {
+	Date         string `json:"date"`
+	Clicks       int    `json:"clicks"`
+	UniqueClicks int    `json:"unique_clicks"`
+}
+
+// NewsletterLinkClicks is one entry in the top-clicked-links breakdown.
+type NewsletterLinkClicks struct {
+	URL          string `json:"url"`
+	Clicks       int    `json:"clicks"`
+	UniqueClicks int    `json:"unique_clicks"`
+}
+
 // NewsletterAnalytics is the body of GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics.
 type NewsletterAnalytics struct {
 	NewsletterID    string     `json:"newsletter_id"`
@@ -254,7 +269,17 @@ type NewsletterAnalytics struct {
 	UniqueOpens      int                    `json:"unique_opens"`
 	OpenRate         float64                `json:"open_rate"`
 	DailyOpens       []NewsletterDailyOpens `json:"daily_opens"`
-	LastEventAt      *time.Time             `json:"last_event_at,omitempty"`
+	// TotalClicks / UniqueClicks / ClickRate / ClickToOpenRate / DailyClicks /
+	// TopLinks are SendGrid-only: a newsletter dispatched via send_provider
+	// "email-service" (SES) always reports zero/empty here. See
+	// docs/newsletter-service-contract.md.
+	TotalClicks     int                     `json:"total_clicks"`
+	UniqueClicks    int                     `json:"unique_clicks"`
+	ClickRate       float64                 `json:"click_rate"`
+	ClickToOpenRate float64                 `json:"click_to_open_rate"`
+	DailyClicks     []NewsletterDailyClicks `json:"daily_clicks"`
+	TopLinks        []NewsletterLinkClicks  `json:"top_links"`
+	LastEventAt     *time.Time              `json:"last_event_at,omitempty"`
 }
 
 // NewsletterRecipientEngagement is one recipient's row in the per-recipient
@@ -277,7 +302,13 @@ type NewsletterRecipientEngagement struct {
 	LastOpenedAt *time.Time `json:"last_opened_at,omitempty"`
 	// OpenedAtList holds every recorded open timestamp, ascending. Always
 	// present; empty when the recipient never opened.
-	OpenedAtList []time.Time `json:"opened_at_list"`
+	OpenedAtList  []time.Time `json:"opened_at_list"`
+	Clicked       bool        `json:"clicked"`
+	ClickCount    int         `json:"click_count"`
+	LastClickedAt *time.Time  `json:"last_clicked_at,omitempty"`
+	// ClickedAtList holds every recorded click timestamp, ascending. Always
+	// present; empty when the recipient never clicked.
+	ClickedAtList []time.Time `json:"clicked_at_list"`
 }
 
 // NewsletterRecipientEngagementResponse is the body of

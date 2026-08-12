@@ -23,33 +23,40 @@ import (
 type sendgridEngagementRow struct {
 	bun.BaseModel `bun:"table:sendgrid_recipient_engagement,alias:sre"`
 
-	EmailID      string     `bun:"email_id,pk"`
-	GroupID      string     `bun:"group_id"`
-	ToEmail      string     `bun:"to_email"`
-	SentAt       *time.Time `bun:"sent_at"`
-	Delivered    bool       `bun:"delivered"`
-	DeliveredAt  *time.Time `bun:"delivered_at"`
-	Opened       bool       `bun:"opened"`
-	OpenCount    int        `bun:"open_count"`
-	LastOpenedAt *time.Time `bun:"last_opened_at"`
-	Failed       bool       `bun:"failed"`
-	FailedAt     *time.Time `bun:"failed_at"`
+	EmailID       string     `bun:"email_id,pk"`
+	GroupID       string     `bun:"group_id"`
+	ToEmail       string     `bun:"to_email"`
+	SentAt        *time.Time `bun:"sent_at"`
+	Delivered     bool       `bun:"delivered"`
+	DeliveredAt   *time.Time `bun:"delivered_at"`
+	Opened        bool       `bun:"opened"`
+	OpenCount     int        `bun:"open_count"`
+	LastOpenedAt  *time.Time `bun:"last_opened_at"`
+	Clicked       bool       `bun:"clicked"`
+	ClickCount    int        `bun:"click_count"`
+	LastClickedAt *time.Time `bun:"last_clicked_at"`
+	Failed        bool       `bun:"failed"`
+	FailedAt      *time.Time `bun:"failed_at"`
 }
 
-func (r sendgridEngagementRow) toPortRecord(openedAt []time.Time) port.EmailRecipientRecord {
+func (r sendgridEngagementRow) toPortRecord(openedAt, clickedAt []time.Time) port.EmailRecipientRecord {
 	return port.EmailRecipientRecord{
-		EmailID:      r.EmailID,
-		GroupID:      r.GroupID,
-		To:           r.ToEmail,
-		SentAt:       r.SentAt,
-		Delivered:    r.Delivered,
-		DeliveredAt:  r.DeliveredAt,
-		Opened:       r.Opened,
-		OpenCount:    r.OpenCount,
-		LastOpened:   r.LastOpenedAt,
-		OpenedAtList: openedAt,
-		Failed:       r.Failed,
-		FailedAt:     r.FailedAt,
+		EmailID:       r.EmailID,
+		GroupID:       r.GroupID,
+		To:            r.ToEmail,
+		SentAt:        r.SentAt,
+		Delivered:     r.Delivered,
+		DeliveredAt:   r.DeliveredAt,
+		Opened:        r.Opened,
+		OpenCount:     r.OpenCount,
+		LastOpened:    r.LastOpenedAt,
+		OpenedAtList:  openedAt,
+		Clicked:       r.Clicked,
+		ClickCount:    r.ClickCount,
+		LastClicked:   r.LastClickedAt,
+		ClickedAtList: clickedAt,
+		Failed:        r.Failed,
+		FailedAt:      r.FailedAt,
 	}
 }
 
@@ -62,6 +69,17 @@ type sendgridOpenEventRow struct {
 	SGEventID string    `bun:"sg_event_id,pk"`
 	EmailID   string    `bun:"email_id"`
 	OpenedAt  time.Time `bun:"opened_at"`
+}
+
+// sendgridClickEventRow is the bun model for sendgrid_click_events, mirroring
+// sendgridOpenEventRow with an added url column.
+type sendgridClickEventRow struct {
+	bun.BaseModel `bun:"table:sendgrid_click_events,alias:sce"`
+
+	SGEventID string    `bun:"sg_event_id,pk"`
+	EmailID   string    `bun:"email_id"`
+	URL       string    `bun:"url"`
+	ClickedAt time.Time `bun:"clicked_at"`
 }
 
 // sendgridRevertedGroupRow is the tombstone for a reverted send group. reverted_at
@@ -126,6 +144,12 @@ func (s *SendGridEngagementStore) RevertGroup(ctx context.Context, groupID strin
 			Where("email_id IN (SELECT email_id FROM sendgrid_recipient_engagement WHERE group_id = ?)", groupID).
 			Exec(ctx); err != nil {
 			return fmt.Errorf("sendgrid delete open events by group: %w", err)
+		}
+		if _, err := tx.NewDelete().
+			Table("sendgrid_click_events").
+			Where("email_id IN (SELECT email_id FROM sendgrid_recipient_engagement WHERE group_id = ?)", groupID).
+			Exec(ctx); err != nil {
+			return fmt.Errorf("sendgrid delete click events by group: %w", err)
 		}
 		if _, err := tx.NewDelete().
 			Table("sendgrid_recipient_engagement").
@@ -217,17 +241,66 @@ func (s *SendGridEngagementStore) ApplyOpen(ctx context.Context, sgEventID, emai
 	})
 }
 
+// ApplyClick records one click, deduplicated by sgEventID. Structurally
+// identical to ApplyOpen — same advisory lock, tombstone check, dedup insert,
+// and self-healing rollup upsert — but rolls up into the click columns and
+// persists the clicked url into sendgrid_click_events for the top-links
+// analytics breakdown. Only a genuinely new event bumps
+// click_count / clicked / last_clicked_at.
+func (s *SendGridEngagementStore) ApplyClick(ctx context.Context, sgEventID, emailID, groupID, to, url string, at time.Time) error {
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Same per-group advisory lock as ApplyOpen/RevertGroup — see ApplyOpen's
+		// comment for why sendgrid_click_events (no group_id) needs this explicit
+		// check rather than relying on the engagement-row trigger.
+		if _, err := tx.NewRaw(
+			"SELECT pg_advisory_xact_lock(hashtextextended('sendgrid_group:' || ?, 0))", groupID,
+		).Exec(ctx); err != nil {
+			return fmt.Errorf("sendgrid apply click (lock): %w", err)
+		}
+		var reverted bool
+		if err := tx.NewRaw(
+			"SELECT EXISTS(SELECT 1 FROM sendgrid_reverted_groups WHERE group_id = ?)", groupID,
+		).Scan(ctx, &reverted); err != nil {
+			return fmt.Errorf("sendgrid apply click (tombstone check): %w", err)
+		}
+		if reverted {
+			return nil // group reverted — drop the click so no orphan row is left
+		}
+		ev := &sendgridClickEventRow{SGEventID: sgEventID, EmailID: emailID, URL: url, ClickedAt: at}
+		res, err := tx.NewInsert().
+			Model(ev).
+			On("CONFLICT (sg_event_id) DO NOTHING").
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("sendgrid apply click (event): %w", err)
+		}
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			return nil // duplicate webhook delivery — already counted
+		}
+		row := &sendgridEngagementRow{EmailID: emailID, GroupID: groupID, ToEmail: to, Clicked: true, ClickCount: 1, LastClickedAt: &at}
+		if _, err := tx.NewInsert().
+			Model(row).
+			On("CONFLICT (email_id) DO UPDATE SET clicked = TRUE, click_count = sre.click_count + 1, last_clicked_at = GREATEST(sre.last_clicked_at, EXCLUDED.last_clicked_at)").
+			Exec(ctx); err != nil {
+			return fmt.Errorf("sendgrid apply click (rollup): %w", err)
+		}
+		return nil
+	})
+}
+
 // Engagement returns the per-group rollup. Opened is the raw open total
 // (SUM(open_count)); UniqueOpens counts recipient rows whose boolean opened is
 // true. Keeping them distinct matches the email-service dispatcher and avoids
 // sum(DailyOpens) exceeding TotalOpens for a newsletter with repeat opens.
 func (s *SendGridEngagementStore) Engagement(ctx context.Context, groupID string) (*port.EmailEngagement, error) {
 	type aggRow struct {
-		TotalSent   int `bun:"total_sent"`
-		Delivered   int `bun:"delivered"`
-		Opened      int `bun:"opened"`
-		UniqueOpens int `bun:"unique_opens"`
-		Failed      int `bun:"failed"`
+		TotalSent    int `bun:"total_sent"`
+		Delivered    int `bun:"delivered"`
+		Opened       int `bun:"opened"`
+		UniqueOpens  int `bun:"unique_opens"`
+		Clicked      int `bun:"clicked"`
+		UniqueClicks int `bun:"unique_clicks"`
+		Failed       int `bun:"failed"`
 	}
 	agg := &aggRow{}
 	if err := s.db.NewSelect().
@@ -236,8 +309,11 @@ func (s *SendGridEngagementStore) Engagement(ctx context.Context, groupID string
 		// Opened is the raw open total (feeds analytics TotalOpens, matching the
 		// email-service dispatcher); UniqueOpens counts recipients who opened at
 		// least once. Keeping them distinct avoids sum(DailyOpens) > TotalOpens.
+		// Clicked/UniqueClicks mirror that exact distinction for clicks.
 		ColumnExpr("COALESCE(SUM(open_count), 0) AS opened").
 		ColumnExpr("COUNT(*) FILTER (WHERE opened) AS unique_opens").
+		ColumnExpr("COALESCE(SUM(click_count), 0) AS clicked").
+		ColumnExpr("COUNT(*) FILTER (WHERE clicked) AS unique_clicks").
 		ColumnExpr("COUNT(*) FILTER (WHERE failed) AS failed").
 		Table("sendgrid_recipient_engagement").
 		Where("group_id = ?", groupID).
@@ -245,12 +321,14 @@ func (s *SendGridEngagementStore) Engagement(ctx context.Context, groupID string
 		return nil, fmt.Errorf("sendgrid engagement: %w", err)
 	}
 	return &port.EmailEngagement{
-		GroupID:     groupID,
-		TotalSent:   agg.TotalSent,
-		Delivered:   agg.Delivered,
-		Opened:      agg.Opened,
-		UniqueOpens: agg.UniqueOpens,
-		Failed:      agg.Failed,
+		GroupID:      groupID,
+		TotalSent:    agg.TotalSent,
+		Delivered:    agg.Delivered,
+		Opened:       agg.Opened,
+		UniqueOpens:  agg.UniqueOpens,
+		Clicked:      agg.Clicked,
+		UniqueClicks: agg.UniqueClicks,
+		Failed:       agg.Failed,
 	}, nil
 }
 
@@ -267,7 +345,11 @@ func (s *SendGridEngagementStore) RecipientByEmailID(ctx context.Context, emailI
 	if err != nil {
 		return nil, err
 	}
-	rec := row.toPortRecord(opens)
+	clicks, err := s.clickTimesForEmail(ctx, emailID)
+	if err != nil {
+		return nil, err
+	}
+	rec := row.toPortRecord(opens, clicks)
 	return &rec, nil
 }
 
@@ -285,18 +367,19 @@ func (s *SendGridEngagementStore) RecipientsByGroupID(ctx context.Context, group
 	}
 	out := make([]port.EmailRecipientRecord, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, r.toPortRecord(nil))
+		out = append(out, r.toPortRecord(nil, nil))
 	}
 	return out, nil
 }
 
 // RecipientRecordsByGroupID returns every recipient record for a group WITH its
-// ascending open-timestamp series, for the per-recipient analytics endpoint.
-// Recipient count is bounded by the committee audience; each recipient's open
-// series is capped at port.MaxOpensPerRecipient most-recent opens, enforced in SQL
-// (a ROW_NUMBER window in a subquery — Postgres forbids window functions
-// directly in WHERE) so neither transfer nor heap is unbounded. An unknown
-// group returns an empty slice, matching RecipientsByGroupID.
+// ascending open- and click-timestamp series, for the per-recipient analytics
+// endpoint. Recipient count is bounded by the committee audience; each
+// recipient's open/click series is capped at port.MaxOpensPerRecipient /
+// port.MaxClicksPerRecipient most-recent events, enforced in SQL (a ROW_NUMBER
+// window in a subquery — Postgres forbids window functions directly in WHERE)
+// so neither transfer nor heap is unbounded. An unknown group returns an empty
+// slice, matching RecipientsByGroupID.
 func (s *SendGridEngagementStore) RecipientRecordsByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
 	var rows []sendgridEngagementRow
 	if err := s.db.NewSelect().Model(&rows).Where("sre.group_id = ?", groupID).Scan(ctx); err != nil {
@@ -324,18 +407,41 @@ func (s *SendGridEngagementStore) RecipientRecordsByGroupID(ctx context.Context,
 	for _, ev := range evs {
 		opensByEmail[ev.EmailID] = append(opensByEmail[ev.EmailID], ev.OpenedAt)
 	}
+
+	rankedClicks := s.db.NewSelect().
+		ColumnExpr("sce.sg_event_id, sce.email_id, sce.clicked_at").
+		ColumnExpr("ROW_NUMBER() OVER (PARTITION BY sce.email_id ORDER BY sce.clicked_at DESC) AS rn").
+		TableExpr("sendgrid_click_events AS sce").
+		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = sce.email_id").
+		Where("sre.group_id = ?", groupID)
+	var clickEvs []sendgridClickEventRow
+	if err := s.db.NewSelect().
+		ColumnExpr("sg_event_id, email_id, clicked_at").
+		TableExpr("(?) AS ranked_click_events", rankedClicks).
+		Where("rn <= ?", port.MaxClicksPerRecipient).
+		OrderExpr("clicked_at ASC").
+		Scan(ctx, &clickEvs); err != nil {
+		return nil, fmt.Errorf("sendgrid recipient click events: %w", err)
+	}
+	clicksByEmail := make(map[string][]time.Time, len(rows))
+	for _, ev := range clickEvs {
+		clicksByEmail[ev.EmailID] = append(clicksByEmail[ev.EmailID], ev.ClickedAt)
+	}
+
 	out := make([]port.EmailRecipientRecord, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, r.toPortRecord(opensByEmail[r.EmailID]))
+		out = append(out, r.toPortRecord(opensByEmail[r.EmailID], clicksByEmail[r.EmailID]))
 	}
 	return out, nil
 }
 
 // GroupEngagementDetail computes the group's bounded analytics detail with a few
-// SQL aggregates — no raw per-open data is loaded: the unique-open count (rows
-// flagged opened), the per-UTC-day opens series (GROUP BY, ascending), the last
-// open instant (a nullable MAX), and the deduplicated failed-recipient
-// addresses. lastEvent is nil for a group with no opens.
+// SQL aggregates — no raw per-open/click data is loaded: the unique-open and
+// unique-click counts (rows flagged opened/clicked), the per-UTC-day opens and
+// clicks series (GROUP BY, ascending), the top-clicked-links breakdown, the
+// last engagement instant of either kind (a nullable MAX), and the
+// deduplicated failed-recipient addresses. LastEventAt is nil for a group with
+// no opens and no clicks.
 func (s *SendGridEngagementStore) GroupEngagementDetail(ctx context.Context, groupID string) (*port.GroupEngagementDetail, error) {
 	detail := &port.GroupEngagementDetail{FailedRecipients: []string{}}
 
@@ -347,6 +453,16 @@ func (s *SendGridEngagementStore) GroupEngagementDetail(ctx context.Context, gro
 		return nil, fmt.Errorf("sendgrid group unique opens: %w", err)
 	} else {
 		detail.UniqueOpens = unique
+	}
+
+	if unique, err := s.db.NewSelect().
+		Table("sendgrid_recipient_engagement").
+		Where("group_id = ?", groupID).
+		Where("clicked").
+		Count(ctx); err != nil {
+		return nil, fmt.Errorf("sendgrid group unique clicks: %w", err)
+	} else {
+		detail.UniqueClicks = unique
 	}
 
 	type dayRow struct {
@@ -372,20 +488,86 @@ func (s *SendGridEngagementStore) GroupEngagementDetail(ctx context.Context, gro
 		detail.DailyOpens = append(detail.DailyOpens, model.DailyOpens{Date: r.Day.UTC(), Opens: r.Opens, UniqueOpens: r.Unique})
 	}
 
-	// The last open instant is a single scalar MAX. It is NULL for a group with no
-	// opens, so scan into a nullable value rather than time.Time (which errors on
-	// NULL) — a no-opens group returns an empty series and nil lastEvent.
-	var maxAt sql.NullTime
+	var clickDayRows []dayRow
+	if err := s.db.NewSelect().
+		ColumnExpr("date_trunc('day', sce.clicked_at AT TIME ZONE 'UTC') AS day").
+		ColumnExpr("COUNT(*) AS opens").
+		ColumnExpr("COUNT(DISTINCT sce.email_id) AS uniq").
+		TableExpr("sendgrid_click_events AS sce").
+		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = sce.email_id").
+		Where("sre.group_id = ?", groupID).
+		GroupExpr("date_trunc('day', sce.clicked_at AT TIME ZONE 'UTC')").
+		OrderExpr("day ASC").
+		Scan(ctx, &clickDayRows); err != nil {
+		return nil, fmt.Errorf("sendgrid group daily clicks: %w", err)
+	}
+	detail.DailyClicks = make([]model.DailyClicks, 0, len(clickDayRows))
+	for _, r := range clickDayRows {
+		detail.DailyClicks = append(detail.DailyClicks, model.DailyClicks{Date: r.Day.UTC(), Clicks: r.Opens, UniqueClicks: r.Unique})
+	}
+
+	// Top-clicked-links breakdown, capped at port.MaxTopLinks and ordered by total
+	// clicks descending. Chrome/compliance links (unsubscribe, My Newsletters) are
+	// excluded at the source via clicktracking="off", so this reflects author
+	// content only.
+	type linkRow struct {
+		URL          string `bun:"url"`
+		Clicks       int    `bun:"clicks"`
+		UniqueClicks int    `bun:"unique_clicks"`
+	}
+	var linkRows []linkRow
+	if err := s.db.NewSelect().
+		ColumnExpr("sce.url AS url").
+		ColumnExpr("COUNT(*) AS clicks").
+		ColumnExpr("COUNT(DISTINCT sce.email_id) AS unique_clicks").
+		TableExpr("sendgrid_click_events AS sce").
+		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = sce.email_id").
+		Where("sre.group_id = ?", groupID).
+		GroupExpr("sce.url").
+		OrderExpr("clicks DESC").
+		Limit(port.MaxTopLinks).
+		Scan(ctx, &linkRows); err != nil {
+		return nil, fmt.Errorf("sendgrid group top links: %w", err)
+	}
+	detail.TopLinks = make([]model.LinkClicks, 0, len(linkRows))
+	for _, r := range linkRows {
+		detail.TopLinks = append(detail.TopLinks, model.LinkClicks{URL: r.URL, Clicks: r.Clicks, UniqueClicks: r.UniqueClicks})
+	}
+
+	// The last engagement instant is the later of the last open and the last
+	// click, each a single scalar MAX. Either may be NULL for a group with no
+	// opens or no clicks, so scan into a nullable value rather than time.Time
+	// (which errors on NULL) — a group with neither returns nil.
+	var maxOpenAt, maxClickAt sql.NullTime
 	if err := s.db.NewSelect().
 		ColumnExpr("MAX(soe.opened_at) AS max_at").
 		TableExpr("sendgrid_open_events AS soe").
 		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = soe.email_id").
 		Where("sre.group_id = ?", groupID).
-		Scan(ctx, &maxAt); err != nil {
+		Scan(ctx, &maxOpenAt); err != nil {
 		return nil, fmt.Errorf("sendgrid group last open: %w", err)
 	}
-	if maxAt.Valid {
-		u := maxAt.Time.UTC()
+	if err := s.db.NewSelect().
+		ColumnExpr("MAX(sce.clicked_at) AS max_at").
+		TableExpr("sendgrid_click_events AS sce").
+		Join("JOIN sendgrid_recipient_engagement AS sre ON sre.email_id = sce.email_id").
+		Where("sre.group_id = ?", groupID).
+		Scan(ctx, &maxClickAt); err != nil {
+		return nil, fmt.Errorf("sendgrid group last click: %w", err)
+	}
+	switch {
+	case maxOpenAt.Valid && maxClickAt.Valid:
+		u := maxOpenAt.Time
+		if maxClickAt.Time.After(u) {
+			u = maxClickAt.Time
+		}
+		u = u.UTC()
+		detail.LastEventAt = &u
+	case maxOpenAt.Valid:
+		u := maxOpenAt.Time.UTC()
+		detail.LastEventAt = &u
+	case maxClickAt.Valid:
+		u := maxClickAt.Time.UTC()
 		detail.LastEventAt = &u
 	}
 
@@ -433,6 +615,24 @@ func (s *SendGridEngagementStore) openTimesForEmail(ctx context.Context, emailID
 	times := make([]time.Time, 0, len(evs))
 	for _, e := range evs {
 		times = append(times, e.OpenedAt)
+	}
+	return times, nil
+}
+
+// clickTimesForEmail returns the ascending click timestamps for one email_id.
+// Mirrors openTimesForEmail exactly, for the single-recipient status read.
+func (s *SendGridEngagementStore) clickTimesForEmail(ctx context.Context, emailID string) ([]time.Time, error) {
+	var evs []sendgridClickEventRow
+	if err := s.db.NewSelect().
+		Model(&evs).
+		Where("sce.email_id = ?", emailID).
+		OrderExpr("sce.clicked_at ASC").
+		Scan(ctx); err != nil {
+		return nil, fmt.Errorf("sendgrid click times: %w", err)
+	}
+	times := make([]time.Time, 0, len(evs))
+	for _, e := range evs {
+		times = append(times, e.ClickedAt)
 	}
 	return times, nil
 }

@@ -23,6 +23,14 @@ import (
 // list is truncated to the most recent 500 to bound response size.
 const MaxOpensPerRecipient = 500
 
+// MaxClicksPerRecipient mirrors MaxOpensPerRecipient for the per-recipient
+// click-event list.
+const MaxClicksPerRecipient = 500
+
+// MaxTopLinks bounds the top-clicked-links analytics breakdown. The raw click
+// events keep every row, so raising this is a query change, not a data-loss one.
+const MaxTopLinks = 20
+
 // ListFilters narrows a newsletter listing query.
 //
 // Statuses is optional: if empty, newsletters in every state are returned.
@@ -206,18 +214,22 @@ type SendEmailInput struct {
 // that only emit a flat `opened_at`, OpenedAtList carries a single element so
 // downstream callers can treat the multi-event shape as canonical.
 type EmailRecipientRecord struct {
-	EmailID      string
-	GroupID      string
-	To           string
-	SentAt       *time.Time
-	Delivered    bool
-	DeliveredAt  *time.Time
-	Opened       bool
-	OpenCount    int
-	LastOpened   *time.Time
-	OpenedAtList []time.Time
-	Failed       bool
-	FailedAt     *time.Time
+	EmailID       string
+	GroupID       string
+	To            string
+	SentAt        *time.Time
+	Delivered     bool
+	DeliveredAt   *time.Time
+	Opened        bool
+	OpenCount     int
+	LastOpened    *time.Time
+	OpenedAtList  []time.Time
+	Clicked       bool
+	ClickCount    int
+	LastClicked   *time.Time
+	ClickedAtList []time.Time
+	Failed        bool
+	FailedAt      *time.Time
 }
 
 // RecipientEngagement pairs one per-recipient engagement record with the
@@ -248,12 +260,14 @@ type RecipientEngagementResult struct {
 // keyed by group_id. It is provider-agnostic: the email-service (NATS) reader
 // and the SendGrid store-backed reader both return it.
 type EmailEngagement struct {
-	GroupID     string
-	TotalSent   int
-	Delivered   int
-	Opened      int
-	UniqueOpens int
-	Failed      int
+	GroupID      string
+	TotalSent    int
+	Delivered    int
+	Opened       int
+	UniqueOpens  int
+	Clicked      int
+	UniqueClicks int
+	Failed       int
 }
 
 // EmailDispatcher sends individual emails and reads back engagement for
@@ -334,8 +348,15 @@ type EngagementReader interface {
 // boundary there; the per-recipient analytics endpoint uses RecipientRecords
 // when callers explicitly ask for who engaged and when.
 type GroupEngagementDetail struct {
-	UniqueOpens      int
-	DailyOpens       []model.DailyOpens
+	UniqueOpens  int
+	DailyOpens   []model.DailyOpens
+	UniqueClicks int
+	// DailyClicks and TopLinks are populated by the SendGrid store (SQL
+	// aggregates). GroupDetailFromRecords — the email-service reader's
+	// builder — leaves them nil/zero: SES clicks are a documented follow-up,
+	// not this reader's job (see docs/newsletter-service-contract.md).
+	DailyClicks      []model.DailyClicks
+	TopLinks         []model.LinkClicks
 	LastEventAt      *time.Time
 	FailedRecipients []string
 }
