@@ -130,7 +130,7 @@ type AppConfig struct {
 
 	// S3 storage for newsletter images (optional; image routes not registered if
 	// S3_BUCKET is unset).
-	S3Bucket               string
+	S3Bucket              string
 	S3Region              string
 	S3Endpoint            string
 	S3CreateMissingBucket bool

@@ -15,19 +15,17 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/aws/smithy-go"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 )
 
 // Client implements port.ImageStore by persisting images to S3.
 type Client struct {
-	s3Client           *s3.Client
-	bucket             string
-	cdnURLPrefix       string
+	s3Client            *s3.Client
+	bucket              string
+	cdnURLPrefix        string
 	createMissingBucket bool
 }
 
@@ -47,35 +45,27 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("S3 bucket and region are required")
 	}
 
-	// Load AWS configuration
-	opts := []func(*config.LoadOptions) error{}
-
-	// Set custom endpoint if provided (MinIO/LocalStack)
-	if cfg.Endpoint != "" {
-		opts = append(opts, config.WithEndpointResolver(aws.EndpointResolverFunc(
-			func(service, region string) (aws.Endpoint, error) {
-				if service == s3.ServiceID {
-					return aws.Endpoint{
-						URL:           cfg.Endpoint,
-						SigningRegion: cfg.Region,
-					}, nil
-				}
-				return aws.Endpoint{}, &smithy.GenericAPIError{Code: "UnknownService"}
-			},
-		)))
-	}
-
-	awsConfig, err := config.LoadDefaultConfig(ctx, opts...)
+	awsConfig, err := config.LoadDefaultConfig(ctx, config.WithRegion(cfg.Region))
 	if err != nil {
 		return nil, fmt.Errorf("load AWS config: %w", err)
 	}
 
-	s3Client := s3.NewFromConfig(awsConfig)
+	// Set a custom endpoint if one is provided (MinIO/LocalStack). Those servers
+	// do not support virtual-host style bucket addressing, so use path style.
+	s3Opts := []func(*s3.Options){}
+	if cfg.Endpoint != "" {
+		s3Opts = append(s3Opts, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(cfg.Endpoint)
+			o.UsePathStyle = true
+		})
+	}
+
+	s3Client := s3.NewFromConfig(awsConfig, s3Opts...)
 
 	client := &Client{
-		s3Client:           s3Client,
-		bucket:             cfg.Bucket,
-		cdnURLPrefix:       cfg.CDNURLPrefix,
+		s3Client:            s3Client,
+		bucket:              cfg.Bucket,
+		cdnURLPrefix:        cfg.CDNURLPrefix,
 		createMissingBucket: cfg.CreateMissingBucket,
 	}
 
@@ -119,8 +109,7 @@ func (c *Client) ensureBucket(ctx context.Context) error {
 // Put stores the image data at the given key (content hash).
 // Implements port.ImageStore.
 func (c *Client) Put(ctx context.Context, key string, data []byte, contentType string) error {
-	uploader := manager.NewUploader(c.s3Client)
-	_, err := uploader.Upload(ctx, &s3.PutObjectInput{
+	_, err := c.s3Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(c.bucket),
 		Key:         aws.String(key),
 		Body:        bytes.NewReader(data),
@@ -149,7 +138,9 @@ func (c *Client) Get(ctx context.Context, key string) ([]byte, string, error) {
 		}
 		return nil, "", fmt.Errorf("get from S3: %w", err)
 	}
-	defer result.Body.Close()
+	defer func() {
+		_ = result.Body.Close()
+	}()
 
 	// Read the body
 	data, err := io.ReadAll(result.Body)

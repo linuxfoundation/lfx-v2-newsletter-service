@@ -192,7 +192,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 
 	// Step 7: S3 image storage (optional; gates on S3_BUCKET being set).
 	var imageSvc *service.ImageService
-	var imageMaxBytes int64 = cfg.ImageMaxBytes
+	imageMaxBytes := cfg.ImageMaxBytes
 	if cfg.S3Bucket != "" {
 		s3Client, err := s3infra.New(ctx, s3infra.Config{
 			Bucket:              cfg.S3Bucket,

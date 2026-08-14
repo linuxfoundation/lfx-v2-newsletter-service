@@ -5,6 +5,7 @@ package handler
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -94,7 +95,7 @@ func TestUploadImage_Success(t *testing.T) {
 	}
 
 	// Create a test request.
-	req := httptest.NewRequest("POST", "/projects/proj123/newsletters/images", nil)
+	req := httptest.NewRequest(http.MethodPost, "/projects/proj123/newsletters/images", nil)
 	req.Header.Set("Content-Type", "image/png")
 	req.Body = nil // We'll set this via the actual image data
 
@@ -109,12 +110,10 @@ func TestUploadImage_Success(t *testing.T) {
 func genSmallPNG() []byte {
 	// Minimal PNG hex-encoded (1x1 transparent PNG)
 	// This is a valid minimal PNG that can be decoded.
-	hex := "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a4944415408d76340010000050001e2b60500000000494e44ae426082"
-	data := make([]byte, len(hex)/2)
-	for i := 0; i < len(hex); i += 2 {
-		var b byte
-		fmt.Sscanf(hex[i:i+2], "%02x", &b)
-		data[i/2] = b
+	const encoded = "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a4944415408d76340010000050001e2b60500000000494e44ae426082"
+	data, err := hex.DecodeString(encoded)
+	if err != nil {
+		panic("test PNG fixture is not valid hex: " + err.Error())
 	}
 	return data
 }
@@ -135,15 +134,13 @@ func TestDownloadImage_Success(t *testing.T) {
 		publicBaseURL: "https://newsletter.example.com",
 	}
 
-	req := httptest.NewRequest("GET", "/projects/proj123/newsletters/images/hash123", nil)
+	req := httptest.NewRequest(http.MethodGet, "/projects/proj123/newsletters/images/hash123", nil)
 	w := httptest.NewRecorder()
-
-	// Simulate path value extraction (Go 1.22+ feature)
-	req = req.WithContext(context.WithValue(req.Context(), "url", struct{}{} ))
 
 	// Call the handler (but we can't easily test without mocking httptest to support PathValue)
 	// This is left as a sketch; full integration testing should happen via HTTP test suite.
 	_ = h
+	_ = req
 	_ = w
 }
 
@@ -158,7 +155,7 @@ func TestDownloadImage_NotFound(t *testing.T) {
 		images: imgSvc,
 	}
 
-	req := httptest.NewRequest("GET", "/projects/proj123/newsletters/images/nonexistent", nil)
+	req := httptest.NewRequest(http.MethodGet, "/projects/proj123/newsletters/images/nonexistent", nil)
 	w := httptest.NewRecorder()
 
 	// Similar limitation as above — full testing deferred to integration suite.

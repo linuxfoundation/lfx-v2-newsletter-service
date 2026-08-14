@@ -13,9 +13,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
-	_ "image/jpeg"
 	"image/png"
-	_ "image/png"
 	"io"
 
 	"golang.org/x/image/draw"
@@ -24,11 +22,11 @@ import (
 
 // Sentinel errors for image ingest validation and processing.
 var (
-	ErrUnsupportedType   = errors.New("unsupported image type")
-	ErrTooLarge          = errors.New("image exceeds maximum byte size")
-	ErrPixelCapExceeded  = errors.New("image dimensions exceed maximum pixel count")
-	ErrDecodeFailed      = errors.New("failed to decode image")
-	ErrEncodeFailed      = errors.New("failed to encode image")
+	ErrUnsupportedType  = errors.New("unsupported image type")
+	ErrTooLarge         = errors.New("image exceeds maximum byte size")
+	ErrPixelCapExceeded = errors.New("image dimensions exceed maximum pixel count")
+	ErrDecodeFailed     = errors.New("failed to decode image")
+	ErrEncodeFailed     = errors.New("failed to encode image")
 )
 
 // Limits controls the constraints applied to image ingest.
@@ -81,7 +79,9 @@ func Ingest(data []byte, declaredContentType string, cfg Limits) (Result, error)
 	}
 
 	// Decode the full image.
-	reader.Seek(0, io.SeekStart)
+	if _, err := reader.Seek(0, io.SeekStart); err != nil {
+		return Result{}, fmt.Errorf("%w: %v", ErrDecodeFailed, err)
+	}
 	img, _, err := image.Decode(reader)
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrDecodeFailed, err)

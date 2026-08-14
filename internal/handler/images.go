@@ -5,6 +5,7 @@ package handler
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -83,6 +84,8 @@ func (h *Handler) DownloadImage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(data); err != nil {
-		// Error writing to client; already logged by the HTTP server.
+		// The status and headers are already sent, so the response cannot be
+		// changed. Log the failure so a truncated image body is visible.
+		slog.WarnContext(r.Context(), "failed to write image response body", "error", err, "hash", hash)
 	}
 }

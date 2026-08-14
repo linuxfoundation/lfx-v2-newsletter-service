@@ -5,8 +5,8 @@ package imageingest
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"fmt"
+	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -18,7 +18,6 @@ import (
 func TestIngest(t *testing.T) {
 	// Generate a small valid PNG in-memory.
 	smallPNG := genPNG(100, 100)
-	smallPNGHash := fmt.Sprintf("%x", sha256.Sum256(smallPNG))
 
 	// Generate a small valid JPEG.
 	smallJPEG := genJPEG(100, 100)
@@ -39,8 +38,8 @@ func TestIngest(t *testing.T) {
 		cfg           Limits
 		wantErr       error
 		checkHash     bool
-		hashSame      bool // when true, re-ingest identical data should produce same hash
-		checkExif     bool // when true, assert output contains no "Exif" marker
+		hashSame      bool   // when true, re-ingest identical data should produce same hash
+		checkExif     bool   // when true, assert output contains no "Exif" marker
 		shouldNotFind string // string that should NOT appear in output
 	}{
 		{
@@ -245,8 +244,8 @@ func genJPEGWithExif(width, height int) []byte {
 	exifMarker := []byte{0xFF, 0xE1} // APP1 marker
 	exifData := []byte("Exif\x00\x00")
 	// Minimal TIFF header (8 bytes)
-	exifData = append(exifData, 0x49, 0x49) // Little-endian TIFF header
-	exifData = append(exifData, 0x2A, 0x00) // TIFF magic
+	exifData = append(exifData, 0x49, 0x49)             // Little-endian TIFF header
+	exifData = append(exifData, 0x2A, 0x00)             // TIFF magic
 	exifData = append(exifData, 0x08, 0x00, 0x00, 0x00) // IFD offset
 
 	// Length includes the 2-byte length field itself
@@ -285,7 +284,9 @@ func genPNGWithDimensions(declaredW, declaredH, actualW, actualH int) []byte {
 
 	// We'll modify the width and height fields in the IHDR chunk
 	// IHDR is the first chunk after the signature
-	if len(pngData) < 8+4+4+4+4 {
+	// The signature is 8 bytes and the IHDR chunk is 25 bytes, so the width,
+	// height and CRC fields all sit within the first 33 bytes.
+	if len(pngData) < 33 {
 		return pngData
 	}
 
@@ -307,12 +308,11 @@ func genPNGWithDimensions(declaredW, declaredH, actualW, actualH int) []byte {
 	result[22] = byte((declaredH >> 8) & 0xFF)
 	result[23] = byte(declaredH & 0xFF)
 
-	// Note: we're not updating the IHDR CRC here, which makes the PNG invalid
-	// if fully decoded, but DecodeConfig should still read the header.
-	// If the PNG decoder strictly validates CRC, this test may fail on
-	// some Go versions. In that case, we can use a real small PNG with a
-	// hex editor to modify its dimensions, or rely on the fact that we're
-	// testing DecodeConfig which may be more lenient than full Decode.
+	// Recompute the IHDR CRC over the chunk type and chunk data, bytes 12 to 28.
+	// Go's png.DecodeConfig validates the CRC, so a stale CRC would be reported
+	// as a corrupt file instead of the oversized header we want to test.
+	crc := crc32.ChecksumIEEE(result[12:29])
+	binary.BigEndian.PutUint32(result[29:33], crc)
 
 	return result
 }
