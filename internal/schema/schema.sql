@@ -413,3 +413,26 @@ CREATE TABLE IF NOT EXISTS sendgrid_click_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sg_click_events_email ON sendgrid_click_events (email_id);
+
+-- Newsletter images, content-addressed by sha256 hash and scoped to project.
+-- Metadata is persisted (dimension, byte size, content type) for API responses;
+-- image bytes are stored in S3 keyed by hash. Uploads are idempotent: a second
+-- upload of identical content is a no-op at the repository layer (ON CONFLICT DO NOTHING).
+CREATE TABLE IF NOT EXISTS newsletter_images (
+    hash TEXT PRIMARY KEY,               -- sha256 (hex) of the final re-encoded bytes; also the S3 key
+    project_uid TEXT NOT NULL,           -- scoping; images are not shared across projects
+    content_type TEXT NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    byte_size INTEGER NOT NULL,
+    uploaded_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    referenced_by_sent_newsletter BOOLEAN NOT NULL DEFAULT FALSE
+    -- set true once a sent newsletter's body_html is found to reference this
+    -- hash (future retention-sweep work, not part of this change); never
+    -- unset once true, so a once-sent image is never garbage-collected even
+    -- if a later edit stops referencing it. No sweep/GC job is added in this
+    -- change — this column just reserves the retention signal for later use.
+);
+
+CREATE INDEX IF NOT EXISTS idx_newsletter_images_project_uid ON newsletter_images(project_uid);

@@ -22,10 +22,12 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/handler"
 	natsinfra "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/nats"
+	s3infra "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/s3"
 	sendgridinfra "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/sendgrid"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/repository"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/schema"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/imageingest"
 )
 
 // Package-level singletons populated by InitInfrastructure and torn down by Shutdown.
@@ -188,15 +190,42 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		return err
 	}
 
+	// Step 7: S3 image storage (optional; gates on S3_BUCKET being set).
+	var imageSvc *service.ImageService
+	var imageMaxBytes int64 = cfg.ImageMaxBytes
+	if cfg.S3Bucket != "" {
+		s3Client, err := s3infra.New(ctx, s3infra.Config{
+			Bucket:              cfg.S3Bucket,
+			Region:              cfg.S3Region,
+			Endpoint:            cfg.S3Endpoint,
+			CDNURLPrefix:        cfg.CDNURLPrefix,
+			CreateMissingBucket: cfg.S3CreateMissingBucket,
+		})
+		if err != nil {
+			return fmt.Errorf("s3 client: %w", err)
+		}
+
+		imageRepo := repository.NewImageRepository(bunDB)
+		imageSvc = service.NewImageService(imageRepo, s3Client, imageingest.Limits{
+			MaxBytes:  cfg.ImageMaxBytes,
+			MaxPixels: cfg.ImageMaxPixels,
+			MaxWidth:  cfg.ImageMaxWidth,
+		})
+		slog.InfoContext(ctx, "image upload enabled", "bucket", cfg.S3Bucket)
+	}
+
 	handlerImpl = handler.New(handler.Config{
 		Newsletter:      newsletterSvc,
 		Send:            sendSvc,
 		Analytics:       analyticsSvc,
 		Unsubscribe:     unsubSvc,
+		Images:          imageSvc,
 		Project:         projectClient,
 		DB:              sqlDB,
 		Auth:            authImpl,
 		RequireUserAuth: cfg.RequireUserAuth,
+		ImageMaxBytes:   imageMaxBytes,
+		PublicBaseURL:   cfg.PublicBaseURL,
 		SendGridWebhook: sendgridWebhook,
 	})
 	httpHandler = handlerImpl.Routes()

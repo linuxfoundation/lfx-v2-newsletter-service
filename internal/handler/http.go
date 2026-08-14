@@ -29,10 +29,13 @@ type Handler struct {
 	send            *service.SendOrchestrator
 	analytics       *service.AnalyticsService
 	unsub           *service.UnsubscribeService
+	images          *service.ImageService
 	project         port.ProjectMetadataClient
 	db              *sql.DB
 	auth            *AuthValidator
 	requireUserAuth bool
+	imageMaxBytes   int64
+	publicBaseURL   string
 	// sendgridWebhook is the SendGrid event-webhook handler, registered on a
 	// public route when configured (nil otherwise). It self-authenticates via
 	// its ECDSA signature check.
@@ -45,10 +48,13 @@ type Config struct {
 	Send            *service.SendOrchestrator
 	Analytics       *service.AnalyticsService
 	Unsubscribe     *service.UnsubscribeService
+	Images          *service.ImageService
 	Project         port.ProjectMetadataClient
 	DB              *sql.DB
 	Auth            *AuthValidator
 	RequireUserAuth bool
+	ImageMaxBytes   int64
+	PublicBaseURL   string
 	// SendGridWebhook, when non-nil, is registered at POST
 	// /newsletters/sendgrid/events (unauthenticated; signature-verified).
 	SendGridWebhook http.Handler
@@ -61,10 +67,13 @@ func New(cfg Config) *Handler {
 		send:            cfg.Send,
 		analytics:       cfg.Analytics,
 		unsub:           cfg.Unsubscribe,
+		images:          cfg.Images,
 		project:         cfg.Project,
 		db:              cfg.DB,
 		auth:            cfg.Auth,
 		requireUserAuth: cfg.RequireUserAuth,
+		imageMaxBytes:   cfg.ImageMaxBytes,
+		publicBaseURL:   cfg.PublicBaseURL,
 		sendgridWebhook: cfg.SendGridWebhook,
 	}
 }
@@ -128,6 +137,16 @@ func (h *Handler) Routes() http.Handler {
 	// Newsletter opt-outs — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletter-opt-outs", h.withAuth(http.HandlerFunc(h.ListOptOuts)))
 	mux.Handle("DELETE /projects/{project_uid}/newsletter-opt-outs/{opt_out_id}", h.withAuth(http.HandlerFunc(h.DeleteOptOut)))
+
+	// Newsletter images — upload authenticated, download unauthenticated for
+	// email clients. Registered only when S3 is configured.
+	if h.images != nil {
+		mux.Handle("POST /projects/{project_uid}/newsletters/images", h.withAuth(http.HandlerFunc(h.UploadImage)))
+		// Download route is intentionally unauthenticated so email clients with
+		// no session can load images embedded in newsletters, matching the
+		// open-pixel and unsubscribe-link patterns below.
+		mux.HandleFunc("GET /projects/{project_uid}/newsletters/images/{hash}", h.DownloadImage)
+	}
 
 	// Open tracking pixel — intentionally unauthenticated; requested by the
 	// recipient's email client which has no session. Identity comes from the

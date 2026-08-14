@@ -128,6 +128,19 @@ type AppConfig struct {
 	// environment via LFX_SELF_SERVE_BASE_URL.
 	SelfServeBaseURL string
 
+	// S3 storage for newsletter images (optional; image routes not registered if
+	// S3_BUCKET is unset).
+	S3Bucket               string
+	S3Region              string
+	S3Endpoint            string
+	S3CreateMissingBucket bool
+	CDNURLPrefix          string
+
+	// Image upload limits.
+	ImageMaxBytes  int64
+	ImageMaxPixels int64
+	ImageMaxWidth  int
+
 	// Auth
 	JWKSURL          string
 	ExpectedAudience string
@@ -159,6 +172,10 @@ const (
 	// and StuckSendTTL so the recovery sweep never marks a row 'sent' while
 	// its fan-out job is still running.
 	minStuckSendSlack = 5 * time.Minute
+	// Image upload defaults.
+	defaultImageMaxBytes  = int64(20 * 1024 * 1024) // 20 MB
+	defaultImageMaxPixels = int64(40_000_000)       // ~40 megapixels
+	defaultImageMaxWidth  = 1200
 )
 
 // AppConfigFromEnv reads AppConfig from environment variables, applying defaults
@@ -191,6 +208,14 @@ func AppConfigFromEnv() (AppConfig, error) {
 		UnsubscribeSecret:            os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
 		PublicBaseURL:                strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
 		SelfServeBaseURL:             strings.TrimRight(envOr("LFX_SELF_SERVE_BASE_URL", defaultSelfServeBaseURL), "/"),
+		S3Bucket:                     strings.TrimSpace(os.Getenv("S3_BUCKET")),
+		S3Region:                     strings.TrimSpace(os.Getenv("S3_REGION")),
+		S3Endpoint:                   strings.TrimSpace(os.Getenv("S3_ENDPOINT")),
+		S3CreateMissingBucket:        boolOr("S3_CREATE_MISSING_BUCKET", false),
+		CDNURLPrefix:                 strings.TrimRight(strings.TrimSpace(os.Getenv("CDN_URL_PREFIX")), "/"),
+		ImageMaxBytes:                intOr64("IMAGE_MAX_BYTES", defaultImageMaxBytes),
+		ImageMaxPixels:               intOr64("IMAGE_MAX_PIXELS", defaultImageMaxPixels),
+		ImageMaxWidth:                intOr("IMAGE_MAX_WIDTH", defaultImageMaxWidth),
 		JWKSURL:                      os.Getenv("JWKS_URL"),
 		ExpectedAudience:             os.Getenv("JWT_AUDIENCE"),
 		RequireUserAuth:              boolOr("REQUIRE_USER_AUTH", true),
@@ -224,6 +249,12 @@ func AppConfigFromEnv() (AppConfig, error) {
 	}
 	if cfg.EmailProvider == "sendgrid" && cfg.SendGridAPIKey == "" {
 		missing = append(missing, "SENDGRID_API_KEY (required when EMAIL_PROVIDER=sendgrid)")
+	}
+	// S3CreateMissingBucket must not be enabled in production (outside explicit local/dev environments).
+	if cfg.S3CreateMissingBucket {
+		if env := strings.ToLower(strings.TrimSpace(cfg.LFXEnvironment)); env != "local" && env != "development" && env != "dev" {
+			return cfg, fmt.Errorf("S3_CREATE_MISSING_BUCKET=true is only allowed in local/dev LFX_ENVIRONMENT (LFX_ENVIRONMENT=%q); refusing to start", cfg.LFXEnvironment)
+		}
 	}
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
@@ -385,6 +416,18 @@ func intOr(key string, fallback int) int {
 		return fallback
 	}
 	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+func intOr64(key string, fallback int64) int64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		return fallback
 	}
