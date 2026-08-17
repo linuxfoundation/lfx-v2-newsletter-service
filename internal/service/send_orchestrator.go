@@ -26,6 +26,12 @@ import (
 // defaultSendConcurrency caps in-flight email-service requests during fan-out.
 const defaultSendConcurrency = 5
 
+// defaultFanOutPageSize bounds each FanOutSendRecipients materialization
+// call. Matches SendGrid mail/send's personalizations-per-request cap so a
+// future dispatch loop that follows the same pages can hand each one
+// straight to the provider without re-chunking.
+const defaultFanOutPageSize = 1000
+
 // defaultSendJobTimeout bounds the detached background fan-out. Generous by
 // design: at the default concurrency of 5 and ~1s per email-service
 // round-trip, 30 minutes covers ~9000 recipients.
@@ -80,17 +86,24 @@ const myNewslettersPath = "/newsletters/my"
 // transition. It owns the email-service integration; the UI no longer talks
 // to email-service directly.
 type SendOrchestrator struct {
-	repo          port.NewsletterRepository
-	committee     port.CommitteeClient
-	project       port.ProjectMetadataClient
-	email         port.EmailDispatcher
-	userMetadata  port.UserMetadataReader
-	userEmail     port.UserEmailReader
-	unsub         *UnsubscribeService
-	concurrency   int
-	fanoutEnabled bool
-	fromAddress   string
-	fromOverrides map[string]string
+	repo port.NewsletterRepository
+	// sendRecipients materializes per-recipient send state ahead of dispatch
+	// (LFXV2-2714). Nil is tolerated (e.g. tests constructed without it):
+	// SendNewsletter skips materialization rather than failing the send.
+	sendRecipients port.SendRecipientRepository
+	// fanOutPageSize bounds each FanOutSendRecipients call. Defaults to
+	// defaultFanOutPageSize.
+	fanOutPageSize int
+	committee      port.CommitteeClient
+	project        port.ProjectMetadataClient
+	email          port.EmailDispatcher
+	userMetadata   port.UserMetadataReader
+	userEmail      port.UserEmailReader
+	unsub          *UnsubscribeService
+	concurrency    int
+	fanoutEnabled  bool
+	fromAddress    string
+	fromOverrides  map[string]string
 	// sendProvider is the value stamped onto newsletters.send_provider at the
 	// sending transition, recording which provider dispatched the newsletter so
 	// analytics reads engagement from the matching store. Set from the active
@@ -127,11 +140,19 @@ type SendOrchestrator struct {
 
 // SendOrchestratorConfig configures a SendOrchestrator.
 type SendOrchestratorConfig struct {
-	Repo         port.NewsletterRepository
-	Committee    port.CommitteeClient
-	Project      port.ProjectMetadataClient
-	Email        port.EmailDispatcher
-	UserMetadata port.UserMetadataReader
+	Repo port.NewsletterRepository
+	// SendRecipients materializes per-recipient send state ahead of dispatch
+	// (LFXV2-2714). Nil skips materialization; production wiring passes the
+	// same PostgresNewsletterRepo used for Repo, which implements both.
+	SendRecipients port.SendRecipientRepository
+	// FanOutPageSize bounds each SendRecipients materialization call. Zero
+	// falls back to defaultFanOutPageSize (1000, matching SendGrid mail/send's
+	// personalizations cap).
+	FanOutPageSize int
+	Committee      port.CommitteeClient
+	Project        port.ProjectMetadataClient
+	Email          port.EmailDispatcher
+	UserMetadata   port.UserMetadataReader
 	// UserEmail resolves the sender's primary email by principal, used to
 	// derive the send-time Reply-To address. Nil is tolerated (e.g. tests) —
 	// resolveSenderEmail falls back to the draft's stored ed_reply_email.
@@ -261,8 +282,14 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	if scheduleCancelBuffer < minScheduleCancelBuffer {
 		scheduleCancelBuffer = minScheduleCancelBuffer
 	}
+	fanOutPageSize := cfg.FanOutPageSize
+	if fanOutPageSize <= 0 {
+		fanOutPageSize = defaultFanOutPageSize
+	}
 	return &SendOrchestrator{
 		repo:                  cfg.Repo,
+		sendRecipients:        cfg.SendRecipients,
+		fanOutPageSize:        fanOutPageSize,
 		committee:             cfg.Committee,
 		project:               cfg.Project,
 		email:                 cfg.Email,
@@ -513,10 +540,55 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	}, nil
 }
 
+// materializeSendRecipients writes the full recipient list for this send
+// attempt into newsletter_send_recipients before dispatch begins, in
+// fanOutPageSize chunks keyed on envelope.GroupID (the send_id). Insertion is
+// idempotent, so a process restart that re-runs a send under the same
+// group_id replays already-materialized pages as no-ops instead of
+// duplicating rows.
+//
+// Best-effort: o.sendRecipients is nil in orchestrators wired without it
+// (e.g. tests), and a materialization failure only logs — it must not block
+// or fail the send, since fanOut's own dispatch is the source of truth for
+// whether mail actually went out.
+func (o *SendOrchestrator) materializeSendRecipients(ctx context.Context, sending *model.Newsletter, recipients []model.CommitteeMember, envelope emailEnvelope) {
+	if o.sendRecipients == nil || len(recipients) == 0 {
+		return
+	}
+
+	afterEmail := ""
+	for {
+		page, err := o.sendRecipients.FanOutSendRecipients(
+			ctx,
+			sending.ID,
+			envelope.GroupID,
+			envelope.BatchID,
+			recipients,
+			afterEmail,
+			o.fanOutPageSize,
+		)
+		if err != nil {
+			slog.ErrorContext(ctx, "newsletter send: materializing send recipients failed",
+				"newsletter_id", sending.ID,
+				"group_id", envelope.GroupID,
+				"after_email", afterEmail,
+				"error", err,
+			)
+			return
+		}
+		if !page.Remaining {
+			return
+		}
+		afterEmail = page.LastCursor
+	}
+}
+
 // runSendJob is the detached background half of SendNewsletter: fan out to
 // every recipient, then settle the newsletter — sent when at least one
 // recipient was delivered to, reverted to draft when none were.
 func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsletter, recipients []model.CommitteeMember, envelope emailEnvelope) {
+	o.materializeSendRecipients(ctx, sending, recipients, envelope)
+
 	sent, failed, unknown, failures := o.fanOut(ctx, sending.ProjectUID, recipients, envelope)
 
 	// The terminal persistence write must not depend on the job context: a

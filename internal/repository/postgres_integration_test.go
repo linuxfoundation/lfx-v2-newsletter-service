@@ -592,3 +592,185 @@ func TestRevertScheduled_RejectsStaleBatchID(t *testing.T) {
 		t.Fatalf("Version after stale revert attempt: got %d, want unchanged %d", n.Version, armedB.Version)
 	}
 }
+
+// members builds n CommitteeMembers with emails member0@example.com..memberN-1@example.com.
+func members(n int) []model.CommitteeMember {
+	out := make([]model.CommitteeMember, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, model.CommitteeMember{Email: fmt.Sprintf("member%d@example.com", i)})
+	}
+	return out
+}
+
+func TestFanOutSendRecipients_SinglePage(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+	newsletterID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+	sendID := uuid.NewString()
+
+	page, err := repo.FanOutSendRecipients(ctx, newsletterID, sendID, "batch-1", members(5), "", 1000)
+	if err != nil {
+		t.Fatalf("FanOutSendRecipients: %v", err)
+	}
+	if page.Inserted != 5 {
+		t.Fatalf("Inserted: got %d, want 5", page.Inserted)
+	}
+	if page.Remaining {
+		t.Fatalf("Remaining: got true, want false")
+	}
+	if page.LastCursor != "member4@example.com" {
+		t.Fatalf("LastCursor: got %q, want member4@example.com", page.LastCursor)
+	}
+
+	count, err := repo.db.NewSelect().Model((*model.NewsletterSendRecipient)(nil)).
+		Where("send_id = ?", sendID).Count(ctx)
+	if err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if count != 5 {
+		t.Fatalf("rows persisted: got %d, want 5", count)
+	}
+}
+
+func TestFanOutSendRecipients_MultiPageViaCursor(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+	newsletterID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+	sendID := uuid.NewString()
+	all := members(9)
+
+	afterEmail := ""
+	pages := 0
+	inserted := 0
+	for {
+		page, err := repo.FanOutSendRecipients(ctx, newsletterID, sendID, "batch-1", all, afterEmail, 4)
+		if err != nil {
+			t.Fatalf("FanOutSendRecipients page %d: %v", pages, err)
+		}
+		pages++
+		inserted += page.Inserted
+		afterEmail = page.LastCursor
+		if !page.Remaining {
+			break
+		}
+		if pages > 10 {
+			t.Fatalf("did not terminate after %d pages", pages)
+		}
+	}
+
+	if pages != 3 {
+		t.Fatalf("pages: got %d, want 3 (9 recipients / pageSize 4)", pages)
+	}
+	if inserted != 9 {
+		t.Fatalf("total inserted: got %d, want 9", inserted)
+	}
+	if afterEmail != "member8@example.com" {
+		t.Fatalf("final cursor: got %q, want member8@example.com", afterEmail)
+	}
+
+	count, err := repo.db.NewSelect().Model((*model.NewsletterSendRecipient)(nil)).
+		Where("send_id = ?", sendID).Count(ctx)
+	if err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if count != 9 {
+		t.Fatalf("rows persisted: got %d, want 9", count)
+	}
+}
+
+func TestFanOutSendRecipients_ReplayIsIdempotentAndAdvancesCursor(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+	newsletterID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+	sendID := uuid.NewString()
+	all := members(4)
+
+	first, err := repo.FanOutSendRecipients(ctx, newsletterID, sendID, "batch-1", all, "", 4)
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if first.Inserted != 4 {
+		t.Fatalf("first call Inserted: got %d, want 4", first.Inserted)
+	}
+
+	// Full replay of the same page (e.g. after a crash before the caller
+	// persisted its own cursor progress): every row conflicts, so nothing new
+	// is inserted, but the cursor must still advance and Remaining must still
+	// reflect the underlying data, not the conflict outcome.
+	replay, err := repo.FanOutSendRecipients(ctx, newsletterID, sendID, "batch-1", all, "", 4)
+	if err != nil {
+		t.Fatalf("replay call: %v", err)
+	}
+	if replay.Inserted != 0 {
+		t.Fatalf("replay Inserted: got %d, want 0", replay.Inserted)
+	}
+	if replay.LastCursor != first.LastCursor {
+		t.Fatalf("replay LastCursor: got %q, want %q (must still advance)", replay.LastCursor, first.LastCursor)
+	}
+	if replay.Remaining != first.Remaining {
+		t.Fatalf("replay Remaining: got %v, want %v", replay.Remaining, first.Remaining)
+	}
+
+	count, err := repo.db.NewSelect().Model((*model.NewsletterSendRecipient)(nil)).
+		Where("send_id = ?", sendID).Count(ctx)
+	if err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if count != 4 {
+		t.Fatalf("rows persisted after replay: got %d, want 4 (no duplicates)", count)
+	}
+}
+
+func TestFanOutSendRecipients_DifferentSendIDsDoNotCollide(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+	newsletterID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+	all := members(3)
+
+	sendA := uuid.NewString()
+	sendB := uuid.NewString()
+
+	if _, err := repo.FanOutSendRecipients(ctx, newsletterID, sendA, "batch-a", all, "", 100); err != nil {
+		t.Fatalf("send A: %v", err)
+	}
+	if _, err := repo.FanOutSendRecipients(ctx, newsletterID, sendB, "batch-b", all, "", 100); err != nil {
+		t.Fatalf("send B: %v", err)
+	}
+
+	for _, sendID := range []string{sendA, sendB} {
+		count, err := repo.db.NewSelect().Model((*model.NewsletterSendRecipient)(nil)).
+			Where("send_id = ?", sendID).Count(ctx)
+		if err != nil {
+			t.Fatalf("count rows for %s: %v", sendID, err)
+		}
+		if count != 3 {
+			t.Fatalf("rows for send_id %s: got %d, want 3 (a resend must not collide with a prior attempt's rows)", sendID, count)
+		}
+	}
+}
+
+func TestFanOutSendRecipients_EmptyRecipients(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+	newsletterID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	page, err := repo.FanOutSendRecipients(ctx, newsletterID, uuid.NewString(), "batch-1", nil, "", 100)
+	if err != nil {
+		t.Fatalf("FanOutSendRecipients: %v", err)
+	}
+	if page.Inserted != 0 || page.Remaining {
+		t.Fatalf("got %+v, want zero-value page with Remaining=false", page)
+	}
+}
+
+func TestFanOutSendRecipients_RejectsNonPositivePageSize(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+	newsletterID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	for _, pageSize := range []int{0, -1} {
+		if _, err := repo.FanOutSendRecipients(ctx, newsletterID, uuid.NewString(), "batch-1", members(1), "", pageSize); err == nil {
+			t.Errorf("pageSize %d: expected error, got nil", pageSize)
+		}
+	}
+}

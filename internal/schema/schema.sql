@@ -413,3 +413,39 @@ CREATE TABLE IF NOT EXISTS sendgrid_click_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sg_click_events_email ON sendgrid_click_events (email_id);
+
+-- ---------------------------------------------------------------------------
+-- Per-recipient send state (LFXV2-2714)
+--
+-- Materialized once per send attempt so a chunked fan-out is idempotent and
+-- resumable: FanOutSendRecipients inserts pages of rows before dispatch
+-- begins, keyed on (send_id, email), so re-running the same page after a
+-- crash is a no-op rather than a duplicate row.
+--
+-- send_id is the newsletter's group_id at the time of this send attempt, not
+-- newsletters.id. A newsletter reverted to draft and resent mints a new
+-- group_id, so keying on the stable newsletter id would make a fresh attempt
+-- collide with rows left over from a prior, unrelated attempt.
+--
+-- timezone and send_at are reserved for a future per-recipient send-time
+-- ticket and are not read or written by this one.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS newsletter_send_recipients (
+    id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    newsletter_id UUID        NOT NULL REFERENCES newsletters (id),
+    send_id       TEXT        NOT NULL,
+    email         TEXT        NOT NULL,
+    timezone      TEXT,
+    send_at       TIMESTAMPTZ,
+    batch_id      TEXT,
+    status        TEXT        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
+    last_error    TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_send_recipients_send_email
+    ON newsletter_send_recipients (send_id, email);
+
+CREATE INDEX IF NOT EXISTS idx_send_recipients_status_send_at
+    ON newsletter_send_recipients (status, send_at);

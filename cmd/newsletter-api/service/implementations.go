@@ -145,6 +145,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	unsubSvc := service.NewUnsubscribeService(repo, []byte(cfg.UnsubscribeSecret), cfg.PublicBaseURL)
 	sendSvc = service.NewSendOrchestrator(service.SendOrchestratorConfig{
 		Repo:                  repo,
+		SendRecipients:        repo,
 		Committee:             committeeClient,
 		Project:               projectClient,
 		Email:                 emailDispatcher,

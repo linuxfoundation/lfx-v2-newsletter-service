@@ -138,6 +138,44 @@ type UnsubscribeRepository interface {
 	DeleteUnsubscribe(ctx context.Context, projectUID string, id uuid.UUID) error
 }
 
+// FanOutPage is the result of one FanOutSendRecipients page.
+//
+// Inserted is the number of rows actually inserted by this page (rows the
+// unique index rejected as an already-materialized replay are not counted).
+// LastCursor always advances to the last email considered on this page, even
+// when every row on it conflicted, so a resumed caller that loops on
+// LastCursor can never stall on a fully-replayed page. Remaining is true
+// when more recipients follow LastCursor.
+type FanOutPage struct {
+	Inserted   int
+	LastCursor string
+	Remaining  bool
+}
+
+// SendRecipientRepository materializes per-recipient send state ahead of
+// dispatch, so a chunked fan-out is idempotent and resumable.
+type SendRecipientRepository interface {
+	// FanOutSendRecipients inserts one page of newsletter_send_recipients rows
+	// for sendID (the newsletter's group_id for this send attempt), starting
+	// after afterEmail in ascending, case-insensitive email order.
+	//
+	// recipients is the full resolved recipient list for the send, sorted
+	// internally by email so pageSize and afterEmail form a stable keyset
+	// cursor across repeated calls; pass afterEmail="" to start from the
+	// beginning. Insertion is idempotent on (send_id, email): re-running the
+	// same page after a crash inserts nothing new and returns the same
+	// LastCursor. batchID is optional and recorded on every row in the page.
+	FanOutSendRecipients(
+		ctx context.Context,
+		newsletterID uuid.UUID,
+		sendID string,
+		batchID string,
+		recipients []model.CommitteeMember,
+		afterEmail string,
+		pageSize int,
+	) (FanOutPage, error)
+}
+
 // CommitteeClient resolves committee members for newsletter recipient calculation.
 //
 // The concrete implementation talks to lfx-v2-committee-service via the

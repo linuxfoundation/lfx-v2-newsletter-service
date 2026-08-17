@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -722,6 +723,91 @@ func (r *PostgresNewsletterRepo) CreateUnsubscribe(ctx context.Context, projectU
 		return fmt.Errorf("insert unsubscribe: %w", err)
 	}
 	return nil
+}
+
+// FanOutSendRecipients inserts one page of newsletter_send_recipients rows
+// for sendID, in ascending case-insensitive email order starting after
+// afterEmail. Insertion is idempotent on (send_id, email): a row already
+// materialized by a prior, possibly-crashed call is left untouched rather
+// than duplicated or overwritten.
+//
+// recipients is sorted on every call rather than assuming caller-sorted
+// input, so a single canonical ordering backs the keyset cursor regardless of
+// how the caller resolved the recipient list. LastCursor and Remaining are
+// derived from the page's position in that sorted list, not from how many
+// rows were actually inserted, so a page that is entirely a replay of an
+// earlier attempt still advances the cursor and a resumed loop cannot stall.
+func (r *PostgresNewsletterRepo) FanOutSendRecipients(
+	ctx context.Context,
+	newsletterID uuid.UUID,
+	sendID string,
+	batchID string,
+	recipients []model.CommitteeMember,
+	afterEmail string,
+	pageSize int,
+) (port.FanOutPage, error) {
+	if pageSize <= 0 {
+		return port.FanOutPage{}, fmt.Errorf("fan out send recipients: pageSize must be positive")
+	}
+
+	sorted := make([]model.CommitteeMember, len(recipients))
+	copy(sorted, recipients)
+	sort.Slice(sorted, func(i, j int) bool {
+		return strings.ToLower(sorted[i].Email) < strings.ToLower(sorted[j].Email)
+	})
+
+	start := 0
+	if afterEmail != "" {
+		cursor := strings.ToLower(afterEmail)
+		start = sort.Search(len(sorted), func(i int) bool {
+			return strings.ToLower(sorted[i].Email) > cursor
+		})
+	}
+
+	if start >= len(sorted) {
+		return port.FanOutPage{LastCursor: afterEmail, Remaining: false}, nil
+	}
+
+	end := start + pageSize
+	if end > len(sorted) {
+		end = len(sorted)
+	}
+	page := sorted[start:end]
+
+	var batchIDPtr *string
+	if batchID != "" {
+		batchIDPtr = &batchID
+	}
+
+	rows := make([]*model.NewsletterSendRecipient, 0, len(page))
+	for _, recipient := range page {
+		rows = append(rows, &model.NewsletterSendRecipient{
+			NewsletterID: newsletterID,
+			SendID:       sendID,
+			Email:        strings.ToLower(strings.TrimSpace(recipient.Email)),
+			BatchID:      batchIDPtr,
+			Status:       model.SendRecipientStatusPending,
+		})
+	}
+
+	res, err := r.db.NewInsert().
+		Model(&rows).
+		On("CONFLICT (send_id, email) DO NOTHING").
+		Exec(ctx)
+	if err != nil {
+		return port.FanOutPage{}, fmt.Errorf("insert send recipients page: %w", err)
+	}
+
+	inserted, err := res.RowsAffected()
+	if err != nil {
+		return port.FanOutPage{}, fmt.Errorf("insert send recipients page rows affected: %w", err)
+	}
+
+	return port.FanOutPage{
+		Inserted:   int(inserted),
+		LastCursor: page[len(page)-1].Email,
+		Remaining:  end < len(sorted),
+	}, nil
 }
 
 // ListUnsubscribedEmails returns the set of lowercased email addresses that

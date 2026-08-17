@@ -157,6 +157,38 @@ type Analytics struct {
 	LastEventAt     *time.Time    `json:"lastEventAt,omitempty"`
 }
 
+// SendRecipientStatus enumerates newsletter_send_recipients.status values.
+type SendRecipientStatus string
+
+// Status values persisted in newsletter_send_recipients. Mirrored by the
+// schema CHECK constraint. There is no "sending" or "skipped" value: this
+// ticket only materializes the per-recipient rows and lets the fan-out mark
+// them sent/failed, it does not implement a claim/poll dispatch queue.
+const (
+	SendRecipientStatusPending SendRecipientStatus = "pending"
+	SendRecipientStatusSent    SendRecipientStatus = "sent"
+	SendRecipientStatusFailed  SendRecipientStatus = "failed"
+)
+
+// NewsletterSendRecipient is one row of newsletter_send_recipients: a single
+// recipient's state for one send attempt (identified by SendID, the
+// newsletter's group_id at send time, not its stable NewsletterID).
+type NewsletterSendRecipient struct {
+	bun.BaseModel `bun:"table:newsletter_send_recipients,alias:nsr"`
+
+	ID           uuid.UUID           `bun:"id,pk,type:uuid,default:gen_random_uuid()" json:"id"`
+	NewsletterID uuid.UUID           `bun:"newsletter_id,notnull,type:uuid" json:"newsletterId"`
+	SendID       string              `bun:"send_id,notnull" json:"sendId"`
+	Email        string              `bun:"email,notnull" json:"email"`
+	Timezone     *string             `bun:"timezone" json:"timezone,omitempty"`
+	SendAt       *time.Time          `bun:"send_at" json:"sendAt,omitempty"`
+	BatchID      *string             `bun:"batch_id" json:"batchId,omitempty"`
+	Status       SendRecipientStatus `bun:"status,notnull,default:'pending'" json:"status"`
+	LastError    *string             `bun:"last_error" json:"lastError,omitempty"`
+	CreatedAt    time.Time           `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
+	UpdatedAt    time.Time           `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
+}
+
 // CommitteeMember is the slice of a committee member the newsletter needs for personalization.
 type CommitteeMember struct {
 	Email     string
