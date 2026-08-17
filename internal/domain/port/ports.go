@@ -127,6 +127,25 @@ type NewsletterRepository interface {
 	Analytics(ctx context.Context, newsletterID uuid.UUID) (*model.Analytics, error)
 }
 
+// RecipientTimezoneRepository persists this service's own record of a
+// recipient's timezone, scoped per (project_uid, email) (LFXV2-2506, Option
+// B). It also records the per-send audit trail of the timezone and resolved
+// send_at used for each recipient of a tz_local send.
+type RecipientTimezoneRepository interface {
+	// UpsertRecipientTimezone records or overwrites the timezone on file for
+	// (projectUID, email). Idempotent: a later call for the same recipient
+	// replaces the prior value and source.
+	UpsertRecipientTimezone(ctx context.Context, projectUID, email, timezone, source string) error
+	// GetRecipientTimezones returns the timezone on file for every email in
+	// emails that has one, keyed by lowercased email. Emails with no record
+	// are simply absent from the result — callers apply the
+	// DefaultTimezone/UTC fallback themselves.
+	GetRecipientTimezones(ctx context.Context, projectUID string, emails []string) (map[string]string, error)
+	// RecordSendRecipient inserts one per-recipient audit row after a
+	// successful tz_local dispatch. Not used to drive delivery.
+	RecordSendRecipient(ctx context.Context, newsletterID uuid.UUID, email, timezone string, sendAt time.Time) error
+}
+
 // UnsubscribeRepository persists project-scoped opt-outs.
 //
 // CreateUnsubscribe must be idempotent: a second unsubscribe for the same

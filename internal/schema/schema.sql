@@ -413,3 +413,95 @@ CREATE TABLE IF NOT EXISTS sendgrid_click_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sg_click_events_email ON sendgrid_click_events (email_id);
+
+-- ---------------------------------------------------------------------------
+-- Per-recipient timezone-local sending (LFXV2-2506)
+--
+-- delivery_strategy selects how a scheduled send's release time is computed
+-- per recipient. 'global' (the existing, default behavior) releases every
+-- recipient at the same operator-chosen scheduled_at. 'tz_local' releases
+-- each recipient at target_local (a HH:MM wall-clock time) on the schedule
+-- date, resolved in that recipient's own timezone (falling back to
+-- default_timezone, then UTC, when no recipient timezone is on file) — see
+-- fanOut's per-recipient clamp in internal/service/send_orchestrator.go.
+-- 'personalised' is reserved for future per-recipient content variation and
+-- intentionally NOT part of the CHECK constraint below until that work is
+-- scoped.
+-- ---------------------------------------------------------------------------
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS delivery_strategy TEXT NOT NULL DEFAULT 'global';
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS target_local TEXT;
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS default_timezone TEXT;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_delivery_strategy_check'
+    ) THEN
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_delivery_strategy_check
+            CHECK (delivery_strategy IN ('global', 'tz_local'));
+    END IF;
+END$$;
+
+-- A tz_local newsletter must carry both target_local and default_timezone —
+-- target_local anchors the wall-clock release time and default_timezone is
+-- the fallback used when a recipient has no timezone on file. A 'global'
+-- newsletter leaves both NULL.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_tz_local_requires_fields'
+    ) THEN
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_tz_local_requires_fields
+            CHECK (delivery_strategy <> 'tz_local' OR (target_local IS NOT NULL AND default_timezone IS NOT NULL));
+    END IF;
+END$$;
+
+-- newsletter_recipient_timezones stores this service's own record of a
+-- recipient's timezone, scoped per (project_uid, email) rather than per
+-- newsletter — a recipient's timezone is a property of the person, not of any
+-- one send. This is deliberately self-contained to this service (Option B):
+-- committee-service / auth-service are not modified to expose a member
+-- timezone, since that would be a cross-service contract change requiring
+-- architecture review, which is out of scope for LFXV2-2506.
+CREATE TABLE IF NOT EXISTS newsletter_recipient_timezones (
+    project_uid TEXT        NOT NULL,
+    email       TEXT        NOT NULL,
+    timezone    TEXT        NOT NULL,
+    source      TEXT        NOT NULL,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_uid, email)
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletter_recipient_timezones_source_check'
+    ) THEN
+        ALTER TABLE newsletter_recipient_timezones
+            ADD CONSTRAINT newsletter_recipient_timezones_source_check
+            CHECK (source IN ('enrichment', 'ip_geolocation', 'browser'));
+    END IF;
+END$$;
+
+-- newsletter_send_recipients is a per-send audit trail of the timezone and
+-- resolved send_at actually used for each recipient of a tz_local send. One
+-- row per (newsletter_id, email); written by fanOut immediately after a
+-- successful per-recipient dispatch. Not used to drive delivery — SendGrid
+-- owns the actual release timing — this is purely for support/debugging
+-- visibility into what release time each recipient was given.
+CREATE TABLE IF NOT EXISTS newsletter_send_recipients (
+    id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    newsletter_id UUID        NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
+    email         TEXT        NOT NULL,
+    timezone      TEXT        NOT NULL,
+    send_at       TIMESTAMPTZ NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_send_recipients_newsletter_email
+    ON newsletter_send_recipients (newsletter_id, email);

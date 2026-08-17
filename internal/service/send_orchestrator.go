@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/mail"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -123,6 +124,12 @@ type SendOrchestrator struct {
 	// engagement purger, used to purge engagement records for scheduled sends
 	// even after a provider switch. Nil if SendGrid credentials are not configured.
 	sendGridDispatcher port.EngagementPurger
+	// recipientTZRepo backs per-recipient timezone-local scheduling
+	// (delivery_strategy=tz_local, LFXV2-2506): resolving each recipient's
+	// stored timezone and recording the computed per-recipient release time
+	// as an audit trail. Nil disables tz_local (SendNewsletter rejects an
+	// attempt to arm one).
+	recipientTZRepo port.RecipientTimezoneRepository
 }
 
 // SendOrchestratorConfig configures a SendOrchestrator.
@@ -194,6 +201,11 @@ type SendOrchestratorConfig struct {
 	// rollback to email-service (LFXV2-2685). Set when SendGrid credentials are
 	// configured.
 	SendGridDispatcher port.EngagementPurger
+	// RecipientTZRepo backs per-recipient timezone-local scheduling
+	// (delivery_strategy=tz_local, LFXV2-2506). Nil disables tz_local —
+	// SendNewsletter rejects an attempt to arm one rather than silently
+	// falling back to a shared send time.
+	RecipientTZRepo port.RecipientTimezoneRepository
 }
 
 // NewSendOrchestrator wires a SendOrchestrator.
@@ -282,6 +294,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		scheduleCancelBuffer:  scheduleCancelBuffer,
 		sendGridScheduler:     cfg.SendGridScheduler,
 		sendGridDispatcher:    cfg.SendGridDispatcher,
+		recipientTZRepo:       cfg.RecipientTZRepo,
 	}
 }
 
@@ -433,25 +446,56 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	groupID := uuid.NewString()
 
 	envelope := emailEnvelope{
-		Subject:         draft.Subject,
-		HTML:            htmlBody,
-		Text:            textBody,
-		From:            o.resolveFromAddress(ctx, draft.ProjectUID),
-		FromDisplayName: fromDisplayName,
-		ReplyTo:         replyTo,
-		GroupID:         groupID,
+		Subject:          draft.Subject,
+		HTML:             htmlBody,
+		Text:             textBody,
+		From:             o.resolveFromAddress(ctx, draft.ProjectUID),
+		FromDisplayName:  fromDisplayName,
+		ReplyTo:          replyTo,
+		GroupID:          groupID,
+		DeliveryStrategy: draft.DeliveryStrategy,
+		NewsletterID:     draft.ID,
 	}
 
 	// Mint the provider batch id before claiming 'sending' so scheduled_at and
 	// batch_id can be persisted atomically with the draft → sending transition
 	// (LFXV2-2685). Every recipient in the fan-out below carries this same
-	// SendAt/BatchID so the provider releases them together.
+	// BatchID; a global schedule also carries the same shared SendAt, while a
+	// tz_local schedule (LFXV2-2506) overrides SendAt per recipient via
+	// envelope.RecipientReleases.
 	// Validate the schedule window immediately before arming so the check accounts
 	// for time consumed by recipient resolution and rendering (LFXV2-2685).
 	var batchID string
 	if scheduledAt != nil {
 		if err := o.validateScheduleWindow(*scheduledAt); err != nil {
 			return nil, err
+		}
+		if draft.DeliveryStrategy == model.DeliveryStrategyTZLocal {
+			if o.recipientTZRepo == nil {
+				return nil, pkgerrors.NewServiceUnavailable("tz_local scheduling requires a recipient timezone store, which is not configured")
+			}
+			releases, err := o.resolveRecipientSendTimes(ctx, draft.ProjectUID, recipients, draft.TargetLocal, draft.DefaultTimezone, *scheduledAt)
+			if err != nil {
+				return nil, err
+			}
+			// Section 4.4 of the spec left the horizon-interaction behavior for
+			// a per-recipient release open ("needs confirmation with
+			// newsletter-service owners"). This resolves it fail-closed,
+			// mirroring validateScheduleWindow's own arm-time rejection above:
+			// reject the whole request before any state changes (no batch
+			// minted, no MarkSending) rather than silently clamping a
+			// recipient's release down to the provider's horizon and hiding
+			// the discrepancy in an audit trail.
+			maxAt := time.Now().UTC().Add(o.scheduleMaxHorizon)
+			for email, release := range releases {
+				if release.SendAt.After(maxAt) {
+					return nil, fmt.Errorf(
+						"%w: recipient %s resolves to a release time beyond the %s scheduling horizon (timezone %s)",
+						domain.ErrInvalidRequest, redactEmail(email), o.scheduleMaxHorizon, release.Timezone,
+					)
+				}
+			}
+			envelope.RecipientReleases = releases
 		}
 		batchID, err = scheduler.CreateBatchID(ctx)
 		if err != nil {
@@ -1048,10 +1092,41 @@ type emailEnvelope struct {
 	GroupID         string
 	// SendAt/BatchID arm a scheduled release (LFXV2-2685): when SendAt is
 	// non-nil, every recipient in the fan-out carries the same SendAt/BatchID
-	// so the provider holds and releases them together. Nil/empty for an
-	// immediate send.
+	// so the provider holds and releases them together, UNLESS
+	// DeliveryStrategy is tz_local (LFXV2-2506), in which case
+	// RecipientReleases below overrides SendAt per recipient while BatchID
+	// stays shared (a batch groups the whole send for cancellation purposes;
+	// SendGrid still lets each message in a batch carry its own send_at).
+	// Nil/empty SendAt with a nil RecipientReleases means an immediate send.
 	SendAt  *time.Time
 	BatchID string
+	// DeliveryStrategy and NewsletterID support tz_local scheduling
+	// (LFXV2-2506). DeliveryStrategy mirrors model.Newsletter.DeliveryStrategy
+	// (model.DeliveryStrategyGlobal or model.DeliveryStrategyTZLocal).
+	// NewsletterID is needed because fanOut only otherwise receives the
+	// project UID, not the newsletter row, and RecordSendRecipient's audit
+	// trail is keyed by newsletter.
+	DeliveryStrategy string
+	NewsletterID     uuid.UUID
+	// RecipientReleases holds each recipient's resolved per-recipient release
+	// time and the timezone used to compute it, keyed by lowercased email.
+	// Populated only for a tz_local schedule; nil for global/immediate sends,
+	// in which case fanOut falls back to the shared SendAt/BatchID above for
+	// every recipient.
+	RecipientReleases map[string]recipientRelease
+}
+
+// recipientRelease is one recipient's resolved tz_local release time
+// (LFXV2-2506): the UTC instant at which target_local occurs in the
+// recipient's resolved timezone on the schedule date, clamped to never
+// precede the operator's chosen scheduled_at. Timezone is persisted
+// alongside SendAt via RecordSendRecipient as the audit trail — the specific
+// timezone actually used to compute the release, after the
+// recipient-timezone-on-file → newsletter default_timezone → UTC fallback
+// chain.
+type recipientRelease struct {
+	SendAt   time.Time
+	Timezone string
 }
 
 // fanOut dispatches per-recipient send_email requests to email-service with
@@ -1114,6 +1189,21 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				mu.Unlock()
 				return
 			}
+			// A tz_local schedule (LFXV2-2506) overrides the shared SendAt with
+			// this recipient's own resolved release time; BatchID stays shared
+			// (SendGrid groups by batch for cancellation regardless of each
+			// message's individual send_at). Every other delivery strategy
+			// dispatches with the envelope's shared SendAt/BatchID, unchanged
+			// from before tz_local existed.
+			sendAt := env.SendAt
+			var release recipientRelease
+			var hasRelease bool
+			if env.DeliveryStrategy == model.DeliveryStrategyTZLocal && env.RecipientReleases != nil {
+				release, hasRelease = env.RecipientReleases[recipient.Email]
+				if hasRelease {
+					sendAt = &release.SendAt
+				}
+			}
 			_, err := o.email.SendEmail(ctx, port.SendEmailInput{
 				To:              recipient.Email,
 				Subject:         env.Subject,
@@ -1123,11 +1213,10 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				FromDisplayName: env.FromDisplayName,
 				ReplyTo:         env.ReplyTo,
 				GroupID:         env.GroupID,
-				SendAt:          env.SendAt,
+				SendAt:          sendAt,
 				BatchID:         env.BatchID,
 			})
 			mu.Lock()
-			defer mu.Unlock()
 			if err != nil {
 				// An ambiguous outcome (the provider may have accepted the message)
 				// is counted separately so an all-ambiguous fan-out does NOT trip
@@ -1139,6 +1228,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 					failed++
 				}
 				failures = append(failures, SendFailure{Email: recipient.Email, Error: err.Error()})
+				mu.Unlock()
 				slog.WarnContext(ctx, "send fanout: recipient failed",
 					"recipient", redactEmail(recipient.Email),
 					"group_id", env.GroupID,
@@ -1148,10 +1238,121 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				return
 			}
 			sent++
+			mu.Unlock()
+			// Record the per-recipient audit trail outside the mutex — this is a
+			// best-effort write (a failure here doesn't affect delivery, which
+			// already succeeded above), so it must never block other recipients'
+			// dispatch or count against the fan-out's success/failure totals.
+			if hasRelease && o.recipientTZRepo != nil {
+				if err := o.recipientTZRepo.RecordSendRecipient(ctx, env.NewsletterID, recipient.Email, release.Timezone, release.SendAt); err != nil {
+					slog.WarnContext(ctx, "tz_local schedule: failed to record recipient send-time audit trail",
+						"recipient", redactEmail(recipient.Email),
+						"newsletter_id", env.NewsletterID,
+						"error", err,
+					)
+				}
+			}
 		}()
 	}
 	wg.Wait()
 	return sent, failed, unknown, failures
+}
+
+// resolveRecipientSendTimes computes each recipient's tz_local release time
+// (LFXV2-2506): the UTC instant at which targetLocal (an "HH:MM" wall-clock
+// time) occurs, on scheduledAt's calendar date, in the recipient's resolved
+// timezone. Resolution order per recipient is: the timezone captured on file
+// via CaptureRecipientTimezone (o.recipientTZRepo), then the newsletter's own
+// defaultTimezone, then UTC. Every result is clamped to be no earlier than
+// scheduledAt — the operator's chosen time is always a floor, never something
+// a recipient's timezone can move earlier (e.g. a recipient far to the west
+// whose "9am local" on the schedule date would otherwise fall before the
+// operator even armed the schedule).
+func (o *SendOrchestrator) resolveRecipientSendTimes(ctx context.Context, projectUID string, recipients []model.CommitteeMember, targetLocal, defaultTimezone *string, scheduledAt time.Time) (map[string]recipientRelease, error) {
+	hh, mm, err := parseTargetLocal(fallbackString(derefString(targetLocal), ""))
+	if err != nil {
+		return nil, fmt.Errorf("%w: target_local: %v", domain.ErrInvalidRequest, err)
+	}
+
+	fallbackTZ := strings.TrimSpace(derefString(defaultTimezone))
+	if fallbackTZ == "" {
+		fallbackTZ = "UTC"
+	}
+
+	emails := make([]string, len(recipients))
+	for i, r := range recipients {
+		emails[i] = r.Email
+	}
+	onFile, err := o.recipientTZRepo.GetRecipientTimezones(ctx, projectUID, emails)
+	if err != nil {
+		return nil, fmt.Errorf("resolve recipient timezones: %w", err)
+	}
+
+	releases := make(map[string]recipientRelease, len(recipients))
+	for _, r := range recipients {
+		tz := strings.TrimSpace(onFile[r.Email])
+		if tz == "" {
+			tz = fallbackTZ
+		}
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			slog.WarnContext(ctx, "tz_local schedule: recipient timezone failed to load, falling back to UTC",
+				"recipient", redactEmail(r.Email),
+				"timezone", tz,
+				"error", err,
+			)
+			tz = "UTC"
+			loc = time.UTC
+		}
+		releaseAt := localReleaseTime(scheduledAt, hh, mm, loc)
+		if releaseAt.Before(scheduledAt) {
+			releaseAt = scheduledAt
+		}
+		releases[r.Email] = recipientRelease{SendAt: releaseAt, Timezone: tz}
+	}
+	return releases, nil
+}
+
+// localReleaseTime returns the UTC instant at which hh:mm occurs, in loc, on
+// the calendar date scheduledAt falls on when viewed in loc. Constructing via
+// time.Date(..., loc) is DST-safe by construction for all three edge cases
+// this must handle: a wall-clock time that doesn't exist that day (spring-
+// forward gap) is normalized forward by Go's calendar arithmetic; a wall-
+// clock time that occurs twice (fall-back overlap) resolves to its first
+// (pre-transition) occurrence; and the date itself is always the one implied
+// by loc's own offset on the schedule date, not any other timezone's idea of
+// "today".
+func localReleaseTime(scheduledAt time.Time, hh, mm int, loc *time.Location) time.Time {
+	local := scheduledAt.In(loc)
+	return time.Date(local.Year(), local.Month(), local.Day(), hh, mm, 0, 0, loc).UTC()
+}
+
+// parseTargetLocal parses an "HH:MM" 24-hour wall-clock string (the shape
+// validateTZLocalFields already enforces at draft save time), returning the
+// hour and minute components.
+func parseTargetLocal(targetLocal string) (hh, mm int, err error) {
+	parts := strings.SplitN(targetLocal, ":", 2)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("expected HH:MM, got %q", targetLocal)
+	}
+	hh, err = strconv.Atoi(parts[0])
+	if err != nil || hh < 0 || hh > 23 {
+		return 0, 0, fmt.Errorf("invalid hour in %q", targetLocal)
+	}
+	mm, err = strconv.Atoi(parts[1])
+	if err != nil || mm < 0 || mm > 59 {
+		return 0, 0, fmt.Errorf("invalid minute in %q", targetLocal)
+	}
+	return hh, mm, nil
+}
+
+// derefString safely dereferences an optional string pointer, e.g.
+// model.Newsletter's TargetLocal/DefaultTimezone.
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // resolveSenderName looks up the sender's display name from auth-service using

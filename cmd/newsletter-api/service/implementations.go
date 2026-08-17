@@ -141,10 +141,13 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 
 	// Step 5: domain wiring.
 	repo := repository.NewPostgresNewsletterRepo(bunDB)
-	newsletterSvc := service.NewNewsletterService(repo)
+	// repo also implements port.RecipientTimezoneRepository (LFXV2-2506); it
+	// is reused, not duplicated, as the recipient-timezone store below.
+	newsletterSvc := service.NewNewsletterService(repo, repo)
 	unsubSvc := service.NewUnsubscribeService(repo, []byte(cfg.UnsubscribeSecret), cfg.PublicBaseURL)
 	sendSvc = service.NewSendOrchestrator(service.SendOrchestratorConfig{
 		Repo:                  repo,
+		RecipientTZRepo:       repo,
 		Committee:             committeeClient,
 		Project:               projectClient,
 		Email:                 emailDispatcher,

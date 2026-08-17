@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	_ "time/tzdata" // guarantee IANA tzdata is embedded so time.LoadLocation works without an OS tzdata package
 
 	"github.com/google/uuid"
 
@@ -30,6 +31,9 @@ import (
 // malformed values even if a future caller forgets to validate upstream.
 var recipientHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
+// targetLocalPattern matches a 24-hour HH:MM wall-clock time, e.g. "09:00".
+var targetLocalPattern = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
+
 const (
 	maxSubjectLength      = 200
 	maxBodyHTMLLength     = 100_000
@@ -38,12 +42,16 @@ const (
 
 // NewsletterService implements business logic for draft management.
 type NewsletterService struct {
-	repo port.NewsletterRepository
+	repo   port.NewsletterRepository
+	tzRepo port.RecipientTimezoneRepository
 }
 
-// NewNewsletterService wires a NewsletterService over the given repository.
-func NewNewsletterService(repo port.NewsletterRepository) *NewsletterService {
-	return &NewsletterService{repo: repo}
+// NewNewsletterService wires a NewsletterService over the given repositories.
+// tzRepo may be the same concrete value as repo — PostgresNewsletterRepo
+// implements both interfaces — or nil in tests that don't exercise recipient
+// timezone capture.
+func NewNewsletterService(repo port.NewsletterRepository, tzRepo port.RecipientTimezoneRepository) *NewsletterService {
+	return &NewsletterService{repo: repo, tzRepo: tzRepo}
 }
 
 // CreateDraftInput is the typed input for CreateDraft.
@@ -56,6 +64,15 @@ type CreateDraftInput struct {
 	CreatedBy     string
 	// ScheduledAt is optional save-time intent — see validateScheduledAtSave.
 	ScheduledAt *time.Time
+	// DeliveryStrategy is "global" or "tz_local" (LFXV2-2506). Empty defaults
+	// to "global".
+	DeliveryStrategy string
+	// TargetLocal is the HH:MM release time on the schedule date, required
+	// when DeliveryStrategy is "tz_local".
+	TargetLocal *string
+	// DefaultTimezone is the IANA fallback timezone, required when
+	// DeliveryStrategy is "tz_local".
+	DefaultTimezone *string
 }
 
 // UpdateDraftInput is the typed input for UpdateDraft.
@@ -69,6 +86,11 @@ type UpdateDraftInput struct {
 	// ScheduledAt is full-replace like every other field here: nil clears a
 	// previously-saved schedule.
 	ScheduledAt *time.Time
+	// DeliveryStrategy, TargetLocal, and DefaultTimezone are full-replace,
+	// like ScheduledAt — see CreateDraftInput.
+	DeliveryStrategy string
+	TargetLocal      *string
+	DefaultTimezone  *string
 }
 
 // CreateDraft validates the input and inserts a new draft row.
@@ -94,6 +116,13 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	if err := validateScheduledAtSave(in.ScheduledAt); err != nil {
 		return nil, err
 	}
+	deliveryStrategy, err := validateDeliveryStrategy(in.DeliveryStrategy)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateTZLocalFields(deliveryStrategy, in.TargetLocal, in.DefaultTimezone); err != nil {
+		return nil, err
+	}
 
 	n := &model.Newsletter{
 		ProjectUID:    in.ProjectUID,
@@ -104,6 +133,14 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 		Status:        model.StatusDraft,
 		CreatedBy:     in.CreatedBy,
 		ScheduledAt:   in.ScheduledAt,
+		// deliveryStrategy is explicitly defaulted to "global" by
+		// validateDeliveryStrategy rather than relying on the schema column
+		// default: bun's struct-model insert sends Go's zero value ("") for
+		// an unset string field, which would violate the CHECK constraint
+		// instead of falling back to the DB default.
+		DeliveryStrategy: deliveryStrategy,
+		TargetLocal:      in.TargetLocal,
+		DefaultTimezone:  in.DefaultTimezone,
 	}
 
 	if err := s.repo.Create(ctx, n); err != nil {
@@ -264,6 +301,13 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	if err := validateScheduledAtSave(in.ScheduledAt); err != nil {
 		return nil, err
 	}
+	deliveryStrategy, err := validateDeliveryStrategy(in.DeliveryStrategy)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateTZLocalFields(deliveryStrategy, in.TargetLocal, in.DefaultTimezone); err != nil {
+		return nil, err
+	}
 
 	existing, err := s.repo.Get(ctx, in.ID)
 	if err != nil {
@@ -293,6 +337,9 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	existing.EDReplyEmail = strings.TrimSpace(in.EDReplyEmail)
 	existing.CommitteeUIDs = normalizeCommitteeUIDs(in.CommitteeUIDs)
 	existing.ScheduledAt = in.ScheduledAt
+	existing.DeliveryStrategy = deliveryStrategy
+	existing.TargetLocal = in.TargetLocal
+	existing.DefaultTimezone = in.DefaultTimezone
 
 	return s.repo.Update(ctx, existing, in.ExpectedVersion)
 }
@@ -320,6 +367,45 @@ func (s *NewsletterService) DeleteDraft(ctx context.Context, projectUID string, 
 		return domain.ErrScheduled
 	}
 	return s.repo.Delete(ctx, id)
+}
+
+// CaptureRecipientTimezoneInput is the typed input for CaptureRecipientTimezone.
+type CaptureRecipientTimezoneInput struct {
+	ProjectUID string
+	Email      string
+	Timezone   string
+	Source     string
+}
+
+// CaptureRecipientTimezone records or overwrites the timezone on file for a
+// recipient, scoped to (project_uid, email) (LFXV2-2506, Option B). It is
+// independent of any single newsletter — the timezone is a property of the
+// person within a project, consumed later by any tz_local send's fan-out.
+func (s *NewsletterService) CaptureRecipientTimezone(ctx context.Context, in CaptureRecipientTimezoneInput) error {
+	if s.tzRepo == nil {
+		return fmt.Errorf("%w: recipient timezone capture is not configured", domain.ErrInvalidRequest)
+	}
+	if err := validateProjectUID(in.ProjectUID); err != nil {
+		return err
+	}
+	trimmedEmail := strings.ToLower(strings.TrimSpace(in.Email))
+	if trimmedEmail == "" {
+		return fmt.Errorf("%w: email is required", domain.ErrInvalidRequest)
+	}
+	if _, err := mail.ParseAddress(trimmedEmail); err != nil {
+		return fmt.Errorf("%w: email is not a valid email: %v", domain.ErrInvalidRequest, err)
+	}
+	if err := validateIANATimezone(in.Timezone); err != nil {
+		return fmt.Errorf("%w: timezone %v", domain.ErrInvalidRequest, err)
+	}
+	source := strings.TrimSpace(in.Source)
+	switch source {
+	case model.RecipientTimezoneSourceEnrichment, model.RecipientTimezoneSourceIPGeolocation, model.RecipientTimezoneSourceBrowser:
+		// valid
+	default:
+		return fmt.Errorf("%w: source must be 'enrichment', 'ip_geolocation', or 'browser'", domain.ErrInvalidRequest)
+	}
+	return s.tzRepo.UpsertRecipientTimezone(ctx, in.ProjectUID, trimmedEmail, strings.TrimSpace(in.Timezone), source)
 }
 
 func validateProjectUID(projectUID string) error {
@@ -372,6 +458,74 @@ func validateScheduledAtSave(scheduledAt *time.Time) error {
 	}
 	if !scheduledAt.After(time.Now().UTC()) {
 		return fmt.Errorf("%w: scheduled_at must be in the future", domain.ErrInvalidRequest)
+	}
+	return nil
+}
+
+// validateDeliveryStrategy normalizes and validates the delivery_strategy
+// input, returning the value to persist. An empty string defaults to
+// "global" — callers must use the returned value, not the raw input, when
+// constructing/updating a model.Newsletter (see the comment in CreateDraft).
+func validateDeliveryStrategy(strategy string) (string, error) {
+	trimmed := strings.TrimSpace(strategy)
+	if trimmed == "" {
+		return model.DeliveryStrategyGlobal, nil
+	}
+	switch trimmed {
+	case model.DeliveryStrategyGlobal, model.DeliveryStrategyTZLocal:
+		return trimmed, nil
+	default:
+		return "", fmt.Errorf("%w: delivery_strategy must be 'global' or 'tz_local'", domain.ErrInvalidRequest)
+	}
+}
+
+// validateTZLocalFields mirrors the schema CHECK constraint
+// newsletters_tz_local_requires_fields: tz_local requires both TargetLocal
+// and DefaultTimezone; global requires neither be set.
+func validateTZLocalFields(deliveryStrategy string, targetLocal, defaultTimezone *string) error {
+	if deliveryStrategy == model.DeliveryStrategyTZLocal {
+		if targetLocal == nil || strings.TrimSpace(*targetLocal) == "" {
+			return fmt.Errorf("%w: target_local is required when delivery_strategy is 'tz_local'", domain.ErrInvalidRequest)
+		}
+		if !targetLocalPattern.MatchString(strings.TrimSpace(*targetLocal)) {
+			return fmt.Errorf("%w: target_local must be in HH:MM 24-hour format", domain.ErrInvalidRequest)
+		}
+		if defaultTimezone == nil || strings.TrimSpace(*defaultTimezone) == "" {
+			return fmt.Errorf("%w: default_timezone is required when delivery_strategy is 'tz_local'", domain.ErrInvalidRequest)
+		}
+		if err := validateIANATimezone(*defaultTimezone); err != nil {
+			return fmt.Errorf("%w: default_timezone %v", domain.ErrInvalidRequest, err)
+		}
+		return nil
+	}
+	// global: neither field applies. Reject rather than silently discard, so
+	// a caller who mistakenly sets them on a global draft finds out at save
+	// time instead of losing data silently.
+	if targetLocal != nil && strings.TrimSpace(*targetLocal) != "" {
+		return fmt.Errorf("%w: target_local is only valid when delivery_strategy is 'tz_local'", domain.ErrInvalidRequest)
+	}
+	if defaultTimezone != nil && strings.TrimSpace(*defaultTimezone) != "" {
+		return fmt.Errorf("%w: default_timezone is only valid when delivery_strategy is 'tz_local'", domain.ErrInvalidRequest)
+	}
+	return nil
+}
+
+// validateIANATimezone confirms tz is loadable via the stdlib tzdata
+// database. Used for both a newsletter's default_timezone and a captured
+// recipient timezone, so both reject the same way at input time rather than
+// failing later inside the fan-out's clamp computation.
+func validateIANATimezone(tz string) error {
+	trimmed := strings.TrimSpace(tz)
+	if trimmed == "" {
+		return errors.New("must not be empty")
+	}
+	if strings.EqualFold(trimmed, "Local") {
+		// time.LoadLocation("Local") resolves to the host's local timezone,
+		// which is meaningless for a server-side scheduling decision.
+		return errors.New("must be a specific IANA timezone, not 'Local'")
+	}
+	if _, err := time.LoadLocation(trimmed); err != nil {
+		return fmt.Errorf("is not a valid IANA timezone: %w", err)
 	}
 	return nil
 }
