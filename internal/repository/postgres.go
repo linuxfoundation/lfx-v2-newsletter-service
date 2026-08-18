@@ -213,6 +213,9 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		// json-encodes the slice and PG raises a "malformed array literal".
 		Set("committee_uids = ?", pgdialect.Array(n.CommitteeUIDs)).
 		Set("project_uid = ?", n.ProjectUID).
+		// Full replace: a nil publication_id unlinks the edition from its
+		// publication, consistent with the create/update contract (LFXV2-2582).
+		Set("publication_id = ?", n.PublicationID).
 		// Full replace: an omitted/null scheduled_at clears it, consistent with
 		// every other field here (LFXV2-2685).
 		Set("scheduled_at = ?", n.ScheduledAt).

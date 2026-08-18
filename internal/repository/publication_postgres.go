@@ -10,10 +10,12 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/uptrace/bun"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
+	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
 // PostgresPublicationRepo persists NewsletterPublication aggregates in PostgreSQL via bun.
@@ -33,6 +35,12 @@ func (r *PostgresPublicationRepo) Create(ctx context.Context, pub *model.Newslet
 		Model(pub).
 		Returning("*").
 		Exec(ctx); err != nil {
+		// A duplicate (project_uid, slug) is caller-driven input, not a server
+		// fault — surface it as a 409 conflict rather than a raw 500.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_publications_project_slug" {
+			return pkgerrors.NewConflict(fmt.Sprintf("a publication with slug %q already exists in this project", pub.Slug), err)
+		}
 		return fmt.Errorf("insert publication: %w", err)
 	}
 	return nil

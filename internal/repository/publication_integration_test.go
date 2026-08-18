@@ -7,7 +7,6 @@ package repository
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
