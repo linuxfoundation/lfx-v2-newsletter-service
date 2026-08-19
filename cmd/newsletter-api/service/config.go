@@ -54,6 +54,19 @@ type AppConfig struct {
 	// Kept above SendJobTimeout so the sweep never races a live job.
 	StuckSendTTL time.Duration
 
+	// ScheduleMaxHorizon caps how far in the future a schedule can be armed
+	// (LFXV2-2685), enforced at POST .../schedule. Clamped to SendGrid Mail
+	// Send's own 72h send_at limit — a larger configured value is rejected at
+	// startup since SendGrid enforces the cap anyway.
+	ScheduleMaxHorizon time.Duration
+	// ScheduleMinLead is the minimum lead time a newly-armed schedule must
+	// clear (LFXV2-2685): scheduled_at must be after now + ScheduleMinLead.
+	ScheduleMinLead time.Duration
+	// ScheduleCancelBuffer rejects a cancel-schedule request that arrives
+	// inside this window before scheduled_at (LFXV2-2685), since SendGrid's
+	// cancel is best-effort near release time.
+	ScheduleCancelBuffer time.Duration
+
 	// EmailFromAddress is the bare address used as the SMTP envelope From on
 	// outbound newsletters. Defaults to newsletter@lfx.linuxfoundation.org; override
 	// per environment when a different sender is configured upstream. The
@@ -136,6 +149,12 @@ const (
 	defaultSendJobTimeout        = 30 * time.Minute
 	defaultStuckSendTTL          = 45 * time.Minute
 	defaultSelfServeBaseURL      = "https://app.lfx.dev"
+	// maxScheduleHorizon mirrors SendGrid Mail Send's own send_at limit
+	// (LFXV2-2685); a larger configured ScheduleMaxHorizon is rejected at
+	// startup rather than silently clamped, since SendGrid enforces it anyway.
+	maxScheduleHorizon          = 72 * time.Hour
+	defaultScheduleMinLead      = 5 * time.Minute
+	defaultScheduleCancelBuffer = 10 * time.Minute
 	// minStuckSendSlack is the minimum margin enforced between SendJobTimeout
 	// and StuckSendTTL so the recovery sweep never marks a row 'sent' while
 	// its fan-out job is still running.
@@ -157,6 +176,9 @@ func AppConfigFromEnv() (AppConfig, error) {
 		SendConcurrency:           intOr("SEND_CONCURRENCY", defaultSendConcurrency),
 		SendJobTimeout:            durationOr("SEND_JOB_TIMEOUT", defaultSendJobTimeout),
 		StuckSendTTL:              durationOr("STUCK_SEND_TTL", defaultStuckSendTTL),
+		ScheduleMaxHorizon:        durationOr("NEWSLETTER_SCHEDULE_MAX_HORIZON", maxScheduleHorizon),
+		ScheduleMinLead:           durationOr("NEWSLETTER_SCHEDULE_MIN_LEAD", defaultScheduleMinLead),
+		ScheduleCancelBuffer:      durationOr("NEWSLETTER_SCHEDULE_CANCEL_BUFFER", defaultScheduleCancelBuffer),
 		EmailFromAddress:          envOr("EMAIL_FROM_ADDRESS", defaultEmailFromAddress),
 		EmailFromAddressOverrides: parseFromAddressOverrides(os.Getenv("EMAIL_FROM_ADDRESS_OVERRIDES")),
 		EmailReplyToAllowedDomains: parseAllowedDomains(
@@ -238,6 +260,13 @@ func AppConfigFromEnv() (AppConfig, error) {
 	// never mark a row 'sent' while its fan-out is still running.
 	if cfg.StuckSendTTL < cfg.SendJobTimeout+minStuckSendSlack {
 		cfg.StuckSendTTL = cfg.SendJobTimeout + minStuckSendSlack
+	}
+
+	// A configured horizon beyond SendGrid's own send_at limit would let a
+	// schedule pass our validation only to be rejected by SendGrid itself —
+	// fail fast at startup instead (LFXV2-2685).
+	if cfg.ScheduleMaxHorizon > maxScheduleHorizon {
+		return cfg, fmt.Errorf("NEWSLETTER_SCHEDULE_MAX_HORIZON must be <= %s (SendGrid Mail Send's send_at limit), got %s", maxScheduleHorizon, cfg.ScheduleMaxHorizon)
 	}
 
 	return cfg, nil

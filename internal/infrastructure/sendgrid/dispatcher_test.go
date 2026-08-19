@@ -28,6 +28,7 @@ type fakeStore struct {
 	delivered  []string // emailIDs
 	failed     []string // emailIDs
 	opens      []string // "sgEventID|emailID"
+	clicks     []string // "sgEventID|emailID|url"
 	deleted    []string // groupIDs passed to RevertGroup
 	applyErr   error    // when set, the Apply* methods return it
 	engagement *port.EmailEngagement
@@ -51,6 +52,10 @@ func (f *fakeStore) ApplyOpen(_ context.Context, sgEventID, emailID, _, _ string
 	f.opens = append(f.opens, sgEventID+"|"+emailID)
 	return f.applyErr
 }
+func (f *fakeStore) ApplyClick(_ context.Context, sgEventID, emailID, _, _, url string, _ time.Time) error {
+	f.clicks = append(f.clicks, sgEventID+"|"+emailID+"|"+url)
+	return f.applyErr
+}
 func (f *fakeStore) ApplyFailed(_ context.Context, emailID, _, _ string, _ time.Time) error {
 	f.failed = append(f.failed, emailID)
 	return f.applyErr
@@ -60,6 +65,9 @@ func (f *fakeStore) Engagement(context.Context, string) (*port.EmailEngagement, 
 }
 func (f *fakeStore) RecipientByEmailID(context.Context, string) (*port.EmailRecipientRecord, error) {
 	return f.byEmailID, nil
+}
+func (f *fakeStore) RecipientRecordsByGroupID(context.Context, string) ([]port.EmailRecipientRecord, error) {
+	return nil, nil
 }
 func (f *fakeStore) GroupEngagementDetail(context.Context, string) (*port.GroupEngagementDetail, error) {
 	return f.detail, nil
@@ -534,5 +542,173 @@ func TestDispatcher_PurgeEngagement(t *testing.T) {
 	d2, _ := NewDispatcher(Config{APIKey: "k", DefaultFrom: "f@lfx.aaif.io"})
 	if err := d2.PurgeEngagement(context.Background(), "x"); err != nil {
 		t.Errorf("store-less PurgeEngagement should be a no-op, got %v", err)
+	}
+}
+
+func TestSendEmail_ScheduledSendAt(t *testing.T) {
+	// Test that send_at and batch_id are properly serialized when scheduling a send.
+	var gotBody mailSendRequest
+	d := newTestDispatcher(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	sendAtTime := time.Now().UTC().Add(24 * time.Hour)
+	emailID, err := d.SendEmail(context.Background(), port.SendEmailInput{
+		To:      "alice@example.com",
+		Subject: "Scheduled",
+		Text:    "Hi",
+		GroupID: "grp-456",
+		SendAt:  &sendAtTime,
+		BatchID: "batch-789",
+	})
+	if err != nil {
+		t.Fatalf("SendEmail with scheduled send_at: %v", err)
+	}
+	if emailID == "" {
+		t.Errorf("expected a non-empty email_id for scheduled send")
+	}
+	if gotBody.SendAt == nil {
+		t.Errorf("send_at should be set in the request")
+	}
+	if *gotBody.SendAt != sendAtTime.Unix() {
+		t.Errorf("send_at = %d, want %d", *gotBody.SendAt, sendAtTime.Unix())
+	}
+	if gotBody.BatchID != "batch-789" {
+		t.Errorf("batch_id = %q, want batch-789", gotBody.BatchID)
+	}
+}
+
+func TestCreateBatchID_Success(t *testing.T) {
+	d := newTestDispatcher(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != mailBatchPath {
+			t.Errorf("path = %q, want %q", r.URL.Path, mailBatchPath)
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"batch_id":"SG.batch-test-123"}`))
+	})
+
+	batchID, err := d.CreateBatchID(context.Background())
+	if err != nil {
+		t.Fatalf("CreateBatchID: %v", err)
+	}
+	if batchID != "SG.batch-test-123" {
+		t.Errorf("batch_id = %q, want SG.batch-test-123", batchID)
+	}
+}
+
+func TestCreateBatchID_ErrorHandling(t *testing.T) {
+	cases := []struct {
+		name            string
+		status          int
+		responseBody    string
+		wantErrContains string
+	}{
+		{"500 error", http.StatusInternalServerError, `{"errors":[{"message":"server error"}]}`, "returned 500"},
+		{"malformed response", http.StatusCreated, `{invalid json}`, "unparseable"},
+		{"missing batch_id", http.StatusCreated, `{}`, "unparseable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDispatcher(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.responseBody))
+			})
+
+			_, err := d.CreateBatchID(context.Background())
+			if err == nil {
+				t.Fatalf("expected an error for status %d", tc.status)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrContains) {
+				t.Errorf("error = %v, should contain %q", err, tc.wantErrContains)
+			}
+		})
+	}
+}
+
+func TestCancelScheduledBatch_Success(t *testing.T) {
+	var gotBody scheduledSendRequest
+	d := newTestDispatcher(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		if r.URL.Path != scheduledSendsPath {
+			t.Errorf("path = %q, want %q", r.URL.Path, scheduledSendsPath)
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	err := d.CancelScheduledBatch(context.Background(), "batch-789")
+	if err != nil {
+		t.Fatalf("CancelScheduledBatch: %v", err)
+	}
+	if gotBody.BatchID != "batch-789" {
+		t.Errorf("batch_id = %q, want batch-789", gotBody.BatchID)
+	}
+	if gotBody.Status != "cancel" {
+		t.Errorf("status = %q, want cancel", gotBody.Status)
+	}
+}
+
+func TestCancelScheduledBatch_AcceptsAlternateSuccessStatuses(t *testing.T) {
+	// SendGrid's documented response for this endpoint is 201, but 200 and 204
+	// have also been observed for the same successful cancellation.
+	for _, status := range []int{http.StatusOK, http.StatusNoContent} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			d := newTestDispatcher(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+			})
+			if err := d.CancelScheduledBatch(context.Background(), "batch-789"); err != nil {
+				t.Fatalf("CancelScheduledBatch with status %d: %v", status, err)
+			}
+		})
+	}
+}
+
+func TestCancelScheduledBatch_Idempotent(t *testing.T) {
+	// Re-cancelling an already-cancelled batch is treated as success
+	// (the SendGrid API returns a BadRequest with "already exists in the cancel").
+	d := newTestDispatcher(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"Batch already exists in the cancel queue"}]}`))
+	})
+
+	err := d.CancelScheduledBatch(context.Background(), "batch-789")
+	if err != nil {
+		t.Fatalf("re-cancel of already-cancelled batch should be idempotent, got: %v", err)
+	}
+}
+
+func TestCancelScheduledBatch_ErrorHandling(t *testing.T) {
+	cases := []struct {
+		name            string
+		status          int
+		responseBody    string
+		wantErrContains string
+	}{
+		{"500 error", http.StatusInternalServerError, `{"errors":[{"message":"server error"}]}`, "returned 500"},
+		{"bad request (not already cancelled)", http.StatusBadRequest, `{"errors":[{"message":"Batch not found"}]}`, "Batch not found"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDispatcher(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.responseBody))
+			})
+
+			err := d.CancelScheduledBatch(context.Background(), "batch-789")
+			if err == nil {
+				t.Fatalf("expected an error for %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrContains) {
+				t.Errorf("error = %v, should contain %q", err, tc.wantErrContains)
+			}
+		})
 	}
 }

@@ -42,6 +42,7 @@ func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
 		EDReplyEmail:  body.EDReplyEmail,
 		CommitteeUIDs: body.CommitteeUIDs,
 		CreatedBy:     user,
+		ScheduledAt:   body.ScheduledAt,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -102,6 +103,7 @@ func (h *Handler) UpdateNewsletter(w http.ResponseWriter, r *http.Request) {
 		BodyLayout:      toEmitterLayoutPtr(body.BodyLayout.Layout),
 		EDReplyEmail:    body.EDReplyEmail,
 		CommitteeUIDs:   body.CommitteeUIDs,
+		ScheduledAt:     body.ScheduledAt,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -170,6 +172,7 @@ func toAPINewsletter(ctx context.Context, n *model.Newsletter) *publicapi.Newsle
 		Status:          publicapi.Status(n.Status),
 		SentAt:          n.SentAt,
 		GroupID:         n.GroupID,
+		ScheduledAt:     n.ScheduledAt,
 		TotalRecipients: n.TotalRecipients,
 		CreatedBy:       n.CreatedBy,
 		Version:         n.Version,

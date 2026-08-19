@@ -109,6 +109,18 @@ spec:
             - name: EMAIL_REPLY_TO_ALLOWED_DOMAINS
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.app.send.schedule.maxHorizon }}
+            - name: NEWSLETTER_SCHEDULE_MAX_HORIZON
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.schedule.minLead }}
+            - name: NEWSLETTER_SCHEDULE_MIN_LEAD
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.schedule.cancelBuffer }}
+            - name: NEWSLETTER_SCHEDULE_CANCEL_BUFFER
+              value: {{ . | quote }}
+            {{- end }}
             {{- if and (ne .Values.app.send.provider "email-service") (ne .Values.app.send.provider "sendgrid") }}
             {{- fail (printf "app.send.provider must be \"email-service\" or \"sendgrid\", got %q" .Values.app.send.provider) }}
             {{- end }}
@@ -126,14 +138,11 @@ spec:
                  empty list would disable the From-domain guard. Mirrors the API-key guard. */}}
             {{- required "app.send.sendgrid.authenticatedDomains is required when app.send.provider=sendgrid" "" }}
             {{- end }}
-            {{- if .Values.app.send.sendgrid.apiKeySecretRef.name }}
-            - name: SENDGRID_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.app.send.sendgrid.apiKeySecretRef.name }}
-                  key: {{ .Values.app.send.sendgrid.apiKeySecretRef.key }}
-            {{- else }}
-            {{/* Fail the install rather than let every pod CrashLoop in AppConfigFromEnv on a missing key. */}}
+            {{- if not .Values.app.send.sendgrid.apiKeySecretRef.name }}
+            {{/* A SendGrid provider needs the API key to arm scheduled sends and
+                 to support cancellation of outstanding batches even after a
+                 provider switch back to email-service (LFXV2-2685). Require the ref
+                 for provider=sendgrid. */}}
             {{- required "app.send.sendgrid.apiKeySecretRef.name is required when app.send.provider=sendgrid" "" }}
             {{- end }}
             {{- if not .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
@@ -145,6 +154,18 @@ spec:
                  back to email-service. */}}
             {{- required "app.send.sendgrid.webhookPublicKeySecretRef.name is required when app.send.provider=sendgrid" "" }}
             {{- end }}
+            {{- end }}
+            {{- if .Values.app.send.sendgrid.apiKeySecretRef.name }}
+            # SendGrid API key is wired independently of the active outbound provider
+            # to support the independently-wired scheduler that handles cancellations
+            # of scheduled sends even after a provider rollback to email-service
+            # (LFXV2-2685). Credentials are NOT required when provider=email-service
+            # but MUST be configured when scheduled sends need to be cancelable.
+            - name: SENDGRID_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.send.sendgrid.apiKeySecretRef.name }}
+                  key: {{ .Values.app.send.sendgrid.apiKeySecretRef.key }}
             {{- end }}
             {{- if .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
             # Webhook ingestion is independent of the active outbound provider: the

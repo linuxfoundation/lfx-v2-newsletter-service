@@ -19,11 +19,20 @@ type Status string
 //
 // StatusSending means a send has been accepted and the per-recipient fan-out
 // is running asynchronously. The newsletter settles to StatusSent on
-// completion, or reverts to StatusDraft if no recipient could be delivered to.
+// completion (at least one recipient succeeded or any result is ambiguous),
+// or reverts to StatusDraft if no recipient could be delivered to. A settled
+// StatusSent does NOT guarantee that all recipients were accepted — only that
+// the send was initiated. For scheduling, StatusSending transitions to
+// StatusScheduled once at least one recipient message is accepted by SendGrid
+// for release at the scheduled_at time, or if any scheduling outcome is
+// ambiguous. A settled StatusScheduled does NOT guarantee all recipients were
+// accepted — only that the schedule was armed at the provider or its outcome
+// was unknown.
 const (
-	StatusDraft   Status = "draft"
-	StatusSending Status = "sending"
-	StatusSent    Status = "sent"
+	StatusDraft     Status = "draft"
+	StatusSending   Status = "sending"
+	StatusScheduled Status = "scheduled"
+	StatusSent      Status = "sent"
 )
 
 // Newsletter is the response shape returned by single-resource endpoints.
@@ -42,12 +51,18 @@ type Newsletter struct {
 	SentAt        *time.Time        `json:"sent_at,omitempty"`
 	// GroupID is the lfx-v2-email-service correlation identifier, set when
 	// the newsletter is sent. Null on drafts.
-	GroupID         *string   `json:"group_id,omitempty"`
-	TotalRecipients int       `json:"total_recipients"`
-	CreatedBy       string    `json:"created_by"`
-	Version         int64     `json:"version"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	GroupID *string `json:"group_id,omitempty"`
+	// ScheduledAt carries two meanings depending on Status: while the
+	// newsletter is a draft, it is the author's saved intent — saving it does
+	// not by itself contact SendGrid. Once the newsletter is scheduled (via
+	// POST .../schedule), it is the committed release time. Null when no
+	// schedule has ever been set.
+	ScheduledAt     *time.Time `json:"scheduled_at,omitempty"`
+	TotalRecipients int        `json:"total_recipients"`
+	CreatedBy       string     `json:"created_by"`
+	Version         int64      `json:"version"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // CreateNewsletterRequest is the body of POST /projects/{project_uid}/newsletters.
@@ -61,6 +76,10 @@ type CreateNewsletterRequest struct {
 	BodyLayout    *NewsletterLayout `json:"body_layout,omitempty"`
 	EDReplyEmail  string            `json:"ed_reply_email"`
 	CommitteeUIDs []string          `json:"committee_uids"`
+	// ScheduledAt is optional. When set, only a future time is required at
+	// save time — arming the schedule (72h horizon, minimum lead) is
+	// validated separately by POST .../schedule.
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
 }
 
 // UpdateNewsletterRequest is the body of PUT /projects/{project_uid}/newsletters/{newsletter_uid}.
@@ -73,12 +92,16 @@ type CreateNewsletterRequest struct {
 //     the newsletter becomes html-only, taking body_html from the request.
 //   - OBJECT: the layout replaces the stored one; body_html is re-derived
 //     from it and the request's body_html is ignored.
+//
+// Full-replace semantics apply to ScheduledAt like every other field here: an
+// omitted value clears a previously-saved schedule.
 type UpdateNewsletterRequest struct {
 	Subject       string         `json:"subject"`
 	BodyHTML      string         `json:"body_html"`
 	BodyLayout    OptionalLayout `json:"body_layout,omitzero"`
 	EDReplyEmail  string         `json:"ed_reply_email"`
 	CommitteeUIDs []string       `json:"committee_uids"`
+	ScheduledAt   *time.Time     `json:"scheduled_at,omitempty"`
 }
 
 // OptionalLayout distinguishes the three JSON states of an optional
@@ -189,10 +212,14 @@ type SendFailure struct {
 // The send is asynchronous: the endpoint returns 202 Accepted as soon as the
 // newsletter transitions to status='sending' (with Sent=0 and no Failures),
 // and the fan-out completes in the background. Callers observe the outcome by
-// re-fetching the newsletter — status settles to 'sent', or reverts to
-// 'draft' when zero recipients could be delivered to. The zero-recipient edge
-// case settles synchronously and returns 200 with status='sent'. Clients
-// should branch on Newsletter.Status rather than the HTTP status code.
+// re-fetching the newsletter — status settles to 'sent' when at least one
+// recipient succeeded or any result is ambiguous, or reverts to 'draft' when
+// zero recipients could be delivered to. A settled status='sent' does NOT
+// guarantee all recipients were accepted — only that the send was initiated.
+// The zero-recipient edge case settles synchronously and returns 200 with
+// status='sent'. Clients should branch on Newsletter.Status rather than the
+// HTTP status code; consult the Failures list and provider engagement metrics
+// for per-recipient delivery outcomes.
 type SendNewsletterResponse struct {
 	Newsletter      Newsletter    `json:"newsletter"`
 	GroupID         string        `json:"group_id"`
@@ -289,6 +316,47 @@ type TemplateManifest struct {
 	Wrapper    string                  `json:"wrapper,omitempty"`
 }
 
+// ScheduleNewsletterRequest is the body of
+// POST /projects/{project_uid}/newsletters/{newsletter_uid}/schedule.
+//
+// ScheduledAt is optional: when omitted, the draft's previously-saved
+// scheduled_at is used. When neither exists, the request is rejected with a
+// 400. When present, it overrides the saved value for this arm.
+type ScheduleNewsletterRequest struct {
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+}
+
+// ScheduleNewsletterResponse is the body of
+// POST /projects/{project_uid}/newsletters/{newsletter_uid}/schedule.
+//
+// Mirrors SendNewsletterResponse: the endpoint returns 202 Accepted as soon
+// as the newsletter transitions to status='sending' with the schedule armed
+// at SendGrid, and the fan-out completes in the background. The newsletter
+// settles to status='scheduled' once at least one recipient's message has been
+// accepted by SendGrid for release at ScheduledAt, or if any scheduling outcome
+// is ambiguous (unknown result from the provider). It reverts to 'draft' only
+// when zero recipients could be scheduled and no outcome was ambiguous. A
+// settled status='scheduled' does NOT guarantee all recipients were accepted
+// — only that the schedule was armed. Consult the Failures list for
+// per-recipient scheduling outcomes.
+type ScheduleNewsletterResponse struct {
+	Newsletter      Newsletter    `json:"newsletter"`
+	GroupID         string        `json:"group_id"`
+	ScheduledAt     time.Time     `json:"scheduled_at"`
+	TotalRecipients int           `json:"total_recipients"`
+	Sent            int           `json:"sent"`
+	Failed          int           `json:"failed"`
+	Failures        []SendFailure `json:"failures,omitempty"`
+}
+
+// CancelScheduleResponse is the body of
+// POST /projects/{project_uid}/newsletters/{newsletter_uid}/cancel-schedule.
+// The reverted newsletter is back to status='draft', retaining scheduled_at
+// as the author's saved intent while group_id and batch_id are cleared.
+type CancelScheduleResponse struct {
+	Newsletter Newsletter `json:"newsletter"`
+}
+
 // NewsletterListItem is one row in the unified list response. Inherits the
 // Newsletter shape and adds engagement fields populated only when status='sent'.
 // body_layout is always omitted on list rows: a layout can approach the 1 MiB
@@ -334,6 +402,21 @@ type NewsletterDailyOpens struct {
 	UniqueOpens int    `json:"unique_opens"`
 }
 
+// NewsletterDailyClicks is one bucket of the daily-clicks time series,
+// mirroring NewsletterDailyOpens.
+type NewsletterDailyClicks struct {
+	Date         string `json:"date"`
+	Clicks       int    `json:"clicks"`
+	UniqueClicks int    `json:"unique_clicks"`
+}
+
+// NewsletterLinkClicks is one entry in the top-clicked-links breakdown.
+type NewsletterLinkClicks struct {
+	URL          string `json:"url"`
+	Clicks       int    `json:"clicks"`
+	UniqueClicks int    `json:"unique_clicks"`
+}
+
 // NewsletterAnalytics is the body of GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics.
 type NewsletterAnalytics struct {
 	NewsletterID    string     `json:"newsletter_id"`
@@ -353,7 +436,63 @@ type NewsletterAnalytics struct {
 	UniqueOpens      int                    `json:"unique_opens"`
 	OpenRate         float64                `json:"open_rate"`
 	DailyOpens       []NewsletterDailyOpens `json:"daily_opens"`
-	LastEventAt      *time.Time             `json:"last_event_at,omitempty"`
+	// TotalClicks / UniqueClicks / ClickRate / ClickToOpenRate / DailyClicks /
+	// TopLinks are SendGrid-only: a newsletter dispatched via send_provider
+	// "email-service" (SES) always reports zero/empty here. See
+	// docs/newsletter-service-contract.md.
+	TotalClicks     int                     `json:"total_clicks"`
+	UniqueClicks    int                     `json:"unique_clicks"`
+	ClickRate       float64                 `json:"click_rate"`
+	ClickToOpenRate float64                 `json:"click_to_open_rate"`
+	DailyClicks     []NewsletterDailyClicks `json:"daily_clicks"`
+	TopLinks        []NewsletterLinkClicks  `json:"top_links"`
+	LastEventAt     *time.Time              `json:"last_event_at,omitempty"`
+}
+
+// NewsletterRecipientEngagement is one recipient's row in the per-recipient
+// analytics response: who the newsletter went to, the delivery outcome, and
+// every recorded open.
+type NewsletterRecipientEngagement struct {
+	// Name is the recipient's full name, resolved best-effort from the
+	// newsletter's committees at read time. Empty when the member no longer
+	// appears in the committees or has no name on file — clients display Name
+	// when present and fall back to Email.
+	Name         string     `json:"name,omitempty"`
+	Email        string     `json:"email"`
+	SentAt       *time.Time `json:"sent_at,omitempty"`
+	Delivered    bool       `json:"delivered"`
+	DeliveredAt  *time.Time `json:"delivered_at,omitempty"`
+	Failed       bool       `json:"failed"`
+	FailedAt     *time.Time `json:"failed_at,omitempty"`
+	Opened       bool       `json:"opened"`
+	OpenCount    int        `json:"open_count"`
+	LastOpenedAt *time.Time `json:"last_opened_at,omitempty"`
+	// OpenedAtList holds every recorded open timestamp, ascending. Always
+	// present; empty when the recipient never opened.
+	OpenedAtList  []time.Time `json:"opened_at_list"`
+	Clicked       bool        `json:"clicked"`
+	ClickCount    int         `json:"click_count"`
+	LastClickedAt *time.Time  `json:"last_clicked_at,omitempty"`
+	// ClickedAtList holds every recorded click timestamp, ascending. Always
+	// present; empty when the recipient never clicked.
+	ClickedAtList []time.Time `json:"clicked_at_list"`
+}
+
+// NewsletterRecipientEngagementResponse is the body of
+// GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients.
+type NewsletterRecipientEngagementResponse struct {
+	NewsletterID string `json:"newsletter_id"`
+	// TotalRecipients is the newsletter's send-time audience snapshot.
+	TotalRecipients int `json:"total_recipients"`
+	// Complete is false when the sending provider returned fewer per-recipient
+	// records than TotalRecipients — the provider stores are best-effort
+	// (records may be omitted, and a freshly-sent newsletter's records may
+	// still be propagating), so clients must treat an incomplete list as
+	// partial rather than assume absent recipients were never sent to.
+	Complete bool `json:"complete"`
+	// Recipients is sorted by email ascending and always present; empty for
+	// drafts or when the sending provider recorded no recipients.
+	Recipients []NewsletterRecipientEngagement `json:"recipients"`
 }
 
 // OptOut is a single entry in the newsletter opt-outs list.

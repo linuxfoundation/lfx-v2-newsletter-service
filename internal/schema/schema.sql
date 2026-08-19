@@ -135,6 +135,104 @@ BEGIN
     END IF;
 END$$;
 
+-- scheduled_at / batch_id support scheduled sends (LFXV2-2685). scheduled_at
+-- carries two meanings depending on status: while draft, it is the author's
+-- saved intent (set on create/update, does not by itself send anything);
+-- once a schedule is armed it is the committed release time handed to the
+-- provider as send_at, and batch_id is the provider batch identifier shared
+-- by every recipient in that fan-out so the provider releases them together
+-- and the whole batch can be cancelled.
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS batch_id TEXT;
+
+-- Widen the status CHECK to add 'scheduled', mirroring the 'sending' widening
+-- above: additive for existing rows, a no-op once the constraint already
+-- mentions 'scheduled'.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'newsletters_status_check'
+          AND conrelid = 'newsletters'::regclass
+          AND pg_get_constraintdef(oid) NOT LIKE '%scheduled%'
+    ) THEN
+        ALTER TABLE newsletters DROP CONSTRAINT newsletters_status_check;
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_status_check
+            CHECK (status IN ('draft','sending','scheduled','sent'));
+    END IF;
+END$$;
+
+-- A scheduled row is armed for exactly one provider batch, so it needs a
+-- group_id too — widen the sent-only invariant to cover it. Drop-and-re-add
+-- inside a definition-guarded block so re-running schema.sql is a no-op.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'newsletters_sent_requires_group_id'
+          AND conrelid = 'newsletters'::regclass
+          AND pg_get_constraintdef(oid) NOT LIKE '%scheduled%'
+    ) THEN
+        ALTER TABLE newsletters DROP CONSTRAINT newsletters_sent_requires_group_id;
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_sent_requires_group_id
+            CHECK (status NOT IN ('sent','scheduled') OR group_id IS NOT NULL);
+    END IF;
+END$$;
+
+-- A scheduled row must carry both the release time and the provider batch
+-- id — that pair is what "armed" means. Deliberately one-directional: a draft
+-- may carry scheduled_at with no batch_id (the author's saved-but-unarmed
+-- intent), which this constraint permits.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_scheduled_requires_schedule'
+    ) THEN
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_scheduled_requires_schedule
+            CHECK (status <> 'scheduled' OR (scheduled_at IS NOT NULL AND batch_id IS NOT NULL));
+    END IF;
+END$$;
+
+-- Prevent legacy pods (running old code before the scheduled-sends feature)
+-- from mutating armed scheduled rows during a rolling deploy. An armed row
+-- (batch_id IS NOT NULL) has been handed to a provider scheduler; only the
+-- new code that understands the scheduler contract should touch it. This guard
+-- uses a session-local GUC flag to distinguish legitimate app mutations from
+-- legacy pod mutations: the new binary sets 'app.allow_armed_mutation' before
+-- each legitimate update, allowing it to pass; legacy pods never set it and
+-- are unconditionally blocked. CREATE OR REPLACE + DROP/CREATE keep re-running
+-- schema.sql a no-op.
+CREATE OR REPLACE FUNCTION reject_armed_scheduled_mutation() RETURNS trigger AS $$
+BEGIN
+    -- Only reject if the row was armed (OLD.batch_id IS NOT NULL) and the
+    -- caller did not explicitly authorize the mutation via the GUC flag.
+    -- The new binary always sets app.allow_armed_mutation = 'true' before
+    -- legitimate mutations, so it passes; legacy pods never set it and are blocked.
+    IF OLD.batch_id IS NOT NULL AND current_setting('app.allow_armed_mutation', true) IS DISTINCT FROM 'true' THEN
+        RAISE EXCEPTION 'cannot mutate armed scheduled row (batch_id is set) — service version mismatch during rolling deploy';
+    END IF;
+    -- For DELETE, return OLD; for UPDATE, return NEW
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_reject_armed_scheduled_mutation ON newsletters;
+CREATE TRIGGER trg_reject_armed_scheduled_mutation
+    BEFORE UPDATE OR DELETE ON newsletters
+    FOR EACH ROW EXECUTE FUNCTION reject_armed_scheduled_mutation();
+
+-- Supports the due-schedule sweep (status = 'scheduled' AND scheduled_at <= now()).
+CREATE INDEX IF NOT EXISTS idx_newsletters_scheduled_due
+    ON newsletters (scheduled_at) WHERE status = 'scheduled';
+
 -- Replace the old (context_type, context_uid) indexes with project-scoped
 -- equivalents. The composite list index supports the (project_uid, updated_at
 -- DESC, id DESC) keyset pagination used by ListAll.
@@ -295,3 +393,32 @@ DROP TRIGGER IF EXISTS trg_sg_reject_reverted_engagement ON sendgrid_recipient_e
 CREATE TRIGGER trg_sg_reject_reverted_engagement
     BEFORE INSERT ON sendgrid_recipient_engagement
     FOR EACH ROW EXECUTE FUNCTION sendgrid_reject_reverted_engagement();
+
+-- Click tracking (clicks parity with opens). clicked/click_count/last_clicked_at
+-- mirror the opened/open_count/last_opened_at columns above; ADD COLUMN ...
+-- NOT NULL DEFAULT is metadata-only on the PG12+ this schema already requires,
+-- so this is safe against a live cluster.
+ALTER TABLE sendgrid_recipient_engagement
+    ADD COLUMN IF NOT EXISTS clicked BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sendgrid_recipient_engagement
+    ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sendgrid_recipient_engagement
+    ADD COLUMN IF NOT EXISTS last_clicked_at TIMESTAMPTZ;
+
+-- Individual click events, mirroring sendgrid_open_events. Deduplicated by
+-- sg_event_id so a webhook redelivery is a no-op. url is the clicked link
+-- (truncated defensively at the application layer); group_id is derived by
+-- joining to sendgrid_recipient_engagement on email_id, same as opens.
+--
+-- Like sendgrid_open_events, this table carries no group_id, so it is NOT
+-- covered by trg_sg_reject_reverted_engagement (that trigger only fires on
+-- sendgrid_recipient_engagement). ApplyClick and RevertGroup handle the
+-- tombstone check and cleanup explicitly, the same way ApplyOpen does today.
+CREATE TABLE IF NOT EXISTS sendgrid_click_events (
+    sg_event_id TEXT        PRIMARY KEY,
+    email_id    TEXT        NOT NULL,
+    url         TEXT        NOT NULL DEFAULT '',
+    clicked_at  TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sg_click_events_email ON sendgrid_click_events (email_id);

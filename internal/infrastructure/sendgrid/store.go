@@ -36,6 +36,11 @@ type EngagementStore interface {
 	// recipient's open count and last-opened timestamp. Event insert and rollup
 	// are one transaction; the rollup upserts on emailID from groupID / to.
 	ApplyOpen(ctx context.Context, sgEventID, emailID, groupID, to string, at time.Time) error
+	// ApplyClick records one click, deduplicated by sgEventID, and bumps the
+	// recipient's click count and last-clicked timestamp. Mirrors ApplyOpen's
+	// idempotency and self-healing upsert semantics exactly. url is the
+	// clicked link, persisted for the top-clicked-links analytics breakdown.
+	ApplyClick(ctx context.Context, sgEventID, emailID, groupID, to, url string, at time.Time) error
 	// ApplyFailed marks the recipient failed — bounce / dropped / spamreport
 	// (first failure wins). Upserts on emailID from groupID / to.
 	ApplyFailed(ctx context.Context, emailID, groupID, to string, at time.Time) error
@@ -48,6 +53,10 @@ type EngagementStore interface {
 	// opens, the per-UTC-day opens series, the last open instant, and the failed
 	// recipients) with a few SQL aggregates, so no raw per-open data is loaded.
 	GroupEngagementDetail(ctx context.Context, groupID string) (*port.GroupEngagementDetail, error)
+	// RecipientRecordsByGroupID returns every recipient record for a group with
+	// its ascending open-timestamp series, for the per-recipient analytics
+	// endpoint. Bounded by the group's audience and its recorded opens.
+	RecipientRecordsByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error)
 
 	// RevertGroup tombstones a group and purges its engagement rows and open
 	// events, atomically. Used after a fully-failed send reverts to draft and

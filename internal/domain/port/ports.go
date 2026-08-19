@@ -18,6 +18,19 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 )
 
+// MaxOpensPerRecipient is the per-recipient open-event cap applied
+// provider-independently in the service layer. Each recipient's open
+// list is truncated to the most recent 500 to bound response size.
+const MaxOpensPerRecipient = 500
+
+// MaxClicksPerRecipient mirrors MaxOpensPerRecipient for the per-recipient
+// click-event list.
+const MaxClicksPerRecipient = 500
+
+// MaxTopLinks bounds the top-clicked-links analytics breakdown. The raw click
+// events keep every row, so raising this is a query change, not a data-loss one.
+const MaxTopLinks = 20
+
 // ListFilters narrows a newsletter listing query.
 //
 // Statuses is optional: if empty, newsletters in every state are returned.
@@ -63,15 +76,40 @@ type NewsletterRepository interface {
 	// replicas: a zero-row result is classified as domain.ErrNotFound,
 	// domain.ErrAlreadySent, domain.ErrSendInProgress, or
 	// domain.ErrVersionMismatch.
-	MarkSending(ctx context.Context, id uuid.UUID, groupID, sendProvider string, totalRecipients int, expectedVersion int64) (*model.Newsletter, error)
+	//
+	// scheduledAt/batchID are non-nil/non-empty only when this fan-out is
+	// arming a scheduled release (LFXV2-2685); both persist atomically with the
+	// draft → sending claim so a crash immediately after this UPDATE still
+	// carries enough state for RecoverStuckSending to settle the right way.
+	MarkSending(ctx context.Context, id uuid.UUID, groupID, sendProvider string, totalRecipients int, expectedVersion int64, scheduledAt *time.Time, batchID string) (*model.Newsletter, error)
 	// MarkSent transitions sending → sent, gated on the version returned by
 	// MarkSending. group_id and total_recipients were already persisted at the
 	// sending transition.
 	MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, expectedVersion int64) (*model.Newsletter, error)
+	// MarkScheduled transitions sending → scheduled, gated on the version
+	// returned by MarkSending (LFXV2-2685). Used instead of MarkSent when the
+	// fan-out just armed a scheduled release: scheduled_at and batch_id were
+	// already persisted at the sending transition.
+	MarkScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64) (*model.Newsletter, error)
 	// RevertSending returns a sending newsletter to draft after a total
 	// fan-out failure (zero recipients delivered) so the operator can retry.
 	RevertSending(ctx context.Context, id uuid.UUID) error
-	// RecoverStuckSending marks sending rows older than the given age as sent.
+	// RevertScheduled cancels an armed schedule and returns the newsletter to
+	// draft, gated on expectedVersion since this transition is user-initiated
+	// (LFXV2-2685) rather than a crash-recovery sweep. Clears group_id/batch_id
+	// and resets total_recipients, but deliberately RETAINS scheduled_at — the
+	// cancelled newsletter still carries the author's saved intent, which they
+	// may edit or re-arm. batchID ties the revert to the specific batch that was
+	// cancelled, preventing a delayed duplicate cancel from reverting a newer send.
+	RevertScheduled(ctx context.Context, id uuid.UUID, expectedVersion int64, batchID *string) (*model.Newsletter, error)
+	// SettleDueScheduled marks scheduled rows whose scheduled_at has passed as
+	// sent (LFXV2-2685). Reconciliation of our display state only — SendGrid
+	// owns the actual release timing. Returns the number of settled rows.
+	SettleDueScheduled(ctx context.Context, now time.Time) (int64, error)
+	// RecoverStuckSending marks sending rows older than the given age as sent,
+	// except rows arming a scheduled release (scheduled_at IS NOT NULL), which
+	// settle to scheduled instead (LFXV2-2685) — flipping those straight to
+	// sent would be wrong since the provider is still holding the release.
 	// Crash recovery: a pod dying mid-fan-out leaves status='sending' forever;
 	// after the TTL an unknown number of emails may already have gone out, so
 	// re-arming Send would guarantee duplicates — marking sent at worst
@@ -158,6 +196,13 @@ type SendEmailInput struct {
 	FromDisplayName string
 	ReplyTo         string
 	GroupID         string
+	// SendAt and BatchID arm a scheduled release: when SendAt is non-nil, every
+	// recipient in the fan-out carries the same SendAt/BatchID so the provider
+	// holds and releases them together (LFXV2-2685). Nil/empty means send
+	// immediately — the historical behavior. Only a dispatcher implementing
+	// ScheduledSender can be asked to populate these.
+	SendAt  *time.Time
+	BatchID string
 }
 
 // EmailRecipientRecord mirrors lfx-v2-email-service's per-recipient state, used
@@ -169,28 +214,60 @@ type SendEmailInput struct {
 // that only emit a flat `opened_at`, OpenedAtList carries a single element so
 // downstream callers can treat the multi-event shape as canonical.
 type EmailRecipientRecord struct {
-	EmailID      string
-	GroupID      string
-	To           string
-	SentAt       *time.Time
-	Delivered    bool
-	Opened       bool
-	OpenCount    int
-	LastOpened   *time.Time
-	OpenedAtList []time.Time
-	Failed       bool
+	EmailID       string
+	GroupID       string
+	To            string
+	SentAt        *time.Time
+	Delivered     bool
+	DeliveredAt   *time.Time
+	Opened        bool
+	OpenCount     int
+	LastOpened    *time.Time
+	OpenedAtList  []time.Time
+	Clicked       bool
+	ClickCount    int
+	LastClicked   *time.Time
+	ClickedAtList []time.Time
+	Failed        bool
+	FailedAt      *time.Time
+}
+
+// RecipientEngagement pairs one per-recipient engagement record with the
+// recipient's display name, resolved best-effort from the newsletter's
+// committees at read time. Name is empty when the recipient no longer appears
+// in the committees or has no name on file — callers fall back to the
+// record's email address.
+type RecipientEngagement struct {
+	Name   string
+	Record EmailRecipientRecord
+}
+
+// RecipientEngagementResult is the per-recipient analytics read: the records
+// plus an explicit completeness marker, so clients can distinguish a complete
+// audience from a best-effort partial one. Both providers' per-recipient
+// stores are best-effort (email-service silently omits missing/malformed KV
+// records and its group index briefly lags a fresh send; the SendGrid store
+// records no row for ambiguous send outcomes), so Complete is false whenever
+// fewer records came back than TotalRecipients, the newsletter's
+// authoritative send-time audience snapshot.
+type RecipientEngagementResult struct {
+	TotalRecipients int
+	Complete        bool
+	Recipients      []RecipientEngagement
 }
 
 // EmailEngagement is the per-group engagement rollup for a sent newsletter,
 // keyed by group_id. It is provider-agnostic: the email-service (NATS) reader
 // and the SendGrid store-backed reader both return it.
 type EmailEngagement struct {
-	GroupID     string
-	TotalSent   int
-	Delivered   int
-	Opened      int
-	UniqueOpens int
-	Failed      int
+	GroupID      string
+	TotalSent    int
+	Delivered    int
+	Opened       int
+	UniqueOpens  int
+	Clicked      int
+	UniqueClicks int
+	Failed       int
 }
 
 // EmailDispatcher sends individual emails and reads back engagement for
@@ -223,6 +300,23 @@ type EngagementPurger interface {
 	PurgeEngagement(ctx context.Context, groupID string) error
 }
 
+// ScheduledSender optionally lets a dispatcher arm and cancel a native
+// provider-side scheduled send (LFXV2-2685). Only the SendGrid dispatcher
+// implements it — Mail Send's send_at/batch_id have no NATS/email-service
+// analogue — so the orchestrator type-asserts for it and rejects a schedule
+// request with a clear error when the active provider does not support it,
+// rather than silently sending immediately.
+type ScheduledSender interface {
+	// CreateBatchID mints a new provider batch identifier (SendGrid POST
+	// /v3/mail/batch) to be shared by every recipient in one scheduled
+	// fan-out.
+	CreateBatchID(ctx context.Context) (batchID string, err error)
+	// CancelScheduledBatch cancels a previously armed batch so the provider
+	// discards it at release time instead of sending. Idempotent: cancelling
+	// an already-cancelled batch is not an error.
+	CancelScheduledBatch(ctx context.Context, batchID string) error
+}
+
 // EngagementReader reads per-newsletter engagement for analytics, keyed by the
 // send group_id. Both the email-service (NATS) dispatcher and the SendGrid
 // store-backed reader implement it, so the analytics service can resolve a
@@ -236,19 +330,33 @@ type EngagementReader interface {
 	// opens and distinct recipients per day, ascending), the last open instant,
 	// and the deduplicated failed-recipient addresses. Each provider computes it
 	// its own bounded way — a set of SQL aggregates for the SendGrid store, one
-	// email-service reply bucketed in memory for the NATS reader — so analytics
-	// makes one call and never loads raw per-open data. lastEvent is nil for a
-	// group with no opens.
+	// email-service reply bucketed in memory for the NATS reader — so the
+	// aggregate analytics endpoint makes one call without loading raw per-open
+	// data. lastEvent is nil for a group with no opens.
 	GroupEngagementDetail(ctx context.Context, groupID string) (*GroupEngagementDetail, error)
+	// RecipientRecords returns every per-recipient engagement record for a
+	// group, including each recipient's full open-timestamp series. Bounded by
+	// the group's recipient count (a newsletter's committee audience). Backs
+	// the per-recipient analytics endpoint, which — unlike the aggregate
+	// endpoint — deliberately exposes who engaged and when.
+	RecipientRecords(ctx context.Context, groupID string) ([]EmailRecipientRecord, error)
 }
 
 // GroupEngagementDetail is the bounded per-group analytics detail a reader
-// computes in a single fetch. It replaces returning every per-recipient record
-// (with its raw open timestamps): only aggregated, bounded values cross the
-// boundary.
+// computes in a single fetch. The aggregate analytics endpoint uses it instead
+// of per-recipient records so only aggregated, bounded values cross the
+// boundary there; the per-recipient analytics endpoint uses RecipientRecords
+// when callers explicitly ask for who engaged and when.
 type GroupEngagementDetail struct {
-	UniqueOpens      int
-	DailyOpens       []model.DailyOpens
+	UniqueOpens  int
+	DailyOpens   []model.DailyOpens
+	UniqueClicks int
+	// DailyClicks and TopLinks are populated by the SendGrid store (SQL
+	// aggregates). GroupDetailFromRecords — the email-service reader's
+	// builder — leaves them nil/zero: SES clicks are a documented follow-up,
+	// not this reader's job (see docs/newsletter-service-contract.md).
+	DailyClicks      []model.DailyClicks
+	TopLinks         []model.LinkClicks
 	LastEventAt      *time.Time
 	FailedRecipients []string
 }

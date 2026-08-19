@@ -6,12 +6,16 @@ package service
 import (
 	"context"
 	"log/slog"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
+	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
 // AnalyticsService aggregates engagement metrics for a sent newsletter,
@@ -28,14 +32,17 @@ import (
 type AnalyticsService struct {
 	repo            port.NewsletterRepository
 	readers         map[string]port.EngagementReader
+	committee       port.CommitteeClient
 	defaultProvider string
 }
 
 // NewAnalyticsService wires an AnalyticsService. readers must contain an entry
 // for defaultProvider; a nil or missing reader for a newsletter's provider
 // degrades that newsletter to local-only analytics rather than panicking.
-func NewAnalyticsService(repo port.NewsletterRepository, readers map[string]port.EngagementReader, defaultProvider string) *AnalyticsService {
-	return &AnalyticsService{repo: repo, readers: readers, defaultProvider: defaultProvider}
+// committee resolves recipient display names for the per-recipient endpoint;
+// nil is tolerated (names stay empty).
+func NewAnalyticsService(repo port.NewsletterRepository, readers map[string]port.EngagementReader, committee port.CommitteeClient, defaultProvider string) *AnalyticsService {
+	return &AnalyticsService{repo: repo, readers: readers, committee: committee, defaultProvider: defaultProvider}
 }
 
 // readerFor resolves the engagement reader for a newsletter's send_provider.
@@ -139,6 +146,15 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 		// observed, surface the bigger number.
 		local.TotalOpens = engagement.Opened
 	}
+	// Clicks have no local source today (unlike opens' tracking pixel), so the
+	// provider's scalars always win here; the max keeps the overlay rule
+	// uniform with opens rather than special-casing an always-zero local side.
+	if engagement.UniqueClicks > local.UniqueClicks {
+		local.UniqueClicks = engagement.UniqueClicks
+	}
+	if engagement.Clicked > local.TotalClicks {
+		local.TotalClicks = engagement.Clicked
+	}
 
 	// The engagement summary is scalar-only. GroupEngagementDetail is a single
 	// bounded fetch (SQL aggregates for SendGrid, one email-service reply bucketed
@@ -162,8 +178,17 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 		if detail.UniqueOpens > local.UniqueOpens {
 			local.UniqueOpens = detail.UniqueOpens
 		}
+		if detail.UniqueClicks > local.UniqueClicks {
+			local.UniqueClicks = detail.UniqueClicks
+		}
 		if len(detail.DailyOpens) > 0 {
 			local.DailyOpens = detail.DailyOpens
+		}
+		if len(detail.DailyClicks) > 0 {
+			local.DailyClicks = detail.DailyClicks
+		}
+		if len(detail.TopLinks) > 0 {
+			local.TopLinks = detail.TopLinks
 		}
 		if len(detail.FailedRecipients) > 0 {
 			local.FailedRecipients = detail.FailedRecipients
@@ -179,6 +204,135 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 	}
 	if denominator > 0 {
 		local.OpenRate = float64(local.UniqueOpens) / float64(denominator)
+		local.ClickRate = float64(local.UniqueClicks) / float64(denominator)
+	}
+	if local.UniqueOpens > 0 {
+		local.ClickToOpenRate = float64(local.UniqueClicks) / float64(local.UniqueOpens)
+		// Cap at 1.0: UniqueClicks can exceed UniqueOpens if a recipient clicks
+		// without opening (e.g., open pixel was blocked). This is legitimate behavior,
+		// but the contract specifies capped 1.0 to avoid surprising API clients.
+		if local.ClickToOpenRate > 1.0 {
+			local.ClickToOpenRate = 1.0
+		}
 	}
 	return local, nil
+}
+
+// Recipients returns the per-recipient engagement records for a sent
+// newsletter — who was sent to, delivery outcome, and every recorded open
+// timestamp — gated on project ownership like Get. Records come from the
+// provider that dispatched the newsletter (routed by send_provider); local
+// pixel opens are excluded (they are keyed by recipient hash, which cannot be
+// mapped back to an email address).
+//
+// Unlike Get there is no local fallback, so a provider read failure is
+// returned as an error rather than an empty list — an empty list must mean
+// "no records", never "the read failed". Drafts and sent rows without a
+// group_id return an empty result marked complete.
+//
+// The result carries an explicit Complete marker: both providers'
+// per-recipient stores are best-effort (email-service omits missing/malformed
+// records and its group index briefly lags a fresh send; the SendGrid store
+// records no row for ambiguous outcomes), so the record list is compared
+// against the newsletter's send-time total_recipients snapshot and marked
+// incomplete when it trails, letting clients distinguish partial data from a
+// complete audience instead of guessing.
+//
+// Display names are resolved best-effort by re-querying the newsletter's
+// committees: a failed lookup leaves names empty (the email remains the
+// fallback identity) and never fails the request, since membership may have
+// legitimately changed after the send.
+func (a *AnalyticsService) Recipients(ctx context.Context, projectUID string, newsletterID uuid.UUID) (*port.RecipientEngagementResult, error) {
+	if err := validateProjectUID(projectUID); err != nil {
+		return nil, err
+	}
+	n, err := a.repo.Get(ctx, newsletterID)
+	if err != nil {
+		return nil, err
+	}
+	if n.ProjectUID != projectUID {
+		return nil, domain.ErrNotFound
+	}
+
+	if n.Status != model.StatusSent || n.GroupID == nil || *n.GroupID == "" {
+		return &port.RecipientEngagementResult{Complete: true, Recipients: []port.RecipientEngagement{}}, nil
+	}
+
+	reader := a.readerFor(n.SendProvider)
+	if reader == nil {
+		return nil, pkgerrors.NewServiceUnavailable("no engagement reader for send provider " + n.SendProvider)
+	}
+	records, err := reader.RecipientRecords(ctx, *n.GroupID)
+	if err != nil {
+		return nil, err
+	}
+
+	names := a.recipientNames(ctx, n.CommitteeUIDs)
+	out := make([]port.RecipientEngagement, 0, len(records))
+	for _, r := range records {
+		// Open timestamps come pre-sorted from the SendGrid store's ORDER BY;
+		// the email-service reply's ordering is upstream's, so sort defensively
+		// to keep the contract's "ascending" promise provider-independent.
+		sort.Slice(r.OpenedAtList, func(i, j int) bool { return r.OpenedAtList[i].Before(r.OpenedAtList[j]) })
+		// Cap per-recipient opens to the most recent MaxOpensPerRecipient to bound
+		// response size provider-independently. The list is ascending (oldest first),
+		// so keep the LAST MaxOpensPerRecipient entries (most recent). Copy instead
+		// of reslicing to release the original backing array from memory.
+		if len(r.OpenedAtList) > port.MaxOpensPerRecipient {
+			capped := make([]time.Time, port.MaxOpensPerRecipient)
+			copy(capped, r.OpenedAtList[len(r.OpenedAtList)-port.MaxOpensPerRecipient:])
+			r.OpenedAtList = capped
+		}
+		// Same defensive sort + cap for clicks, mirroring the opens handling above.
+		sort.Slice(r.ClickedAtList, func(i, j int) bool { return r.ClickedAtList[i].Before(r.ClickedAtList[j]) })
+		if len(r.ClickedAtList) > port.MaxClicksPerRecipient {
+			capped := make([]time.Time, port.MaxClicksPerRecipient)
+			copy(capped, r.ClickedAtList[len(r.ClickedAtList)-port.MaxClicksPerRecipient:])
+			r.ClickedAtList = capped
+		}
+		out = append(out, port.RecipientEngagement{
+			Name:   names[strings.ToLower(strings.TrimSpace(r.To))],
+			Record: r,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i].Record.To) < strings.ToLower(out[j].Record.To)
+	})
+	return &port.RecipientEngagementResult{
+		TotalRecipients: n.TotalRecipients,
+		Complete:        len(out) >= n.TotalRecipients,
+		Recipients:      out,
+	}, nil
+}
+
+// recipientNames builds a lowercased-email → "First Last" map from the
+// newsletter's committees. Best-effort: a failed committee lookup is logged
+// and skipped, so callers still get names for the committees that resolved.
+func (a *AnalyticsService) recipientNames(ctx context.Context, committeeUIDs []string) map[string]string {
+	names := make(map[string]string)
+	if a.committee == nil {
+		return names
+	}
+	for _, uid := range committeeUIDs {
+		members, err := a.committee.ListMembers(ctx, uid)
+		if err != nil {
+			slog.WarnContext(ctx, "analytics: committee member lookup failed, recipient names degrade to email",
+				"committee_uid", uid,
+				"error", err.Error(),
+			)
+			continue
+		}
+		for _, m := range members {
+			email := strings.ToLower(strings.TrimSpace(m.Email))
+			if email == "" {
+				continue
+			}
+			name := strings.TrimSpace(strings.TrimSpace(m.FirstName) + " " + strings.TrimSpace(m.LastName))
+			if name == "" {
+				continue
+			}
+			names[email] = name
+		}
+	}
+	return names
 }

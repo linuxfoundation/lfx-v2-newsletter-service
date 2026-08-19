@@ -21,10 +21,16 @@ type Status string
 // guard: the draft → sending transition is a single optimistically-locked
 // UPDATE, so a concurrent or repeated send request observes the row is no
 // longer a draft and is rejected with ErrSendInProgress.
+// StatusScheduled means every recipient's message has been accepted by the
+// send provider and is being held for release at ScheduledAt. It sits between
+// StatusSending (the fan-out that arms the schedule) and StatusSent (which the
+// recovery sweep settles it to once ScheduledAt passes — reconciliation of our
+// display state only; the provider owns the actual delivery timing).
 const (
-	StatusDraft   Status = "draft"
-	StatusSending Status = "sending"
-	StatusSent    Status = "sent"
+	StatusDraft     Status = "draft"
+	StatusSending   Status = "sending"
+	StatusScheduled Status = "scheduled"
+	StatusSent      Status = "sent"
 )
 
 // Send provider values persisted in newsletters.send_provider. They record
@@ -72,11 +78,22 @@ type Newsletter struct {
 	// sending transition. Analytics routes engagement reads by this value so a
 	// newsletter's stats always come from the store that holds them, regardless
 	// of the currently-active provider. Defaults to 'email-service'.
-	SendProvider string    `bun:"send_provider,notnull,default:'email-service'" json:"sendProvider"`
-	CreatedBy    string    `bun:"created_by,notnull" json:"createdBy"`
-	Version      int64     `bun:"version,notnull,default:1" json:"version"`
-	CreatedAt    time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
-	UpdatedAt    time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
+	SendProvider string `bun:"send_provider,notnull,default:'email-service'" json:"sendProvider"`
+	// ScheduledAt has two meanings depending on Status. While the row is
+	// draft, it is the author's saved intent — set on create/update, not yet
+	// armed, and does not by itself cause any send. Once Status is scheduled
+	// (or sending en route to it), it is the committed release time handed to
+	// the provider as send_at.
+	ScheduledAt *time.Time `bun:"scheduled_at" json:"scheduledAt,omitempty"`
+	// BatchID is the provider batch identifier minted when a schedule is
+	// armed (SendGrid POST /v3/mail/batch). Every recipient in the fan-out
+	// carries the same BatchID and ScheduledAt so the provider releases them
+	// together, and it is what makes the batch cancellable.
+	BatchID   *string   `bun:"batch_id" json:"-"`
+	CreatedBy string    `bun:"created_by,notnull" json:"createdBy"`
+	Version   int64     `bun:"version,notnull,default:1" json:"version"`
+	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
+	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
 }
 
 // NewsletterOpen records a single open event for a sent newsletter.
@@ -94,6 +111,24 @@ type DailyOpens struct {
 	Date        time.Time `json:"date"`
 	Opens       int       `json:"opens"`
 	UniqueOpens int       `json:"uniqueOpens"`
+}
+
+// DailyClicks is one bucket of clicks for an analytics time-series, mirroring
+// DailyOpens.
+type DailyClicks struct {
+	Date         time.Time `json:"date"`
+	Clicks       int       `json:"clicks"`
+	UniqueClicks int       `json:"uniqueClicks"`
+}
+
+// LinkClicks is one entry in the top-clicked-links breakdown: a URL and how
+// many total/unique clicks it received. Chrome/compliance links (unsubscribe,
+// My Newsletters) are excluded at the source via clicktracking="off", so this
+// reflects engagement with author content only.
+type LinkClicks struct {
+	URL          string `json:"url"`
+	Clicks       int    `json:"clicks"`
+	UniqueClicks int    `json:"uniqueClicks"`
 }
 
 // Analytics aggregates engagement metrics for a sent newsletter.
@@ -115,13 +150,25 @@ type Analytics struct {
 	UniqueOpens      int          `json:"uniqueOpens"`
 	OpenRate         float64      `json:"openRate"`
 	DailyOpens       []DailyOpens `json:"dailyOpens"`
-	LastEventAt      *time.Time   `json:"lastEventAt,omitempty"`
+	// TotalClicks / UniqueClicks / ClickRate / ClickToOpenRate / DailyClicks /
+	// TopLinks are SendGrid-only (see docs/newsletter-service-contract.md): a
+	// newsletter dispatched via send_provider='email-service' (SES) always
+	// reports zero/empty here, since SES click tracking is a documented
+	// follow-up, not implemented by this service.
+	TotalClicks     int           `json:"totalClicks"`
+	UniqueClicks    int           `json:"uniqueClicks"`
+	ClickRate       float64       `json:"clickRate"`
+	ClickToOpenRate float64       `json:"clickToOpenRate"`
+	DailyClicks     []DailyClicks `json:"dailyClicks"`
+	TopLinks        []LinkClicks  `json:"topLinks"`
+	LastEventAt     *time.Time    `json:"lastEventAt,omitempty"`
 }
 
 // CommitteeMember is the slice of a committee member the newsletter needs for personalization.
 type CommitteeMember struct {
 	Email     string
 	FirstName string
+	LastName  string
 }
 
 // ProjectBranding is the slice of a project used to brand newsletter emails.

@@ -95,6 +95,9 @@ func (f *fakeEmailDispatcher) GetStatusByGroupID(_ context.Context, _ string) ([
 func (f *fakeEmailDispatcher) GroupEngagementDetail(_ context.Context, _ string) (*port.GroupEngagementDetail, error) {
 	return &port.GroupEngagementDetail{}, nil
 }
+func (f *fakeEmailDispatcher) RecipientRecords(_ context.Context, _ string) ([]port.EmailRecipientRecord, error) {
+	return nil, nil
+}
 func (f *fakeEmailDispatcher) reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -197,7 +200,7 @@ func (r *fakeNewsletterRepo) Update(_ context.Context, n *model.Newsletter, _ in
 	return n, nil
 }
 func (r *fakeNewsletterRepo) Delete(_ context.Context, _ uuid.UUID) error { return nil }
-func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupID, sendProvider string, total int, expectedVersion int64) (*model.Newsletter, error) {
+func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupID, sendProvider string, total int, expectedVersion int64, scheduledAt *time.Time, batchID string) (*model.Newsletter, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	n, ok := r.drafts[id]
@@ -210,6 +213,9 @@ func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupI
 	if n.Status == model.StatusSending {
 		return nil, domain.ErrSendInProgress
 	}
+	if n.Status == model.StatusScheduled {
+		return nil, domain.ErrScheduled
+	}
 	if n.Version != expectedVersion {
 		return nil, domain.ErrVersionMismatch
 	}
@@ -218,6 +224,12 @@ func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupI
 	n.GroupID = &g
 	n.SendProvider = sendProvider
 	n.TotalRecipients = total
+	if scheduledAt != nil {
+		sa := *scheduledAt
+		n.ScheduledAt = &sa
+		b := batchID
+		n.BatchID = &b
+	}
 	n.Version++
 	cp := *n
 	return &cp, nil
@@ -241,6 +253,24 @@ func (r *fakeNewsletterRepo) MarkSent(_ context.Context, id uuid.UUID, sentAt ti
 	cp := *n
 	return &cp, nil
 }
+func (r *fakeNewsletterRepo) MarkScheduled(_ context.Context, id uuid.UUID, expectedVersion int64) (*model.Newsletter, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.drafts[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	if n.Status == model.StatusSent {
+		return nil, domain.ErrAlreadySent
+	}
+	if n.Status != model.StatusSending || n.Version != expectedVersion {
+		return nil, domain.ErrVersionMismatch
+	}
+	n.Status = model.StatusScheduled
+	n.Version++
+	cp := *n
+	return &cp, nil
+}
 func (r *fakeNewsletterRepo) RevertSending(_ context.Context, id uuid.UUID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -253,6 +283,44 @@ func (r *fakeNewsletterRepo) RevertSending(_ context.Context, id uuid.UUID) erro
 	n.TotalRecipients = 0
 	n.Version++
 	return nil
+}
+func (r *fakeNewsletterRepo) RevertScheduled(_ context.Context, id uuid.UUID, expectedVersion int64, batchID *string) (*model.Newsletter, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.drafts[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	if n.Status != model.StatusScheduled || n.Version != expectedVersion {
+		return nil, domain.ErrVersionMismatch
+	}
+	// Ensure we're reverting the same batch that was cancelled to prevent
+	// delayed duplicate cancels from reverting the wrong row.
+	if (batchID == nil && n.BatchID != nil) || (batchID != nil && (n.BatchID == nil || *batchID != *n.BatchID)) {
+		return nil, domain.ErrVersionMismatch // Batch mismatch = no match
+	}
+	n.Status = model.StatusDraft
+	n.GroupID = nil
+	n.BatchID = nil
+	n.TotalRecipients = 0
+	n.Version++
+	cp := *n
+	return &cp, nil
+}
+func (r *fakeNewsletterRepo) SettleDueScheduled(_ context.Context, now time.Time) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var count int64
+	for _, n := range r.drafts {
+		if n.Status == model.StatusScheduled && n.ScheduledAt != nil && !n.ScheduledAt.After(now) {
+			n.Status = model.StatusSent
+			sa := *n.ScheduledAt
+			n.SentAt = &sa
+			n.Version++
+			count++
+		}
+	}
+	return count, nil
 }
 func (r *fakeNewsletterRepo) RecoverStuckSending(_ context.Context, _ time.Duration) (int64, error) {
 	return 0, nil
@@ -1762,7 +1830,7 @@ func TestDraftGuardsWhileSending(t *testing.T) {
 	svc := NewNewsletterService(repo, true)
 
 	draft := repo.addDraft("p1", []string{"c1"})
-	if _, err := repo.MarkSending(ctx, draft.ID, uuid.NewString(), model.SendProviderEmailService, 1, draft.Version); err != nil {
+	if _, err := repo.MarkSending(ctx, draft.ID, uuid.NewString(), model.SendProviderEmailService, 1, draft.Version, nil, ""); err != nil {
 		t.Fatalf("MarkSending: %v", err)
 	}
 

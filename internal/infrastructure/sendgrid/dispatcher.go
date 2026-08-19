@@ -42,6 +42,16 @@ const (
 	// custom_args, which the event webhook echoes back for back-mapping.
 	mailSendPath = "/v3/mail/send"
 
+	// mailBatchPath mints a new batch id (LFXV2-2685). A successful call returns
+	// 201 with {"batch_id": "..."}. The batch id is valid for 10 days — well
+	// beyond the 72h scheduling window it is used within.
+	mailBatchPath = "/v3/mail/batch"
+
+	// scheduledSendsPath cancels or pauses a batch's scheduled release. A
+	// successful cancel returns 201; SendGrid discards the batch's messages at
+	// release time rather than sending them.
+	scheduledSendsPath = "/v3/user/scheduled_sends"
+
 	// defaultTimeout bounds a single mail/send call. SendGrid accepts a send in
 	// well under a second; this only guards against a hung connection.
 	defaultTimeout = 30 * time.Second
@@ -108,6 +118,10 @@ type Dispatcher struct {
 
 // Compile-time assertion that Dispatcher satisfies the port.
 var _ port.EmailDispatcher = (*Dispatcher)(nil)
+
+// Compile-time assertion that Dispatcher also implements the optional
+// scheduled-send capability (LFXV2-2685).
+var _ port.ScheduledSender = (*Dispatcher)(nil)
 
 // NewDispatcher wires a SendGrid Dispatcher. APIKey and DefaultFrom are required.
 func NewDispatcher(cfg Config) (*Dispatcher, error) {
@@ -282,6 +296,11 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 	if d.sandboxMode {
 		reqBody.MailSettings = &mailSettings{SandboxMode: &toggle{Enable: true}}
 	}
+	if in.SendAt != nil {
+		sendAt := in.SendAt.Unix()
+		reqBody.SendAt = &sendAt
+		reqBody.BatchID = in.BatchID
+	}
 
 	if definitive, err := d.postMailSend(ctx, reqBody); err != nil {
 		// Persist a failure only for a tracked send AND only on a definitive
@@ -387,6 +406,87 @@ func (d *Dispatcher) postMailSend(ctx context.Context, reqBody mailSendRequest) 
 	}
 }
 
+// CreateBatchID mints a new SendGrid batch id via POST /v3/mail/batch, to be
+// shared by every recipient in one scheduled fan-out (LFXV2-2685). Unlike
+// mail/send, a 4xx here is always our request/credentials, never caller
+// content, so it is surfaced as ServiceUnavailable rather than Validation.
+func (d *Dispatcher) CreateBatchID(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+mailBatchPath, nil)
+	if err != nil {
+		return "", pkgerrors.NewUnexpected("sendgrid: build mail/batch request", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+d.apiKey)
+
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return "", pkgerrors.NewServiceUnavailable("sendgrid: mail/batch request failed", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode != http.StatusCreated {
+		return "", pkgerrors.NewServiceUnavailable(
+			fmt.Sprintf("sendgrid: mail/batch returned %d", resp.StatusCode),
+			errors.New(summarizeError(resp.StatusCode, body)),
+		)
+	}
+	var parsed struct {
+		BatchID string `json:"batch_id"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || strings.TrimSpace(parsed.BatchID) == "" {
+		return "", pkgerrors.NewServiceUnavailable("sendgrid: mail/batch returned an unparseable response", err)
+	}
+	return parsed.BatchID, nil
+}
+
+// alreadyCancelledMessage is the substring SendGrid's error body contains when
+// a batch id is cancelled twice. Treated as success so CancelScheduledBatch is
+// idempotent — the orchestrator may retry a cancel after an ambiguous failure.
+const alreadyCancelledMessage = "already exists in the cancel"
+
+// CancelScheduledBatch cancels a batch's scheduled release via POST
+// /v3/user/scheduled_sends, so SendGrid discards its messages at send_at
+// instead of delivering them (LFXV2-2685). Idempotent: re-cancelling an
+// already-cancelled batch is treated as success.
+func (d *Dispatcher) CancelScheduledBatch(ctx context.Context, batchID string) error {
+	if strings.TrimSpace(batchID) == "" {
+		return pkgerrors.NewValidation("sendgrid: batchID is required")
+	}
+	payload, err := json.Marshal(scheduledSendRequest{BatchID: batchID, Status: "cancel"})
+	if err != nil {
+		return pkgerrors.NewUnexpected("sendgrid: marshal scheduled_sends request", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+scheduledSendsPath, bytes.NewReader(payload))
+	if err != nil {
+		return pkgerrors.NewUnexpected("sendgrid: build scheduled_sends request", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+d.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return pkgerrors.NewServiceUnavailable("sendgrid: scheduled_sends request failed", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// SendGrid's documented response for this endpoint is 201 Created with the
+	// cancellation record, but the API has also been observed returning 200 OK
+	// and 204 No Content for the same successful cancellation. Accept all three
+	// rather than pinning to one status code the API contract doesn't guarantee.
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode == http.StatusBadRequest && strings.Contains(string(body), alreadyCancelledMessage) {
+		return nil
+	}
+	return pkgerrors.NewServiceUnavailable(
+		fmt.Sprintf("sendgrid: scheduled_sends cancel returned %d", resp.StatusCode),
+		errors.New(summarizeError(resp.StatusCode, body)),
+	)
+}
+
 // recordSent persists the initial engagement row for an accepted send. It is
 // best-effort: the email is already sent, so a store failure degrades tracking
 // but must not fail the send. A no-op when no store is wired (send-only mode).
@@ -460,6 +560,15 @@ func (d *Dispatcher) GroupEngagementDetail(ctx context.Context, groupID string) 
 	return d.store.GroupEngagementDetail(ctx, groupID)
 }
 
+// RecipientRecords returns the group's per-recipient engagement records with
+// their full open-timestamp series from the store.
+func (d *Dispatcher) RecipientRecords(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
+	if d.store == nil {
+		return nil, pkgerrors.NewUnexpected("sendgrid: RecipientRecords unavailable", errReadNotWired)
+	}
+	return d.store.RecipientRecordsByGroupID(ctx, groupID)
+}
+
 // summarizeError renders SendGrid's error body into a single readable string,
 // falling back to the raw (truncated) body when it isn't the expected shape.
 func summarizeError(status int, body []byte) string {
@@ -497,6 +606,11 @@ type mailSendRequest struct {
 	Content          []content         `json:"content"`
 	CustomArgs       map[string]string `json:"custom_args,omitempty"`
 	MailSettings     *mailSettings     `json:"mail_settings,omitempty"`
+	// SendAt (UNIX seconds) and BatchID together arm a scheduled release
+	// (LFXV2-2685). Both must be set together — SendGrid rejects send_at
+	// without batch_id — which SendEmail enforces.
+	SendAt  *int64 `json:"send_at,omitempty"`
+	BatchID string `json:"batch_id,omitempty"`
 }
 
 type personalization struct {
@@ -519,4 +633,9 @@ type mailSettings struct {
 
 type toggle struct {
 	Enable bool `json:"enable"`
+}
+
+type scheduledSendRequest struct {
+	BatchID string `json:"batch_id"`
+	Status  string `json:"status"`
 }

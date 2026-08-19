@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -106,6 +107,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("PUT /projects/{project_uid}/newsletters/{newsletter_uid}", h.withAuth(http.HandlerFunc(h.UpdateNewsletter)))
 	mux.Handle("DELETE /projects/{project_uid}/newsletters/{newsletter_uid}", h.withAuth(http.HandlerFunc(h.DeleteNewsletter)))
 	mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/send", h.withAuth(http.HandlerFunc(h.SendNewsletter)))
+	mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/schedule", h.withAuth(http.HandlerFunc(h.ScheduleNewsletter)))
+	mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/cancel-schedule", h.withAuth(http.HandlerFunc(h.CancelScheduleNewsletter)))
 
 	// Committee-scoped newsletter reads — JWT auth. Member-facing: Heimdall
 	// gates on `committee:{committee_uid}#member` (not project writer), so
@@ -133,6 +136,7 @@ func (h *Handler) Routes() http.Handler {
 
 	// Per-newsletter analytics — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics", h.withAuth(http.HandlerFunc(h.GetAnalytics)))
+	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients", h.withAuth(http.HandlerFunc(h.GetRecipientEngagement)))
 
 	// Newsletter opt-outs — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletter-opt-outs", h.withAuth(http.HandlerFunc(h.ListOptOuts)))
@@ -246,6 +250,10 @@ func classifyError(err error) (int, string) {
 		// Distinct code from already_sent so clients can poll the newsletter
 		// until the in-flight send settles instead of giving up.
 		return http.StatusConflict, "send_in_progress"
+	case errors.Is(err, domain.ErrScheduled):
+		return http.StatusConflict, "scheduled"
+	case errors.Is(err, domain.ErrCancelWindowClosed):
+		return http.StatusConflict, "cancel_window_closed"
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest, "invalid_request"
 	case errors.Is(err, domain.ErrUnprocessable):
@@ -280,6 +288,27 @@ func decodeJSON(r *http.Request, dst any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
+		return errors.Join(domain.ErrInvalidRequest, err)
+	}
+	return nil
+}
+
+// decodeJSONOptional is decodeJSON, but a missing or empty body leaves dst at
+// its zero value instead of erroring. Used by POST .../schedule, whose body
+// is an optional override — arming a draft's already-saved schedule needs no
+// body at all.
+func decodeJSONOptional(r *http.Request, dst any) error {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil
+	}
+	defer func() { _ = r.Body.Close() }()
+	r.Body = http.MaxBytesReader(nil, r.Body, maxRequestBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		if err == io.EOF {
+			return nil
+		}
 		return errors.Join(domain.ErrInvalidRequest, err)
 	}
 	return nil

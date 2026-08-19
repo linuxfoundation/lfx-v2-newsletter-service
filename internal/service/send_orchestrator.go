@@ -45,6 +45,25 @@ const persistTimeout = 30 * time.Second
 // always sets one through SendOrchestratorConfig.
 const defaultFromAddress = "newsletter@lfx.linuxfoundation.org"
 
+// defaultScheduleMaxHorizon mirrors SendGrid Mail Send's send_at limit
+// (LFXV2-2685), used when the orchestrator is constructed without an
+// explicit ScheduleMaxHorizon (e.g. tests).
+const defaultScheduleMaxHorizon = 72 * time.Hour
+
+// defaultScheduleCancelBuffer is the fallback schedule-window setting used
+// when the orchestrator is constructed without explicit config (e.g. tests).
+// Production wiring always sets this through SendOrchestratorConfig from AppConfig.
+// ScheduleMinLead is computed dynamically from SendJobTimeout to ensure the
+// fan-out has time to complete before scheduled_at.
+const (
+	defaultScheduleCancelBuffer = 10 * time.Minute
+	minScheduleCancelBuffer     = 10 * time.Minute
+	// minScheduleMinLeadSafetyMargin is added to the SendJobTimeout to compute
+	// the minimum schedule lead. The total (SendJobTimeout + margin) ensures
+	// all per-recipient provider arming calls complete before scheduled_at.
+	minScheduleMinLeadSafetyMargin = 5 * time.Minute
+)
+
 // defaultReplyToAllowedDomains mirrors lfx-v2-email-service's default
 // SMTP_ALLOWED_REPLY_TO_DOMAINS, used when the orchestrator is constructed
 // without an explicit ReplyToAllowedDomains (e.g. tests). Production wiring
@@ -94,6 +113,20 @@ type SendOrchestrator struct {
 	// jobs tracks detached background send goroutines so graceful shutdown
 	// (and tests) can wait for in-flight fan-outs via Drain.
 	jobs sync.WaitGroup
+	// scheduleMaxHorizon/scheduleMinLead/scheduleCancelBuffer configure the
+	// arm-time and cancel-time validation windows for scheduled sends
+	// (LFXV2-2685). See SendOrchestratorConfig for their meaning.
+	scheduleMaxHorizon   time.Duration
+	scheduleMinLead      time.Duration
+	scheduleCancelBuffer time.Duration
+	// sendGridScheduler is a cached reference to the SendGrid scheduler (if
+	// available) used to cancel outstanding schedules even after a provider
+	// switch. Nil if the current EMAIL_PROVIDER is not sendgrid (LFXV2-2685).
+	sendGridScheduler port.ScheduledSender
+	// sendGridDispatcher is a cached reference to the SendGrid dispatcher's
+	// engagement purger, used to purge engagement records for scheduled sends
+	// even after a provider switch. Nil if SendGrid credentials are not configured.
+	sendGridDispatcher port.EngagementPurger
 }
 
 // SendOrchestratorConfig configures a SendOrchestrator.
@@ -141,6 +174,30 @@ type SendOrchestratorConfig struct {
 	// (AppConfigFromEnv enforces TTL >= SendJobTimeout + 5m), or the sweep can
 	// settle a row 'sent' while its fan-out job is still running.
 	SendJobTimeout time.Duration
+	// ScheduleMaxHorizon caps how far in the future a schedule can be armed
+	// (LFXV2-2685). Zero falls back to the 72h SendGrid Mail Send limit.
+	ScheduleMaxHorizon time.Duration
+	// ScheduleMinLead is the minimum lead time a newly-armed schedule must
+	// clear before scheduled_at. Zero falls back to 30 minutes, and any value
+	// below 30 minutes is capped to 30m to ensure all per-recipient provider
+	// arming calls complete before scheduled release time (LFXV2-2685).
+	ScheduleMinLead time.Duration
+	// ScheduleCancelBuffer rejects a cancel-schedule request inside this
+	// window before scheduled_at (SendGrid API requires minimum 10m). Zero
+	// falls back to 10 minutes.
+	ScheduleCancelBuffer time.Duration
+	// SendGridScheduler is an optional reference to a SendGrid scheduler for
+	// cancelling outstanding scheduled sends even after a provider switch. When
+	// nil, scheduled sends cannot be cancelled if the provider has switched away
+	// from sendgrid (LFXV2-2685). Set when EMAIL_PROVIDER is sendgrid.
+	SendGridScheduler port.ScheduledSender
+	// SendGridDispatcher is an optional reference to a SendGrid engagement purger
+	// for purging engagement records after scheduled sends are cancelled. Used to
+	// route purge calls by draft.SendProvider instead of the active dispatcher, so
+	// engagements from SendGrid schedules are cleaned up even after a provider
+	// rollback to email-service (LFXV2-2685). Set when SendGrid credentials are
+	// configured.
+	SendGridDispatcher port.EngagementPurger
 }
 
 // NewSendOrchestrator wires a SendOrchestrator.
@@ -186,6 +243,28 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	if sendProvider == "" {
 		sendProvider = model.SendProviderEmailService
 	}
+	scheduleMaxHorizon := cfg.ScheduleMaxHorizon
+	if scheduleMaxHorizon <= 0 {
+		scheduleMaxHorizon = defaultScheduleMaxHorizon
+	}
+	// Compute minimum schedule lead based on actual job timeout: the scheduler
+	// must give the fan-out enough time to complete provider arming calls before
+	// scheduled_at arrives. If config provides an explicit lead, use it; otherwise
+	// derive from the job timeout + safety margin.
+	minComputedLead := jobTimeout + minScheduleMinLeadSafetyMargin
+	scheduleMinLead := cfg.ScheduleMinLead
+	if scheduleMinLead <= 0 {
+		scheduleMinLead = minComputedLead
+	} else if scheduleMinLead < minComputedLead {
+		scheduleMinLead = minComputedLead
+	}
+	scheduleCancelBuffer := cfg.ScheduleCancelBuffer
+	if scheduleCancelBuffer <= 0 {
+		scheduleCancelBuffer = defaultScheduleCancelBuffer
+	}
+	if scheduleCancelBuffer < minScheduleCancelBuffer {
+		scheduleCancelBuffer = minScheduleCancelBuffer
+	}
 	return &SendOrchestrator{
 		repo:                  cfg.Repo,
 		committee:             cfg.Committee,
@@ -202,6 +281,11 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		selfServeBaseURL:      strings.TrimRight(strings.TrimSpace(cfg.SelfServeBaseURL), "/"),
 		jobTimeout:            jobTimeout,
 		sendProvider:          sendProvider,
+		scheduleMaxHorizon:    scheduleMaxHorizon,
+		scheduleMinLead:       scheduleMinLead,
+		scheduleCancelBuffer:  scheduleCancelBuffer,
+		sendGridScheduler:     cfg.SendGridScheduler,
+		sendGridDispatcher:    cfg.SendGridDispatcher,
 	}
 }
 
@@ -216,6 +300,18 @@ type SendNewsletterInput struct {
 	NewsletterID    uuid.UUID
 	ExpectedVersion int64
 	Principal       string
+	// Schedule arms a scheduled release instead of sending immediately
+	// (LFXV2-2685), set only by the POST .../schedule handler. It is the sole
+	// discriminator that lets SendNewsletter serve both routes: when false
+	// (the plain POST .../send path), ScheduledAt below is never consulted —
+	// not even a draft's own saved draft.ScheduledAt — so a draft carrying a
+	// saved-but-unarmed schedule still sends immediately.
+	Schedule bool
+	// ScheduledAt optionally overrides the draft's saved scheduled_at when
+	// Schedule is true. Nil (with Schedule=true) falls back to the draft's own
+	// saved value; if neither is set the request is invalid. Ignored entirely
+	// when Schedule is false.
+	ScheduledAt *time.Time
 }
 
 // SendFailure describes a single per-recipient failure surfaced from the
@@ -265,8 +361,36 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	if draft.Status == model.StatusSending {
 		return nil, domain.ErrSendInProgress
 	}
+	if draft.Status == model.StatusScheduled {
+		return nil, domain.ErrScheduled
+	}
 	if in.ExpectedVersion != 0 && draft.Version != in.ExpectedVersion {
 		return nil, domain.ErrVersionMismatch
+	}
+
+	// Resolve the schedule BEFORE doing any recipient-resolution or rendering
+	// work, but defer the window validation until immediately before CreateBatchID
+	// so the validation accounts for time consumed by recipient resolution and
+	// rendering (LFXV2-2685). Schedule is the sole discriminator: a plain send
+	// (Schedule=false) never consults ScheduledAt — not in.ScheduledAt, and not
+	// draft.ScheduledAt — so a draft carrying a saved-but-unarmed schedule still
+	// sends immediately when POST .../send is called directly.
+	var scheduledAt *time.Time
+	var scheduler port.ScheduledSender
+	if in.Schedule {
+		effective := in.ScheduledAt
+		if effective == nil {
+			effective = draft.ScheduledAt
+		}
+		if effective == nil {
+			return nil, fmt.Errorf("%w: scheduled_at is required (not set on the draft or in the request)", domain.ErrInvalidRequest)
+		}
+		var ok bool
+		scheduler, ok = o.email.(port.ScheduledSender)
+		if !ok {
+			return nil, pkgerrors.NewServiceUnavailable("scheduling requires the SendGrid provider (EMAIL_PROVIDER=sendgrid)")
+		}
+		scheduledAt = effective
 	}
 
 	recipients, err := o.resolveRecipients(ctx, draft.ProjectUID, draft.CommitteeUIDs)
@@ -352,10 +476,29 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		GroupID:         groupID,
 	}
 
+	// Mint the provider batch id before claiming 'sending' so scheduled_at and
+	// batch_id can be persisted atomically with the draft → sending transition
+	// (LFXV2-2685). Every recipient in the fan-out below carries this same
+	// SendAt/BatchID so the provider releases them together.
+	// Validate the schedule window immediately before arming so the check accounts
+	// for time consumed by recipient resolution and rendering (LFXV2-2685).
+	var batchID string
+	if scheduledAt != nil {
+		if err := o.validateScheduleWindow(*scheduledAt); err != nil {
+			return nil, err
+		}
+		batchID, err = scheduler.CreateBatchID(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("mint schedule batch id: %w", err)
+		}
+		envelope.SendAt = scheduledAt
+		envelope.BatchID = batchID
+	}
+
 	// The duplicate-send guard: a single optimistically-locked UPDATE gated on
 	// status='draft'. From here on no concurrent or repeated send request can
 	// enter the fan-out for this newsletter.
-	sending, err := o.repo.MarkSending(ctx, draft.ID, groupID, o.sendProvider, len(recipients), draft.Version)
+	sending, err := o.repo.MarkSending(ctx, draft.ID, groupID, o.sendProvider, len(recipients), draft.Version, scheduledAt, batchID)
 	if err != nil {
 		return nil, fmt.Errorf("mark sending: %w", err)
 	}
@@ -496,18 +639,79 @@ func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsle
 				"newsletter_id", sending.ID,
 				"error", err,
 			)
-		} else if purger, ok := o.email.(port.EngagementPurger); ok {
-			// The revert cleared group_id, so any engagement rows the provider
-			// recorded for this fully-failed send (with recipient emails) are now
-			// orphaned. Purge them; best-effort, so a failure only logs.
-			if err := purger.PurgeEngagement(persistCtx, envelope.GroupID); err != nil {
-				slog.WarnContext(persistCtx, "newsletter send: failed to purge provider engagement after revert",
-					"newsletter_id", sending.ID,
-					"group_id", envelope.GroupID,
-					"error", err,
-				)
+		} else {
+			// The revert cleared group_id (and batch_id, for a scheduled
+			// attempt), so any provider-side state keyed to this fully-failed
+			// send is now orphaned — best-effort cleanup, so a failure only
+			// logs. Keyed off envelope.BatchID (set only when THIS request
+			// armed a schedule), for the same reason the settlement branch
+			// above is keyed off envelope.SendAt rather than a row column.
+			if envelope.BatchID != "" {
+				if scheduler, ok := o.email.(port.ScheduledSender); ok {
+					if err := scheduler.CancelScheduledBatch(persistCtx, envelope.BatchID); err != nil {
+						slog.WarnContext(persistCtx, "newsletter send: failed to cancel provider batch after revert",
+							"newsletter_id", sending.ID,
+							"batch_id", envelope.BatchID,
+							"error", err,
+						)
+					}
+				}
+			}
+			if purger, ok := o.email.(port.EngagementPurger); ok {
+				if err := purger.PurgeEngagement(persistCtx, envelope.GroupID); err != nil {
+					slog.WarnContext(persistCtx, "newsletter send: failed to purge provider engagement after revert",
+						"newsletter_id", sending.ID,
+						"group_id", envelope.GroupID,
+						"error", err,
+					)
+				}
 			}
 		}
+		return
+	}
+
+	// A scheduled fan-out settles to 'scheduled' — the provider is holding
+	// these messages for release at ScheduledAt, not delivering them now
+	// (LFXV2-2685). SettleDueScheduled flips it to 'sent' once that time
+	// passes.
+	//
+	// Deliberately keyed off envelope.SendAt — set only when THIS request
+	// armed a schedule (SendNewsletter's in.Schedule branch) — and not off
+	// sending.ScheduledAt. A plain immediate send never clears scheduled_at
+	// on a draft that has one saved-but-unarmed (MarkSending only touches
+	// that column when it is itself asked to persist a schedule), so
+	// sending.ScheduledAt can be non-nil purely as leftover saved intent.
+	// Branching on that column would misfile an ordinary send as scheduled.
+	if envelope.SendAt != nil {
+		if _, err := o.repo.MarkScheduled(persistCtx, sending.ID, sending.Version); err != nil {
+			if errors.Is(err, domain.ErrAlreadySent) || errors.Is(err, domain.ErrScheduled) {
+				slog.WarnContext(ctx, "newsletter schedule: row was already settled by another actor",
+					"newsletter_id", sending.ID,
+					"group_id", envelope.GroupID,
+					"sent", sent,
+					"failed", failed,
+				)
+				return
+			}
+			slog.ErrorContext(ctx, "newsletter schedule: mark scheduled failed after fan-out; the recovery sweep settles any row still 'sending'",
+				"newsletter_id", sending.ID,
+				"group_id", envelope.GroupID,
+				"sent", sent,
+				"failed", failed,
+				"error", err,
+			)
+			return
+		}
+		slog.InfoContext(ctx, "newsletter scheduled",
+			"newsletter_id", sending.ID,
+			"project_uid", sending.ProjectUID,
+			"group_id", envelope.GroupID,
+			"batch_id", envelope.BatchID,
+			"scheduled_at", sending.ScheduledAt,
+			"total_recipients", len(recipients),
+			"sent", sent,
+			"failed", failed,
+		)
 		return
 	}
 
@@ -569,6 +773,152 @@ func firstFailureError(failures []SendFailure) string {
 		return ""
 	}
 	return failures[0].Error
+}
+
+// validateScheduleWindow enforces the arm-time window (LFXV2-2685):
+// scheduledAt must clear the minimum lead time and must not exceed the
+// configured horizon (itself capped at SendGrid Mail Send's 72h send_at
+// limit). This is deliberately stricter than the lenient future-only check
+// applied at save time (CreateDraft/UpdateDraft) — a draft may save a time
+// further out than this window; it just can't be armed until it falls inside
+// it.
+func (o *SendOrchestrator) validateScheduleWindow(scheduledAt time.Time) error {
+	now := time.Now().UTC()
+	minAt := now.Add(o.scheduleMinLead)
+	maxAt := now.Add(o.scheduleMaxHorizon)
+	if scheduledAt.Before(minAt) {
+		return fmt.Errorf("%w: scheduled_at must be at least %s in the future", domain.ErrInvalidRequest, o.scheduleMinLead)
+	}
+	if scheduledAt.After(maxAt) {
+		return fmt.Errorf("%w: scheduled_at must be no more than %s in the future", domain.ErrInvalidRequest, o.scheduleMaxHorizon)
+	}
+	return nil
+}
+
+// CancelScheduledInput is the typed input for CancelScheduled.
+type CancelScheduledInput struct {
+	ProjectUID      string
+	NewsletterID    uuid.UUID
+	ExpectedVersion int64
+}
+
+// CancelScheduled cancels an armed schedule and returns the newsletter to
+// draft (LFXV2-2685). The provider batch is cancelled BEFORE our row is
+// mutated, so a SendGrid failure leaves the row truthfully still 'scheduled'
+// rather than reporting a cancellation that didn't actually take effect
+// upstream.
+func (o *SendOrchestrator) CancelScheduled(ctx context.Context, in CancelScheduledInput) (*model.Newsletter, error) {
+	if err := validateProjectUID(in.ProjectUID); err != nil {
+		return nil, err
+	}
+
+	draft, err := o.repo.Get(ctx, in.NewsletterID)
+	if err != nil {
+		return nil, err
+	}
+	if draft.ProjectUID != in.ProjectUID {
+		return nil, domain.ErrNotFound
+	}
+	// Allow cancellation of both scheduled (sent to provider, waiting) and sending
+	// (fan-out in progress with an armed batch_id) rows. This permits race-safe
+	// cancellation of in-flight batches before the recovery sweep runs (LFXV2-2685).
+	if draft.Status != model.StatusScheduled && draft.Status != model.StatusSending {
+		if draft.Status == model.StatusSent {
+			return nil, domain.ErrAlreadySent
+		}
+		return nil, fmt.Errorf("%w: newsletter is not scheduled", domain.ErrInvalidRequest)
+	}
+	// A sending row with a batch_id can be cancelled, but a sending row WITHOUT one
+	// (immediate send in progress) cannot — only the recovery sweep can deal with it.
+	if draft.Status == model.StatusSending && draft.BatchID == nil {
+		return nil, fmt.Errorf("%w: newsletter is not scheduled", domain.ErrInvalidRequest)
+	}
+	if in.ExpectedVersion != 0 && draft.Version != in.ExpectedVersion {
+		return nil, domain.ErrVersionMismatch
+	}
+	if draft.ScheduledAt != nil && time.Now().UTC().After(draft.ScheduledAt.Add(-o.scheduleCancelBuffer)) {
+		return nil, domain.ErrCancelWindowClosed
+	}
+
+	if draft.BatchID != nil {
+		// Route cancellation by the provider that armed this schedule, not the
+		// current EMAIL_PROVIDER. If the provider was switched after scheduling,
+		// we must still support cancellation of outstanding SendGrid batches
+		// (LFXV2-2685). Only SendGrid supports scheduled sends.
+		var scheduler port.ScheduledSender
+		switch draft.SendProvider {
+		case model.SendProviderSendGrid:
+			scheduler = o.sendGridScheduler
+			if scheduler == nil {
+				// The newsletter was originally sent via SendGrid and armed a batch,
+				// but the provider has been switched away (EMAIL_PROVIDER is no longer
+				// sendgrid) and we have no cached reference. The batch is still queued
+				// at SendGrid and cannot be cancelled without provider credentials.
+				return nil, pkgerrors.NewServiceUnavailable(
+					"cancelling this schedule requires the SendGrid provider (EMAIL_PROVIDER=sendgrid); the provider appears to have been switched",
+				)
+			}
+		default:
+			// email-service does not support scheduled sends; a batch_id should never
+			// exist on an email-service send. This is a data corruption issue.
+			return nil, pkgerrors.NewUnexpected(
+				fmt.Sprintf("newsletter has a batch_id but send_provider=%q (which does not support scheduling)", draft.SendProvider),
+				nil,
+			)
+		}
+		if err := scheduler.CancelScheduledBatch(ctx, *draft.BatchID); err != nil {
+			return nil, fmt.Errorf("cancel provider batch: %w", err)
+		}
+	}
+
+	// Use a fresh context with timeout independent of the request context. The
+	// request context may already be exhausted from the provider cancellation
+	// call above, but reverting to draft must persist reliably. Pass the batch_id
+	// that was cancelled so the revert predicates on that same batch, preventing a
+	// delayed duplicate cancel from reverting a newer send (LFXV2-2685).
+	revertCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	reverted, err := o.repo.RevertScheduled(revertCtx, draft.ID, draft.Version, draft.BatchID)
+	if err != nil {
+		return nil, fmt.Errorf("revert scheduled: %w", err)
+	}
+
+	if draft.GroupID != nil {
+		// Route engagement purge by the provider that owned this send, not the
+		// active dispatcher. This ensures SendGrid scheduled sends are properly
+		// cleaned up even after a provider switch to email-service (LFXV2-2685).
+		// Use an independent bounded context to ensure cleanup succeeds even if the
+		// request context was cancelled by the client during provider cancellation.
+		var purger port.EngagementPurger
+		switch draft.SendProvider {
+		case model.SendProviderSendGrid:
+			purger = o.sendGridDispatcher
+		default:
+			purger, _ = o.email.(port.EngagementPurger)
+		}
+		if purger != nil {
+			// Create an independent context for purge so it succeeds even if the
+			// request context is exhausted or cancelled (e.g., client disconnect).
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := purger.PurgeEngagement(cleanupCtx, *draft.GroupID); err != nil {
+				cleanupCancel()
+				slog.WarnContext(context.Background(), "cancel schedule: failed to purge provider engagement after revert",
+					"newsletter_id", draft.ID,
+					"group_id", *draft.GroupID,
+					"provider", draft.SendProvider,
+					"error", err,
+				)
+			} else {
+				cleanupCancel()
+			}
+		}
+	}
+
+	slog.InfoContext(ctx, "newsletter schedule cancelled",
+		"newsletter_id", reverted.ID,
+		"project_uid", reverted.ProjectUID,
+	)
+	return reverted, nil
 }
 
 // TestSendInput is the typed input for TestSend.
@@ -848,6 +1198,12 @@ type emailEnvelope struct {
 	FromDisplayName string
 	ReplyTo         string
 	GroupID         string
+	// SendAt/BatchID arm a scheduled release (LFXV2-2685): when SendAt is
+	// non-nil, every recipient in the fan-out carries the same SendAt/BatchID
+	// so the provider holds and releases them together. Nil/empty for an
+	// immediate send.
+	SendAt  *time.Time
+	BatchID string
 }
 
 // fanOut dispatches per-recipient send_email requests to email-service with
@@ -921,6 +1277,8 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				FromDisplayName: env.FromDisplayName,
 				ReplyTo:         env.ReplyTo,
 				GroupID:         env.GroupID,
+				SendAt:          env.SendAt,
+				BatchID:         env.BatchID,
 			})
 			mu.Lock()
 			defer mu.Unlock()

@@ -15,8 +15,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // nowTS returns the current Unix time as the string the SendGrid signed webhook
@@ -82,6 +84,7 @@ func TestWebhook_AppliesVerifiedEvents(t *testing.T) {
 	body := []byte(`[
 	  {"event":"delivered","email":"a@x.io","timestamp":1700000000,"sg_event_id":"e1","email_id":"m1","group_id":"g"},
 	  {"event":"open","email":"a@x.io","timestamp":1700000100,"sg_event_id":"e2","email_id":"m1","group_id":"g"},
+	  {"event":"click","email":"a@x.io","timestamp":1700000150,"sg_event_id":"e6","email_id":"m1","group_id":"g","url":"https://example.com/content"},
 	  {"event":"bounce","email":"b@x.io","timestamp":1700000200,"sg_event_id":"e3","email_id":"m2","group_id":"g"},
 	  {"event":"processed","email":"c@x.io","timestamp":1700000300,"sg_event_id":"e4","email_id":"m3","group_id":"g"},
 	  {"event":"open","email":"d@x.io","timestamp":1700000400,"sg_event_id":"e5","group_id":"g"}
@@ -108,6 +111,9 @@ func TestWebhook_AppliesVerifiedEvents(t *testing.T) {
 	if len(store.opens) != 1 || store.opens[0] != "e2|m1" {
 		t.Errorf("opens = %v, want [e2|m1]", store.opens)
 	}
+	if len(store.clicks) != 1 || store.clicks[0] != "e6|m1|https://example.com/content" {
+		t.Errorf("clicks = %v, want [e6|m1|https://example.com/content]", store.clicks)
+	}
 }
 
 func TestWebhook_SkipsIncompleteTrackedEvents(t *testing.T) {
@@ -123,6 +129,8 @@ func TestWebhook_SkipsIncompleteTrackedEvents(t *testing.T) {
 	  {"event":"delivered","email":"a@x.io","timestamp":1700000000,"sg_event_id":"e1","email_id":"m1","group_id":""},
 	  {"event":"bounce","email":"b@x.io","timestamp":1700000100,"sg_event_id":"e2","email_id":"m2","group_id":""},
 	  {"event":"open","email":"c@x.io","timestamp":1700000200,"sg_event_id":"","email_id":"m3","group_id":"g"},
+	  {"event":"click","email":"e@x.io","timestamp":1700000250,"sg_event_id":"","email_id":"m5","group_id":"g","url":"https://example.com"},
+	  {"event":"click","email":"f@x.io","timestamp":1700000260,"sg_event_id":"e6","email_id":"m6","group_id":"","url":"https://example.com"},
 	  {"event":"delivered","email":"d@x.io","timestamp":1700000300,"sg_event_id":"e4","email_id":"m4","group_id":"g"}
 	]`)
 	ts := nowTS()
@@ -146,6 +154,11 @@ func TestWebhook_SkipsIncompleteTrackedEvents(t *testing.T) {
 	}
 	if len(store.opens) != 0 {
 		t.Errorf("opens = %v, want [] (empty sg_event_id must be skipped)", store.opens)
+	}
+	// The click missing sg_event_id and the click missing group_id are both
+	// skipped, same reasoning as opens/delivered above.
+	if len(store.clicks) != 0 {
+		t.Errorf("clicks = %v, want [] (empty sg_event_id/group_id must be skipped)", store.clicks)
 	}
 }
 
@@ -205,5 +218,53 @@ func TestWebhook_StoreErrorRequestsRedelivery(t *testing.T) {
 	// (application is idempotent, so reapply is safe).
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", rec.Code)
+	}
+}
+
+func TestTrimURLToMaxLen_MultibyteBoundary(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantLen int // want the output to be validly <= this many bytes
+	}{
+		{
+			// ASCII only: no multi-byte runes, trim cleanly at 2048
+			name:    "ascii_within_limit",
+			input:   "https://example.com/a",
+			wantLen: 2048, // well under limit
+		},
+		{
+			// URL with multi-byte UTF-8 runes (Chinese characters) such that
+			// a naive byte-at-2048 trim would split a 3-byte rune.
+			name: "unicode_at_boundary",
+			// Construct a URL that's ASCII + a multi-byte character right at position 2046-2048.
+			// A 3-byte UTF-8 character like '中' (U+4E2D) encodes as E4 B8 AD.
+			// If we naively trim at position 2046, we might cut it as "...E4 B8" (incomplete).
+			input:   "https://example.com/" + strings.Repeat("a", 2035) + "中国语言",
+			wantLen: 2048,
+		},
+		{
+			// Ensure the output is valid UTF-8 even if the input would force trimming
+			// into the middle of a multi-byte sequence.
+			name:    "4byte_at_boundary",
+			input:   "https://example.com/" + strings.Repeat("x", 2040) + "😀😀😀",
+			wantLen: 2048,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := trimURLToMaxLen(tt.input)
+			if len(got) > maxClickURLLen {
+				t.Errorf("trimURLToMaxLen output is %d bytes, exceeds maxClickURLLen %d", len(got), maxClickURLLen)
+			}
+			// Validate UTF-8 by checking if we can decode every rune without error.
+			for i, r := range got {
+				if r == utf8.RuneError {
+					t.Errorf("trimURLToMaxLen output contains invalid UTF-8 at position %d", i)
+					break
+				}
+			}
+		})
 	}
 }

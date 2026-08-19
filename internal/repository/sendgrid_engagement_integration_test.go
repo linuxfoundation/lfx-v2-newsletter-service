@@ -52,9 +52,13 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	group := "grp-" + time.Now().UTC().Format("150405.000000000")
 	m1, m2 := group+"-m1", group+"-m2"
 	ev1, ev2 := group+"-ev1", group+"-ev2"
+	cev1, cev2, cev3 := group+"-cev1", group+"-cev2", group+"-cev3"
 	t.Cleanup(func() {
 		if _, err := db.NewRaw("DELETE FROM sendgrid_open_events WHERE email_id IN (?, ?)", m1, m2).Exec(ctx); err != nil {
 			t.Errorf("cleanup open_events: %v", err)
+		}
+		if _, err := db.NewRaw("DELETE FROM sendgrid_click_events WHERE email_id IN (?, ?)", m1, m2).Exec(ctx); err != nil {
+			t.Errorf("cleanup click_events: %v", err)
 		}
 		if _, err := db.NewRaw("DELETE FROM sendgrid_recipient_engagement WHERE group_id = ?", group).Exec(ctx); err != nil {
 			t.Errorf("cleanup engagement: %v", err)
@@ -75,14 +79,23 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	must(t, store.ApplyOpen(ctx, ev2, m1, group, "a@x.io", now.Add(time.Minute)))
 	must(t, store.ApplyFailed(ctx, m2, group, "b@x.io", now))
 
+	must(t, store.ApplyClick(ctx, cev1, m1, group, "a@x.io", "https://example.com/a", now))
+	must(t, store.ApplyClick(ctx, cev1, m1, group, "a@x.io", "https://example.com/a", now)) // dedup on sg_event_id
+	must(t, store.ApplyClick(ctx, cev2, m1, group, "a@x.io", "https://example.com/b", now.Add(time.Minute)))
+
 	eng, err := store.Engagement(ctx, group)
 	if err != nil {
 		t.Fatalf("Engagement: %v", err)
 	}
 	// Opened is the raw open total (m1's open_count of 2: ev1 deduped, ev1+ev2
-	// counted); UniqueOpens is the one recipient (m1) who opened.
+	// counted); UniqueOpens is the one recipient (m1) who opened. Clicked mirrors
+	// that shape for clicks: m1 clicked twice (cev1 deduped, cev1+cev2 counted),
+	// and m1 is the one recipient with a click.
 	if eng.TotalSent != 2 || eng.Delivered != 1 || eng.Opened != 2 || eng.UniqueOpens != 1 || eng.Failed != 1 {
 		t.Errorf("Engagement = %+v; want TotalSent=2 Delivered=1 Opened=2 UniqueOpens=1 Failed=1", eng)
+	}
+	if eng.Clicked != 2 || eng.UniqueClicks != 1 {
+		t.Errorf("Engagement clicks = %+v; want Clicked=2 UniqueClicks=1", eng)
 	}
 
 	// GroupEngagementDetail aggregates the group in SQL: m1 opened twice (ev1 at
@@ -116,14 +129,48 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 		t.Errorf("GroupEngagementDetail LastEventAt = %v; want ~%v", detail.LastEventAt, now.Add(time.Minute))
 	}
 
-	// A group with no opens returns an empty series and nil LastEventAt (the
-	// nullable MAX must not error).
+	// Clicks mirror the opens assertions above: m1 clicked two distinct links
+	// (cev1 deduped, cev1+cev2 counted), so unique clicks is 1 and the top-links
+	// aggregate ranks both URLs with one click each, ordered by click count desc
+	// (a stable tie order is not asserted since both have equal counts).
+	if detail.UniqueClicks != 1 {
+		t.Errorf("GroupEngagementDetail UniqueClicks = %d; want 1 (m1)", detail.UniqueClicks)
+	}
+	totalClicks := 0
+	for _, d := range detail.DailyClicks {
+		totalClicks += d.Clicks
+		if d.UniqueClicks != 1 {
+			t.Errorf("GroupEngagementDetail click day %v UniqueClicks = %d; want 1 (only m1)", d.Date, d.UniqueClicks)
+		}
+	}
+	if totalClicks != 2 {
+		t.Errorf("GroupEngagementDetail total daily clicks = %d; want 2", totalClicks)
+	}
+	if len(detail.TopLinks) != 2 {
+		t.Errorf("GroupEngagementDetail TopLinks = %v; want 2 distinct URLs", detail.TopLinks)
+	} else {
+		urls := map[string]bool{detail.TopLinks[0].URL: true, detail.TopLinks[1].URL: true}
+		if !urls["https://example.com/a"] || !urls["https://example.com/b"] {
+			t.Errorf("GroupEngagementDetail TopLinks = %v; want both clicked URLs", detail.TopLinks)
+		}
+		for _, l := range detail.TopLinks {
+			if l.Clicks != 1 || l.UniqueClicks != 1 {
+				t.Errorf("GroupEngagementDetail TopLinks entry %+v; want Clicks=1 UniqueClicks=1", l)
+			}
+		}
+	}
+
+	// A group with no opens or clicks returns empty series and nil LastEventAt
+	// (the nullable MAX must not error).
 	emptyDetail, err := store.GroupEngagementDetail(ctx, group+"-no-opens")
 	if err != nil {
 		t.Fatalf("GroupEngagementDetail(no opens): %v", err)
 	}
 	if len(emptyDetail.DailyOpens) != 0 || emptyDetail.LastEventAt != nil || emptyDetail.UniqueOpens != 0 {
 		t.Errorf("GroupEngagementDetail(no opens) = %+v; want empty series, nil LastEventAt, 0 unique", emptyDetail)
+	}
+	if len(emptyDetail.DailyClicks) != 0 || len(emptyDetail.TopLinks) != 0 || emptyDetail.UniqueClicks != 0 {
+		t.Errorf("GroupEngagementDetail(no clicks) = %+v; want empty click series, 0 unique clicks", emptyDetail)
 	}
 
 	rec, err := store.RecipientByEmailID(ctx, m1)
@@ -136,27 +183,37 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	if rec.OpenCount != 2 || len(rec.OpenedAtList) != 2 {
 		t.Errorf("m1 opens = count %d / list %d; want 2 / 2 (ev1 deduped, ev1+ev2 counted)", rec.OpenCount, len(rec.OpenedAtList))
 	}
+	if !rec.Clicked || rec.ClickCount != 2 || len(rec.ClickedAtList) != 2 {
+		t.Errorf("m1 clicks = clicked %v / count %d / list %d; want true / 2 / 2 (cev1 deduped, cev1+cev2 counted)", rec.Clicked, rec.ClickCount, len(rec.ClickedAtList))
+	}
 
 	// Self-heal: an event for an email_id that RecordSent never persisted still
 	// lands its engagement — the row is created from the event's group_id / to.
 	// Uses its own group so it does not perturb the group-of-two assertions above.
 	healGroup := group + "-heal"
-	m3, ev3 := healGroup+"-m3", healGroup+"-ev3"
+	m3, ev3, hcev := healGroup+"-m3", healGroup+"-ev3", healGroup+"-cev"
 	t.Cleanup(func() {
 		if _, err := db.NewRaw("DELETE FROM sendgrid_open_events WHERE email_id = ?", m3).Exec(ctx); err != nil {
 			t.Errorf("cleanup heal open_events: %v", err)
+		}
+		if _, err := db.NewRaw("DELETE FROM sendgrid_click_events WHERE email_id = ?", m3).Exec(ctx); err != nil {
+			t.Errorf("cleanup heal click_events: %v", err)
 		}
 		if _, err := db.NewRaw("DELETE FROM sendgrid_recipient_engagement WHERE group_id = ?", healGroup).Exec(ctx); err != nil {
 			t.Errorf("cleanup heal engagement: %v", err)
 		}
 	})
 	must(t, store.ApplyOpen(ctx, ev3, m3, healGroup, "c@x.io", now))
+	must(t, store.ApplyClick(ctx, hcev, m3, healGroup, "c@x.io", "https://example.com/heal", now))
 	rec3, err := store.RecipientByEmailID(ctx, m3)
 	if err != nil {
 		t.Fatalf("RecipientByEmailID(self-healed m3): %v", err)
 	}
 	if !rec3.Opened || rec3.OpenCount != 1 || rec3.To != "c@x.io" || rec3.GroupID != healGroup {
 		t.Errorf("self-healed m3 = %+v; want opened, count 1, to c@x.io, group %s", rec3, healGroup)
+	}
+	if !rec3.Clicked || rec3.ClickCount != 1 {
+		t.Errorf("self-healed m3 clicks = %+v; want clicked, count 1", rec3)
 	}
 
 	recs, err := store.RecipientsByGroupID(ctx, group)
@@ -167,10 +224,49 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 		t.Errorf("group records = %d; want 2", len(recs))
 	}
 
-	// RevertGroup tombstones the group and purges its engagement rows and open
-	// events (cleanup after a fully-failed send reverts), leaving other groups
-	// intact.
+	// RecipientRecordsByGroupID returns the same rows WITH each recipient's
+	// ascending open series and the delivery/failure timestamps, for the
+	// per-recipient analytics endpoint.
+	full, err := store.RecipientRecordsByGroupID(ctx, group)
+	if err != nil {
+		t.Fatalf("RecipientRecordsByGroupID: %v", err)
+	}
+	if len(full) != 2 {
+		t.Fatalf("full group records = %d; want 2", len(full))
+	}
+	byEmailID := map[string]int{full[0].EmailID: 0, full[1].EmailID: 1}
+	f1, f2 := full[byEmailID[m1]], full[byEmailID[m2]]
+	if len(f1.OpenedAtList) != 2 || f1.OpenedAtList[0].After(f1.OpenedAtList[1]) {
+		t.Errorf("m1 OpenedAtList = %v; want 2 ascending timestamps", f1.OpenedAtList)
+	}
+	if len(f1.ClickedAtList) != 2 || f1.ClickedAtList[0].After(f1.ClickedAtList[1]) {
+		t.Errorf("m1 ClickedAtList = %v; want 2 ascending timestamps", f1.ClickedAtList)
+	}
+	if !f1.Delivered || f1.DeliveredAt == nil {
+		t.Errorf("m1 = %+v; want delivered with delivered_at set", f1)
+	}
+	if len(f2.OpenedAtList) != 0 {
+		t.Errorf("m2 OpenedAtList = %v; want empty (never opened)", f2.OpenedAtList)
+	}
+	if len(f2.ClickedAtList) != 0 {
+		t.Errorf("m2 ClickedAtList = %v; want empty (never clicked)", f2.ClickedAtList)
+	}
+	if !f2.Failed || f2.FailedAt == nil {
+		t.Errorf("m2 = %+v; want failed with failed_at set", f2)
+	}
+	if none, err := store.RecipientRecordsByGroupID(ctx, group+"-unknown"); err != nil || len(none) != 0 {
+		t.Errorf("RecipientRecordsByGroupID(unknown group) = %v, %v; want empty, nil error", none, err)
+	}
+
+	// RevertGroup tombstones the group and purges its engagement rows, open
+	// events, and click events (cleanup after a fully-failed send reverts),
+	// leaving other groups intact.
 	must(t, store.RevertGroup(ctx, group))
+	var survivingClicks int
+	must(t, db.NewRaw("SELECT COUNT(*) FROM sendgrid_click_events WHERE email_id = ?", m1).Scan(ctx, &survivingClicks))
+	if survivingClicks != 0 {
+		t.Errorf("click events survived RevertGroup: %d; want 0", survivingClicks)
+	}
 	recs, err = store.RecipientsByGroupID(ctx, group)
 	if err != nil {
 		t.Fatalf("RecipientsByGroupID after revert: %v", err)
@@ -190,6 +286,7 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	// trigger), so purged recipient PII stays purged.
 	must(t, store.ApplyDelivered(ctx, m1, group, "a@x.io", now))
 	must(t, store.ApplyOpen(ctx, group+"-late-ev", m1, group, "a@x.io", now))
+	must(t, store.ApplyClick(ctx, cev3, m1, group, "a@x.io", "https://example.com/late", now))
 	must(t, store.ApplyFailed(ctx, m2, group, "b@x.io", now))
 	if recs, err := store.RecipientsByGroupID(ctx, group); err != nil {
 		t.Fatalf("RecipientsByGroupID after late webhooks: %v", err)
@@ -202,6 +299,14 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	must(t, db.NewRaw("SELECT COUNT(*) FROM sendgrid_open_events WHERE sg_event_id = ?", group+"-late-ev").Scan(ctx, &lateOpens))
 	if lateOpens != 0 {
 		t.Errorf("late open for a reverted group left %d orphan open-event row(s); want 0", lateOpens)
+	}
+	// Same for a late click (ApplyClick must do the identical tombstone check
+	// before inserting, since sendgrid_click_events has no group_id column for
+	// the DB trigger to enforce it).
+	var lateClicks int
+	must(t, db.NewRaw("SELECT COUNT(*) FROM sendgrid_click_events WHERE sg_event_id = ?", cev3).Scan(ctx, &lateClicks))
+	if lateClicks != 0 {
+		t.Errorf("late click for a reverted group left %d orphan click-event row(s); want 0", lateClicks)
 	}
 
 	// A brand-new (non-reverted) group is unaffected by the tombstone.
@@ -278,6 +383,18 @@ func TestSchemaMigration_SendProviderUpgradePath(t *testing.T) {
 
 	id := "mig-row"
 
+	// Simulate a pre-click-tracking database: first seed engagement + open rows
+	// with the current schema (full click columns), then drop the click columns/table
+	// to create the pre-upgrade shape. This ensures schema.Apply is the first caller
+	// that must handle the columns.
+	group, emailID, evID := "mig-click-grp", "mig-click-m", "mig-click-ev"
+	preUpgradeStore := repository.NewSendGridEngagementStore(db)
+	must(t, preUpgradeStore.ApplyDelivered(ctx, emailID, group, "a@x.io", time.Now().UTC()))
+	must(t, preUpgradeStore.ApplyOpen(ctx, evID, emailID, group, "a@x.io", time.Now().UTC()))
+	// Now drop the click-only schema objects to simulate a pre-click-tracking database.
+	must(t, exec(ctx, db, `DROP TABLE IF EXISTS sendgrid_click_events`))
+	must(t, exec(ctx, db, `ALTER TABLE sendgrid_recipient_engagement DROP COLUMN IF EXISTS clicked, DROP COLUMN IF EXISTS click_count, DROP COLUMN IF EXISTS last_clicked_at`))
+
 	// Simulate a prior partial run: column nullable, no default, no CHECK, plus a
 	// legacy row with a NULL provider.
 	must(t, exec(ctx, db, `ALTER TABLE newsletters DROP CONSTRAINT IF EXISTS newsletters_send_provider_check`))
@@ -312,6 +429,30 @@ func TestSchemaMigration_SendProviderUpgradePath(t *testing.T) {
 	}
 	// A third apply is a no-op (idempotent).
 	must(t, schema.Apply(ctx, pool))
+
+	// The click-tracking upgrade: the pre-existing engagement + open row survives
+	// with the new columns backfilled to their defaults (clicked=false,
+	// click_count=0), the old open metrics are unaffected, and sendgrid_click_events
+	// exists and is immediately usable.
+	postStore := repository.NewSendGridEngagementStore(db)
+	rec, err := postStore.RecipientByEmailID(ctx, emailID)
+	if err != nil {
+		t.Fatalf("RecipientByEmailID after click-tracking upgrade: %v", err)
+	}
+	if !rec.Opened || rec.OpenCount != 1 {
+		t.Errorf("legacy row lost its open metrics after upgrade: %+v", rec)
+	}
+	if rec.Clicked || rec.ClickCount != 0 || rec.LastClicked != nil {
+		t.Errorf("legacy row click fields not backfilled to zero-value: %+v", rec)
+	}
+	must(t, postStore.ApplyClick(ctx, "mig-click-cev", emailID, group, "a@x.io", "https://example.com", time.Now().UTC()))
+	rec, err = postStore.RecipientByEmailID(ctx, emailID)
+	if err != nil {
+		t.Fatalf("RecipientByEmailID after post-upgrade click: %v", err)
+	}
+	if !rec.Clicked || rec.ClickCount != 1 {
+		t.Errorf("post-upgrade click did not apply: %+v", rec)
+	}
 }
 
 // TestSendGridRevertConcurrency_Integration exercises both commit orderings of a

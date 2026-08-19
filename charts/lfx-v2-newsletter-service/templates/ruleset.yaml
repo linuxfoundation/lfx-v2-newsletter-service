@@ -283,6 +283,66 @@ spec:
               aud: {{ .Values.app.audience }}
 
     # ---------------------------------------------------------------------
+    # Scheduled sends (LFXV2-2685): arming and cancelling a schedule carry
+    # exactly the authority `send` already carries — same actor, same blast
+    # radius, no new data exposure — so both rules are copied verbatim from
+    # `newsletters:send` above, changing only id and path.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:schedule"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/schedule
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:cancel_schedule"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/cancel-schedule
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # ---------------------------------------------------------------------
     # Recipient resolution + test send. Recipient queries are reads (viewer);
     # test-send is a write (writer).
     # ---------------------------------------------------------------------
@@ -472,6 +532,35 @@ spec:
         {{- else }}
         - authorizer: allow_all
         {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # Per-newsletter per-recipient engagement. Returns PII beyond recipient lists:
+    # engagement history (opened, failed, per-recipient open timestamps). While
+    # recipients-preview already exposes email addresses, this endpoint is a NEW
+    # exposure surface for engagement data. Requires the restrictive `auditor`
+    # relation. Does NOT fall back to allow_all — fails closed like the opt-out
+    # rules: unreachable when `openfga.enabled=false`.
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:analytics_recipients"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/analytics/recipients
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: auditor
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         - finalizer: create_jwt
           config:
             values:

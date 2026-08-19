@@ -97,6 +97,26 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	if err != nil {
 		return err
 	}
+	// Wire a SendGrid scheduler and purger independently of the active dispatcher so
+	// cancellation and engagement cleanup for outstanding SendGrid batches works
+	// even after a provider rollback to email-service (LFXV2-2685). These are
+	// created only when SendGrid credentials are configured.
+	var sendGridScheduler port.ScheduledSender
+	var sendGridDispatcher port.EngagementPurger
+	if cfg.SendGridAPIKey != "" {
+		sg, err := sendgridinfra.NewDispatcher(sendgridinfra.Config{
+			APIKey:                cfg.SendGridAPIKey,
+			DefaultFrom:           cfg.EmailFromAddress,
+			Store:                 repository.NewSendGridEngagementStore(bunDB),
+			AuthenticatedDomains:  cfg.SendGridAuthenticatedDomains,
+			ReplyToAllowedDomains: cfg.EmailReplyToAllowedDomains,
+		})
+		if err != nil {
+			return fmt.Errorf("independent sendgrid scheduler: %w", err)
+		}
+		sendGridScheduler = sg
+		sendGridDispatcher = sg
+	}
 	userMetadataClient := natsinfra.NewUserMetadataClient(nc)
 
 	// Step 4: auth.
@@ -139,6 +159,11 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		SelfServeBaseURL:      cfg.SelfServeBaseURL,
 		SendJobTimeout:        cfg.SendJobTimeout,
 		SendProvider:          cfg.EmailProvider,
+		ScheduleMaxHorizon:    cfg.ScheduleMaxHorizon,
+		ScheduleMinLead:       cfg.ScheduleMinLead,
+		ScheduleCancelBuffer:  cfg.ScheduleCancelBuffer,
+		SendGridScheduler:     sendGridScheduler,
+		SendGridDispatcher:    sendGridDispatcher,
 	})
 	// Analytics routes engagement reads by each newsletter's send_provider, so
 	// register a reader per provider. The email-service (NATS) reader and the
@@ -151,7 +176,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		model.SendProviderEmailService: natsinfra.NewEmailDispatcher(nc),
 		model.SendProviderSendGrid:     sendgridinfra.NewEngagementReader(repository.NewSendGridEngagementStore(bunDB)),
 	}
-	analyticsSvc := service.NewAnalyticsService(repo, engagementReaders, model.SendProviderEmailService)
+	analyticsSvc := service.NewAnalyticsService(repo, engagementReaders, committeeClient, model.SendProviderEmailService)
 
 	// Step 6: recovery sweep for newsletters stranded in 'sending' by a pod
 	// crash mid-fan-out. Runs once at startup (catches strands from previous
@@ -188,6 +213,7 @@ func SQLDB() *sql.DB { return sqlDB }
 // stuckSendRecoverer is the narrow repository slice the recovery sweep needs.
 type stuckSendRecoverer interface {
 	RecoverStuckSending(ctx context.Context, olderThan time.Duration) (int64, error)
+	SettleDueScheduled(ctx context.Context, now time.Time) (int64, error)
 }
 
 // startStuckSendRecovery launches the background sweep that settles
@@ -209,6 +235,21 @@ func startStuckSendRecovery(repo stuckSendRecoverer, ttl time.Duration) {
 				slog.WarnContext(ctx, "stuck-sending recovery sweep settled stranded newsletters",
 					"recovered", recovered,
 					"ttl", ttl.String(),
+				)
+			}
+
+			// Same sweep, second responsibility: flip any 'scheduled' rows whose
+			// scheduled_at has passed to 'sent'. SendGrid owns the actual release
+			// timing; this only reconciles our display state, and is safe from
+			// multiple pods since the UPDATE is status+time gated.
+			settled, err := repo.SettleDueScheduled(ctx, time.Now().UTC())
+			if err != nil {
+				slog.ErrorContext(ctx, "due-scheduled settlement sweep failed", "error", err)
+				return
+			}
+			if settled > 0 {
+				slog.InfoContext(ctx, "due-scheduled settlement sweep settled newsletters",
+					"settled", settled,
 				)
 			}
 		}
@@ -312,3 +353,7 @@ func newSendGridWebhook(ctx context.Context, cfg AppConfig) (http.Handler, error
 	slog.InfoContext(ctx, "SendGrid event webhook registered at POST /newsletters/sendgrid/events")
 	return sendgridinfra.NewWebhook(verifier, repository.NewSendGridEngagementStore(bunDB)), nil
 }
+
+// extractSendGridScheduler extracts the SendGrid scheduler from an email
+// dispatcher if it implements port.ScheduledSender. Used to support scheduled
+// send cancellation even after a provider switch (LFXV2-2685).
