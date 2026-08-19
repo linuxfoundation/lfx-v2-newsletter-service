@@ -40,6 +40,37 @@ func TestStripHTMLForTextDropsHeadStyleScript(t *testing.T) {
 	}
 }
 
+// TestStripHTMLForTextTokenizerEdgeCases guards the two failure modes that a
+// regex-based strip could not handle and that the html-tokenizer pass fixes.
+func TestStripHTMLForTextTokenizerEdgeCases(t *testing.T) {
+	// (1) A '>' inside an attribute value must not corrupt extraction. A naive
+	// `<[^>]+>` tag pass stops at the first '>' (here inside title="1 > 0") and
+	// leaks the attribute tail into the visible text.
+	got := StripHTMLForText(`<p><a href="https://example.com/a" title="1 > 0">Read</a> now</p>`)
+	if strings.Contains(got, "title=") || strings.Contains(got, `0">`) {
+		t.Errorf("attribute tail leaked into text: %q", got)
+	}
+	for _, want := range []string{"Read", "https://example.com/a", "now"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("visible content/link lost %q: %q", want, got)
+		}
+	}
+
+	// (2) A self-closing <style/> is a raw-text element (HTML ignores the slash),
+	// so its CSS must never leak into the text. The old regex skip-scanner keyed
+	// on a </style> that a self-closing tag never opens, spilling the CSS.
+	// Content BEFORE the style survives; the style's own content does not.
+	got = StripHTMLForText(`<p>Before</p><style/>.leaked{color:red}`)
+	if !strings.Contains(got, "Before") {
+		t.Errorf("content before self-closing <style/> was dropped: %q", got)
+	}
+	for _, leaked := range []string{".leaked", "color:red", "leaked"} {
+		if strings.Contains(got, leaked) {
+			t.Errorf("self-closing <style/> css leaked %q: %q", leaked, got)
+		}
+	}
+}
+
 const testMyNewslettersURL = "https://app.lfx.dev/newsletters/my"
 
 func TestEmailHTMLMyNewslettersLine(t *testing.T) {

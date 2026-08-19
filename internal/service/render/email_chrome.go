@@ -14,6 +14,8 @@ package render
 import (
 	"regexp"
 	"strings"
+
+	"golang.org/x/net/html"
 )
 
 // Chrome carries everything the renderer needs to wrap a body in the outer
@@ -181,84 +183,122 @@ func convertStandaloneCtas(html string) string {
 	})
 }
 
-var linkRe = regexp.MustCompile(`(?is)<a\b[^>]*href=("|')(.*?)("|')[^>]*>([\s\S]*?)</a>`)
-
-// preserveLinkDestinations rewrites `<a href="X">label</a>` to `label (X)` so
-// link targets survive the strip-html pass for the plain-text fallback. Skips
-// the parenthesized URL when the label already equals the href (raw URL pasted
-// as link text).
-func preserveLinkDestinations(html string) string {
-	return linkRe.ReplaceAllStringFunc(html, func(match string) string {
-		sub := linkRe.FindStringSubmatch(match)
-		if len(sub) < 5 {
-			return match
-		}
-		href := sub[2]
-		label := sub[4]
-		trimmedLabel := strings.TrimSpace(label)
-		if href == "" || trimmedLabel == href {
-			return label
-		}
-		return label + " (" + href + ")"
-	})
-}
-
-var tagRe = regexp.MustCompile(`<[^>]+>`)
-var entityRe = regexp.MustCompile(`&(amp|lt|gt|quot|#39|nbsp);`)
 var multispaceRe = regexp.MustCompile(`[\t ]+`)
 var multiNewlineRe = regexp.MustCompile(`\n{3,}`)
 
-// stripHTML removes tags and decodes the small entity set we emit. The output
-// is suitable for the plain-text fallback (not for indexing or other downstream
-// consumers).
-func stripHTML(html string) string {
-	// Remove <style>, <script>, and <head> tags and their entire content first.
-	// stripHTML's simple tag pass only matches individual tags, so CSS/JS/metadata
-	// inside these elements would otherwise survive as plain text.
-	out := nonRenderedRe.ReplaceAllString(html, "")
-	out = tagRe.ReplaceAllString(out, "")
-	out = entityRe.ReplaceAllStringFunc(out, func(e string) string {
-		switch e {
-		case "&amp;":
-			return "&"
-		case "&lt;":
-			return "<"
-		case "&gt;":
-			return ">"
-		case "&quot;":
-			return `"`
-		case "&#39;":
-			return "'"
-		case "&nbsp;":
-			return " "
-		}
-		return e
-	})
-	out = multispaceRe.ReplaceAllString(out, " ")
-	out = multiNewlineRe.ReplaceAllString(out, "\n\n")
-	return strings.TrimSpace(out)
-}
+// htmlToText derives a plain-text body from an HTML fragment or full document
+// for the text/plain part of an email. It tokenizes with golang.org/x/net/html
+// rather than parsing HTML structure with regexes, which fixes two failure
+// modes of the old regex approach:
+//
+//   - Non-rendered content never leaks: text inside <head>, <style>, <script>,
+//     and <title> is dropped. A self-closing <style/> or a '>' inside an
+//     attribute value could defeat the old regex skip-scanner and spill CSS/JS
+//     into the recipient-visible text; the tokenizer tracks real element
+//     boundaries, so it cannot.
+//   - Link destinations survive: <a href="X">label</a> becomes "label (X)",
+//     unless the label is already the raw URL (or the href is empty), matching
+//     the old preserveLinkDestinations behavior.
+//
+// Entities are decoded by the tokenizer (so &amp; etc. need no manual table);
+// decoded &nbsp; (U+00A0) is normalized to a plain space, then the same
+// whitespace collapse as before is applied.
+func htmlToText(input string) string {
+	z := html.NewTokenizer(strings.NewReader(input))
+	var out strings.Builder
+	skip := 0 // depth inside <head>/<style>/<script>/<title> — their text is dropped
+	inAnchor := false
+	anchorHref := ""
+	var anchorText strings.Builder
 
-// nonRenderedRe matches <head>, <style>, and <script> elements (and their inner
-// text). The layout send path feeds StripHTMLForText a COMPLETE compiled MJML
-// document whose <head><style>…</style></head> carries CSS/media-query text;
-// without dropping these first, stripHTML's tag-only pass would leak that style
-// text into the text/plain part. Tag-specific alternatives ensure each opening
-// tag matches only its own closing tag (case-insensitive, dot-matches-newline).
-var nonRenderedRe = regexp.MustCompile(`(?is)(<head\b[^>]*>.*?</head>|<style\b[^>]*>.*?</style>|<script\b[^>]*>.*?</script>)`)
+	flushAnchor := func() {
+		if !inAnchor {
+			return
+		}
+		label := anchorText.String()
+		out.WriteString(label)
+		if anchorHref != "" && strings.TrimSpace(label) != anchorHref {
+			out.WriteString(" (" + anchorHref + ")")
+		}
+		inAnchor = false
+		anchorHref = ""
+		anchorText.Reset()
+	}
+
+loop:
+	for {
+		switch z.Next() {
+		case html.ErrorToken:
+			break loop // io.EOF or a parse error — emit what we have
+		case html.TextToken:
+			if skip > 0 {
+				continue
+			}
+			if inAnchor {
+				anchorText.Write(z.Text())
+			} else {
+				out.Write(z.Text())
+			}
+		case html.StartTagToken:
+			name, hasAttr := z.TagName()
+			switch string(name) {
+			case "head", "style", "script", "title":
+				skip++
+			case "a":
+				if skip == 0 && !inAnchor {
+					href := ""
+					for hasAttr {
+						k, v, more := z.TagAttr()
+						if string(k) == "href" {
+							href = string(v)
+						}
+						hasAttr = more
+					}
+					inAnchor = true
+					anchorHref = href
+					anchorText.Reset()
+				}
+			}
+		case html.EndTagToken:
+			name, _ := z.TagName()
+			switch string(name) {
+			case "head", "style", "script", "title":
+				if skip > 0 {
+					skip--
+				}
+			case "a":
+				flushAnchor()
+			}
+		case html.SelfClosingTagToken:
+			name, _ := z.TagName()
+			switch string(name) {
+			case "style", "script", "title":
+				// style/script/title are raw-text/RCDATA elements: the tokenizer
+				// switches to raw-text mode after the start tag even when it is
+				// written self-closing (HTML ignores the slash on these), so the
+				// following content arrives as one text token and must be dropped
+				// until the matching close (or EOF). This is exactly the
+				// self-closing <style/> case the old regex skip-scanner missed.
+				skip++
+			}
+			// Other self-closing/void tags (<br/>, <img/>, …) contribute no text.
+		}
+	}
+	flushAnchor() // document ended mid-anchor (unterminated <a>)
+
+	text := strings.ReplaceAll(out.String(), " ", " ")
+	text = multispaceRe.ReplaceAllString(text, " ")
+	text = multiNewlineRe.ReplaceAllString(text, "\n\n")
+	return strings.TrimSpace(text)
+}
 
 // StripHTMLForText derives a plain-text body from a full HTML email. It is the
 // exported counterpart to EmailText for the layout-based send path, where the
 // emitter already owns the whole email and there is no Chrome to wrap. Link
-// destinations are preserved (`label (href)`) before tags are stripped so the
-// plain-text fallback keeps its URLs, matching EmailText's body treatment.
-//
-// The layout body is a full HTML document, so its <head>/<style>/<script>
-// contents are removed first: stripHTML only removes tags, so their inner
-// CSS/JS text would otherwise survive into the text/plain part.
-func StripHTMLForText(html string) string {
-	html = nonRenderedRe.ReplaceAllString(html, "")
-	return stripHTML(preserveLinkDestinations(html))
+// destinations are preserved (`label (href)`); non-rendered <head>/<style>/
+// <script> content is dropped by the tokenizer.
+func StripHTMLForText(input string) string {
+	return htmlToText(input)
 }
 
 // renderComplianceFooterHTML emits the sender attribution + reply-to + UNSUBSCRIBE
@@ -382,7 +422,7 @@ func EmailText(input Chrome) string {
 	if subject == "" {
 		subject = "Untitled"
 	}
-	body := stripHTML(preserveLinkDestinations(input.BodyHTML))
+	body := htmlToText(input.BodyHTML)
 
 	lines := []string{display + " · Newsletter", subject, "", body}
 
