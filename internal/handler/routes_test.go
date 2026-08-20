@@ -67,7 +67,7 @@ func TestRoutes_RenderPreviewTemplatesRouting(t *testing.T) {
 	})
 
 	t.Run("get-template-manifest", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/newsletters/templates/default/manifest", nil)
+		req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/newsletters/templates/aaif-user-community/manifest", nil)
 		w := httptest.NewRecorder()
 		routes.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {

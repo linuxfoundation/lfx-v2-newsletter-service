@@ -217,9 +217,9 @@ func TestCreateDraft_TemplateKey_RoundTripsAndRendersFromSelectedLibrary(t *test
 	repo := newFakeRepo()
 	svc := NewNewsletterService(repo, true)
 
-	const marker = "Hello from the default library"
+	const marker = "Hello from the selected library"
 	layout := introLayout(marker)
-	layout.TemplateKey = "default" // intro_paragraph exists in the "default" set
+	layout.TemplateKey = "aaif-user-community" // intro_paragraph exists in this set
 
 	draft, err := svc.CreateDraft(context.Background(), CreateDraftInput{
 		ProjectUID:    "p1",
@@ -236,8 +236,8 @@ func TestCreateDraft_TemplateKey_RoundTripsAndRendersFromSelectedLibrary(t *test
 	if err := json.Unmarshal(draft.BodyLayout, &stored); err != nil {
 		t.Fatalf("unmarshal stored layout: %v", err)
 	}
-	if stored.TemplateKey != "default" {
-		t.Errorf("template_key did not round-trip: got %q, want %q", stored.TemplateKey, "default")
+	if stored.TemplateKey != "aaif-user-community" {
+		t.Errorf("template_key did not round-trip: got %q, want %q", stored.TemplateKey, "aaif-user-community")
 	}
 	if !strings.Contains(draft.BodyHTML, marker) {
 		t.Errorf("derived body_html missing block content %q; got:\n%s", marker, draft.BodyHTML)
@@ -253,7 +253,7 @@ func TestCreateDraft_TemplateKey_WhitespacePadded_PersistsTrimmed(t *testing.T) 
 	svc := NewNewsletterService(repo, true)
 
 	layout := introLayout("Padded key")
-	layout.TemplateKey = "  default  "
+	layout.TemplateKey = "  aaif-user-community  "
 
 	draft, err := svc.CreateDraft(context.Background(), CreateDraftInput{
 		ProjectUID:    "p1",
@@ -270,34 +270,8 @@ func TestCreateDraft_TemplateKey_WhitespacePadded_PersistsTrimmed(t *testing.T) 
 	if err := json.Unmarshal(draft.BodyLayout, &stored); err != nil {
 		t.Fatalf("unmarshal stored layout: %v", err)
 	}
-	if stored.TemplateKey != "default" {
-		t.Errorf("template_key did not persist trimmed: got %q, want %q", stored.TemplateKey, "default")
-	}
-}
-
-// TestCreateDraft_TemplateKey_SelectsLibrary proves the key actually routes the
-// render library: hidden_gems exists in the default render library
-// (aaif-user-community) but NOT in the smaller "default" set, so a layout tagged
-// template_key="default" with a hidden_gems block is unrenderable (422) — it is
-// bound against the selected library, not the fallback superset.
-func TestCreateDraft_TemplateKey_SelectsLibrary(t *testing.T) {
-	repo := newFakeRepo()
-	svc := NewNewsletterService(repo, true)
-
-	layout := &declarative.Layout{
-		TemplateKey: "default",
-		Blocks:      []declarative.Block{{BlockType: "hidden_gems", Content: map[string]any{}}},
-	}
-	_, err := svc.CreateDraft(context.Background(), CreateDraftInput{
-		ProjectUID:    "p1",
-		Subject:       "News",
-		BodyLayout:    layout,
-		EDReplyEmail:  "ed@example.com",
-		CommitteeUIDs: []string{"c1"},
-		CreatedBy:     "user1",
-	})
-	if !IsUnprocessableError(err) {
-		t.Fatalf("expected 422 for a block absent from the selected library, got %v", err)
+	if stored.TemplateKey != "aaif-user-community" {
+		t.Errorf("template_key did not persist trimmed: got %q, want %q", stored.TemplateKey, "aaif-user-community")
 	}
 }
 
@@ -408,12 +382,6 @@ func TestUpdateDraft_OmittingLayout_KeepsExistingLayout(t *testing.T) {
 	if !strings.Contains(updated.BodyHTML, "hi") {
 		t.Errorf("re-derived body_html must contain the stored layout's block content; got %q", updated.BodyHTML)
 	}
-	if !strings.Contains(updated.BodyHTML, "mailto:new-ed@example.com") {
-		t.Error("re-derived body_html must carry the update's reply address in the footer")
-	}
-	if strings.Contains(updated.BodyHTML, "mailto:ed@example.com") {
-		t.Error("re-derived body_html must not keep the previous reply address")
-	}
 	if strings.Contains(updated.BodyHTML, "just html") {
 		t.Error("the request's body_html must still be ignored on the preserve branch")
 	}
@@ -482,19 +450,18 @@ func TestRenderLayout_WrapperRuntimeFields(t *testing.T) {
 		t.Fatalf("CreateDraft: %v", err)
 	}
 
-	for _, want := range []string{SenderNamePlaceholder, ProjectNamePlaceholder, "mailto:ed@example.com", "Delivered by LFX"} {
+	// The manage sentinel is now bound at render-on-write (My Newsletters is a
+	// standard archive link); the send path substitutes it to the Self-Serve
+	// archive URL, so it must be present with the "My Newsletters" label.
+	for _, want := range []string{SenderNamePlaceholder, ProjectNamePlaceholder, "Delivered by", ManageSubscriptionsURLPlaceholder, "My Newsletters"} {
 		if !strings.Contains(draft.BodyHTML, want) {
 			t.Errorf("derived body_html missing %q", want)
 		}
 	}
-	// The render key on this branch is the aaif-user-community set, whose
-	// brand-keyed wrapper legitimately carries its own subscribe URL - the
-	// no-tenant-leak invariant for the NEUTRAL wrapper is pinned per key in
-	// TestDefaultKeyWrapperIsProjectNeutral instead.
-	for _, reject := range []string{"Manage your email preferences", ManageSubscriptionsURLPlaceholder} {
-		if strings.Contains(draft.BodyHTML, reject) {
-			t.Errorf("derived body_html must not contain %q", reject)
-		}
+	// The manage link is the read-only archive, never the old "Manage your email
+	// preferences" copy that aliased the one-click unsubscribe URL.
+	if strings.Contains(draft.BodyHTML, "Manage your email preferences") {
+		t.Errorf("derived body_html must not contain %q", "Manage your email preferences")
 	}
 }
 
@@ -528,7 +495,7 @@ func TestRenderLayout_UnsubscribeDisabled_RendersReplyFallback(t *testing.T) {
 		t.Errorf("unsubscribe disabled: derived body_html must contain the reply fallback copy %q; got:\n%s", unsubscribeReplyFallbackText, draft.BodyHTML)
 	}
 	// The rest of the footer still renders.
-	if !strings.Contains(draft.BodyHTML, "Delivered by LFX") {
+	if !strings.Contains(draft.BodyHTML, "Delivered by") {
 		t.Error("unsubscribe disabled: footer should still carry the Delivered by LFX line")
 	}
 }

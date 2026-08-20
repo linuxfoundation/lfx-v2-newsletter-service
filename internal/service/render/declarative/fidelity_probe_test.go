@@ -105,45 +105,20 @@ func TestRender_SectionStylingReachesCompiledHTML(t *testing.T) {
 	}
 }
 
-// TestDefaultKeyWrapperIsProjectNeutral pins the tenant-leak fix for the
-// NEUTRAL template set: the default key's wrapper must not carry any
-// brand-specific URL (the aaif-user-community key keeps its own brand chrome
-// by design, scoped to that key).
-func TestDefaultKeyWrapperIsProjectNeutral(t *testing.T) {
-	templates, err := LoadEmbeddedTemplate("default")
-	if err != nil {
-		t.Fatal(err)
-	}
-	layout := Layout{WrapperKey: "default", Blocks: []Block{{
-		BlockType: "intro_paragraph",
-		Content:   map[string]any{"text": "hello"},
-	}}}
-	html, err := Render(context.Background(), layout, templates, map[string]any{"edition": map[string]any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(html, "aaif.live") {
-		t.Error("default-key wrapper must not carry a brand URL")
-	}
-	if !strings.Contains(html, "Delivered by LFX") {
-		t.Error("default-key wrapper missing the compliance footer")
-	}
-}
-
 // TestRender_ClassStylesReachCompiledHTML pins the class mapping: the semantic
 // authoring classes (card, eyebrow, body) carry canonical styles into the
-// compiled email. The AAIF User Community set is fully inline-styled (Style C),
-// so this exercises the class mapping through the "default" set, whose generic
-// block authors card on its Section and eyebrow on its heading Text.
+// compiled email. The sole embedded set (aaif-user-community) is fully
+// inline-styled (Style C) and authors no mapped classes, so this exercises the
+// class mapping (applyClassStyles, still applied to every render) through an
+// inline probe template: card on the Section, eyebrow on a heading Text.
 func TestRender_ClassStylesReachCompiledHTML(t *testing.T) {
-	templates, err := LoadEmbeddedTemplate("default")
-	if err != nil {
-		t.Fatal(err)
+	templates := Templates{
+		Wrappers: map[string]string{"default": `<slot name="body" />`},
+		Blocks: map[string]string{
+			"probe": `<Section class="card"><Text class="eyebrow">SECTION</Text><Text class="body"><p>body</p></Text></Section>`,
+		},
 	}
-	layout := Layout{WrapperKey: "default", Blocks: []Block{{
-		BlockType: "generic",
-		Content:   map[string]any{"heading": "SECTION", "title": "Title", "body": "<p>body</p>"},
-	}}}
+	layout := Layout{WrapperKey: "default", Blocks: []Block{{BlockType: "probe"}}}
 	html, err := Render(context.Background(), layout, templates, map[string]any{"edition": map[string]any{}})
 	if err != nil {
 		t.Fatal(err)

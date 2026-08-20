@@ -35,11 +35,10 @@ func TestRenderPreviewSuccess(t *testing.T) {
 		// The preview MERGES the client's wrapper_content over the send-path
 		// footer defaults: the footer sentinels (sender/project/unsubscribe)
 		// come from the send path for size parity, while client-owned bindings
-		// like edition.title and reply_email are honored.
+		// like edition.date are honored.
 		WrapperContent: map[string]any{
 			"edition": map[string]any{
-				"title":       "January 1, 2026",
-				"reply_email": "ed@example.com",
+				"date": "January 1, 2026",
 			},
 		},
 	}
@@ -77,20 +76,15 @@ func TestRenderPreviewSuccess(t *testing.T) {
 			t.Errorf("expected send-time footer sentinel %q in preview:\n%s", want, resp.BodyHTML)
 		}
 	}
-	// reply_email supplied via wrapper_content is honored (stateless preview's
-	// only client-sourced footer field).
-	if !strings.Contains(resp.BodyHTML, "ed@example.com") {
-		t.Errorf("expected client reply_email in preview footer:\n%s", resp.BodyHTML)
-	}
-	// Client-supplied edition.title IS rendered (in the header): the merge honors
+	// Client-supplied edition.date IS rendered (in the header): the merge honors
 	// client-owned (non-footer) wrapper_content bindings.
 	if !strings.Contains(resp.BodyHTML, "January 1, 2026") {
-		t.Errorf("expected client edition.title in the merged preview:\n%s", resp.BodyHTML)
+		t.Errorf("expected client edition.date in the merged preview:\n%s", resp.BodyHTML)
 	}
 }
 
 // TestRenderPreviewMergesWrapperContent asserts the merge honors client-owned
-// non-footer bindings (edition.title) while a client attempt to override a
+// non-footer bindings (edition.date) while a client attempt to override a
 // footer sentinel (edition.sender_name) is ignored — the send-path sentinel is
 // preserved so the preview's footer size matches the sent email.
 func TestRenderPreviewMergesWrapperContent(t *testing.T) {
@@ -104,7 +98,7 @@ func TestRenderPreviewMergesWrapperContent(t *testing.T) {
 		},
 		WrapperContent: map[string]any{
 			"edition": map[string]any{
-				"title":       "Preview Subject",
+				"date":        "Preview Date",
 				"sender_name": "ClientSpoofedSender",
 			},
 		},
@@ -126,8 +120,8 @@ func TestRenderPreviewMergesWrapperContent(t *testing.T) {
 		t.Fatalf("unmarshal response: %v. body=%s", err, w.Body.String())
 	}
 	// Client-owned non-footer binding is honored.
-	if !strings.Contains(resp.BodyHTML, "Preview Subject") {
-		t.Errorf("expected client edition.title in preview:\n%s", resp.BodyHTML)
+	if !strings.Contains(resp.BodyHTML, "Preview Date") {
+		t.Errorf("expected client edition.date in preview:\n%s", resp.BodyHTML)
 	}
 	// Footer sentinel is preserved; the client's spoofed value must not appear.
 	if !strings.Contains(resp.BodyHTML, "%%SENDER_NAME%%") {
@@ -222,9 +216,9 @@ func TestRenderPreview_TemplateKey_RendersFromSelectedLibrary(t *testing.T) {
 
 	reqBody := publicapi.RenderPreviewRequest{
 		BodyLayout: publicapi.NewsletterLayout{
-			TemplateKey: "default", // intro_paragraph exists in the "default" set
+			TemplateKey: "aaif-user-community", // intro_paragraph exists in this set
 			Blocks: []publicapi.LayoutBlock{
-				{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Hi from default</p>"}},
+				{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Hi from the library</p>"}},
 			},
 		},
 	}
@@ -244,36 +238,8 @@ func TestRenderPreview_TemplateKey_RendersFromSelectedLibrary(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v. body=%s", err, w.Body.String())
 	}
-	if !strings.Contains(resp.BodyHTML, "Hi from default") {
+	if !strings.Contains(resp.BodyHTML, "Hi from the library") {
 		t.Errorf("expected bound content in output:\n%s", resp.BodyHTML)
-	}
-}
-
-// TestRenderPreview_TemplateKey_SelectsLibrary proves the key routes the render
-// library: hidden_gems exists in the default render library but NOT in the
-// smaller "default" set, so tagging the layout template_key="default" makes it
-// unrenderable (422) — it is bound against the selected library, not the
-// fallback superset.
-func TestRenderPreview_TemplateKey_SelectsLibrary(t *testing.T) {
-	h := &Handler{}
-
-	reqBody := publicapi.RenderPreviewRequest{
-		BodyLayout: publicapi.NewsletterLayout{
-			TemplateKey: "default",
-			Blocks:      []publicapi.LayoutBlock{{BlockType: "hidden_gems", Content: map[string]any{}}},
-		},
-	}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		t.Fatalf("marshal request: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/projects/p/newsletters/render-preview", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-	h.RenderPreview(w, req)
-
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422. body=%s", w.Code, w.Body.String())
 	}
 }
 

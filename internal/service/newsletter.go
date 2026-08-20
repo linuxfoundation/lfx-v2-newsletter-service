@@ -120,7 +120,7 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	bodyHTML := in.BodyHTML
 	var bodyLayout json.RawMessage
 	if in.BodyLayout != nil {
-		html, raw, err := renderLayout(ctx, in.BodyLayout, in.Subject, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled))
+		html, raw, err := renderLayout(ctx, in.BodyLayout, in.Subject, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled), true)
 		if err != nil {
 			return nil, err
 		}
@@ -334,7 +334,7 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	case in.BodyLayoutSet && in.BodyLayout != nil:
 		// New / updated layout: the emitter owns the whole email; body_html is
 		// DERIVED and the request's body_html is ignored.
-		html, raw, renderErr := renderLayout(ctx, in.BodyLayout, in.Subject, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled))
+		html, raw, renderErr := renderLayout(ctx, in.BodyLayout, in.Subject, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled), true)
 		if renderErr != nil {
 			return nil, renderErr
 		}
@@ -369,7 +369,7 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 		if err := json.Unmarshal(existing.BodyLayout, &stored); err != nil {
 			return nil, fmt.Errorf("unmarshal stored body_layout: %w", err)
 		}
-		html, raw, renderErr := renderLayout(ctx, &stored, in.Subject, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled))
+		html, raw, renderErr := renderLayout(ctx, &stored, in.Subject, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled), true)
 		if renderErr != nil {
 			return nil, renderErr
 		}
@@ -535,16 +535,13 @@ func normalizeCommitteeUIDs(in []string) []string {
 // (rather than emitting a row whose href would substitute to empty at send):
 //   - edition.date and edition.view_online_link: no newsletter-date field and
 //     no hosted "view online" surface yet.
-//   - edition.manage_subscriptions_url: no preferences surface exists yet, and
-//     aliasing it to the one-click unsubscribe URL would silently opt out a
-//     recipient who only wanted to manage preferences.
 //   - edition.unsubscribe_url when the unsubscribe service is not configured:
 //     the row is dropped instead of shipping a broken link.
 //
 // A render failure is surfaced as ErrUnprocessable (422), matching render-preview
 // for the same unrenderable layout — the request itself is well-formed.
-func renderLayout(ctx context.Context, layout *declarative.Layout, subject, replyEmail string, mode unsubFooterMode) (bodyHTML string, raw json.RawMessage, err error) {
-	html, err := renderLayoutBody(ctx, layout, LayoutWrapperContent(subject, replyEmail, mode))
+func renderLayout(ctx context.Context, layout *declarative.Layout, subject, replyEmail string, mode unsubFooterMode, manageEnabled bool) (bodyHTML string, raw json.RawMessage, err error) {
+	html, err := renderLayoutBody(ctx, layout, LayoutWrapperContent(subject, replyEmail, mode, manageEnabled))
 	if err != nil {
 		return "", nil, err
 	}
@@ -713,7 +710,7 @@ var previewFooterSentinelKeys = map[string]struct{}{
 // preserved. Only the edition sub-map is deep-merged; that is the only shape the
 // wrapper contract defines.
 func previewWrapperContent(clientWC map[string]any, mode unsubFooterMode) map[string]any {
-	base := LayoutWrapperContent("", replyEmailFromWrapperContent(clientWC), mode)
+	base := LayoutWrapperContent("", replyEmailFromWrapperContent(clientWC), mode, true)
 
 	clientEdition, ok := clientWC["edition"].(map[string]any)
 	if !ok {
@@ -800,7 +797,7 @@ func sendUnsubFooterMode(unsubEnabled bool) unsubFooterMode {
 // caller — render-on-write (renderLayout) and the stateless render-preview
 // handler — produces the SAME footer structure, and a preview's byte size
 // therefore matches the email that will be sent.
-func LayoutWrapperContent(subject, replyEmail string, mode unsubFooterMode) map[string]any {
+func LayoutWrapperContent(subject, replyEmail string, mode unsubFooterMode, manageEnabled bool) map[string]any {
 	unsubURL := ""
 	unsubFallback := ""
 	switch mode {
@@ -811,6 +808,14 @@ func LayoutWrapperContent(subject, replyEmail string, mode unsubFooterMode) map[
 	case unsubFooterSuppressed:
 		// Both empty: the opt-out row is dropped entirely.
 	}
+	// The "My Newsletters" archive link is a send-time-known value: its URL is
+	// the orchestrator's Self-Serve base URL, so it binds to a sentinel the send
+	// path substitutes. When My Newsletters is unavailable (no base URL bound),
+	// the field stays empty and the wrapper renders the label without a link.
+	manageURL := ""
+	if manageEnabled {
+		manageURL = ManageSubscriptionsURLPlaceholder
+	}
 	return map[string]any{
 		"edition": map[string]any{
 			"date":                     "",
@@ -818,7 +823,7 @@ func LayoutWrapperContent(subject, replyEmail string, mode unsubFooterMode) map[
 			"view_online_link":         "",
 			"unsubscribe_url":          unsubURL,
 			"unsubscribe_fallback":     unsubFallback,
-			"manage_subscriptions_url": "",
+			"manage_subscriptions_url": manageURL,
 			"sender_name":              SenderNamePlaceholder,
 			"project_name":             ProjectNamePlaceholder,
 			"reply_email":              strings.TrimSpace(replyEmail),

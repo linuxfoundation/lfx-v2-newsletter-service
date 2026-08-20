@@ -1925,6 +1925,51 @@ var chromeEnvelopeMarkers = []string{
 	`class="lfx-pad"`,     // chrome table cell class
 }
 
+// TestSendLayoutIncludesMyNewslettersLink asserts a LAYOUT newsletter's send
+// substitutes the manage sentinel to the Self-Serve "My Newsletters" archive
+// URL, matching the legacy chrome path. Render-on-write binds the sentinel and
+// the send-time re-render keeps it (base URL configured), so the recipient gets
+// a working archive link — never the destructive one-click unsubscribe URL.
+func TestSendLayoutIncludesMyNewslettersLink(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:             repo,
+		Committee:        committee,
+		Project:          &fakeProjectClient{},
+		Email:            email,
+		Unsubscribe:      unsub,
+		Concurrency:      2,
+		FanoutEnabled:    true,
+		SelfServeBaseURL: "https://app.lfx.dev",
+	})
+
+	draft := repo.addLayoutDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	const wantURL = "https://app.lfx.dev/newsletters/my"
+	if !strings.Contains(email.sends[0].HTML, `href="`+wantURL+`"`) {
+		t.Errorf("layout send HTML missing My Newsletters link:\n%s", email.sends[0].HTML)
+	}
+	if strings.Contains(email.sends[0].HTML, ManageSubscriptionsURLPlaceholder) {
+		t.Errorf("layout send left the manage sentinel unsubstituted:\n%s", email.sends[0].HTML)
+	}
+	// The archive link is read-only, never the destructive one-click unsubscribe URL.
+	if strings.Contains(email.sends[0].HTML, `<a href="`+unsub.BuildURL("p1", "alice@example.com")+`">My Newsletters`) {
+		t.Errorf("layout send: My Newsletters link aliases the unsubscribe URL")
+	}
+}
+
 // TestSendNewsletterLayoutNotDoubleWrapped asserts a layout-based newsletter is
 // dispatched with body_html used directly (emitter content present, no chrome
 // envelope) and with the three runtime placeholders substituted to real
@@ -2038,7 +2083,7 @@ func TestSendNewsletterLayoutReRendersFooterAtSendTime(t *testing.T) {
 	// unsubscribe DISABLED: no per-recipient opt-out LINK (the reply-based
 	// fallback stands in), so the stale persisted body carries no unsubscribe
 	// sentinel and no Unsubscribe link.
-	staleBody, rawLayout, err := renderLayout(ctx, layout, "Weekly Update", "ed@example.com", sendUnsubFooterMode(false) /* write-time, unsub disabled */)
+	staleBody, rawLayout, err := renderLayout(ctx, layout, "Weekly Update", "ed@example.com", sendUnsubFooterMode(false) /* write-time, unsub disabled */, true)
 	if err != nil {
 		t.Fatalf("write-time render: %v", err)
 	}

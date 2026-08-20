@@ -575,7 +575,7 @@ func (o *SendOrchestrator) reRenderLayoutBody(ctx context.Context, draft *model.
 	// into the wrapper footer, matching the legacy chrome path and the envelope
 	// ReplyTo. StripHTMLForText later derives the text/plain part from this same
 	// HTML, so the two stay consistent.
-	html, _, err := renderLayout(ctx, &layout, draft.Subject, replyTo, sendUnsubFooterMode(o.unsub.Enabled()))
+	html, _, err := renderLayout(ctx, &layout, draft.Subject, replyTo, sendUnsubFooterMode(o.unsub.Enabled()), o.selfServeBaseURL != "")
 	if err != nil {
 		slog.WarnContext(ctx, "newsletter send: body_layout re-render failed; caller refuses the send",
 			"newsletter_id", draft.ID,
@@ -1013,7 +1013,10 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		// mints no real token, so a preview carries no opt-out link. The emitter
 		// owns the whole email; it is dispatched verbatim, never re-wrapped in
 		// email_chrome (mirrors the real-send layout branch).
-		derived, _, rerr := renderLayout(ctx, in.BodyLayout, in.Subject, replyTo, unsubFooterSuppressed)
+		// manageEnabled=false: a test send mints no per-recipient context and
+		// substituteTestPlaceholders zeroes the manage sentinel, so binding it
+		// would only leave an empty href. The wrapper renders the label unlinked.
+		derived, _, rerr := renderLayout(ctx, in.BodyLayout, in.Subject, replyTo, unsubFooterSuppressed, false)
 		if rerr != nil {
 			return rerr
 		}
@@ -1522,12 +1525,11 @@ func (o *SendOrchestrator) renderBody(isLayout bool, in bodyRenderInput) (htmlBo
 //
 //   - %%UNSUBSCRIBE_URL%%          → the recipient's signed unsubscribe link
 //     (HTML-escaped; it lands in an href attribute).
-//   - %%MANAGE_SUBSCRIPTIONS_URL%% → EMPTY, never the unsubscribe URL: that
-//     URL performs a destructive one-click opt-out on GET, so aliasing it
-//     under a preferences label would silently unsubscribe recipients.
-//     Render-on-write also binds the field empty (the wrapper drops the
-//     link); this replacement is defensive for bodies rendered before that
-//     change. A real preferences surface replaces it.
+//   - %%MANAGE_SUBSCRIPTIONS_URL%% → the Self-Serve "My Newsletters" archive
+//     link (o.selfServeBaseURL + myNewslettersPath), HTML-escaped for its href.
+//     This is a read-only archive, NEVER the one-click unsubscribe URL (that URL
+//     opts out on GET). When no base URL is configured it resolves empty and the
+//     wrapper renders the label without a link.
 //   - %%VIEW_ONLINE_URL%%          → the hosted "view online" link. No hosted
 //     web-version exists yet, so render-on-write leaves edition.view_online_link
 //     empty and the wrapper's `if=` guard drops the View Online row at RENDER
@@ -1544,16 +1546,23 @@ func (o *SendOrchestrator) substitutePlaceholders(body, projectUID, email string
 	if o.unsub.Enabled() {
 		unsubURL = o.unsub.BuildURL(projectUID, email)
 	}
-	// The unsubscribe URL lands in an href in the HTML part, so escape it
-	// there; the plain-text part carries the raw URL (HTML entities would be
-	// wrong in text/plain — see the textBody call sites).
+	// The "My Newsletters" archive link (read-only, never the unsubscribe URL —
+	// see the function comment). Empty when no Self-Serve base URL is configured,
+	// so the wrapper renders the label unlinked.
+	manageURL := ""
+	if o.selfServeBaseURL != "" {
+		manageURL = o.selfServeBaseURL + myNewslettersPath
+	}
+	// Both URLs land in an href in the HTML part, so escape them there; the
+	// plain-text part carries raw URLs (HTML entities would be wrong in
+	// text/plain — see the textBody call sites).
 	if escapeHTML {
 		unsubURL = html.EscapeString(unsubURL)
+		manageURL = html.EscapeString(manageURL)
 	}
 	replacer := strings.NewReplacer(
 		UnsubscribeURLPlaceholder, unsubURL,
-		// Empty, never the unsubscribe URL — see the function comment.
-		ManageSubscriptionsURLPlaceholder, "",
+		ManageSubscriptionsURLPlaceholder, manageURL,
 		ViewOnlineURLPlaceholder, "",
 	)
 	return replacer.Replace(body)

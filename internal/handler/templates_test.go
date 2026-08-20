@@ -28,15 +28,12 @@ func TestListTemplates(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v. body=%s", err, w.Body.String())
 	}
-	if len(resp.Templates) != 2 {
-		t.Fatalf("expected 2 templates, got %d", len(resp.Templates))
+	if len(resp.Templates) != 1 {
+		t.Fatalf("expected 1 template, got %d", len(resp.Templates))
 	}
 	byKey := map[string]string{}
 	for _, tpl := range resp.Templates {
 		byKey[tpl.Key] = tpl.Label
-	}
-	if byKey["default"] != "Default" {
-		t.Errorf("default label = %q, want Default", byKey["default"])
 	}
 	if byKey["aaif-user-community"] == "" {
 		t.Errorf("expected a label for aaif-user-community")
