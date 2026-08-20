@@ -172,9 +172,11 @@ func TestBuildEmbeddedManifest_AAIF(t *testing.T) {
 		byType[b.BlockType] = b
 	}
 
-	// The full palette: 19 blocks + 4 bricks in one namespace.
-	if len(m.Blocks) != 23 {
-		t.Errorf("expected 23 palette entries, got %d", len(m.Blocks))
+	// The full palette: 28 blocks + 4 bricks in one namespace (the Style C
+	// AAIF User Community set plus the executive-director-weekly / default
+	// blocks kept here to satisfy the render superset invariant).
+	if len(m.Blocks) != 32 {
+		t.Errorf("expected 32 palette entries, got %d", len(m.Blocks))
 	}
 
 	// Deterministic ordering by block_type.

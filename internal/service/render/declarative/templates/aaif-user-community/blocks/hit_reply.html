@@ -1,0 +1,15 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
+<!-- SCHEMA: {
+  "question": {"type":"text","label":"Question (shown in quotes)"},
+  "note": {"type":"text","label":"Note under the question"}
+} -->
+<!-- Style C HIT REPLY — reply-prompt question; violet shadow accent. -->
+<Section class="dm-card-dashed" style="width:100%;max-width:650px;margin:0 auto 24px;background-color:#ffffff;border:1px solid #131313;border-collapse:separate;border-radius:14px;box-shadow:6px 6px 0 #7b4dff;color:#131313">
+  <div style="padding:28px 32px;text-align:center">
+    <Text class="dm-m" style="color:#77777c;font-size:11px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;margin:0 0 14px">HIT REPLY</Text>
+    <Text class="dm-h" style="font-family:Georgia,'Times New Roman',serif;font-size:22px;font-style:italic;line-height:1.5;color:#131313;margin:0 0 14px">&ldquo;{{question}}&rdquo;</Text>
+    <Text if="note" class="dm-m" style="font-size:14px;color:#77777c;line-height:1.5;margin:0">{{note}}</Text>
+  </div>
+</Section>

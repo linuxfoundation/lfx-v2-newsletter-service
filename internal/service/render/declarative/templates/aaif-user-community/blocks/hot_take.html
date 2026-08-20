@@ -1,5 +1,6 @@
 <!-- Copyright The Linux Foundation and each contributor to LFX. -->
 <!-- SPDX-License-Identifier: MIT -->
+
 <!-- SCHEMA: {
   "title": {"type":"text","label":"Title"},
   "body": {"type":"richtext","label":"Body"},
@@ -8,20 +9,21 @@
   "poll_option_2_label": {"type":"text","label":"Poll option 2 label"},
   "poll_option_2_link": {"type":"text","label":"Poll option 2 link"}
 } -->
-<Section class="card">
-  <div style="padding:15px 15px 5px">
-    <Text class="eyebrow">HOT TAKE</Text>
-    <Heading if="title" class="title">{{title}}</Heading>
-    <richtext field="body" class="body" />
+<!-- Style C HOT TAKE — reader poll: two tracked vote buttons (filled + outline). -->
+<Section class="dm-card" style="width:100%;max-width:650px;margin:0 auto 24px;background-color:#ffffff;border:1px solid #131313;border-collapse:separate;border-radius:14px;box-shadow:6px 6px 0 #131313;color:#131313">
+  <div style="padding:22px 22px 14px">
+    <Text class="dm-h" style="margin:0 0 14px;color:#131313;font-size:11px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;line-height:1"><span class="dm-dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:#131313;vertical-align:middle;font-size:0;line-height:0">&nbsp;</span><span class="dm-dot" style="display:inline-block;width:9px;height:9px;background-color:#131313;vertical-align:middle;margin:0 12px 0 5px;font-size:0;line-height:0">&nbsp;</span>HOT TAKE</Text>
+    <Heading if="title" class="dm-h" style="margin:0 0 8px;font-size:26px;font-weight:bold;color:#131313;line-height:1.15;letter-spacing:-0.3px">{{title}}</Heading>
+    <richtext field="body" class="dm-t" style="font-size:16px;color:#3c3c3f;line-height:1.5;margin:0 0 16px" />
   </div>
   <Section if="poll_option_1_label">
-    <div style="padding:0 5px 15px">
+    <div style="padding:0 22px 14px">
       <Row>
-        <Column style="width:50%;text-align:center;padding:5px">
-          <Button href="{{poll_option_1_link}}" style="background-color:#4086c6;color:#ffffff;font-weight:bold;padding:10px 18px;border-radius:6px;text-decoration:none">{{poll_option_1_label}}</Button>
+        <Column style="width:50%;padding:0 5px 8px 0;vertical-align:top">
+          <Button href="{{poll_option_1_link}}" class="dm-btn dm-btn-a" style="display:block;background-color:#131313;color:#ffffff;font-weight:bold;text-decoration:none;text-align:center;padding:12px 10px;border-radius:8px;line-height:120%">{{poll_option_1_label}}</Button>
         </Column>
-        <Column if="poll_option_2_label" style="width:50%;text-align:center;padding:5px">
-          <Button href="{{poll_option_2_link}}" style="background-color:#4086c6;color:#ffffff;font-weight:bold;padding:10px 18px;border-radius:6px;text-decoration:none">{{poll_option_2_label}}</Button>
+        <Column if="poll_option_2_label" style="width:50%;padding:0 0 8px 5px;vertical-align:top">
+          <Button href="{{poll_option_2_link}}" class="dm-outline" style="display:block;background-color:#ffffff;border:1px solid #c9c9cc;color:#131313;font-weight:bold;text-decoration:none;text-align:center;padding:12px 10px;border-radius:8px;line-height:120%">{{poll_option_2_label}}</Button>
         </Column>
       </Row>
     </div>

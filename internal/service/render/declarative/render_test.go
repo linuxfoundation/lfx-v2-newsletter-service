@@ -326,13 +326,13 @@ func TestRenderMJML_PollBreakoutKeepsCardChrome(t *testing.T) {
 	if sec == "" {
 		t.Fatalf("could not isolate poll mj-section\n---\n%s", doc)
 	}
-	// card class → background-color:#ffffff;border-radius:8px carried onto the
-	// broken-out poll section; the poll wrapper div's padding:0 5px 15px wins
-	// over the card's own padding.
+	// Style C hot_take card → background-color:#ffffff;border-radius:14px carried
+	// onto the broken-out poll section; the poll wrapper div's padding wins over
+	// the card's own padding.
 	for _, want := range []string{
 		`background-color="#ffffff"`,
-		`border-radius="8px"`,
-		`padding="0 5px 15px"`,
+		`border-radius="14px"`,
+		`padding="0 22px 14px"`,
 	} {
 		if !strings.Contains(sec, want) {
 			t.Errorf("poll breakout section missing carried card chrome %q:\n%s", want, sec)

@@ -1,0 +1,26 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
+<!-- SCHEMA: {
+  "stats": {"type":"array","label":"Stats (aim for 3)","fields":{
+    "value":{"type":"text","label":"Big number (e.g. 110M+)"},
+    "label":{"type":"text","label":"Caption"}
+  }}
+} -->
+<!--
+  Style C BY THE NUMBERS — inverted (black) card, always dark in both modes.
+  Renders the stats array as equal columns. A right-hand rule (dm-inv-rule)
+  sits after each column; the last column's trailing rule is a minor,
+  acceptable imperfection versus the mockup.
+-->
+<Section class="dm-inv" style="width:100%;max-width:650px;margin:0 auto 24px;background-color:#131313;border-collapse:separate;border-radius:14px;box-shadow:6px 6px 0 #3d8bff">
+  <div style="padding:22px 22px 26px">
+    <Text class="dm-inv-txt" style="margin:0 0 18px;color:#f0f0f0;font-size:11px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;line-height:1"><span class="dm-chip" style="display:inline-block;width:9px;height:9px;background-color:#f0f0f0;vertical-align:middle;font-size:0;line-height:0">&nbsp;</span><span class="dm-chip" style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:#f0f0f0;vertical-align:middle;margin:0 12px 0 5px;font-size:0;line-height:0">&nbsp;</span>BY THE NUMBERS</Text>
+    <Row>
+      <Column each="stats" class="dm-inv-rule" style="text-align:center;padding:6px;vertical-align:top;border-right:1px solid #3a3a3a">
+        <Text class="dm-inv-txt" style="font-size:34px;font-weight:bold;color:#f0f0f0;margin:0;line-height:1.1;letter-spacing:-1px">{{value}}</Text>
+        <Text class="dm-inv-sub" style="font-size:11px;color:#a9a9a9;margin:6px 0 0;line-height:1.4;letter-spacing:1px;text-transform:uppercase">{{label}}</Text>
+      </Column>
+    </Row>
+  </div>
+</Section>

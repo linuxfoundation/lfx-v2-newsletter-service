@@ -7,51 +7,42 @@
     "preheader":                {"type": "text", "label": "Preheader"},
     "view_online_link":         {"type": "text", "label": "View Online URL"},
     "unsubscribe_url":          {"type": "text", "label": "Unsubscribe URL"},
-    "unsubscribe_fallback":     {"type": "text", "label": "Unsubscribe fallback text"},
-    "manage_subscriptions_url": {"type": "text", "label": "Manage subscriptions URL"},
-    "sender_name":              {"type": "text", "label": "Sender name"},
-    "project_name":             {"type": "text", "label": "Project name"},
-    "reply_email":              {"type": "text", "label": "Reply-to email"}
+    "manage_subscriptions_url": {"type": "text", "label": "Manage subscriptions URL"}
   }
 } -->
 
 <!--
-  AAIF User Community newsletter wrapper.
+  AAIF User Community newsletter wrapper — "Style C".
 
-  Header / footer chrome for every edition of the MLOps Community newsletter,
-  authored as a declarative template the platform parses into a
-  templates_wrappers row. EditionEmail renders the edition body inside the
-  <slot name="body" /> below.
+  Header / footer chrome for every edition, authored as a declarative template
+  the platform parses into a templates_wrappers row. The edition body renders
+  inside the <slot name="body" /> below.
 
-  Per-brand URLs (Shop, Subscribe, Slack, YouTube, podcast, X, LinkedIn,
-  partner email) are baked into the markup directly — no separate config
-  layer. To change them, edit this file and re-apply the source.
+  Styling model: this template owns 100% of its look with INLINE styles only —
+  none of the shared authoring classes (card/eyebrow/title/body/link) are used,
+  so a different newsletter can look completely different from its own set. The
+  gatewaze source additionally ships a dark-mode <style> block plus a light/dark
+  logo swap; the LFX declarative renderer emits no <style> and forwards no
+  dark-mode toggle, so this port keeps the light design only (a single light
+  logo) and drops the dark-mode enhancement. The `dm-*` class names are inert
+  here — the renderer's class mapping ignores them — but are kept so this file
+  stays diff-close to the gatewaze source of truth.
 
-  Only runtime fields use {{mustache}}:
-    {{edition.date}}             — formatted edition date
-    {{edition.view_online_link}} — "View Online" URL. LayoutWrapperContent
-                                   currently always binds this empty, so the
-                                   if= guard above drops the row; the send
-                                   path's defensive deferred placeholder for
-                                   it is %%VIEW_ONLINE_URL%%, substituted (to
-                                   empty) by substitutePlaceholders.
+  Per-brand URLs (Subscribe, socials, sender identity, postal address) are baked
+  into the markup directly. Only runtime fields use {{mustache}}, each guarded by
+  if= so an absent field drops its row:
+    {{edition.date}} · {{edition.view_online_link}} ·
+    {{edition.unsubscribe_url}} · {{edition.manage_subscriptions_url}}
 -->
 
 <Section>
-  <div style="padding: 15px 0">
-    <Text style="margin: 0; text-align: center; font-size: 16px; color: #4086c6">
-      <span if="edition.view_online_link">
-        <Link href="{{edition.view_online_link}}" style="color: #4086c6; text-decoration: underline">View Online</Link>
-      </span>
-    </Text>
-    <Text if="edition.date" style="margin: 8px 0 0; text-align: center; font-size: 14px; color: #4086c6">
-      {{edition.date}}
-    </Text>
-    <Text style="margin: 8px 0 0; text-align: center; font-size: 12px; color: #4086c6">
-      Forwarded this email?
-      <Link href="https://aaif.live/newsletters/usercommunity/" style="color: #4086c6; text-decoration: underline">
-        Subscribe here
-      </Link>
+  <div style="text-align:center;padding:6px 0 0">
+    <Img alt="Agentic AI Foundation" width="230px" href="https://aaif.live" src="https://data.aaif.live/storage/v1/object/public/media/branding/logo_dark.png" style="display:block;margin:0 auto;width:230px;max-width:100%;height:auto" />
+    <Text class="dm-m" style="color:#77777c;font-size:11px;letter-spacing:3px;text-transform:uppercase;margin:14px 0 0;line-height:1.5">USER COMMUNITY</Text>
+    <Text class="dm-m" style="color:#77777c;font-size:13px;line-height:24px;margin:8px 0 0">
+      <span if="edition.date">{{edition.date}} &nbsp;&middot;&nbsp; </span>
+      <span if="edition.view_online_link"><Link href="{{edition.view_online_link}}" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">View Online</Link> &nbsp;&middot;&nbsp; </span>
+      <Link href="https://aaif.live/newsletters/usercommunity/" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">Subscribe</Link>
     </Text>
   </div>
 </Section>
@@ -59,26 +50,24 @@
 <slot name="body" />
 
 <Section>
-  <div style="padding: 15px 0">
-    <Text if="edition.sender_name" style="margin: 0 0 6px; text-align: center; font-size: 12px; color: #999">
-      Sent by {{edition.sender_name}}<span if="edition.project_name"> on behalf of {{edition.project_name}}</span>.
-    </Text>
-    <Text if="edition.reply_email" style="margin: 0 0 6px; text-align: center; font-size: 12px; color: #999">
-      To reply, email <Link href="mailto:{{edition.reply_email}}" style="color: #999; text-decoration: underline">{{edition.reply_email}}</Link>
-    </Text>
-    <Text style="margin: 0; text-align: center; font-size: 12px; color: #999">
-      <span if="edition.unsubscribe_url">
-        <Link href="{{edition.unsubscribe_url}}" style="color: #999; text-decoration: underline">Unsubscribe</Link>
-        <span if="edition.manage_subscriptions_url">
-          &middot;
-          <Link href="{{edition.manage_subscriptions_url}}" style="color: #999; text-decoration: underline">Manage your email preferences</Link>
-        </span>
-        &middot;
-      </span>
-      <span if="edition.unsubscribe_fallback">{{edition.unsubscribe_fallback}} &middot; </span>
-      Delivered by LFX.
+  <div style="text-align:center;padding:6px 20px 0">
+    <Text class="dm-t" style="font-size:14px;line-height:1.6;margin:0;color:#3c3c3f">Thanks for reading. See you on
+      <Link href="https://discord.com/invite/9zTwngHAMy" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">Discord</Link>,
+      <Link href="https://www.youtube.com/@AgenticAI-Foundation" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">YouTube</Link>,
+      <Link href="https://github.com/aaif" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">GitHub</Link>,
+      <Link href="https://x.com/AgenticAIFdn" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">X</Link>, and
+      <Link href="https://www.linkedin.com/company/agentic-ai-foundation" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">LinkedIn</Link>.
     </Text>
   </div>
 </Section>
 
-
+<Section>
+  <div class="dm-rule" style="text-align:center;padding:20px 20px 0;border-top:1px solid #d8d8db;margin:24px 0 0">
+    <Text class="dm-m" style="font-size:12px;line-height:1.7;margin:0;color:#77777c">Sent by <strong>Demetrios Brinkmann</strong> on behalf of <strong>Agentic AI Foundation (AAIF)</strong>.</Text>
+    <Text if="edition.unsubscribe_url" class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">
+      Missed an issue? View past newsletters any time in <Link href="{{edition.manage_subscriptions_url}}" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">My Newsletters</Link>.<br />
+      <Link href="{{edition.unsubscribe_url}}" class="dm-h" style="color:#131313;text-decoration:underline">Unsubscribe</Link> from Agentic AI Foundation (AAIF) newsletters. Delivered by <Link href="https://lfx.linuxfoundation.org" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">LFX</Link>.
+    </Text>
+    <Text class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">The Linux Foundation, 2810 N Church St., PMB 57274, Wilmington, Delaware 19802-4447, United States</Text>
+  </div>
+</Section>

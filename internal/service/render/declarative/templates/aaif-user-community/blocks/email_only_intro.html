@@ -1,5 +1,6 @@
 <!-- Copyright The Linux Foundation and each contributor to LFX. -->
 <!-- SPDX-License-Identifier: MIT -->
+
 <!--
   Email-only Intro — identical layout to intro_paragraph but rendered ONLY in
   the sent email. The portal /View Online/ page filters any block whose
@@ -13,6 +14,8 @@
   Block-def seed: modules/newsletters/migrations/058_email_only_intro_block_def.sql
 -->
 <!-- SCHEMA: { "text": {"type":"richtext","label":"Text"} } -->
-<Section class="column">
-  <richtext field="text" style="font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;font-size:20px;line-height:1.5;color:#555;padding:20px 15px" />
+<Section style="width:100%;max-width:650px;margin:0 auto 24px">
+  <div style="text-align:center;padding:0 30px">
+    <richtext field="text" class="dm-h" style="font-family:Georgia,'Times New Roman',serif;font-size:20px;font-style:italic;line-height:1.55;color:#131313;margin:0" />
+  </div>
 </Section>

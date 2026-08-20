@@ -66,8 +66,8 @@ func TestGetTemplateManifest(t *testing.T) {
 	if manifest.WrapperKey != "default" {
 		t.Errorf("wrapper_key = %q, want default", manifest.WrapperKey)
 	}
-	if len(manifest.Blocks) != 23 {
-		t.Errorf("expected 23 palette entries, got %d", len(manifest.Blocks))
+	if len(manifest.Blocks) != 32 {
+		t.Errorf("expected 32 palette entries, got %d", len(manifest.Blocks))
 	}
 	if manifest.Wrapper == "" {
 		t.Errorf("expected a non-empty wrapper body")

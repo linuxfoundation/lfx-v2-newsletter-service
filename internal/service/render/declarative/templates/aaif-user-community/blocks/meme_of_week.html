@@ -1,9 +1,11 @@
 <!-- Copyright The Linux Foundation and each contributor to LFX. -->
 <!-- SPDX-License-Identifier: MIT -->
-<!-- SCHEMA: { "image_url":{"type":"image","label":"Meme image"}, "image_alt":{"type":"text","label":"Meme image alt text (accessibility)","default":"Meme of the week"} } -->
-<Section class="card">
-  <div style="padding:15px 15px 5px">
-    <Text class="eyebrow">MEME OF THE WEEK</Text>
-    <Img if="image_url" src="{{image_url}}" alt="{{image_alt}}" style="display:block;width:100%;max-width:100%;height:auto;border:0" />
+
+<!-- SCHEMA: { "image_url":{"type":"image","label":"Meme image"} } -->
+<!-- Style C MEME OF THE WEEK — single image. -->
+<Section class="dm-card" style="width:100%;max-width:650px;margin:0 auto 24px;background-color:#ffffff;border:1px solid #131313;border-collapse:separate;border-radius:14px;box-shadow:6px 6px 0 #131313;color:#131313">
+  <div style="padding:22px">
+    <Text class="dm-h" style="margin:0 0 14px;color:#131313;font-size:11px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;line-height:1"><span class="dm-dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:#131313;vertical-align:middle;font-size:0;line-height:0">&nbsp;</span><span class="dm-dot" style="display:inline-block;width:9px;height:9px;background-color:#131313;vertical-align:middle;margin:0 12px 0 5px;font-size:0;line-height:0">&nbsp;</span>MEME OF THE WEEK</Text>
+    <Img if="image_url" src="{{image_url}}" alt="Meme of the week" style="display:block;outline:none;border:0;width:100%;max-width:100%;height:auto;border-radius:8px" />
   </div>
 </Section>

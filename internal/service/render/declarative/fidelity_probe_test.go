@@ -10,24 +10,27 @@ import (
 )
 
 // TestRender_TextStylingReachesCompiledHTML pins the fidelity fix: the
-// authored text presentation (font-size, line-height, color, padding) must
-// reach the compiled email instead of silently falling back to MJML defaults.
-// intro_paragraph authors font-size:20px, line-height:1.5, color:#555, and
-// padding:20px 15px on its Text element.
+// authored text presentation (font-size, color) on a Text/Heading must reach
+// the compiled email instead of silently falling back to MJML defaults. The
+// Style C hidden_gems block authors font-size:26px on its title Heading and
+// color:#3c3c3f on its body Text; the translator carries both onto the inner
+// styled div of the mj-text.
 func TestRender_TextStylingReachesCompiledHTML(t *testing.T) {
 	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	layout := Layout{WrapperKey: "default", Blocks: []Block{{
-		BlockType: "intro_paragraph",
-		Content:   map[string]any{"text": "Probe content here"},
+		BlockType: "hidden_gems",
+		Content: map[string]any{"title": "Gems", "gems": []any{map[string]any{
+			"link_text": "Gem one", "link_url": "https://example.com/g", "description": "<p>desc</p>",
+		}}},
 	}}}
 	html, err := Render(context.Background(), layout, templates, map[string]any{"edition": map[string]any{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"font-size:20px", "line-height:1.5", "color:#555", "padding:20px 15px"} {
+	for _, want := range []string{"font-size:26px", "color:#3c3c3f"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("compiled HTML missing authored declaration %q", want)
 		}
@@ -35,24 +38,28 @@ func TestRender_TextStylingReachesCompiledHTML(t *testing.T) {
 }
 
 // TestRender_SectionStylingReachesCompiledHTML pins the container mapping:
-// allowlisted section styles (padding here, via blog_post's
-// Section style="padding:0 15px") are promoted to MJML attributes rather
-// than dropped.
+// allowlisted section styles are promoted to MJML attributes rather than
+// dropped. The Style C hidden_gems card authors background-color:#ffffff and
+// border-radius:14px on its Section; both reach the compiled email.
 func TestRender_SectionStylingReachesCompiledHTML(t *testing.T) {
 	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	layout := Layout{WrapperKey: "default", Blocks: []Block{{
-		BlockType: "blog_post",
-		Content:   map[string]any{"title": "T", "link_url": "https://example.com", "link_text": "Read", "description": "D"},
+		BlockType: "hidden_gems",
+		Content: map[string]any{"title": "Gems", "gems": []any{map[string]any{
+			"link_text": "Gem one", "link_url": "https://example.com/g", "description": "<p>desc</p>",
+		}}},
 	}}}
 	html, err := Render(context.Background(), layout, templates, map[string]any{"edition": map[string]any{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(html, "padding:0 15px") {
-		t.Error("compiled HTML missing the section's authored padding:0 15px")
+	for _, want := range []string{"background-color:#ffffff", "border-radius:14px"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("compiled HTML missing the section's authored declaration %q", want)
+		}
 	}
 }
 
@@ -126,20 +133,19 @@ func TestRender_ExecutiveDirectorWeeklyBlocks(t *testing.T) {
 	}
 }
 
-// TestRender_ClassStylesReachCompiledHTML pins the class mapping: the
-// semantic authoring classes (card, eyebrow, body) now carry canonical
-// styles into the compiled email. hidden_gems authors card on its Section,
-// an eyebrow Text, and body richtext.
+// TestRender_ClassStylesReachCompiledHTML pins the class mapping: the semantic
+// authoring classes (card, eyebrow, body) carry canonical styles into the
+// compiled email. The AAIF User Community set is fully inline-styled (Style C),
+// so this exercises the class mapping through the "default" set, whose generic
+// block authors card on its Section and eyebrow on its heading Text.
 func TestRender_ClassStylesReachCompiledHTML(t *testing.T) {
-	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
+	templates, err := LoadEmbeddedTemplate("default")
 	if err != nil {
 		t.Fatal(err)
 	}
 	layout := Layout{WrapperKey: "default", Blocks: []Block{{
-		BlockType: "hidden_gems",
-		Content: map[string]any{"title": "Gems", "gems": []any{map[string]any{
-			"link_text": "Gem one", "link_url": "https://example.com/g", "description": "<p>desc</p>",
-		}}},
+		BlockType: "generic",
+		Content:   map[string]any{"heading": "SECTION", "title": "Title", "body": "<p>body</p>"},
 	}}}
 	html, err := Render(context.Background(), layout, templates, map[string]any{"edition": map[string]any{}})
 	if err != nil {
@@ -159,7 +165,7 @@ func TestRender_ClassStylesReachCompiledHTML(t *testing.T) {
 // TestRender_DissolvedWrapperPaddingHoisted pins the wrapper hoist: the
 // <Section><div style="padding:…">…</div> authoring pattern promotes the
 // dissolved div's padding onto the mj-column instead of dropping it.
-// hidden_gems wraps its content in <div style="padding:15px 15px 5px">.
+// hidden_gems wraps its content in <div style="padding:22px 22px 10px">.
 func TestRender_DissolvedWrapperPaddingHoisted(t *testing.T) {
 	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
 	if err != nil {
@@ -175,7 +181,7 @@ func TestRender_DissolvedWrapperPaddingHoisted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(html, "padding:15px 15px 5px") {
+	if !strings.Contains(html, "padding:22px 22px 10px") {
 		t.Error("dissolved wrapper div's padding did not reach the compiled email")
 	}
 }
