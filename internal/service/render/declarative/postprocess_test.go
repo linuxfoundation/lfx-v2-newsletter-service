@@ -52,6 +52,39 @@ func TestReconcileCardBorders_KeepsOwnRadius(t *testing.T) {
 	}
 }
 
+// TestPropagateTextAlign pins that a container's text-align propagates onto text
+// descendants that don't set their own — the fix for centered header/footer
+// chrome rendering left-aligned once MJML dissolves the wrapping div.
+func TestPropagateTextAlign(t *testing.T) {
+	container := &node{
+		Tag:   "div",
+		Attrs: map[string]string{"style": "text-align:center;padding:6px 0 0"},
+		Children: []*node{
+			{Tag: "text", Attrs: map[string]string{"style": "font-size:11px"}},
+			{Tag: "img", Attrs: map[string]string{"src": "x"}},
+		},
+	}
+	propagateTextAlign([]*node{container}, "")
+	if got := cssProp(container.Children[0].Attrs["style"], "text-align"); got != "center" {
+		t.Errorf("text child did not inherit center: %q", got)
+	}
+	// Non-text nodes (img) are not given a text-align.
+	if got := cssProp(container.Children[1].Attrs["style"], "text-align"); got != "" {
+		t.Errorf("img should not inherit text-align: %q", got)
+	}
+
+	// A text node that sets its own alignment is left alone.
+	own := &node{
+		Tag:      "div",
+		Attrs:    map[string]string{"style": "text-align:center"},
+		Children: []*node{{Tag: "text", Attrs: map[string]string{"style": "text-align:left"}}},
+	}
+	propagateTextAlign([]*node{own}, "")
+	if got := cssProp(own.Children[0].Attrs["style"], "text-align"); got != "left" {
+		t.Errorf("own alignment overwritten: %q", got)
+	}
+}
+
 func TestCSSProp(t *testing.T) {
 	style := "border:1px solid #131313;border-radius:14px;padding:20px 0"
 	if got := cssProp(style, "border"); got != "1px solid #131313" {

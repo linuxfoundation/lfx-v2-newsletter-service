@@ -46,7 +46,12 @@ var inertTags = map[string]bool{
 // MJML document string.
 func translate(roots []*node) string {
 	var b strings.Builder
-	b.WriteString("<mjml><mj-body>")
+	// mj-attributes zeroes MJML's default mj-text padding (10px 25px). These
+	// templates control spacing with authored margins and container padding (the
+	// card's inset lives on the column), so the built-in default stacks on top and
+	// over-pads — most visibly the footer. Elements that set their own padding
+	// still override this default.
+	b.WriteString(`<mjml><mj-head><mj-attributes><mj-text padding="0" /></mj-attributes></mj-head><mj-body>`)
 	for _, n := range roots {
 		writeBlock(&b, n)
 	}
@@ -723,6 +728,36 @@ func applyClassStyles(nodes []*node) {
 			}
 		}
 		applyClassStyles(n.Children)
+	}
+}
+
+// propagateTextAlign pushes a container's text-align down onto descendant text
+// nodes that don't set their own. Chrome like the wrapper's header/socials/footer
+// is authored as text-align:center on a wrapping <div>, but MJML dissolves that
+// div (its text-align is not a container attribute it keeps) and mj-text defaults
+// to left — so the centered text rendered left-aligned. Carrying the alignment
+// onto each text node's style routes it through textInnerStyle onto the inner
+// div, which centers the text. Runs once per render, before translation.
+func propagateTextAlign(nodes []*node, inherited string) {
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		own := cssProp(n.Attrs["style"], "text-align")
+		if own == "" && inherited != "" {
+			switch n.Tag {
+			case "text", "heading", "richtext":
+				if n.Attrs == nil {
+					n.Attrs = map[string]string{}
+				}
+				n.Attrs["style"] = appendStyleDecl(n.Attrs["style"], "text-align", inherited)
+			}
+		}
+		next := own
+		if next == "" {
+			next = inherited
+		}
+		propagateTextAlign(n.Children, next)
 	}
 }
 

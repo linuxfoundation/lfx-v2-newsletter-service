@@ -103,6 +103,10 @@ func RenderMJML(layout Layout, templates Templates, wrapperContent map[string]an
 	// Give the semantic authoring classes their canonical styles before
 	// translation (inline styles win per property).
 	applyClassStyles(assembled)
+	// Carry container text-align onto descendant text nodes so centered chrome
+	// (header/socials/footer) doesn't render left-aligned once MJML dissolves the
+	// wrapping div.
+	propagateTextAlign(assembled, "")
 
 	return translate(assembled), nil
 }
