@@ -3,7 +3,7 @@
 
 module github.com/linuxfoundation/lfx-v2-newsletter-service
 
-go 1.25.12
+go 1.25.13
 
 require (
 	github.com/Boostport/mjml-go v0.16.0
