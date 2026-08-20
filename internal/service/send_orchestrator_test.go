@@ -2038,7 +2038,7 @@ func TestSendNewsletterLayoutReRendersFooterAtSendTime(t *testing.T) {
 	// unsubscribe DISABLED: no per-recipient opt-out LINK (the reply-based
 	// fallback stands in), so the stale persisted body carries no unsubscribe
 	// sentinel and no Unsubscribe link.
-	staleBody, rawLayout, err := renderLayout(ctx, layout, "ed@example.com", sendUnsubFooterMode(false) /* write-time, unsub disabled */)
+	staleBody, rawLayout, err := renderLayout(ctx, layout, "Weekly Update", "ed@example.com", sendUnsubFooterMode(false) /* write-time, unsub disabled */)
 	if err != nil {
 		t.Fatalf("write-time render: %v", err)
 	}

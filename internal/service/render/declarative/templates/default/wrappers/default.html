@@ -18,60 +18,46 @@
 <!--
   Default newsletter wrapper.
 
-  Project-neutral header / footer chrome. EditionEmail renders the edition
-  body inside the <slot name="body" /> below. This wrapper deliberately
-  carries NO project- or brand-specific URLs or copy: any project can render
-  through it, so per-brand chrome belongs in a brand-specific wrapper.
+  Project-neutral header / footer chrome that mirrors the legacy (non-blocks)
+  LFX newsletter template (internal/service/render/email_chrome.go): a blue
+  header band carrying the "<project> · Newsletter" eyebrow and the edition
+  subject, the edition body, and the gray compliance footer.
 
-  Runtime fields use {{mustache}} and are bound by renderLayout:
-    {{edition.date}}                     - formatted edition date (empty today)
-    {{edition.view_online_link}}         - hosted web version (empty today)
-    {{edition.unsubscribe_url}}          - per-recipient signed unsubscribe link
-                                           (send-time sentinel; empty when the
-                                           unsubscribe service is not configured,
-                                           which drops the row)
-    {{edition.manage_subscriptions_url}} - preferences page (empty until a real
-                                           preferences surface exists)
-    {{edition.sender_name}}              - resolved at send time (sentinel)
-    {{edition.project_name}}             - resolved at send time (sentinel)
-    {{edition.reply_email}}              - the draft's reply-to address
-  Rows guarded with if= disappear when their field is empty.
+  The declarative renderer compiles to MJML, whose section-band model can't
+  reproduce every pixel of the hand-authored table chrome — there is no single
+  rounded 680px card container, no gray page gutter, and MJML sections take a
+  solid background rather than the legacy's blue gradient. The colors, header
+  treatment, subject, and compliance footer match; the framing is band-based.
+
+  Runtime fields use {{mustache}}, each guarded with if= so an empty field drops
+  its row. edition.title carries the newsletter subject; edition.project_name is
+  a send-time sentinel (%%PROJECT_NAME%%) substituted per send.
 -->
 
-<Section>
-  <div style="padding: 15px 0">
-    <Text style="margin: 0; text-align: center; font-size: 16px; color: #4086c6">
-      <span if="edition.view_online_link">
-        <Link href="{{edition.view_online_link}}" style="color: #4086c6; text-decoration: underline">View Online</Link>
-      </span>
-    </Text>
-    <Text if="edition.date" style="margin: 8px 0 0; text-align: center; font-size: 14px; color: #4086c6">
-      {{edition.date}}
-    </Text>
-  </div>
+<Section style="background-color:#3B82F6;padding:28px 24px">
+  <Text style="padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen-Sans,Ubuntu,Cantarell,'Helvetica Neue',sans-serif;font-size:13px;font-weight:600;letter-spacing:0.8px;text-transform:uppercase;color:#FFFFFF">{{edition.project_name}} &middot; Newsletter</Text>
+  <Text if="edition.title" style="padding:8px 0 0 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen-Sans,Ubuntu,Cantarell,'Helvetica Neue',sans-serif;font-size:22px;font-weight:700;line-height:1.3;color:#FFFFFF">{{edition.title}}</Text>
 </Section>
 
 <slot name="body" />
 
-<Section>
-  <div style="padding: 15px 0">
-    <Text if="edition.sender_name" style="margin: 0 0 6px; text-align: center; font-size: 12px; color: #999">
-      Sent by {{edition.sender_name}}<span if="edition.project_name"> on behalf of {{edition.project_name}}</span>.
-    </Text>
-    <Text if="edition.reply_email" style="margin: 0 0 6px; text-align: center; font-size: 12px; color: #999">
-      To reply, email <Link href="mailto:{{edition.reply_email}}" style="color: #999; text-decoration: underline">{{edition.reply_email}}</Link>
-    </Text>
-    <Text style="margin: 0; text-align: center; font-size: 12px; color: #999">
-      <span if="edition.unsubscribe_url">
-        <Link clicktracking="off" href="{{edition.unsubscribe_url}}" style="color: #999; text-decoration: underline">Unsubscribe</Link>
-        <span if="edition.manage_subscriptions_url">
-          &middot;
-          <Link clicktracking="off" href="{{edition.manage_subscriptions_url}}" style="color: #999; text-decoration: underline">Manage your email preferences</Link>
-        </span>
+<Section style="background-color:#F9FAFB;border-top:1px solid #E5E7EB;padding:24px">
+  <Text if="edition.sender_name" style="padding:0 0 6px 0;text-align:center;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen-Sans,Ubuntu,Cantarell,'Helvetica Neue',sans-serif;font-size:12px;color:#6B7280">
+    Sent by {{edition.sender_name}}<span if="edition.project_name"> on behalf of {{edition.project_name}}</span>.
+  </Text>
+  <Text if="edition.reply_email" style="padding:0 0 6px 0;text-align:center;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen-Sans,Ubuntu,Cantarell,'Helvetica Neue',sans-serif;font-size:12px;color:#6B7280">
+    To reply, email <Link href="mailto:{{edition.reply_email}}" style="color:#6B7280;text-decoration:underline">{{edition.reply_email}}</Link>
+  </Text>
+  <Text style="padding:0;text-align:center;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen-Sans,Ubuntu,Cantarell,'Helvetica Neue',sans-serif;font-size:12px;color:#9CA3AF">
+    <span if="edition.unsubscribe_url">
+      <Link clicktracking="off" href="{{edition.unsubscribe_url}}" style="color:#9CA3AF;text-decoration:underline">Unsubscribe</Link>
+      <span if="edition.manage_subscriptions_url">
         &middot;
+        <Link clicktracking="off" href="{{edition.manage_subscriptions_url}}" style="color:#9CA3AF;text-decoration:underline">Manage your email preferences</Link>
       </span>
-      <span if="edition.unsubscribe_fallback">{{edition.unsubscribe_fallback}} &middot; </span>
-      Delivered by LFX.
-    </Text>
-  </div>
+      &middot;
+    </span>
+    <span if="edition.unsubscribe_fallback">{{edition.unsubscribe_fallback}} &middot; </span>
+    Delivered by LFX.
+  </Text>
 </Section>

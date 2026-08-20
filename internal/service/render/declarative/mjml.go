@@ -748,7 +748,7 @@ const (
 // presentation carrier.
 var styleAllow = map[styleKind]map[string]bool{
 	styleText:    {"color": true, "padding": true},
-	styleSection: {"background-color": true, "padding": true, "border-radius": true, "text-align": true},
+	styleSection: {"background-color": true, "padding": true, "border-radius": true, "text-align": true, "border": true, "border-top": true, "border-bottom": true},
 	styleColumn:  {"background-color": true, "padding": true, "border-radius": true, "vertical-align": true},
 	styleDivider: {"padding": true, "border-color": true, "border-width": true, "width": true},
 }

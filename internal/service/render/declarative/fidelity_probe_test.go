@@ -130,51 +130,6 @@ func TestDefaultKeyWrapperIsProjectNeutral(t *testing.T) {
 	}
 }
 
-// TestRender_ExecutiveDirectorWeeklyBlocks renders a miniature Executive
-// Director weekly edition through the full pipeline: letter intro, section
-// heading, a news item with a source link, and the signature. Pins that the
-// new template set's blocks compose and render end to end (they live in the
-// render superset until per-newsletter template selection ships).
-func TestRender_ExecutiveDirectorWeeklyBlocks(t *testing.T) {
-	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	layout := Layout{WrapperKey: "default", Blocks: []Block{
-		{BlockType: "letter_intro", Content: map[string]any{
-			"greeting": "To the LF Team:",
-			"body":     "<p>It feels like every month is a year.</p>",
-			"signoff":  "LF",
-		}},
-		{BlockType: "section_heading", Content: map[string]any{"title": "NEWS"}},
-		{BlockType: "news_items", Content: map[string]any{"items": []any{map[string]any{
-			"headline":     "FINOS Launches OSERA",
-			"summary":      "<p>A financial services led alliance for supply chain resiliency.</p>",
-			"source_label": "Linux Foundation",
-			"source_url":   "https://www.linuxfoundation.org/press/finos-osera",
-		}}}},
-		{BlockType: "signature", Content: map[string]any{"name": "Jim Zemlin", "title": "CEO, The Linux Foundation"}},
-	}}
-	html, err := Render(context.Background(), layout, templates, map[string]any{"edition": map[string]any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		"To the LF Team:",
-		"every month is a year",
-		">NEWS<",
-		"FINOS Launches OSERA",
-		`href="https://www.linuxfoundation.org/press/finos-osera"`,
-		"Linux Foundation",
-		"Jim Zemlin",
-		"CEO, The Linux Foundation",
-	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("rendered edition missing %q", want)
-		}
-	}
-}
-
 // TestRender_ClassStylesReachCompiledHTML pins the class mapping: the semantic
 // authoring classes (card, eyebrow, body) carry canonical styles into the
 // compiled email. The AAIF User Community set is fully inline-styled (Style C),

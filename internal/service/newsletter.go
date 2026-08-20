@@ -120,7 +120,7 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	bodyHTML := in.BodyHTML
 	var bodyLayout json.RawMessage
 	if in.BodyLayout != nil {
-		html, raw, err := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled))
+		html, raw, err := renderLayout(ctx, in.BodyLayout, in.Subject, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled))
 		if err != nil {
 			return nil, err
 		}
@@ -334,7 +334,7 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	case in.BodyLayoutSet && in.BodyLayout != nil:
 		// New / updated layout: the emitter owns the whole email; body_html is
 		// DERIVED and the request's body_html is ignored.
-		html, raw, renderErr := renderLayout(ctx, in.BodyLayout, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled))
+		html, raw, renderErr := renderLayout(ctx, in.BodyLayout, in.Subject, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled))
 		if renderErr != nil {
 			return nil, renderErr
 		}
@@ -369,7 +369,7 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 		if err := json.Unmarshal(existing.BodyLayout, &stored); err != nil {
 			return nil, fmt.Errorf("unmarshal stored body_layout: %w", err)
 		}
-		html, raw, renderErr := renderLayout(ctx, &stored, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled))
+		html, raw, renderErr := renderLayout(ctx, &stored, in.Subject, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled))
 		if renderErr != nil {
 			return nil, renderErr
 		}
@@ -543,8 +543,8 @@ func normalizeCommitteeUIDs(in []string) []string {
 //
 // A render failure is surfaced as ErrUnprocessable (422), matching render-preview
 // for the same unrenderable layout — the request itself is well-formed.
-func renderLayout(ctx context.Context, layout *declarative.Layout, replyEmail string, mode unsubFooterMode) (bodyHTML string, raw json.RawMessage, err error) {
-	html, err := renderLayoutBody(ctx, layout, LayoutWrapperContent(replyEmail, mode))
+func renderLayout(ctx context.Context, layout *declarative.Layout, subject, replyEmail string, mode unsubFooterMode) (bodyHTML string, raw json.RawMessage, err error) {
+	html, err := renderLayoutBody(ctx, layout, LayoutWrapperContent(subject, replyEmail, mode))
 	if err != nil {
 		return "", nil, err
 	}
@@ -713,7 +713,7 @@ var previewFooterSentinelKeys = map[string]struct{}{
 // preserved. Only the edition sub-map is deep-merged; that is the only shape the
 // wrapper contract defines.
 func previewWrapperContent(clientWC map[string]any, mode unsubFooterMode) map[string]any {
-	base := LayoutWrapperContent(replyEmailFromWrapperContent(clientWC), mode)
+	base := LayoutWrapperContent("", replyEmailFromWrapperContent(clientWC), mode)
 
 	clientEdition, ok := clientWC["edition"].(map[string]any)
 	if !ok {
@@ -800,7 +800,7 @@ func sendUnsubFooterMode(unsubEnabled bool) unsubFooterMode {
 // caller — render-on-write (renderLayout) and the stateless render-preview
 // handler — produces the SAME footer structure, and a preview's byte size
 // therefore matches the email that will be sent.
-func LayoutWrapperContent(replyEmail string, mode unsubFooterMode) map[string]any {
+func LayoutWrapperContent(subject, replyEmail string, mode unsubFooterMode) map[string]any {
 	unsubURL := ""
 	unsubFallback := ""
 	switch mode {
@@ -814,6 +814,7 @@ func LayoutWrapperContent(replyEmail string, mode unsubFooterMode) map[string]an
 	return map[string]any{
 		"edition": map[string]any{
 			"date":                     "",
+			"title":                    strings.TrimSpace(subject),
 			"view_online_link":         "",
 			"unsubscribe_url":          unsubURL,
 			"unsubscribe_fallback":     unsubFallback,

@@ -17,7 +17,7 @@ func TestEmbeddedTemplateKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedTemplateKeys: %v", err)
 	}
-	want := []string{"aaif-user-community", "default", "executive-director-weekly"}
+	want := []string{"aaif-user-community", "default"}
 	if len(keys) != len(want) {
 		t.Fatalf("expected %d template keys, got %d (%v)", len(want), len(keys), keys)
 	}
@@ -172,11 +172,11 @@ func TestBuildEmbeddedManifest_AAIF(t *testing.T) {
 		byType[b.BlockType] = b
 	}
 
-	// The full palette: 28 blocks + 4 bricks in one namespace (the Style C
-	// AAIF User Community set plus the executive-director-weekly / default
-	// blocks kept here to satisfy the render superset invariant).
-	if len(m.Blocks) != 32 {
-		t.Errorf("expected 32 palette entries, got %d", len(m.Blocks))
+	// The full palette: 23 blocks + 4 bricks in one namespace (the Style C
+	// AAIF User Community set plus the shared default blocks kept here to
+	// satisfy the render superset invariant).
+	if len(m.Blocks) != 27 {
+		t.Errorf("expected 27 palette entries, got %d", len(m.Blocks))
 	}
 
 	// Deterministic ordering by block_type.

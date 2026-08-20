@@ -35,10 +35,10 @@ func TestRenderPreviewSuccess(t *testing.T) {
 		// The preview MERGES the client's wrapper_content over the send-path
 		// footer defaults: the footer sentinels (sender/project/unsubscribe)
 		// come from the send path for size parity, while client-owned bindings
-		// like edition.date and reply_email are honored.
+		// like edition.title and reply_email are honored.
 		WrapperContent: map[string]any{
 			"edition": map[string]any{
-				"date":        "January 1, 2026",
+				"title":       "January 1, 2026",
 				"reply_email": "ed@example.com",
 			},
 		},
@@ -82,17 +82,17 @@ func TestRenderPreviewSuccess(t *testing.T) {
 	if !strings.Contains(resp.BodyHTML, "ed@example.com") {
 		t.Errorf("expected client reply_email in preview footer:\n%s", resp.BodyHTML)
 	}
-	// Client-supplied edition.date IS rendered: the merge honors client-owned
-	// (non-footer) wrapper_content bindings.
+	// Client-supplied edition.title IS rendered (in the header): the merge honors
+	// client-owned (non-footer) wrapper_content bindings.
 	if !strings.Contains(resp.BodyHTML, "January 1, 2026") {
-		t.Errorf("expected client edition.date in the merged preview:\n%s", resp.BodyHTML)
+		t.Errorf("expected client edition.title in the merged preview:\n%s", resp.BodyHTML)
 	}
 }
 
 // TestRenderPreviewMergesWrapperContent asserts the merge honors client-owned
-// non-footer bindings (edition.view_online_link) while a client attempt to
-// override a footer sentinel (edition.sender_name) is ignored — the send-path
-// sentinel is preserved so the preview's footer size matches the sent email.
+// non-footer bindings (edition.title) while a client attempt to override a
+// footer sentinel (edition.sender_name) is ignored — the send-path sentinel is
+// preserved so the preview's footer size matches the sent email.
 func TestRenderPreviewMergesWrapperContent(t *testing.T) {
 	h := &Handler{}
 
@@ -104,8 +104,8 @@ func TestRenderPreviewMergesWrapperContent(t *testing.T) {
 		},
 		WrapperContent: map[string]any{
 			"edition": map[string]any{
-				"view_online_link": "https://example.com/view",
-				"sender_name":      "ClientSpoofedSender",
+				"title":       "Preview Subject",
+				"sender_name": "ClientSpoofedSender",
 			},
 		},
 	}
@@ -126,8 +126,8 @@ func TestRenderPreviewMergesWrapperContent(t *testing.T) {
 		t.Fatalf("unmarshal response: %v. body=%s", err, w.Body.String())
 	}
 	// Client-owned non-footer binding is honored.
-	if !strings.Contains(resp.BodyHTML, "https://example.com/view") {
-		t.Errorf("expected client edition.view_online_link in preview:\n%s", resp.BodyHTML)
+	if !strings.Contains(resp.BodyHTML, "Preview Subject") {
+		t.Errorf("expected client edition.title in preview:\n%s", resp.BodyHTML)
 	}
 	// Footer sentinel is preserved; the client's spoofed value must not appear.
 	if !strings.Contains(resp.BodyHTML, "%%SENDER_NAME%%") {

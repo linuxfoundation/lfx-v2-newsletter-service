@@ -575,7 +575,7 @@ func (o *SendOrchestrator) reRenderLayoutBody(ctx context.Context, draft *model.
 	// into the wrapper footer, matching the legacy chrome path and the envelope
 	// ReplyTo. StripHTMLForText later derives the text/plain part from this same
 	// HTML, so the two stay consistent.
-	html, _, err := renderLayout(ctx, &layout, replyTo, sendUnsubFooterMode(o.unsub.Enabled()))
+	html, _, err := renderLayout(ctx, &layout, draft.Subject, replyTo, sendUnsubFooterMode(o.unsub.Enabled()))
 	if err != nil {
 		slog.WarnContext(ctx, "newsletter send: body_layout re-render failed; caller refuses the send",
 			"newsletter_id", draft.ID,
@@ -1013,7 +1013,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		// mints no real token, so a preview carries no opt-out link. The emitter
 		// owns the whole email; it is dispatched verbatim, never re-wrapped in
 		// email_chrome (mirrors the real-send layout branch).
-		derived, _, rerr := renderLayout(ctx, in.BodyLayout, replyTo, unsubFooterSuppressed)
+		derived, _, rerr := renderLayout(ctx, in.BodyLayout, in.Subject, replyTo, unsubFooterSuppressed)
 		if rerr != nil {
 			return rerr
 		}
