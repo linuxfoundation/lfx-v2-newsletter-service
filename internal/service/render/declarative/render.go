@@ -57,7 +57,10 @@ func Render(ctx context.Context, layout Layout, templates Templates, wrapperCont
 		// input is a code defect caught by the render tests, not a runtime 500.
 		return "", fmt.Errorf("%w: compile mjml: %v", ErrUnrenderableLayout, err)
 	}
-	return out, nil
+	// MJML splits a bordered rounded section's border (inner cell) from its
+	// border-radius (outer table), squaring the corners — reconcile them so cards
+	// render rounded.
+	return reconcileCardBorders(out), nil
 }
 
 // RenderMJML performs binding, assembly, and MJML translation but stops before
