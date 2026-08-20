@@ -7,7 +7,10 @@
     "preheader":                {"type": "text", "label": "Preheader"},
     "view_online_link":         {"type": "text", "label": "View Online URL"},
     "unsubscribe_url":          {"type": "text", "label": "Unsubscribe URL"},
-    "manage_subscriptions_url": {"type": "text", "label": "Manage subscriptions URL"}
+    "unsubscribe_fallback":     {"type": "text", "label": "Unsubscribe fallback text"},
+    "manage_subscriptions_url": {"type": "text", "label": "Manage subscriptions URL"},
+    "sender_name":              {"type": "text", "label": "Sender name"},
+    "project_name":             {"type": "text", "label": "Project name"}
   }
 } -->
 
@@ -28,11 +31,19 @@
   here — the renderer's class mapping ignores them — but are kept so this file
   stays diff-close to the gatewaze source of truth.
 
-  Per-brand URLs (Subscribe, socials, sender identity, postal address) are baked
-  into the markup directly. Only runtime fields use {{mustache}}, each guarded by
+  Per-brand URLs (Subscribe, socials, postal address) are baked into the markup
+  directly. Sender identity and the opt-out row are RUNTIME data, each guarded by
   if= so an absent field drops its row:
-    {{edition.date}} · {{edition.view_online_link}} ·
-    {{edition.unsubscribe_url}} · {{edition.manage_subscriptions_url}}
+    {{edition.date}} · {{edition.view_online_link}} · {{edition.sender_name}} ·
+    {{edition.project_name}} · {{edition.unsubscribe_url}} ·
+    {{edition.unsubscribe_fallback}} · {{edition.manage_subscriptions_url}}
+
+  The opt-out row is compliance-critical: a real send always carries an opt-out.
+  When the unsubscribe service is available, edition.unsubscribe_url renders the
+  Unsubscribe link; when it is not (reply-fallback mode), edition.unsubscribe_url
+  is empty and edition.unsubscribe_fallback carries the reply instructions. The
+  two guards are mutually exclusive by how the send path binds them, so exactly
+  one opt-out mechanism renders.
 -->
 
 <Section>
@@ -63,10 +74,12 @@
 
 <Section>
   <div class="dm-rule" style="text-align:center;padding:20px 20px 0;border-top:1px solid #d8d8db;margin:24px 0 0">
-    <Text class="dm-m" style="font-size:12px;line-height:1.7;margin:0;color:#77777c">Sent by <strong>Demetrios Brinkmann</strong> on behalf of <strong>Agentic AI Foundation (AAIF)</strong>.</Text>
-    <Text if="edition.unsubscribe_url" class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">
-      Missed an issue? View past newsletters any time in <Link href="{{edition.manage_subscriptions_url}}" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">My Newsletters</Link>.<br />
-      <Link href="{{edition.unsubscribe_url}}" class="dm-h" style="color:#131313;text-decoration:underline">Unsubscribe</Link> from Agentic AI Foundation (AAIF) newsletters. Delivered by <Link href="https://lfx.linuxfoundation.org" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">LFX</Link>.
+    <Text if="edition.sender_name" class="dm-m" style="font-size:12px;line-height:1.7;margin:0;color:#77777c">Sent by <strong>{{edition.sender_name}}</strong><span if="edition.project_name"> on behalf of <strong>{{edition.project_name}}</strong></span>.</Text>
+    <Text if="edition.manage_subscriptions_url" class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">Missed an issue? View past newsletters any time in <Link clicktracking="off" href="{{edition.manage_subscriptions_url}}" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">My Newsletters</Link>.</Text>
+    <Text class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">
+      <span if="edition.unsubscribe_url"><Link clicktracking="off" href="{{edition.unsubscribe_url}}" class="dm-h" style="color:#131313;text-decoration:underline">Unsubscribe</Link> from these newsletters. </span>
+      <span if="edition.unsubscribe_fallback">{{edition.unsubscribe_fallback}} </span>
+      Delivered by <Link href="https://lfx.linuxfoundation.org" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">LFX</Link>.
     </Text>
     <Text class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">The Linux Foundation, 2810 N Church St., PMB 57274, Wilmington, Delaware 19802-4447, United States</Text>
   </div>

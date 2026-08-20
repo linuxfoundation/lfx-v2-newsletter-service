@@ -90,11 +90,6 @@ var bodyTagStyles = map[string]string{
 	"b":          "color:" + colorGray900 + ";font-weight:600;",
 }
 
-// inlineBodyStylesTagOrder is the deterministic walk order for inlineBodyStyles.
-// Map iteration in Go is randomized; without this every render would produce a
-// different style attribute (harmless functionally, noisy in tests/diffs).
-var inlineBodyStylesTagOrder = []string{"p", "h2", "h3", "ul", "ol", "li", "blockquote", "hr", "a", "strong", "b"}
-
 // htmlEscaper escapes the five characters that need HTML entity treatment in
 // chrome strings (subject, display name, sender, reply-to). bodyHtml is NOT
 // run through this — see the package trust boundary comment.
@@ -110,54 +105,63 @@ func escapeHTML(value string) string {
 	return htmlEscaper.Replace(value)
 }
 
-// inlineBodyStyles injects an inline `style="..."` attribute on each supported
-// tag. Tags that already carry a `style=` attribute are skipped so Quill-emitted
-// overrides win — the matched paragraph loses the base margin/line-height but
-// keeps its alignment, which is the right precedence for an authoring tool
-// that intentionally set the style.
-func inlineBodyStyles(html string) string {
-	result := html
-	for _, tag := range inlineBodyStylesTagOrder {
-		style := bodyTagStyles[tag]
-		// (?i) case-insensitive. Optional trailing `/` so `<hr/>` is also styled.
-		re := regexp.MustCompile(`(?i)<` + tag + `(\s[^>]*)?/?>`)
-		result = re.ReplaceAllStringFunc(result, func(match string) string {
-			attrs := extractAttrs(match, tag)
-			if hasStyleAttr(attrs) {
-				return match
+// inlineBodyStyles injects an inline style="..." attribute on each supported
+// body tag that does not already carry one, so Quill-emitted overrides win. It
+// tokenizes with golang.org/x/net/html rather than regex-matching each tag: the
+// prior regex was not quote-aware, so a quoted attribute value containing '>'
+// or an unquoted value ending in '/' could corrupt the outbound markup. Tags
+// that are not styled, and styled tags that already carry a style attribute,
+// are re-emitted byte-for-byte (z.Raw); only a styled start tag missing a style
+// attribute is reconstructed, with the style injected first and the existing
+// attributes preserved in order and re-escaped exactly once.
+func inlineBodyStyles(body string) string {
+	z := html.NewTokenizer(strings.NewReader(body))
+	var b strings.Builder
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			// ErrorToken is io.EOF once the input is fully consumed (the reader is
+			// in-memory, so no other read error is possible); the document has been
+			// emitted, so stop.
+			return b.String()
+		}
+		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
+			b.Write(z.Raw())
+			continue
+		}
+		name, hasAttr := z.TagName()
+		style, styled := bodyTagStyles[string(name)]
+		if !styled {
+			b.Write(z.Raw())
+			continue
+		}
+		type attr struct{ key, val string }
+		var attrs []attr
+		hasStyle := false
+		for hasAttr {
+			var k, v []byte
+			k, v, hasAttr = z.TagAttr()
+			if string(k) == "style" {
+				hasStyle = true
 			}
-			if attrs != "" {
-				return "<" + tag + ` style="` + style + `"` + attrs + ">"
-			}
-			return "<" + tag + ` style="` + style + `">`
-		})
+			attrs = append(attrs, attr{key: string(k), val: string(v)})
+		}
+		if hasStyle {
+			// Author already set a style attribute — preserve the tag verbatim so
+			// their override wins.
+			b.Write(z.Raw())
+			continue
+		}
+		b.WriteString("<" + string(name) + ` style="` + style + `"`)
+		for _, a := range attrs {
+			b.WriteString(" " + a.key + `="` + html.EscapeString(a.val) + `"`)
+		}
+		if tt == html.SelfClosingTagToken {
+			b.WriteString("/>")
+		} else {
+			b.WriteString(">")
+		}
 	}
-	return result
-}
-
-// extractAttrs returns the attribute string of a tag match (everything between
-// the tag name and the closing `>`/`/>`), or empty.
-func extractAttrs(match, tag string) string {
-	// match is like "<p attrs...>" or "<p>" or "<hr/>".
-	inner := strings.TrimPrefix(match, "<")
-	inner = strings.TrimSuffix(inner, ">")
-	inner = strings.TrimSuffix(inner, "/")
-	inner = strings.TrimSpace(inner)
-	// Strip the leading tag name (case-insensitive).
-	lower := strings.ToLower(inner)
-	if strings.HasPrefix(lower, strings.ToLower(tag)) {
-		inner = inner[len(tag):]
-	}
-	return inner
-}
-
-var styleAttrRe = regexp.MustCompile(`(?i)\sstyle\s*=`)
-
-func hasStyleAttr(attrs string) bool {
-	if attrs == "" {
-		return false
-	}
-	return styleAttrRe.MatchString(attrs)
 }
 
 // ctaButtonStyle is the inline button style for standalone-link CTAs.

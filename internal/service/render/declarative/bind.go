@@ -51,9 +51,16 @@ var mustachePattern = regexp.MustCompile(`{{\s*([a-zA-Z0-9_.]+)\s*}}`)
 
 // forwardedAttrs is the allowlist of attributes carried from a template into
 // the bound tree. Everything else (including directives) is dropped.
+//
+// clicktracking is an inert SendGrid directive (value "off") that suppresses
+// click-tracking rewrites on a link. Layout newsletters bypass email_chrome on
+// send, so their compliance-footer opt-out links carry it here to keep opt-out
+// clicks out of click_rate/top_links — matching the guarantee the legacy chrome
+// path already provides.
 var forwardedAttrs = map[string]bool{
 	"class": true, "style": true, "href": true, "src": true,
 	"alt": true, "target": true, "width": true, "height": true, "align": true,
+	"clicktracking": true,
 }
 
 // bindBlock binds a single Block against its template, returning the resolved

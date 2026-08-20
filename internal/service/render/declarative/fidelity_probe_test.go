@@ -5,9 +5,51 @@ package declarative
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+// sampleContentFromSchema builds a representative content map for a block's
+// SCHEMA so a render test exercises every field branch (text/richtext/number/
+// image scalars and one array item with its nested fields filled). Slot fields
+// are skipped — child blocks are supplied separately.
+func sampleContentFromSchema(t *testing.T, schema json.RawMessage) map[string]any {
+	t.Helper()
+	var fields map[string]map[string]any
+	if err := json.Unmarshal(schema, &fields); err != nil {
+		t.Fatalf("schema unmarshal: %v", err)
+	}
+	return sampleFromFields(fields)
+}
+
+func sampleFromFields(fields map[string]map[string]any) map[string]any {
+	out := map[string]any{}
+	for name, def := range fields {
+		switch def["type"] {
+		case "text", "textarea":
+			out[name] = "Sample " + name
+		case "richtext":
+			out[name] = "<p>Sample " + name + "</p>"
+		case "number":
+			out[name] = float64(1)
+		case "image":
+			out[name] = "https://example.com/image.png"
+		case "array":
+			nested, _ := def["fields"].(map[string]any)
+			nestedTyped := map[string]map[string]any{}
+			for k, v := range nested {
+				if m, ok := v.(map[string]any); ok {
+					nestedTyped[k] = m
+				}
+			}
+			out[name] = []any{sampleFromFields(nestedTyped)}
+		case "slot":
+			// Child blocks are supplied by the caller, not via content.
+		}
+	}
+	return out
+}
 
 // TestRender_TextStylingReachesCompiledHTML pins the fidelity fix: the
 // authored text presentation (font-size, color) on a Text/Heading must reach
@@ -183,5 +225,70 @@ func TestRender_DissolvedWrapperPaddingHoisted(t *testing.T) {
 	}
 	if !strings.Contains(html, "padding:22px 22px 10px") {
 		t.Error("dissolved wrapper div's padding did not reach the compiled email")
+	}
+}
+
+// TestRender_AllAAIFBlocksCompile renders every block the AAIF manifest offers
+// through the full MJML pipeline, both with representative content and empty,
+// asserting each compiles. It is the regression guard for the ported Style C
+// set: a future edit (or an MJML-mapping change) that makes any block emit
+// invalid MJML would otherwise ship undetected and surface as a runtime 422 the
+// first time a writer used that block.
+func TestRender_AllAAIFBlocksCompile(t *testing.T) {
+	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := BuildEmbeddedManifest(RenderTemplateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wc := map[string]any{"edition": map[string]any{}}
+	for _, entry := range m.Blocks {
+		entry := entry
+		t.Run(entry.BlockType, func(t *testing.T) {
+			// Populated: a slot block also gets one child so its <slot> renders.
+			block := Block{BlockType: entry.BlockType, Content: sampleContentFromSchema(t, entry.Schema)}
+			if entry.IsContainer {
+				block.Blocks = []Block{{BlockType: "blog_post", Content: map[string]any{"title": "Child"}}}
+			}
+			if _, err := Render(context.Background(), Layout{WrapperKey: "default", Blocks: []Block{block}}, templates, wc); err != nil {
+				t.Errorf("populated render failed: %v", err)
+			}
+			// Empty: no content at all must still compile.
+			if _, err := Render(context.Background(), Layout{WrapperKey: "default", Blocks: []Block{{BlockType: entry.BlockType}}}, templates, wc); err != nil {
+				t.Errorf("empty render failed: %v", err)
+			}
+		})
+	}
+}
+
+// TestRender_ComplianceLinksSuppressClickTracking pins that the layout path's
+// compliance-footer opt-out links carry clicktracking="off". Layout newsletters
+// bypass email_chrome on send, so this wrapper is the only place the attribute
+// can be set; without it SendGrid would rewrite and count opt-out/My Newsletters
+// clicks toward click_rate. htmlAttrs emits attributes in sorted order, so
+// clicktracking lands before href — the order SendGrid requires to honor it.
+func TestRender_ComplianceLinksSuppressClickTracking(t *testing.T) {
+	templates, err := LoadEmbeddedTemplate(RenderTemplateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout := Layout{Blocks: []Block{{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Body.</p>"}}}}
+	wc := map[string]any{"edition": map[string]any{
+		"unsubscribe_url":          "https://example.com/unsub",
+		"manage_subscriptions_url": "https://example.com/my",
+	}}
+	doc, err := RenderMJML(layout, templates, wc)
+	if err != nil {
+		t.Fatalf("RenderMJML: %v", err)
+	}
+	for _, want := range []string{
+		`clicktracking="off" href="https://example.com/unsub"`,
+		`clicktracking="off" href="https://example.com/my"`,
+	} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("compliance link missing suppressed click-tracking %q:\n%s", want, doc)
+		}
 	}
 }
