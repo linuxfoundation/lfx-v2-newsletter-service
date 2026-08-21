@@ -70,10 +70,12 @@ both `lfx.linuxfoundation.org` and `lfx.aaif.io`.
      for any newsletter, since there is nothing to rewrite the recipient's click
      through.
    - **Click Tracking subcategories: HTML ON, Plain Text OFF.** Newsletters emit
-     a plain-text copy with unsubscribe and My Newsletters links. If plain-text
-     click tracking is enabled, SendGrid rewriting will incorrectly track these
-     compliance links as user interactions, breaking analytics and consent
-     contracts. Plain Text must be OFF to exclude them from tracking.
+     a plain-text copy with unsubscribe and My Newsletters links. Keep Plain Text
+     OFF so SendGrid does not rewrite those compliance links: rewritten links are
+     tracked as user interactions, breaking analytics and consent contracts. This
+     is an analytics/consent setting, not a Gmail-clipping mitigation — Gmail's
+     ~102KB clip is measured on the HTML part, so the plain-text alternative's
+     size does not affect it (see "Gmail message clipping" below).
 6. **Mail Settings, Event Webhook:**
    - **POST URL:** `https://lfx-api.<env-domain>/newsletters/sendgrid/events`
      (dev: `https://lfx-api.dev.v2.cluster.linuxfound.info/newsletters/sendgrid/events`).
@@ -172,6 +174,25 @@ the endpoint returns `503 service_unavailable`.
   5-10 minute window before release is rejected upstream.
 - **Minimum lead.** `NEWSLETTER_SCHEDULE_MIN_LEAD` (default `5m`) rejects arming a
   schedule too close to now, for the same reason in reverse.
+
+## Gmail message clipping
+
+Gmail shows a "[Message clipped]" trailer and hides the tail of an email
+(including the compliance footer and its unsubscribe link) for two independent
+reasons. Both apply to the SendGrid direct-send path.
+
+- **Charset.** SendGrid appears to choose the MIME transfer charset by sniffing
+  the content bytes. An all-ASCII/Latin-1 newsletter was transmitted as
+  `charset=iso-8859-1`, and Gmail clipped it. This is handled in code: `EmailHTML`
+  injects a hidden zero-width non-joiner (`U+200C`), which is unrepresentable in
+  single-byte charsets, forcing UTF-8. See `utf8CharsetGuard` in
+  `internal/service/render/email_chrome.go` and linuxfoundation/lfx-self-serve#1744.
+- **Size.** Gmail clips when the **HTML** part exceeds roughly 102KB. The
+  `text/plain` alternative is not what Gmail renders and does not count toward this
+  threshold, so the Plain Text click-tracking setting does not affect clipping.
+  The lever is the HTML part itself: content length plus HTML click-tracking (kept
+  ON for analytics) rewriting each link into a long redirect URL. A very
+  link-heavy or long newsletter can approach the limit; keep the HTML lean.
 
 ## Blockers that depend on people outside this repo
 

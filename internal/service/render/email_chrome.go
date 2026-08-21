@@ -70,6 +70,29 @@ const (
 // cell that hosts text so Outlook desktop doesn't fall back to Times.
 const fontStack = `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif`
 
+// utf8CharsetGuard is a hidden zero-width non-joiner (U+200C) injected at the
+// top of every rendered email HTML body to force a UTF-8 MIME charset.
+//
+// Observed on the SendGrid direct-send path (see linuxfoundation/lfx-self-serve#1744):
+// an all-ASCII/Latin-1 newsletter was transmitted as charset=iso-8859-1 and
+// Gmail clipped it ("[Message clipped]"). SendGrid appears to choose the MIME
+// transfer charset by sniffing the content bytes, so the guard works by
+// guaranteeing a byte the single-byte charsets cannot represent: U+200C is
+// unrepresentable in iso-8859-1/windows-1252, so a byte-preserving encoder must
+// select a multibyte charset (UTF-8). Forcing UTF-8 resolved the clipping in
+// testing.
+//
+// Why the literal character and not an alternative: an HTML entity (e.g.
+// &#8203;) is ASCII on the wire, so the encoder still sees an all-Latin-1
+// document, and <meta charset> is ignored when the transfer charset is chosen.
+// The separate ~102KB size threshold is an independent clipping cause handled
+// operationally (see docs/sendgrid-go-live.md), not by this guard.
+//
+// The SES path (email-service) sets charset=UTF-8 in the MIME header itself and
+// is unaffected. Only the HTML part carries the guard; the plain-text
+// alternative stays untouched and text clients render it fine.
+const utf8CharsetGuard = `<span style="display:none;max-height:0;overflow:hidden;mso-hide:all;">` + "\u200c" + `</span>`
+
 // Per-tag inline styles applied to the authored body so Gmail/Outlook render
 // header underlines, blockquotes, branded links etc. — Gmail strips <style>
 // blocks so each tag has to carry its own `style=` attribute. Mirrors the
@@ -316,7 +339,7 @@ func EmailHTML(input Chrome) string {
 }
 </style>
 </head>
-<body style="margin:0;padding:0;background-color:` + colorGray50 + `;font-family:` + fontStack + `;">
+<body style="margin:0;padding:0;background-color:` + colorGray50 + `;font-family:` + fontStack + `;">` + utf8CharsetGuard + `
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:` + colorGray50 + `;padding:16px 8px;">
 <tr>
 <td align="center">
