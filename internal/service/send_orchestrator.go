@@ -461,8 +461,9 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		edReplyEmail: replyTo,
 		compliance:   true,
 	})
-	htmlBody = substituteSendScope(htmlBody, senderName, projectName, true)
-	textBody = substituteSendScope(textBody, senderName, projectName, false)
+	sendDate := formatSendDate(scheduledAt)
+	htmlBody = substituteSendScope(htmlBody, senderName, projectName, sendDate, true)
+	textBody = substituteSendScope(textBody, senderName, projectName, sendDate, false)
 
 	groupID := uuid.NewString()
 
@@ -1061,9 +1062,11 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// Bind the sender/project scope sentinels the layout wrapper emits. On the
 	// legacy chrome body these are no-ops (it carries none), and the real
 	// unsubscribe URL minted above is not a placeholder, so the
-	// substituteTestPlaceholders pass at dispatch leaves it intact.
-	htmlBody = substituteSendScope(htmlBody, senderName, projectName, true)
-	textBody = substituteSendScope(textBody, senderName, projectName, false)
+	// substituteTestPlaceholders pass at dispatch leaves it intact. A test send is
+	// immediate, so the header date is today.
+	testSendDate := formatSendDate(nil)
+	htmlBody = substituteSendScope(htmlBody, senderName, projectName, testSendDate, true)
+	textBody = substituteSendScope(textBody, senderName, projectName, testSendDate, false)
 
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "test-send: fanout disabled, accepted without dispatch",
@@ -1589,12 +1592,13 @@ func (o *SendOrchestrator) substituteTestPlaceholders(body string) string {
 // HTML, and the sender name (auth-service profile) and project name
 // (project-service) are external data — the legacy chrome path escapes the
 // same values.
-func substituteSendScope(body, senderName, projectName string, escapeHTML bool) string {
+func substituteSendScope(body, senderName, projectName, sendDate string, escapeHTML bool) string {
 	sender := fallbackString(senderName, "Executive Director")
 	project := projectName
 	// Escape for the HTML part (values land in already-compiled HTML); the
 	// plain-text part keeps them raw so a name like "R&D <Team>" is not turned
-	// into HTML entities in text/plain.
+	// into HTML entities in text/plain. sendDate is a controlled format string
+	// (formatSendDate) with no HTML-significant characters, so it is not escaped.
 	if escapeHTML {
 		sender = html.EscapeString(sender)
 		project = html.EscapeString(project)
@@ -1602,7 +1606,19 @@ func substituteSendScope(body, senderName, projectName string, escapeHTML bool) 
 	return strings.NewReplacer(
 		SenderNamePlaceholder, sender,
 		ProjectNamePlaceholder, project,
+		SendDatePlaceholder, sendDate,
 	).Replace(body)
+}
+
+// formatSendDate renders the header edition date ("January 2, 2006"). For a
+// scheduled send it is the scheduled day; for an immediate send it is now. UTC
+// keeps the date stable regardless of server timezone.
+func formatSendDate(scheduledAt *time.Time) string {
+	t := time.Now().UTC()
+	if scheduledAt != nil {
+		t = scheduledAt.UTC()
+	}
+	return t.Format("January 2, 2006")
 }
 
 func fallbackString(value, fallback string) string {

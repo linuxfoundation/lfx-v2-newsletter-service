@@ -2517,3 +2517,20 @@ func TestSubstitution_TextBodyNotHTMLEscaped(t *testing.T) {
 		t.Errorf("text body should carry the raw project name; got %s", s.Text)
 	}
 }
+
+// TestSubstituteSendScope_SendDate pins the header edition date substitution:
+// the %%SEND_DATE%% sentinel resolves to the formatted send day (scheduled day
+// when scheduled, else today), send-scoped like sender/project.
+func TestSubstituteSendScope_SendDate(t *testing.T) {
+	body := "<span>" + SendDatePlaceholder + "</span>"
+	got := substituteSendScope(body, "Alice", "AAIF", formatSendDate(nil), true)
+	today := time.Now().UTC().Format("January 2, 2006")
+	if !strings.Contains(got, today) || strings.Contains(got, SendDatePlaceholder) {
+		t.Errorf("send date not substituted to %q: %s", today, got)
+	}
+	// A scheduled send uses the scheduled day.
+	sched := time.Date(2027, time.March, 4, 9, 0, 0, 0, time.UTC)
+	if got := formatSendDate(&sched); got != "March 4, 2027" {
+		t.Errorf("formatSendDate(scheduled) = %q, want %q", got, "March 4, 2027")
+	}
+}

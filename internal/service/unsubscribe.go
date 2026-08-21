@@ -47,6 +47,10 @@ const (
 const (
 	SenderNamePlaceholder  = "%%SENDER_NAME%%"
 	ProjectNamePlaceholder = "%%PROJECT_NAME%%"
+	// SendDatePlaceholder is the header edition date. It is send-scoped (the same
+	// for every recipient) and resolved only at send time, so it is bound at
+	// render-on-write and substituted once per send to the formatted send date.
+	SendDatePlaceholder = "%%SEND_DATE%%"
 )
 
 // unsubscribePath is the public route the handler registers for the

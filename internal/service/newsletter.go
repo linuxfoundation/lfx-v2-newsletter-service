@@ -533,8 +533,7 @@ func normalizeCommitteeUIDs(in []string) []string {
 //
 // Fields bound EMPTY are dropped by the wrapper's `if=` guards at render time
 // (rather than emitting a row whose href would substitute to empty at send):
-//   - edition.date and edition.view_online_link: no newsletter-date field and
-//     no hosted "view online" surface yet.
+//   - edition.view_online_link: no hosted "view online" surface yet.
 //   - edition.unsubscribe_url when the unsubscribe service is not configured:
 //     the row is dropped instead of shipping a broken link.
 //
@@ -624,6 +623,7 @@ var reservedPlaceholders = []string{
 	ManageSubscriptionsURLPlaceholder,
 	SenderNamePlaceholder,
 	ProjectNamePlaceholder,
+	SendDatePlaceholder,
 }
 
 // validateNoReservedPlaceholders rejects a layout whose block content —
@@ -823,7 +823,7 @@ func LayoutWrapperContent(subject, replyEmail string, mode unsubFooterMode, mana
 	}
 	return map[string]any{
 		"edition": map[string]any{
-			"date":                     "",
+			"date":                     SendDatePlaceholder,
 			"title":                    strings.TrimSpace(subject),
 			"view_online_link":         "",
 			"unsubscribe_url":          unsubURL,
