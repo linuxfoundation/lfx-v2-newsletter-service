@@ -32,11 +32,15 @@
   stays diff-close to the gatewaze source of truth.
 
   Per-brand URLs (Subscribe, socials, postal address) are baked into the markup
-  directly. Sender identity and the opt-out row are RUNTIME data, each guarded by
-  if= so an absent field drops its row:
+  directly. Sender identity and the opt-out row are RUNTIME data guarded by if=
+  so an absent field drops its row:
     {{edition.date}} · {{edition.view_online_link}} · {{edition.sender_name}} ·
     {{edition.project_name}} · {{edition.unsubscribe_url}} ·
-    {{edition.unsubscribe_fallback}} · {{edition.manage_subscriptions_url}}
+    {{edition.unsubscribe_fallback}}
+  The "My Newsletters" archive line is NOT if=-guarded — its sentence always
+  renders and only the {{edition.manage_subscriptions_url}} link de-links when
+  the value is empty (bindAttrs drops an empty/unsafe href), so no dangling
+  href="" ships.
 
   The opt-out row is compliance-critical: a real send always carries an opt-out.
   When the unsubscribe service is available, edition.unsubscribe_url renders the

@@ -87,7 +87,7 @@ On update, `body_layout` is tri-state: **absent** preserves a layout newsletter'
 | Field | Description |
 | --- | --- |
 | `wrapper_key` | Selects the wrapper template the top-level blocks render inside. |
-| `template_key` | Optional (`omitempty`). Selects the embedded block library the layout is rendered with. Empty renders with **project-neutral chrome** (the neutral wrapper — no brand-specific footer URLs) over the **block superset** (every block type any library offers), so layouts saved before per-newsletter selection stay valid without inheriting another project's branding. A layout that wants brand-specific chrome must set its `template_key`. Naming a library the binary does not embed is a `422`. |
+| `template_key` | Optional (`omitempty`). Selects the embedded block library the layout is rendered with. The block composer is an AAIF-only pilot and there is one embedded library, `aaif-user-community`, which is also the **block superset** (every block type any library offers). Empty falls back to that sole library wholesale (its wrapper plus superset blocks), so a layout saved without an explicit key still resolves every block. The fallback therefore renders AAIF-branded chrome; a keyless layout from a non-AAIF project would inherit AAIF branding, which is acceptable while the pilot is AAIF-only (the composer always sends `template_key="aaif-user-community"`). Naming a library the binary does not embed is a `422`. |
 | `blocks` | Ordered top-level `LayoutBlock`s rendered in the wrapper's body slot. |
 
 `LayoutBlock` is a recursive content node:

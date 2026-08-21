@@ -686,11 +686,10 @@ func (s *NewsletterService) RenderPreview(ctx context.Context, layout *declarati
 }
 
 // previewFooterSentinelKeys are the edition.* fields the send path substitutes
-// per recipient (unsubscribe URL, sender/project name) or forces empty
-// (manage_subscriptions_url — there is no preferences surface yet). A client's
+// per recipient (unsubscribe URL, sender/project name) or per send
+// (manage_subscriptions_url → the "My Newsletters" archive link). A client's
 // wrapper_content must NOT override these — the preview keeps the send-path
-// values so its footer structure and byte size match the sent email (and it
-// can't preview a working "Manage subscription" link that won't exist on send).
+// sentinels so its footer structure and byte size match the sent email.
 var previewFooterSentinelKeys = map[string]struct{}{
 	"unsubscribe_url":          {},
 	"unsubscribe_fallback":     {},

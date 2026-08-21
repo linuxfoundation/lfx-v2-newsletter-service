@@ -25,7 +25,7 @@ func TestRoutes_RenderPreviewTemplatesRequireAuth(t *testing.T) {
 	}{
 		{"render-preview", http.MethodPost, "/projects/proj-1/newsletters/render-preview"},
 		{"list-templates", http.MethodGet, "/projects/proj-1/newsletters/templates"},
-		{"get-template-manifest", http.MethodGet, "/projects/proj-1/newsletters/templates/default/manifest"},
+		{"get-template-manifest", http.MethodGet, "/projects/proj-1/newsletters/templates/aaif-user-community/manifest"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
