@@ -313,9 +313,15 @@ func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, 
 	// If scheduling, authorize armed mutations by setting the GUC before the update.
 	if scheduledAt != nil {
 		err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-			// Set the GUC flag in this transaction
+			// Set the GUC flags in this transaction: armed-mutation authorizes the
+			// batch_id write against reject_armed_scheduled_mutation, and layout-send
+			// authorizes the draft -> sending claim of a layout row against
+			// reject_legacy_layout_send.
 			if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
 				return fmt.Errorf("set armed mutation flag: %w", err)
+			}
+			if _, err := tx.NewRaw("SET LOCAL app.allow_layout_send = 'true'").Exec(ctx); err != nil {
+				return fmt.Errorf("set layout send flag: %w", err)
 			}
 			// Now run the UPDATE in the same transaction
 			res, err := tx.NewUpdate().
@@ -349,29 +355,39 @@ func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, 
 		return updated, err
 	}
 
-	// Non-scheduled send: no GUC needed, just run the UPDATE directly
-	res, err := r.db.NewUpdate().
-		Model(updated).
-		Set("status = ?", model.StatusSending).
-		Set("group_id = ?", groupID).
-		Set("send_provider = ?", sendProvider).
-		Set("total_recipients = ?", totalRecipients).
-		Set("updated_at = now()").
-		Set("version = version + 1").
-		Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusDraft).
-		Returning("*").
-		Exec(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("mark sending: %w", err)
-	}
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("mark sending rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return nil, r.classifySendTransitionMiss(ctx, id, expectedVersion)
-	}
-	return updated, nil
+	// Non-scheduled (immediate) send. Wrap the UPDATE in a transaction so the
+	// layout-send GUC is visible to reject_legacy_layout_send, which blocks a
+	// legacy pod from claiming a body_layout row for dispatch (it would wrap the
+	// stored body_html in email_chrome a second time). SET LOCAL only applies
+	// inside a transaction, so an immediate send now uses one too.
+	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_layout_send = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set layout send flag: %w", err)
+		}
+		res, err := tx.NewUpdate().
+			Model(updated).
+			Set("status = ?", model.StatusSending).
+			Set("group_id = ?", groupID).
+			Set("send_provider = ?", sendProvider).
+			Set("total_recipients = ?", totalRecipients).
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusDraft).
+			Returning("*").
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("mark sending: %w", err)
+		}
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("mark sending rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			return r.classifySendTransitionMissWithDB(ctx, tx, id, expectedVersion)
+		}
+		return nil
+	})
+	return updated, err
 }
 
 // MarkSent transitions sending → sent, gated on the version produced by
@@ -807,23 +823,15 @@ func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UU
 	return domain.ErrVersionMismatch
 }
 
-// classifySendTransitionMiss distinguishes the reasons a MarkSending or
+// classifySendTransitionMissWithDB distinguishes the reasons a MarkSending or
 // MarkSent update can affect zero rows: not found, already sent, another send
-// in progress, or wrong version. Status checks take precedence over the
-// version check because the send-transition UPDATEs bump the version — a row
-// that moved to sending/sent necessarily has a different version too, and the
-// status is the more actionable signal for the caller.
-//
-// Use classifySendTransitionMissWithDB to classify through a transaction,
-// avoiding pool connection exhaustion when classifying within a transaction.
-func (r *PostgresNewsletterRepo) classifySendTransitionMiss(ctx context.Context, id uuid.UUID, expectedVersion int64) error {
-	return r.classifySendTransitionMissWithDB(ctx, r.db, id, expectedVersion)
-}
-
-// classifySendTransitionMissWithDB classifies through an arbitrary bun.IDB
-// (pool or transaction). Use this when classifying within a transaction to
-// avoid holding a transaction open while acquiring another pool connection
-// (pool exhaustion / deadlock risk).
+// in progress, scheduled, or wrong version. Status checks take precedence over
+// the version check because the send-transition UPDATEs bump the version — a
+// row that moved to sending/sent necessarily has a different version too, and
+// the status is the more actionable signal for the caller. It classifies
+// through an arbitrary bun.IDB (pool or transaction); pass the enclosing tx
+// when classifying inside one, so it does not hold that transaction open while
+// acquiring another pool connection (pool exhaustion / deadlock risk).
 func (r *PostgresNewsletterRepo) classifySendTransitionMissWithDB(ctx context.Context, db bun.IDB, id uuid.UUID, expectedVersion int64) error {
 	existing := &model.Newsletter{}
 	err := db.NewSelect().

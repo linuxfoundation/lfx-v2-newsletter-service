@@ -229,6 +229,36 @@ CREATE TRIGGER trg_reject_armed_scheduled_mutation
     BEFORE UPDATE OR DELETE ON newsletters
     FOR EACH ROW EXECUTE FUNCTION reject_armed_scheduled_mutation();
 
+-- Prevent legacy pods (running old code before the block-layout feature) from
+-- dispatching a layout newsletter during a rolling deploy or after a rollback.
+-- A layout row (body_layout IS NOT NULL) stores a fully-rendered email in
+-- body_html; the new binary re-renders that body from body_layout at send time,
+-- but a legacy pod ignores body_layout and would wrap the already-complete
+-- document in the legacy email_chrome a second time. This guard blocks the
+-- draft -> sending claim of a layout row unless the caller is layout-aware: the
+-- new binary sets 'app.allow_layout_send' before the transition in MarkSending,
+-- so it passes; a legacy pod never sets it and its claim fails loudly rather
+-- than shipping a double-wrapped email — the row simply waits in draft until a
+-- layout-aware pod picks it up. Mirrors reject_armed_scheduled_mutation; only
+-- the draft -> sending edge is guarded because that is the single claim point
+-- before dispatch (MarkSending), and the row's body_layout is never mutated by
+-- that UPDATE. CREATE OR REPLACE + DROP/CREATE keep re-running schema.sql a no-op.
+CREATE OR REPLACE FUNCTION reject_legacy_layout_send() RETURNS trigger AS $$
+BEGIN
+    IF NEW.body_layout IS NOT NULL
+       AND OLD.status = 'draft' AND NEW.status = 'sending'
+       AND current_setting('app.allow_layout_send', true) IS DISTINCT FROM 'true' THEN
+        RAISE EXCEPTION 'cannot send layout newsletter (body_layout is set) — service version mismatch during rolling deploy';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_reject_legacy_layout_send ON newsletters;
+CREATE TRIGGER trg_reject_legacy_layout_send
+    BEFORE UPDATE ON newsletters
+    FOR EACH ROW EXECUTE FUNCTION reject_legacy_layout_send();
+
 -- Supports the due-schedule sweep (status = 'scheduled' AND scheduled_at <= now()).
 CREATE INDEX IF NOT EXISTS idx_newsletters_scheduled_due
     ON newsletters (scheduled_at) WHERE status = 'scheduled';

@@ -344,6 +344,62 @@ func TestArmedMutations_AllMethodsSucceed(t *testing.T) {
 	}
 }
 
+// TestLayoutSend_TriggerRejectsLegacyClaim covers the rolling-deploy / rollback
+// guard for block-layout newsletters. A legacy pod (one that predates the
+// feature and so never sets app.allow_layout_send) must not be able to claim a
+// body_layout row for dispatch: it ignores body_layout and would wrap the
+// stored body_html in the legacy email_chrome a second time. The
+// reject_legacy_layout_send trigger blocks the draft -> sending edge unless the
+// layout-aware GUC is set. The new binary's MarkSending sets it, so a normal
+// claim still succeeds. Mirrors TestArmedMutations_TriggerRejectsUnauthorized.
+func TestLayoutSend_TriggerRejectsLegacyClaim(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	// Mark the row as a layout newsletter. A plain draft UPDATE does not touch
+	// the draft -> sending edge, so the guard lets body_layout be set.
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_layout = ?::jsonb WHERE id = ?`,
+		`{"wrapper_key":"default","blocks":[]}`, draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("set body_layout: %v", err)
+	}
+
+	// A legacy pod's claim is a raw draft -> sending UPDATE with no layout GUC;
+	// the trigger must reject it.
+	_, err := repo.db.NewRaw(
+		`UPDATE newsletters SET status = ?, group_id = ?, version = version + 1 WHERE id = ? AND status = ?`,
+		model.StatusSending, uuid.NewString(), draftID, model.StatusDraft,
+	).Exec(ctx)
+	if err == nil {
+		t.Fatalf("legacy layout claim should have been rejected by the trigger but succeeded")
+	}
+	if !strings.Contains(err.Error(), "cannot send layout newsletter") && !strings.Contains(err.Error(), "service version mismatch") {
+		t.Fatalf("unexpected rejection message: %v", err)
+	}
+
+	// The row is untouched: still a draft (the rejected UPDATE rolled back).
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after rejected claim: %v", err)
+	}
+	if n.Status != model.StatusDraft {
+		t.Fatalf("Status should be unchanged StatusDraft, got %v", n.Status)
+	}
+
+	// The new binary's MarkSending sets app.allow_layout_send, so a real claim
+	// of the same layout row succeeds.
+	sending, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "sendgrid", 100, 1, nil, "")
+	if err != nil {
+		t.Fatalf("layout-aware MarkSending should succeed: %v", err)
+	}
+	if sending.Status != model.StatusSending {
+		t.Fatalf("Status after MarkSending: got %v, want StatusSending", sending.Status)
+	}
+}
+
 func TestArmedMutations_TriggerRejectsUnauthorized(t *testing.T) {
 	repo := newIntegrationRepo(t)
 
