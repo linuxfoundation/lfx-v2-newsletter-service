@@ -340,6 +340,57 @@ func TestRenderMJML_PollBreakoutKeepsCardChrome(t *testing.T) {
 	}
 }
 
+// TestRenderMJML_TextStatsCardStaysOneSection asserts that a card block whose
+// only breakout is a row of text columns (by_the_numbers' stats) renders as ONE
+// mj-section: the eyebrow plus an mj-table of side-by-side stat cells, all
+// inside the single dark card. Before the mj-table path, writeSection lifted the
+// stats Row into its own sibling section, and the postprocess card gap then drew
+// a visible break between the eyebrow half and the stats half — two cards where
+// the design is one. Unlike hot_take's poll (buttons, which keep the split
+// path), text-only stat columns are safe to collapse into a table cell.
+func TestRenderMJML_TextStatsCardStaysOneSection(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+
+	layout := Layout{
+		Blocks: []Block{
+			{
+				BlockType: "by_the_numbers",
+				Content: map[string]any{
+					"stats": []any{
+						map[string]any{"value": "110M+", "label": "downloads"},
+						map[string]any{"value": "42", "label": "contributors"},
+					},
+				},
+			},
+		},
+	}
+
+	doc, err := RenderMJML(layout, tmpl, nil)
+	if err != nil {
+		t.Fatalf("RenderMJML: %v", err)
+	}
+
+	// Exactly one dark card section — the stats must not spill into a second one.
+	if n := strings.Count(doc, `background-color="#131313"`); n != 1 {
+		t.Errorf("expected exactly one dark card section, got %d:\n%s", n, doc)
+	}
+	// Both stats ride the same section as the eyebrow, inside an mj-table so the
+	// cells sit side-by-side (the split path would have used sibling mj-columns
+	// in a second section instead).
+	sec := sectionContaining(doc, "110M+")
+	if sec == "" {
+		t.Fatalf("could not isolate stats mj-section\n---\n%s", doc)
+	}
+	for _, want := range []string{"BY THE NUMBERS", "42", "<mj-table"} {
+		if !strings.Contains(sec, want) {
+			t.Errorf("expected stats card section to contain %q:\n%s", want, sec)
+		}
+	}
+	if strings.Contains(sec, "<mj-column") && strings.Count(sec, "<mj-column") != 1 {
+		t.Errorf("expected the stats to render as table cells, not sibling mj-columns:\n%s", sec)
+	}
+}
+
 // sectionContaining returns the <mj-section>…</mj-section> substring that holds
 // the given needle, or "" if none does. It is test-only and assumes the
 // translator never nests mj-section (which MJML forbids).

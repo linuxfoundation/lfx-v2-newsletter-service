@@ -123,6 +123,17 @@ func writeSection(b *strings.Builder, n *node) {
 		return
 	}
 
+	// A CARD section (border-radius / background) that contains a multi-column
+	// breakout must stay ONE mj-section: splitting it would give each half the
+	// card chrome and render as two separate cards. Keep the whole card in one
+	// mj-column and render each breakout row as an mj-table so its columns stay
+	// side-by-side below the inline content (MJML can't hold a text + a
+	// column-row in one section otherwise).
+	if isCardSection(n) && containsBreakout(n) && cardBreakoutsAllTableSafe(n) {
+		writeCardWithBreakout(b, n)
+		return
+	}
+
 	// Column-less run: split it around any multi-column breakouts. The section's
 	// own style is threaded down as the initial ancestor style so a breakout
 	// lifted out of this section keeps its card chrome (see splitBreakouts).
@@ -283,6 +294,125 @@ func writeBreakoutSection(b *strings.Builder, n *node) {
 		b.WriteString("</mj-column>")
 	}
 	b.WriteString("</mj-section>")
+}
+
+// isCardSection reports whether a section carries card chrome — a border-radius
+// or a background — so it must render as a single mj-section rather than split
+// (each split half would otherwise become its own visible card).
+func isCardSection(n *node) bool {
+	style := styleOf(n)
+	return cssProp(style, "border-radius") != "" || cssProp(style, "background-color") != "" || cssProp(style, "background") != ""
+}
+
+// writeCardWithBreakout emits a card section that contains a multi-column
+// breakout as ONE mj-section > mj-column. Inline content (an eyebrow, a title)
+// rides mj-text; each breakout row becomes an mj-table so its columns stay
+// side-by-side directly below that content, all inside the single card.
+func writeCardWithBreakout(b *strings.Builder, n *node) {
+	style := styleAttr(n, styleSection)
+	children := n.Children
+	colStyle := ""
+	// The common <Section><div style="padding:…">…</div> pattern wraps the card's
+	// content in one padded div. Hoist that padding onto the mj-column (as the
+	// normal dissolve path does) so the card keeps its interior padding.
+	if len(children) == 1 && children[0] != nil && inertTags[children[0].Tag] && hasBlockDescendant(children[0]) {
+		colStyle = styleAttr(children[0], styleColumn)
+		children = children[0].Children
+	}
+	b.WriteString("<mj-section" + style + "><mj-column" + colStyle + ">")
+	var inlineRun []*node
+	flush := func() {
+		if len(inlineRun) > 0 {
+			writeChildren(b, inlineRun)
+			inlineRun = nil
+		}
+	}
+	for _, c := range children {
+		if isBreakout(c) {
+			flush()
+			writeBreakoutTable(b, c)
+			continue
+		}
+		inlineRun = append(inlineRun, c)
+	}
+	flush()
+	b.WriteString("</mj-column></mj-section>")
+}
+
+// writeBreakoutTable renders a multi-column Row/Section as a single-row mj-table:
+// one <td> per Column, at equal width, so the columns render side-by-side inside
+// the enclosing card column. Each Column's own style rides its <td>; its content
+// renders as inline HTML (writeInline). MJML's default mj-table padding is zeroed
+// so the table aligns with the surrounding content.
+func writeBreakoutTable(b *strings.Builder, n *node) {
+	cols, _ := partitionColumns(n.Children)
+	if len(cols) == 0 {
+		return
+	}
+	width := 100 / len(cols)
+	b.WriteString(`<mj-table padding="0" cellpadding="0" cellspacing="0" width="100%"><tr>`)
+	for _, c := range cols {
+		tdStyle := strings.TrimSpace(styleOf(c))
+		if tdStyle != "" && !strings.HasSuffix(tdStyle, ";") {
+			tdStyle += ";"
+		}
+		tdStyle += fmt.Sprintf("width:%d%%", width)
+		b.WriteString(`<td style="` + html.EscapeString(tdStyle) + `">`)
+		writeInline(b, c.Children)
+		b.WriteString(`</td>`)
+	}
+	b.WriteString(`</tr></mj-table>`)
+}
+
+// cardBreakoutsAllTableSafe reports whether every breakout descendant of a card
+// section holds only content writeInline can emit into a table cell. The
+// single-card mj-table path renders each breakout Column's content as inline
+// HTML, so a breakout that carries an mj-* block element — a button, an image,
+// or a divider that needs its own MJML component — cannot use it. Such a card
+// (e.g. hot_take's poll, whose columns hold buttons) keeps the original
+// split-into-sibling-sections path instead.
+func cardBreakoutsAllTableSafe(n *node) bool {
+	for _, c := range n.Children {
+		if isBreakout(c) {
+			if !breakoutTableSafe(c) {
+				return false
+			}
+			continue
+		}
+		if c != nil && !cardBreakoutsAllTableSafe(c) {
+			return false
+		}
+	}
+	return true
+}
+
+// breakoutTableSafe reports whether a breakout's columns hold only inline
+// content — no mj-* block element that requires its own MJML component.
+func breakoutTableSafe(n *node) bool {
+	for _, c := range n.Children {
+		if c != nil && c.Tag == "column" && hasMJBlockDescendant(c) {
+			return false
+		}
+	}
+	return true
+}
+
+// hasMJBlockDescendant reports whether n's subtree contains a button, image, or
+// divider — the elements writeChildren hoists to their own MJML component and
+// that writeInline cannot render inside a raw table cell.
+func hasMJBlockDescendant(n *node) bool {
+	for _, c := range n.Children {
+		if c == nil {
+			continue
+		}
+		if c.Tag == "button" || c.Tag == "img" || c.Tag == "hr" {
+			return true
+		}
+		if hasMJBlockDescendant(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // partitionColumns splits children into Column nodes and everything else.
