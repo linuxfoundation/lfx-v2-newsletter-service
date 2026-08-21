@@ -18,19 +18,36 @@ var voidElements = map[string]bool{
 	"source": true, "track": true, "wbr": true,
 }
 
+// cardShadowOffset is the AAIF card drop shadow — a hard offset with no blur,
+// drawn in the card's own border colour (matching the gatewaze source). It
+// degrades gracefully: clients that ignore box-shadow simply show the border.
+const cardShadowOffset = "6px 6px 0"
+
+// cardGap is the vertical gap between stacked cards. MJML strips the card's
+// authored margin, so without this the cards butt together (and the shadow has
+// nowhere to show).
+const cardGap = "24px"
+
 // reconcileCardBorders post-processes mjml-compiled HTML so a bordered, rounded
-// "card" renders with rounded corners.
+// "card" renders like the gatewaze source: rounded corners, a drop shadow, and a
+// gap between stacked cards.
 //
 // MJML renders a bordered, rounded mj-section with the border-radius on the
 // outer <div>/<table> but the full border on the inner content <td>. A radius on
 // the table does not clip a border on the cell, so the visible border has square
 // corners (mj-column drops border/border-radius entirely, so the styling cannot
-// simply move there). This copies the nearest enclosing border-radius onto each
-// element that carries a FULL border but no radius of its own, and sets
-// border-collapse:separate inline on radiused tables so the cell's radius takes
-// effect (inline wins over MJML's head-level border-collapse reset). box-shadow
-// is intentionally left alone: MJML sections carry none, and major clients
-// (Gmail) strip box-shadow regardless.
+// simply move there). It also strips box-shadow and margin from the section
+// entirely. This post-process restores all three, matching what MJML dropped:
+//   - copies the nearest enclosing border-radius onto each element that carries a
+//     FULL border but no radius of its own (the card cell), and sets
+//     border-collapse:separate inline on radiused tables so the cell's radius
+//     takes effect (inline wins over MJML's head-level border-collapse reset);
+//   - re-adds the drop shadow on that same card cell, in its own border colour;
+//   - re-adds the inter-card bottom gap on the card's mj-section wrapper (a
+//     radiused, horizontally-centred element with no border of its own).
+//
+// The shadow and gap use inline styles email clients honour where supported, and
+// harmlessly ignore where not.
 func reconcileCardBorders(input string) string {
 	z := nethtml.NewTokenizer(strings.NewReader(input))
 	var b strings.Builder
@@ -81,16 +98,28 @@ func reconcileCardBorders(input string) string {
 
 		newStyle := style
 		radius := cssProp(style, "border-radius")
-		// A full-bordered element with no radius of its own inherits the nearest
-		// enclosing card radius so its border rounds.
-		if cssProp(style, "border") != "" && radius == "" && len(radii) > 0 {
+		border := cssProp(style, "border")
+		// A full-bordered element with no radius of its own IS the card cell: it
+		// inherits the nearest enclosing card radius so its border rounds, and gets
+		// the drop shadow MJML stripped, drawn in its own border colour.
+		if border != "" && radius == "" && len(radii) > 0 {
 			newStyle = appendStyleDecl(newStyle, "border-radius", radii[len(radii)-1].radius)
+			if color := borderColor(border); color != "" && cssProp(newStyle, "box-shadow") == "" {
+				newStyle = appendStyleDecl(newStyle, "box-shadow", cardShadowOffset+" "+color)
+			}
 		}
 		// A radiused table needs border-collapse:separate for a child cell's
 		// border-radius to render; MJML tables carry cellspacing="0" so this adds
 		// no gaps.
 		if radius != "" && tag == "table" && cssProp(style, "border-collapse") == "" {
 			newStyle = appendStyleDecl(newStyle, "border-collapse", "separate")
+		}
+		// The card's mj-section wrapper — a radiused, horizontally-centred element
+		// (margin: … auto) with no border of its own — gets the inter-card bottom
+		// gap MJML stripped from the card's margin, so stacked cards don't butt
+		// together and the shadow has room to show.
+		if radius != "" && border == "" && marginIsAutoCentred(cssProp(style, "margin")) && cssProp(style, "margin-bottom") == "" {
+			newStyle = appendStyleDecl(newStyle, "margin-bottom", cardGap)
 		}
 
 		if newStyle != style {
@@ -130,6 +159,29 @@ func cssProp(style, prop string) string {
 		}
 	}
 	return ""
+}
+
+// borderColor extracts the colour from a CSS `border` shorthand
+// ("<width> <style> <color>") — the last whitespace-separated token. Returns ""
+// for a function-notation colour (rgb()/hsl(), which contain spaces) so the
+// caller skips the shadow rather than emit a malformed value; the AAIF cards use
+// hex, so this is not hit in practice.
+func borderColor(border string) string {
+	fields := strings.Fields(border)
+	if len(fields) == 0 {
+		return ""
+	}
+	color := fields[len(fields)-1]
+	if strings.ContainsAny(color, "()") {
+		return ""
+	}
+	return color
+}
+
+// marginIsAutoCentred reports whether a CSS `margin` value uses `auto` for its
+// horizontal centring (e.g. "0px auto"), which marks an mj-section wrapper.
+func marginIsAutoCentred(margin string) bool {
+	return strings.Contains(margin, "auto")
 }
 
 // appendStyleDecl appends a "prop:val" declaration to an inline style string.

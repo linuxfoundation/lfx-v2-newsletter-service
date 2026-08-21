@@ -52,6 +52,57 @@ func TestReconcileCardBorders_KeepsOwnRadius(t *testing.T) {
 	}
 }
 
+// TestReconcileCardBorders_AddsShadowToCardCell pins that the card cell (a full
+// border enclosed by a card radius) gets the drop shadow MJML strips, drawn in
+// its own border colour, matching the gatewaze source.
+func TestReconcileCardBorders_AddsShadowToCardCell(t *testing.T) {
+	in := `<div style="border-radius:14px;margin:0px auto;max-width:600px">` +
+		`<table style="border-radius:14px;width:100%">` +
+		`<tbody><tr><td style="border:1px solid #131313;padding:20px 0">Hi</td></tr></tbody>` +
+		`</table></div>`
+	out := reconcileCardBorders(in)
+	if !strings.Contains(out, "box-shadow:6px 6px 0 #131313") {
+		t.Errorf("card cell did not get the drop shadow in its border colour:\n%s", out)
+	}
+	// The shadow attaches to the bordered cell, not the table or wrapper.
+	if strings.Count(out, "box-shadow") != 1 {
+		t.Errorf("expected exactly one box-shadow (on the card cell), got %d:\n%s", strings.Count(out, "box-shadow"), out)
+	}
+}
+
+// TestReconcileCardBorders_AddsGapToCardWrapper pins that the card's mj-section
+// wrapper (radiused, margin:auto-centred, no border) gets the inter-card bottom
+// gap MJML strips, while a plain centred section (no card radius) and a
+// single-side-bordered footer do NOT.
+func TestReconcileCardBorders_AddsGapToCardWrapper(t *testing.T) {
+	card := `<div style="border-radius:14px;margin:0px auto;max-width:600px">` +
+		`<table style="border-radius:14px;width:100%"><tbody><tr>` +
+		`<td style="border:1px solid #131313">Hi</td></tr></tbody></table></div>`
+	plain := `<div style="margin:0px auto;max-width:600px"><table><tbody><tr><td>Header</td></tr></tbody></table></div>`
+	out := reconcileCardBorders(card + plain)
+	if strings.Count(out, "margin-bottom:24px") != 1 {
+		t.Errorf("expected the card wrapper (only) to get the 24px gap, got %d:\n%s", strings.Count(out, "margin-bottom:24px"), out)
+	}
+	if !strings.Contains(out, "border-radius:14px;margin:0px auto;max-width:600px;margin-bottom:24px") {
+		t.Errorf("gap not appended to the card wrapper div:\n%s", out)
+	}
+}
+
+// TestBorderColor pins the colour extraction from a border shorthand.
+func TestBorderColor(t *testing.T) {
+	cases := map[string]string{
+		"1px solid #131313":  "#131313",
+		"2px dashed black":   "black",
+		"1px solid rgb(0,0)": "", // function-notation → skipped
+		"":                   "",
+	}
+	for in, want := range cases {
+		if got := borderColor(in); got != want {
+			t.Errorf("borderColor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestPropagateTextAlign pins that a container's text-align propagates onto text
 // descendants that don't set their own — the fix for centered header/footer
 // chrome rendering left-aligned once MJML dissolves the wrapping div.
