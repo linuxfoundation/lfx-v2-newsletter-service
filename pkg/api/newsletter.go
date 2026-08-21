@@ -245,14 +245,11 @@ type LayoutBlock struct {
 type NewsletterLayout struct {
 	WrapperKey string `json:"wrapper_key"`
 	// TemplateKey selects which block library the layout was composed from and is
-	// rendered with. Optional: empty does NOT mean the "default" library — it
-	// falls back to the aaif-user-community block superset paired with the
-	// neutral "default" wrapper (see declarative.RenderTemplateKey /
-	// NeutralWrapperTemplateKey), so a layout composed without an explicit
-	// library, or saved before per-newsletter selection, still resolves every
-	// block the editor can offer. Explicitly setting "default" instead selects
-	// that library's own smaller block set and wrapper, and renders differently
-	// from an empty key.
+	// rendered with. Optional. The block composer is an AAIF-only pilot with a
+	// single embedded library, aaif-user-community (also the block superset), so
+	// empty falls back to that same library and wrapper (see
+	// declarative.RenderTemplateKey) and resolves every block the editor can
+	// offer. Naming a library the binary does not embed is a 422.
 	TemplateKey string        `json:"template_key,omitempty"`
 	Blocks      []LayoutBlock `json:"blocks"`
 }

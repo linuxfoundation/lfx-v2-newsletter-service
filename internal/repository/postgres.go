@@ -145,6 +145,10 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 func (r *PostgresNewsletterRepo) ListSentByCommittee(ctx context.Context, committeeUID string, pageToken string) (*port.ListPage, error) {
 	q := r.db.NewSelect().
 		Model((*model.Newsletter)(nil)).
+		// body_layout can approach the 1 MiB request cap; committee-list rows
+		// discard it (see toAPICommitteeNewsletter), so never materialize it here
+		// — matching ListAll.
+		ExcludeColumn("body_layout").
 		Where("status = ?", model.StatusSent).
 		// pgdialect.Array forces a Postgres text[] literal for the containment
 		// operand; without it bun json-encodes the slice (see Update's

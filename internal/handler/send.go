@@ -136,7 +136,13 @@ func (h *Handler) CancelScheduleNewsletter(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.Header().Set("ETag", formatETag(reverted.Version))
-	writeJSON(r.Context(), w, http.StatusOK, publicapi.CancelScheduleResponse{Newsletter: *toAPINewsletter(r.Context(), reverted)})
+	// Mirror the send/schedule responses: this send-lifecycle response echoes
+	// post-cancel state, not editable content, so omit body_layout (a layout can
+	// approach 1 MiB and the client already holds what it composed). Shallow-copy
+	// and clear before converting so toAPINewsletter never decodes it.
+	copy := *reverted
+	copy.BodyLayout = nil
+	writeJSON(r.Context(), w, http.StatusOK, publicapi.CancelScheduleResponse{Newsletter: *toAPINewsletter(r.Context(), &copy)})
 }
 
 // RecipientCount handles POST /projects/{project_uid}/newsletters/recipient-count.
