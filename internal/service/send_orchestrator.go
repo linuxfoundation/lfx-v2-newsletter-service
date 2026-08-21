@@ -76,9 +76,14 @@ const fromDisplayNameSuffix = " Newsletter"
 const myNewslettersPath = "/newsletters/my"
 
 // viewOnlinePath builds the Self-Serve permalink for the public "View Online"
-// page of a single sent newsletter edition, appended to SelfServeBaseURL. Only
-// meaningful once the edition has settled to status='sent' — set on real
-// sends only, never on TestSend, which has no persisted edition to link to.
+// page of a single sent newsletter edition, appended to SelfServeBaseURL. Set on
+// real sends only, never on TestSend, which has no persisted edition to link to.
+//
+// The link is embedded in the chrome below, before the per-recipient fan-out,
+// and the row is only marked sent after the fan-out finishes. The public read
+// therefore resolves on model.Newsletter.PubliclyViewable rather than on
+// status='sent', so a recipient at the front of a large fan-out does not get a
+// 404 for content already in their inbox (LFXV2-2579).
 func viewOnlinePath(projectUID, newsletterID string) string {
 	return "/newsletters/" + projectUID + "/" + newsletterID + "/view"
 }

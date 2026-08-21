@@ -89,6 +89,43 @@ type Newsletter struct {
 	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
 }
 
+// PubliclyViewable reports whether this edition may be served over the
+// unauthenticated public "View Online" route.
+//
+// The test is whether the body has already been dispatched to recipients, not
+// whether the row has settled to StatusSent. The send orchestrator embeds the
+// permalink in the email chrome before the per-recipient fan-out, and only
+// marks the row sent after the fan-out finishes, so an early recipient can open
+// the link while the row is still StatusSending. Gating on StatusSent alone
+// gives that recipient a 404 for the whole fan-out (LFXV2-2579).
+//
+// The rule fails closed. When a future release time is still in play the body
+// has not reached anyone, so it stays hidden:
+//
+//   - StatusSent: viewable. The send finished.
+//   - StatusSending: viewable once no future release time is in play. The
+//     fan-out is handing the body to the provider for immediate delivery.
+//   - StatusScheduled: viewable once ScheduledAt has passed. The provider has
+//     released the batch, and the recovery sweep has not yet settled the row.
+//   - StatusDraft: never viewable.
+//
+// A plain immediate send of a draft that carries a future but unarmed
+// ScheduledAt (saved author intent that MarkSending leaves untouched) reads as
+// not viewable here. That is the safe direction, and the permalink starts
+// resolving when the fan-out settles the row to StatusSent.
+func (n *Newsletter) PubliclyViewable(now time.Time) bool {
+	switch n.Status {
+	case StatusSent:
+		return true
+	case StatusSending:
+		return n.ScheduledAt == nil || !n.ScheduledAt.After(now)
+	case StatusScheduled:
+		return n.ScheduledAt != nil && !n.ScheduledAt.After(now)
+	default:
+		return false
+	}
+}
+
 // NewsletterOpen records a single open event for a sent newsletter.
 type NewsletterOpen struct {
 	bun.BaseModel `bun:"table:newsletter_opens,alias:o"`

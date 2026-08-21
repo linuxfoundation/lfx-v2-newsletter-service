@@ -162,17 +162,34 @@ func TestPublicViewWrongProject(t *testing.T) {
 	}
 }
 
-func TestPublicViewNotSentYet(t *testing.T) {
-	for _, status := range []model.Status{model.StatusDraft, model.StatusSending} {
-		t.Run(string(status), func(t *testing.T) {
+// TestPublicViewUndispatched covers the states whose body has not reached any
+// recipient. Each must be indistinguishable from a newsletter that does not
+// exist, so the permalink cannot be used to probe for unpublished content.
+func TestPublicViewUndispatched(t *testing.T) {
+	future := time.Now().UTC().Add(2 * time.Hour)
+	cases := []struct {
+		name        string
+		status      model.Status
+		scheduledAt *time.Time
+	}{
+		{name: "draft", status: model.StatusDraft},
+		{name: "draft with saved schedule", status: model.StatusDraft, scheduledAt: &future},
+		// The fan-out is arming a future release, so nothing is delivered yet.
+		{name: "sending an armed future schedule", status: model.StatusSending, scheduledAt: &future},
+		// The provider is holding the batch until ScheduledAt.
+		{name: "scheduled for the future", status: model.StatusScheduled, scheduledAt: &future},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			id := uuid.New()
 			h := newPublicViewHandler(map[uuid.UUID]*model.Newsletter{
 				id: {
-					ID:         id,
-					ProjectUID: "proj-1",
-					Subject:    "Draft in progress",
-					BodyHTML:   "<p>Hello</p>",
-					Status:     status,
+					ID:          id,
+					ProjectUID:  "proj-1",
+					Subject:     "Not delivered yet",
+					BodyHTML:    "<p>Hello</p>",
+					Status:      tc.status,
+					ScheduledAt: tc.scheduledAt,
 				},
 			})
 
@@ -180,9 +197,78 @@ func TestPublicViewNotSentYet(t *testing.T) {
 			h.PublicView(w, req)
 
 			if w.Code != http.StatusNotFound {
-				t.Fatalf("status = %d, want 404 for status=%s, body=%s", w.Code, status, w.Body.String())
+				t.Fatalf("status = %d, want 404 for status=%s, body=%s", w.Code, tc.status, w.Body.String())
 			}
 		})
+	}
+}
+
+// TestPublicViewDispatchedBeforeSettled is the regression test for the fan-out
+// race. The orchestrator embeds the permalink in the email chrome before it
+// fans out, and marks the row sent only after the fan-out finishes. A recipient
+// at the front of a large fan-out opens the link while the row is still
+// 'sending', and must get the newsletter rather than a 404.
+func TestPublicViewDispatchedBeforeSettled(t *testing.T) {
+	past := time.Now().UTC().Add(-2 * time.Hour)
+	cases := []struct {
+		name        string
+		status      model.Status
+		scheduledAt *time.Time
+	}{
+		{name: "immediate send still fanning out", status: model.StatusSending},
+		// A plain immediate send never clears a draft's saved-but-unarmed
+		// scheduled_at, so a past value can survive into 'sending'.
+		{name: "sending with a past schedule", status: model.StatusSending, scheduledAt: &past},
+		// The provider released the batch; the recovery sweep has not yet
+		// settled the row to 'sent'.
+		{name: "scheduled release already passed", status: model.StatusScheduled, scheduledAt: &past},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := uuid.New()
+			h := newPublicViewHandler(map[uuid.UUID]*model.Newsletter{
+				id: {
+					ID:          id,
+					ProjectUID:  "proj-1",
+					Subject:     "January update",
+					BodyHTML:    "<p>Hello</p>",
+					Status:      tc.status,
+					ScheduledAt: tc.scheduledAt,
+				},
+			})
+
+			w, req := newPublicViewRequest("proj-1", id.String())
+			h.PublicView(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 for status=%s, body=%s", w.Code, tc.status, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "January update") {
+				t.Errorf("body missing subject: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// TestPublicViewWrongProjectWhileSending confirms the widened status window did
+// not widen the project gate with it.
+func TestPublicViewWrongProjectWhileSending(t *testing.T) {
+	id := uuid.New()
+	h := newPublicViewHandler(map[uuid.UUID]*model.Newsletter{
+		id: {
+			ID:         id,
+			ProjectUID: "proj-1",
+			Subject:    "January update",
+			BodyHTML:   "<p>Hello</p>",
+			Status:     model.StatusSending,
+		},
+	})
+
+	w, req := newPublicViewRequest("proj-2", id.String())
+	h.PublicView(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body=%s", w.Code, w.Body.String())
 	}
 }
 

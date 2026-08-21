@@ -496,10 +496,12 @@ spec:
     # ---------------------------------------------------------------------
     # Public "View Online" edition read: intentionally unauthenticated. A
     # recipient opens the permalink from their mail client with no session.
-    # The handler only ever serves a newsletter once status='sent' and gates
-    # on the path project_uid matching the persisted row, collapsing every
-    # other case to an indistinguishable 404 (LFXV2-2579). Must precede no
-    # broader rule; Heimdall matches the exact `/public` path template.
+    # The handler only serves a newsletter whose body has already been
+    # dispatched to recipients, and gates on the path project_uid matching the
+    # persisted row, collapsing every other case to an indistinguishable 404
+    # (LFXV2-2579). A draft, and a send still holding a future release time,
+    # are never served. Must precede no broader rule. Heimdall matches the
+    # exact `/public` path template.
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:public_view"
       allow_encoded_slashes: 'off'
