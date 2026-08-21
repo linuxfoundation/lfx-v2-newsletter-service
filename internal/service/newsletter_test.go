@@ -164,6 +164,39 @@ func TestCreateDraft_LayoutContentWithReservedPlaceholder_Rejected(t *testing.T)
 	}
 }
 
+// TestCreateDraft_LayoutContentWithSendScopeSentinel_Rejected proves the guard
+// also rejects the send-SCOPE sentinels (%%SENDER_NAME%%/%%PROJECT_NAME%%), not
+// just the per-recipient URL sentinels: substituteSendScope globally substitutes
+// them too, and a whole-value token in a URL field bypasses bindAttrs' scheme
+// gate, so writer content carrying one would be rewritten after the check.
+func TestCreateDraft_LayoutContentWithSendScopeSentinel_Rejected(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, true)
+
+	layout := &declarative.Layout{
+		Blocks: []declarative.Block{
+			{
+				BlockType: "logo_header",
+				Content:   map[string]any{"link": ProjectNamePlaceholder},
+			},
+		},
+	}
+	_, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "Send-scope sentinel in a URL field",
+		BodyLayout:    layout,
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if err == nil {
+		t.Fatal("expected error for send-scope sentinel in block content, got nil")
+	}
+	if !IsValidationError(err) {
+		t.Errorf("expected validation (400) error, got %v", err)
+	}
+}
+
 // TestCreateDraft_LayoutContentNestedArrayWithReservedPlaceholder_Rejected
 // proves the reserved-placeholder check also inspects each= array items
 // (bind.go's lookupSlice resolves each= against []any elements holding

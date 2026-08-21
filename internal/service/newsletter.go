@@ -611,13 +611,19 @@ func renderLayoutBody(ctx context.Context, layout *declarative.Layout, wrapperCo
 // through unmodified when it exactly matches a sentinel, and richtext content
 // renders verbatim with no scheme gate at all. A writer field (or richtext
 // HTML) that happens to contain one of these tokens would otherwise have it
-// silently swapped for the recipient's real per-recipient URL on send — e.g.
-// an <img src> equal to %%UNSUBSCRIBE_URL%% auto-fires an unsubscribe when the
-// recipient's mail client loads the image, with no recipient action.
+// silently swapped on send — e.g. an <img src> equal to %%UNSUBSCRIBE_URL%%
+// auto-fires an unsubscribe when the recipient's mail client loads the image,
+// with no recipient action. The per-recipient URL sentinels are the dangerous
+// case; the send-scope name sentinels (%%SENDER_NAME%%/%%PROJECT_NAME%%) are
+// also globally substituted (substituteSendScope), so they are rejected too for
+// consistency — a whole-value token in a URL field bypasses bindAttrs' scheme
+// gate and would be rewritten after the check.
 var reservedPlaceholders = []string{
 	UnsubscribeURLPlaceholder,
 	ViewOnlineURLPlaceholder,
 	ManageSubscriptionsURLPlaceholder,
+	SenderNamePlaceholder,
+	ProjectNamePlaceholder,
 }
 
 // validateNoReservedPlaceholders rejects a layout whose block content —
