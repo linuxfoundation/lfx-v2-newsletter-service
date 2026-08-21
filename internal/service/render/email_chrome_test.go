@@ -153,3 +153,102 @@ func TestEmailTextMyNewslettersLine(t *testing.T) {
 		t.Fatalf("text body unexpectedly contains My Newsletters line with footer off:\n%s", text)
 	}
 }
+
+const testViewOnlineURL = "https://app.lfx.dev/newsletters/proj-1/nl-1/view"
+
+func TestEmailHTMLViewOnlineLine(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    Chrome
+		wantLine bool
+	}{
+		{
+			name: "footer on with URL renders the line",
+			input: Chrome{
+				Subject:                 "Hello",
+				BodyHTML:                "<p>Body</p>",
+				DisplayName:             "Kubernetes",
+				IncludeComplianceFooter: true,
+				ViewOnlineURL:           testViewOnlineURL,
+			},
+			wantLine: true,
+		},
+		{
+			name: "footer on without URL omits the line",
+			input: Chrome{
+				Subject:                 "Hello",
+				BodyHTML:                "<p>Body</p>",
+				DisplayName:             "Kubernetes",
+				IncludeComplianceFooter: true,
+			},
+			wantLine: false,
+		},
+		{
+			name: "footer off suppresses the line even with URL set",
+			input: Chrome{
+				Subject:       "Hello",
+				BodyHTML:      "<p>Body</p>",
+				DisplayName:   "Kubernetes",
+				ViewOnlineURL: testViewOnlineURL,
+			},
+			wantLine: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			html := EmailHTML(tc.input)
+			hasHref := strings.Contains(html, `href="`+testViewOnlineURL+`"`)
+			hasVerbiage := strings.Contains(html, "Trouble viewing this email?") && strings.Contains(html, "View it online</a>")
+			if tc.wantLine && (!hasHref || !hasVerbiage) {
+				t.Fatalf("HTML missing View Online line:\n%s", html)
+			}
+			if !tc.wantLine && (hasHref || strings.Contains(html, "Trouble viewing this email?")) {
+				t.Fatalf("HTML unexpectedly contains View Online line:\n%s", html)
+			}
+		})
+	}
+}
+
+func TestEmailHTMLViewOnlineURLEscaped(t *testing.T) {
+	html := EmailHTML(Chrome{
+		Subject:                 "Hello",
+		BodyHTML:                "<p>Body</p>",
+		DisplayName:             "Kubernetes",
+		IncludeComplianceFooter: true,
+		ViewOnlineURL:           `https://app.lfx.dev/newsletters/proj-1/nl-1/view?a=1&b="x"`,
+	})
+	if !strings.Contains(html, `href="https://app.lfx.dev/newsletters/proj-1/nl-1/view?a=1&amp;b=&quot;x&quot;"`) {
+		t.Fatalf("View Online URL not HTML-escaped:\n%s", html)
+	}
+}
+
+func TestEmailTextViewOnlineLine(t *testing.T) {
+	wantLine := "Trouble viewing this email? View it online: " + testViewOnlineURL
+
+	withURL := Chrome{
+		Subject:                 "Hello",
+		BodyHTML:                "<p>Body</p>",
+		DisplayName:             "Kubernetes",
+		IncludeComplianceFooter: true,
+		UnsubscribeURL:          "https://api.example/newsletters/unsubscribe?t=tok",
+		ViewOnlineURL:           testViewOnlineURL,
+	}
+	text := EmailText(withURL)
+	if !strings.Contains(text, wantLine) {
+		t.Fatalf("text body missing View Online line:\n%s", text)
+	}
+	if strings.Index(text, wantLine) > strings.Index(text, "Unsubscribe from") {
+		t.Errorf("View Online line should precede the unsubscribe line:\n%s", text)
+	}
+
+	withURL.ViewOnlineURL = ""
+	if text := EmailText(withURL); strings.Contains(text, "Trouble viewing this email?") {
+		t.Fatalf("text body unexpectedly contains View Online line without URL:\n%s", text)
+	}
+
+	withURL.ViewOnlineURL = testViewOnlineURL
+	withURL.IncludeComplianceFooter = false
+	if text := EmailText(withURL); strings.Contains(text, "Trouble viewing this email?") {
+		t.Fatalf("text body unexpectedly contains View Online line with footer off:\n%s", text)
+	}
+}

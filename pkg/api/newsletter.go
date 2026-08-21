@@ -328,6 +328,21 @@ type NewsletterRecipientEngagementResponse struct {
 	Recipients []NewsletterRecipientEngagement `json:"recipients"`
 }
 
+// PublicNewsletterView is the body of
+// GET /projects/{project_uid}/newsletters/{newsletter_uid}/public.
+//
+// This is the anonymous "View Online" shape reachable from the email footer
+// link, so it is narrower than Newsletter: no ed_reply_email, committee_uids,
+// group_id, created_by, or version, none of which a visitor with only the
+// permalink should be able to observe. ProjectName is resolved server-side
+// (the visitor has no session to look it up themselves).
+type PublicNewsletterView struct {
+	Subject     string     `json:"subject"`
+	BodyHTML    string     `json:"body_html"`
+	ProjectName string     `json:"project_name"`
+	SentAt      *time.Time `json:"sent_at,omitempty"`
+}
+
 // OptOut is a single entry in the newsletter opt-outs list.
 type OptOut struct {
 	ID             string    `json:"id"`
