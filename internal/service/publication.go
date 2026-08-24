@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -68,10 +69,15 @@ func (s *PublicationService) CreatePublication(ctx context.Context, in CreatePub
 	if err := validateProjectUID(in.ProjectUID); err != nil {
 		return nil, err
 	}
-	if in.Slug == "" {
+	// Trim before the emptiness check: an untrimmed check lets a whitespace-only
+	// slug or name through, and the slug in particular is permanent once a
+	// per-publication URL is built on it.
+	slug := strings.TrimSpace(in.Slug)
+	if slug == "" {
 		return nil, fmt.Errorf("%w: slug is required", domain.ErrInvalidRequest)
 	}
-	if in.Name == "" {
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
 		return nil, fmt.Errorf("%w: name is required", domain.ErrInvalidRequest)
 	}
 	if in.CreatedBy == "" {
@@ -85,8 +91,8 @@ func (s *PublicationService) CreatePublication(ctx context.Context, in CreatePub
 
 	pub := &model.NewsletterPublication{
 		ProjectUID:     in.ProjectUID,
-		Slug:           in.Slug,
-		Name:           in.Name,
+		Slug:           slug,
+		Name:           name,
 		WrapperContent: wrapperContent,
 		TemplateSetID:  in.TemplateSetID,
 		ViewOnlineBase: in.ViewOnlineBase,
@@ -125,8 +131,16 @@ func (s *PublicationService) UpdatePublication(ctx context.Context, projectUID s
 		return nil, err
 	}
 
+	// Trim and reject rather than assigning the pointer value straight through:
+	// a whitespace-only replacement would otherwise blank the publication's
+	// name, and name is NOT NULL-with-meaning in the UI (it is how a user picks
+	// the publication to compose into).
 	if in.Name != nil {
-		pub.Name = *in.Name
+		name := strings.TrimSpace(*in.Name)
+		if name == "" {
+			return nil, fmt.Errorf("%w: name cannot be empty", domain.ErrInvalidRequest)
+		}
+		pub.Name = name
 	}
 	if in.TemplateSetID != nil {
 		pub.TemplateSetID = in.TemplateSetID

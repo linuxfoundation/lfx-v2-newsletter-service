@@ -257,7 +257,9 @@ func TestGetPublication(t *testing.T) {
 		WrapperContent: []byte("{}"),
 		CreatedBy:      "test-user",
 	}
-	mockRepo.Create(context.Background(), pub)
+	if err := mockRepo.Create(context.Background(), pub); err != nil {
+		t.Fatalf("seed publication: %v", err)
+	}
 
 	h := &Handler{
 		publication: service.NewPublicationService(mockRepo),
@@ -303,8 +305,12 @@ func TestListPublications(t *testing.T) {
 		WrapperContent: []byte("{}"),
 		CreatedBy:      "test-user",
 	}
-	mockRepo.Create(context.Background(), pub1)
-	mockRepo.Create(context.Background(), pub2)
+	if err := mockRepo.Create(context.Background(), pub1); err != nil {
+		t.Fatalf("seed publication: %v", err)
+	}
+	if err := mockRepo.Create(context.Background(), pub2); err != nil {
+		t.Fatalf("seed publication: %v", err)
+	}
 
 	h := &Handler{
 		publication: service.NewPublicationService(mockRepo),
@@ -340,7 +346,9 @@ func TestUpdatePublication(t *testing.T) {
 		WrapperContent: []byte("{}"),
 		CreatedBy:      "test-user",
 	}
-	mockRepo.Create(context.Background(), pub)
+	if err := mockRepo.Create(context.Background(), pub); err != nil {
+		t.Fatalf("seed publication: %v", err)
+	}
 
 	h := &Handler{
 		publication: service.NewPublicationService(mockRepo),

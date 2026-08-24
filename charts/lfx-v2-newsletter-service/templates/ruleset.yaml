@@ -99,12 +99,19 @@ spec:
 
     # ---------------------------------------------------------------------
     # Newsletter publication CRUD (project-scoped). A publication is the
-    # two-level parent of many newsletter editions (LFXV2-2582). Same FGA
-    # posture as the newsletter rules above: `project:{project_uid}` from the
-    # URL, writes require `writer`, reads require `viewer`, allow_all fallback
-    # when openfga is disabled. Editions of a publication are read via the flat
-    # newsletter list filtered by `?publication_id=` (the newsletters:list rule),
-    # so there is no dedicated editions rule here.
+    # two-level parent of many newsletter editions (LFXV2-2582).
+    # `project:{project_uid}` from the URL, allow_all fallback when openfga is
+    # disabled. Writes require `writer`; reads require `auditor`, NOT `viewer`.
+    # Per Eric's architecture review: on an active project every user, including
+    # anonymous, holds `viewer`, so a `viewer` read would expose publication
+    # management data — drafts, recipient counts, analytics — to anyone. The
+    # existing newsletter read rules above still use `viewer` and should move to
+    # `auditor` for the same reason; that is a pre-existing exposure this change
+    # deliberately does not widen, tracked separately so it can be rolled out
+    # with the relation grants it needs.
+    # Editions of a publication are read via the flat newsletter list filtered
+    # by `?publication_id=` (the newsletters:list rule), so there is no
+    # dedicated editions rule here.
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletter-publications:create"
       allow_encoded_slashes: 'off'
@@ -150,7 +157,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: viewer
+              relation: auditor
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -177,7 +184,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: viewer
+              relation: auditor
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
