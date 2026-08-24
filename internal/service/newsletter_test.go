@@ -574,6 +574,49 @@ func TestUpdateDraft_ExplicitNullLayout_ClearsToHTMLOnly(t *testing.T) {
 	}
 }
 
+// TestUpdateDraft_ExplicitNullLayout_EmptyBody_ClearsToEmpty pins the discard
+// contract: clearing an existing layout draft back to the basic editor with no
+// replacement body yet (explicit "body_layout": null AND an empty body_html) is
+// allowed and persists as an empty html-only draft. Rejecting it would strand
+// the stored layout and silently revert the switch on reload. A create still
+// requires a body; only this existing-draft clear is exempt.
+func TestUpdateDraft_ExplicitNullLayout_EmptyBody_ClearsToEmpty(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, true)
+
+	created, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "June news",
+		BodyLayout:    introLayout("layout content"),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+
+	updated, err := svc.UpdateDraft(context.Background(), "p1", UpdateDraftInput{
+		ID:              created.ID,
+		ExpectedVersion: created.Version,
+		Subject:         "June news",
+		BodyHTML:        "",
+		BodyLayoutSet:   true,
+		BodyLayout:      nil,
+		EDReplyEmail:    "ed@example.com",
+		CommitteeUIDs:   []string{"c1"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateDraft clearing to empty should succeed, got: %v", err)
+	}
+	if len(updated.BodyLayout) != 0 {
+		t.Errorf("expected BodyLayout cleared, got %s", updated.BodyLayout)
+	}
+	if updated.BodyHTML != "" {
+		t.Errorf("expected empty body_html, got %q", updated.BodyHTML)
+	}
+}
+
 // TestCreateDraft_OversizedDerivedHTML_Is422 pins the status-code contract:
 // an oversized DERIVED (layout-rendered) document is 422 unprocessable, the
 // same classification render-preview gives the identical output — not a 400

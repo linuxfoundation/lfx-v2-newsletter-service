@@ -349,7 +349,16 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 		// newsletter, taking body_html from the request. This is the documented
 		// escape hatch back from the layout path (bodyLayout stays nil, which
 		// the repository persists as SQL NULL).
-		if validateErr := validateBodyHTML(in.BodyHTML); validateErr != nil {
+		//
+		// An EMPTY body is allowed here: switching an existing draft from the
+		// block editor back to the basic editor clears the layout with no
+		// replacement body yet, a deliberate discard the author must be able to
+		// persist. Rejecting it would strand the old layout and silently revert
+		// the switch on reload. The send path still requires content, so an
+		// emptied draft saves but cannot send. A non-empty body is still
+		// length-checked. This mirrors an empty (blocks: []) layout, which the
+		// non-null branch above already persists.
+		if validateErr := validateOptionalBodyHTML(in.BodyHTML); validateErr != nil {
 			return nil, validateErr
 		}
 	case len(existing.BodyLayout) > 0:
@@ -452,6 +461,21 @@ func validateDerivedBodyHTML(html string) error {
 func validateBodyHTML(bodyHTML string) error {
 	if strings.TrimSpace(bodyHTML) == "" {
 		return fmt.Errorf("%w: body_html is required", domain.ErrInvalidRequest)
+	}
+	if len(bodyHTML) > maxBodyHTMLLength {
+		return fmt.Errorf("%w: body_html exceeds %d characters", domain.ErrInvalidRequest, maxBodyHTMLLength)
+	}
+	return nil
+}
+
+// validateOptionalBodyHTML permits an empty body — used when clearing an
+// existing draft's layout back to html-only with no replacement body yet — but
+// still enforces the length ceiling when a body is present. Distinct from
+// validateBodyHTML, which requires a non-empty body (create and the legacy
+// html-only update path).
+func validateOptionalBodyHTML(bodyHTML string) error {
+	if strings.TrimSpace(bodyHTML) == "" {
+		return nil
 	}
 	if len(bodyHTML) > maxBodyHTMLLength {
 		return fmt.Errorf("%w: body_html exceeds %d characters", domain.ErrInvalidRequest, maxBodyHTMLLength)
