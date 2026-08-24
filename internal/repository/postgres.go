@@ -212,6 +212,11 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		// Full replace: an omitted/null scheduled_at clears it, consistent with
 		// every other field here (LFXV2-2685).
 		Set("scheduled_at = ?", n.ScheduledAt).
+		// Full replace, same rationale (LFXV2-2506): switching back to 'global'
+		// clears target_local/default_timezone.
+		Set("delivery_strategy = ?", n.DeliveryStrategy).
+		Set("target_local = ?", n.TargetLocal).
+		Set("default_timezone = ?", n.DefaultTimezone).
 		Set("updated_at = now()").
 		Set("version = version + 1").
 		Where("id = ? AND version = ?", n.ID, expectedVersion).
@@ -775,6 +780,74 @@ func (r *PostgresNewsletterRepo) DeleteUnsubscribe(ctx context.Context, projectU
 	}
 	if rows == 0 {
 		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// UpsertRecipientTimezone records or overwrites the timezone on file for
+// (projectUID, email) (LFXV2-2506). Email is normalized to lowercase, mirroring
+// CreateUnsubscribe, so lookups at fan-out time match regardless of case.
+func (r *PostgresNewsletterRepo) UpsertRecipientTimezone(ctx context.Context, projectUID, email, timezone, source string) error {
+	row := &model.RecipientTimezone{
+		ProjectUID: projectUID,
+		Email:      strings.ToLower(strings.TrimSpace(email)),
+		Timezone:   timezone,
+		Source:     source,
+	}
+	if _, err := r.db.NewInsert().
+		Model(row).
+		On("CONFLICT (project_uid, email) DO UPDATE").
+		Set("timezone = EXCLUDED.timezone").
+		Set("source = EXCLUDED.source").
+		Set("captured_at = now()").
+		Exec(ctx); err != nil {
+		return fmt.Errorf("upsert recipient timezone: %w", err)
+	}
+	return nil
+}
+
+// GetRecipientTimezones returns the timezone on file for every email in emails
+// that has one, keyed by lowercased email (LFXV2-2506). Absent from the map
+// means no record — the caller applies its own fallback chain.
+func (r *PostgresNewsletterRepo) GetRecipientTimezones(ctx context.Context, projectUID string, emails []string) (map[string]string, error) {
+	out := make(map[string]string, len(emails))
+	if len(emails) == 0 {
+		return out, nil
+	}
+	normalized := make([]string, len(emails))
+	for i, e := range emails {
+		normalized[i] = strings.ToLower(strings.TrimSpace(e))
+	}
+	var rows []*model.RecipientTimezone
+	err := r.db.NewSelect().
+		Model(&rows).
+		Where("project_uid = ? AND email IN (?)", projectUID, bun.In(normalized)).
+		Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get recipient timezones: %w", err)
+	}
+	for _, row := range rows {
+		out[row.Email] = row.Timezone
+	}
+	return out, nil
+}
+
+// RecordSendRecipient inserts one per-recipient audit row after a successful
+// tz_local dispatch (LFXV2-2506). Not used to drive delivery.
+func (r *PostgresNewsletterRepo) RecordSendRecipient(ctx context.Context, newsletterID uuid.UUID, email, timezone string, sendAt time.Time) error {
+	row := &model.SendRecipient{
+		NewsletterID: newsletterID,
+		Email:        strings.ToLower(strings.TrimSpace(email)),
+		Timezone:     timezone,
+		SendAt:       sendAt,
+	}
+	if _, err := r.db.NewInsert().
+		Model(row).
+		On("CONFLICT (newsletter_id, email) DO UPDATE").
+		Set("timezone = EXCLUDED.timezone").
+		Set("send_at = EXCLUDED.send_at").
+		Exec(ctx); err != nil {
+		return fmt.Errorf("record send recipient: %w", err)
 	}
 	return nil
 }

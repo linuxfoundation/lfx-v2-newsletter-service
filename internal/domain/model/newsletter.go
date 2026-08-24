@@ -44,6 +44,29 @@ const (
 	SendProviderSendGrid = "sendgrid"
 )
 
+// DeliveryStrategy values persisted in newsletters.delivery_strategy
+// (LFXV2-2506). Mirrored by the schema CHECK constraint.
+const (
+	// DeliveryStrategyGlobal releases every recipient at the same
+	// operator-chosen ScheduledAt. This is the default and the value
+	// backfilled onto every pre-tz_local row.
+	DeliveryStrategyGlobal = "global"
+	// DeliveryStrategyTZLocal releases each recipient at TargetLocal on the
+	// schedule date, resolved in that recipient's own timezone (falling back
+	// to DefaultTimezone, then UTC), clamped so no recipient is released
+	// before ScheduledAt. Requires TargetLocal and DefaultTimezone to be set.
+	DeliveryStrategyTZLocal = "tz_local"
+)
+
+// RecipientTimezoneSource values persisted in
+// newsletter_recipient_timezones.source. Mirrored by the schema CHECK
+// constraint.
+const (
+	RecipientTimezoneSourceEnrichment    = "enrichment"
+	RecipientTimezoneSourceIPGeolocation = "ip_geolocation"
+	RecipientTimezoneSourceBrowser       = "browser"
+)
+
 // Newsletter is the aggregate root persisted in the newsletters table.
 //
 // Project_uid is the only scope dimension — foundation-scoped newsletters are
@@ -82,11 +105,55 @@ type Newsletter struct {
 	// armed (SendGrid POST /v3/mail/batch). Every recipient in the fan-out
 	// carries the same BatchID and ScheduledAt so the provider releases them
 	// together, and it is what makes the batch cancellable.
-	BatchID   *string   `bun:"batch_id" json:"-"`
-	CreatedBy string    `bun:"created_by,notnull" json:"createdBy"`
-	Version   int64     `bun:"version,notnull,default:1" json:"version"`
-	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
-	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
+	BatchID *string `bun:"batch_id" json:"-"`
+	// DeliveryStrategy selects how the release time is computed per
+	// recipient at fan-out time (LFXV2-2506). See DeliveryStrategyGlobal /
+	// DeliveryStrategyTZLocal. Defaults to 'global'.
+	DeliveryStrategy string `bun:"delivery_strategy,notnull,default:'global'" json:"deliveryStrategy"`
+	// TargetLocal is the HH:MM wall-clock release time on the schedule date,
+	// resolved per recipient in their own timezone. Required when
+	// DeliveryStrategy is tz_local, otherwise nil.
+	TargetLocal *string `bun:"target_local" json:"targetLocal,omitempty"`
+	// DefaultTimezone is the IANA timezone used as a fallback release
+	// timezone when a recipient has no timezone on file in
+	// newsletter_recipient_timezones. Required when DeliveryStrategy is
+	// tz_local, otherwise nil.
+	DefaultTimezone *string   `bun:"default_timezone" json:"defaultTimezone,omitempty"`
+	CreatedBy       string    `bun:"created_by,notnull" json:"createdBy"`
+	Version         int64     `bun:"version,notnull,default:1" json:"version"`
+	CreatedAt       time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
+	UpdatedAt       time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
+}
+
+// RecipientTimezone is this service's own record of a recipient's timezone,
+// scoped per (project_uid, email) rather than per newsletter — a recipient's
+// timezone is a property of the person, not of any one send (LFXV2-2506,
+// Option B: self-contained to this service, no committee-service/auth-service
+// contract change).
+type RecipientTimezone struct {
+	bun.BaseModel `bun:"table:newsletter_recipient_timezones,alias:rtz"`
+
+	ProjectUID string    `bun:"project_uid,pk" json:"projectUid"`
+	Email      string    `bun:"email,pk" json:"email"`
+	Timezone   string    `bun:"timezone,notnull" json:"timezone"`
+	Source     string    `bun:"source,notnull" json:"source"`
+	CapturedAt time.Time `bun:"captured_at,notnull,default:current_timestamp" json:"capturedAt"`
+}
+
+// SendRecipient is a per-send audit trail row recording the timezone and
+// resolved send_at actually used for one recipient of a tz_local send
+// (LFXV2-2506). Written by the fan-out immediately after a successful
+// per-recipient dispatch. It does not drive delivery — the provider owns the
+// actual release timing — it exists purely for support/debugging visibility.
+type SendRecipient struct {
+	bun.BaseModel `bun:"table:newsletter_send_recipients,alias:sr"`
+
+	ID           uuid.UUID `bun:"id,pk,type:uuid,default:gen_random_uuid()" json:"id"`
+	NewsletterID uuid.UUID `bun:"newsletter_id,notnull,type:uuid" json:"newsletterId"`
+	Email        string    `bun:"email,notnull" json:"email"`
+	Timezone     string    `bun:"timezone,notnull" json:"timezone"`
+	SendAt       time.Time `bun:"send_at,notnull" json:"sendAt"`
+	CreatedAt    time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
 }
 
 // NewsletterOpen records a single open event for a sent newsletter.
