@@ -32,7 +32,7 @@ func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
 		user = "anonymous"
 	}
 
-	publicationID, err := parseRequiredPublicationID(body.PublicationID)
+	publicationID, err := parseOptionalPublicationID(body.PublicationID)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
@@ -169,10 +169,11 @@ func parseUUID(raw string) (uuid.UUID, error) {
 	return id, nil
 }
 
-// parseOptionalPublicationID parses a publication_id used as a LIST FILTER
-// (the ?publication_id= query parameter), where absent legitimately means "do
-// not filter". It is not used for create or update, where the field identifies
-// the edition's owning publication and is required.
+// parseOptionalPublicationID parses an optional publication_id, used both by
+// create (where absent means the edition is left unfiled) and by the
+// ?publication_id= list filter (where absent means "do not filter"). A
+// non-empty malformed value is a client error rather than being silently
+// dropped.
 func parseOptionalPublicationID(raw *string) (*uuid.UUID, error) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return nil, nil
@@ -184,43 +185,29 @@ func parseOptionalPublicationID(raw *string) (*uuid.UUID, error) {
 	return &id, nil
 }
 
-// parseRequiredPublicationID converts the create request's publication_id into
-// a *uuid.UUID. An edition is always composed inside a publication, so an
-// absent, null, or empty value is a client error rather than an implicit
-// "attach to the project default" — a project is not given a default
-// publication automatically; publications are created explicitly.
-func parseRequiredPublicationID(raw *string) (*uuid.UUID, error) {
-	if raw == nil || strings.TrimSpace(*raw) == "" {
-		return nil, fmt.Errorf("%w: publication_id is required: create the publication first, then compose the edition inside it", domain.ErrInvalidRequest)
-	}
-	id, err := uuid.Parse(strings.TrimSpace(*raw))
-	if err != nil {
-		return nil, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err)
-	}
-	return &id, nil
-}
-
 // parseUpdatePublicationID decodes the update request's publication_id, which
-// is a raw message so the three JSON states stay distinguishable. set is false
-// only when the caller omitted the field, which tells the service to preserve
-// the edition's current publication. An explicit null or empty string is
-// rejected: an edition cannot be unfiled once it belongs to a publication.
+// is a raw message so the three JSON states stay distinguishable:
 //
-// A plain *string would collapse "absent" and "null" into nil, so a client
-// PUTting without the key would silently unlink the edition.
+//	field absent      -> set=false, preserve the edition's current publication
+//	explicit null/""  -> set=true with a nil id, unfile the edition
+//	"<uuid>"          -> set=true with that id, move the edition
+//
+// A plain *string collapses "absent" and "null" into nil, so a client PUTting
+// without the key would silently unlink the edition. Every other field on this
+// request is full-replace, which is why the distinction has to be explicit.
 func parseUpdatePublicationID(raw *json.RawMessage) (*uuid.UUID, bool, error) {
 	if raw == nil {
 		return nil, false, nil
 	}
 	if strings.TrimSpace(string(*raw)) == "null" {
-		return nil, true, fmt.Errorf("%w: publication_id cannot be null: an edition must belong to a publication", domain.ErrInvalidRequest)
+		return nil, true, nil
 	}
 	var s string
 	if err := json.Unmarshal(*raw, &s); err != nil {
 		return nil, true, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err)
 	}
 	if strings.TrimSpace(s) == "" {
-		return nil, true, fmt.Errorf("%w: publication_id cannot be empty: an edition must belong to a publication", domain.ErrInvalidRequest)
+		return nil, true, nil
 	}
 	id, err := uuid.Parse(strings.TrimSpace(s))
 	if err != nil {

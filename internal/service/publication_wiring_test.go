@@ -84,14 +84,16 @@ func TestCreateDraftPublicationIDWiring(t *testing.T) {
 		}
 	})
 
-	// An edition is always composed inside a publication, so an absent
-	// publication_id is a client error rather than an implicit attach to a
-	// project default — a project is not given a default publication
-	// automatically. This is the create-side counterpart of the update-side
-	// preserve-on-omit behavior.
-	t.Run("nil publication_id is rejected", func(t *testing.T) {
-		if _, err := svc.CreateDraft(context.Background(), base); !errors.Is(err, domain.ErrInvalidRequest) {
-			t.Fatalf("want ErrInvalidRequest for missing publication_id, got %v", err)
+	// Unfiled is a valid resting state: a project is not given a default
+	// publication automatically, and server-initiated editions (the weekly
+	// brief) have no publication to pick.
+	t.Run("nil publication_id leaves the edition unfiled", func(t *testing.T) {
+		draft, err := svc.CreateDraft(context.Background(), base)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if draft.PublicationID != nil {
+			t.Fatalf("expected unfiled edition, got %v", draft.PublicationID)
 		}
 	})
 }

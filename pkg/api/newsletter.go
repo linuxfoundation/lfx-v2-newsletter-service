@@ -71,10 +71,10 @@ type CreateNewsletterRequest struct {
 	// save time — arming the schedule (72h horizon, minimum lead) is
 	// validated separately by POST .../schedule.
 	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
-	// PublicationID is REQUIRED: an edition is always composed inside a
-	// publication. Omitting it (or sending null/empty) is a 400. The service
-	// does not resolve an omitted value to a project default — publications are
-	// created explicitly, and a project is not given one automatically.
+	// PublicationID optionally files the edition under a publication. Omitting
+	// it leaves the edition unfiled, which is valid: publications are created
+	// explicitly, a project is not given a default one, and server-initiated
+	// editions (the weekly brief) have no publication to pick.
 	PublicationID *string `json:"publication_id,omitempty"`
 }
 
@@ -93,11 +93,11 @@ type UpdateNewsletterRequest struct {
 	// *string collapses into one:
 	//
 	//	field absent      -> preserve the edition's current publication
-	//	explicit null/""  -> 400 (an edition cannot be unfiled)
+	//	explicit null/""  -> unfile the edition
 	//	"<uuid>"          -> move the edition to that publication
 	//
 	// With a *string, an absent field and an explicit null are both nil, so a
-	// client that PUTs without the key would silently unlink the edition.
+	// client that PUTs without the key would silently unfile the edition.
 	PublicationID *json.RawMessage `json:"publication_id,omitempty"`
 }
 
