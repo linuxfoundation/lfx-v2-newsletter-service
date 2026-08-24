@@ -6,7 +6,10 @@
 // the rest of the V2 services (committee, project, meeting).
 package api
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Status enumerates newsletter lifecycle states.
 type Status string
@@ -67,8 +70,12 @@ type CreateNewsletterRequest struct {
 	// ScheduledAt is optional. When set, only a future time is required at
 	// save time — arming the schedule (72h horizon, minimum lead) is
 	// validated separately by POST .../schedule.
-	ScheduledAt   *time.Time `json:"scheduled_at,omitempty"`
-	PublicationID *string    `json:"publication_id,omitempty"`
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+	// PublicationID is REQUIRED: an edition is always composed inside a
+	// publication. Omitting it (or sending null/empty) is a 400. The service
+	// does not resolve an omitted value to a project default — publications are
+	// created explicitly, and a project is not given one automatically.
+	PublicationID *string `json:"publication_id,omitempty"`
 }
 
 // UpdateNewsletterRequest is the body of PUT /projects/{project_uid}/newsletters/{newsletter_uid}.
@@ -81,7 +88,17 @@ type UpdateNewsletterRequest struct {
 	EDReplyEmail  string     `json:"ed_reply_email"`
 	CommitteeUIDs []string   `json:"committee_uids"`
 	ScheduledAt   *time.Time `json:"scheduled_at,omitempty"`
-	PublicationID *string    `json:"publication_id,omitempty"`
+	// PublicationID is deliberately NOT full-replace, unlike the fields above.
+	// It is a raw message so the handler can tell three states apart that a
+	// *string collapses into one:
+	//
+	//	field absent      -> preserve the edition's current publication
+	//	explicit null/""  -> 400 (an edition cannot be unfiled)
+	//	"<uuid>"          -> move the edition to that publication
+	//
+	// With a *string, an absent field and an explicit null are both nil, so a
+	// client that PUTs without the key would silently unlink the edition.
+	PublicationID *json.RawMessage `json:"publication_id,omitempty"`
 }
 
 // RecipientCountRequest is the body of POST /projects/{project_uid}/newsletters/recipient-count.

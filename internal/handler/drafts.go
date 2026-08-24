@@ -4,6 +4,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -31,7 +32,7 @@ func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
 		user = "anonymous"
 	}
 
-	publicationID, err := parseOptionalPublicationID(body.PublicationID)
+	publicationID, err := parseRequiredPublicationID(body.PublicationID)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
@@ -97,21 +98,22 @@ func (h *Handler) UpdateNewsletter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	publicationID, err := parseOptionalPublicationID(body.PublicationID)
+	publicationID, publicationIDSet, err := parseUpdatePublicationID(body.PublicationID)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
 
 	updated, err := h.newsletter.UpdateDraft(r.Context(), projectUID, service.UpdateDraftInput{
-		ID:              id,
-		ExpectedVersion: expectedVersion,
-		Subject:         body.Subject,
-		BodyHTML:        body.BodyHTML,
-		EDReplyEmail:    body.EDReplyEmail,
-		CommitteeUIDs:   body.CommitteeUIDs,
-		ScheduledAt:     body.ScheduledAt,
-		PublicationID:   publicationID,
+		ID:               id,
+		ExpectedVersion:  expectedVersion,
+		Subject:          body.Subject,
+		BodyHTML:         body.BodyHTML,
+		EDReplyEmail:     body.EDReplyEmail,
+		CommitteeUIDs:    body.CommitteeUIDs,
+		ScheduledAt:      body.ScheduledAt,
+		PublicationID:    publicationID,
+		PublicationIDSet: publicationIDSet,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -167,18 +169,64 @@ func parseUUID(raw string) (uuid.UUID, error) {
 	return id, nil
 }
 
-// parseOptionalPublicationID converts the API's optional string publication_id
-// into a *uuid.UUID. Nil or empty means "unset"; a non-empty malformed value is
-// a client error, surfaced as 400 rather than being silently dropped.
+// parseOptionalPublicationID parses a publication_id used as a LIST FILTER
+// (the ?publication_id= query parameter), where absent legitimately means "do
+// not filter". It is not used for create or update, where the field identifies
+// the edition's owning publication and is required.
 func parseOptionalPublicationID(raw *string) (*uuid.UUID, error) {
-	if raw == nil || *raw == "" {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return nil, nil
 	}
-	id, err := uuid.Parse(*raw)
+	id, err := uuid.Parse(strings.TrimSpace(*raw))
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err)
 	}
 	return &id, nil
+}
+
+// parseRequiredPublicationID converts the create request's publication_id into
+// a *uuid.UUID. An edition is always composed inside a publication, so an
+// absent, null, or empty value is a client error rather than an implicit
+// "attach to the project default" — a project is not given a default
+// publication automatically; publications are created explicitly.
+func parseRequiredPublicationID(raw *string) (*uuid.UUID, error) {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return nil, fmt.Errorf("%w: publication_id is required: create the publication first, then compose the edition inside it", domain.ErrInvalidRequest)
+	}
+	id, err := uuid.Parse(strings.TrimSpace(*raw))
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err)
+	}
+	return &id, nil
+}
+
+// parseUpdatePublicationID decodes the update request's publication_id, which
+// is a raw message so the three JSON states stay distinguishable. set is false
+// only when the caller omitted the field, which tells the service to preserve
+// the edition's current publication. An explicit null or empty string is
+// rejected: an edition cannot be unfiled once it belongs to a publication.
+//
+// A plain *string would collapse "absent" and "null" into nil, so a client
+// PUTting without the key would silently unlink the edition.
+func parseUpdatePublicationID(raw *json.RawMessage) (*uuid.UUID, bool, error) {
+	if raw == nil {
+		return nil, false, nil
+	}
+	if strings.TrimSpace(string(*raw)) == "null" {
+		return nil, true, fmt.Errorf("%w: publication_id cannot be null: an edition must belong to a publication", domain.ErrInvalidRequest)
+	}
+	var s string
+	if err := json.Unmarshal(*raw, &s); err != nil {
+		return nil, true, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err)
+	}
+	if strings.TrimSpace(s) == "" {
+		return nil, true, fmt.Errorf("%w: publication_id cannot be empty: an edition must belong to a publication", domain.ErrInvalidRequest)
+	}
+	id, err := uuid.Parse(strings.TrimSpace(s))
+	if err != nil {
+		return nil, true, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err)
+	}
+	return &id, true, nil
 }
 
 // toAPINewsletter converts a domain model into the public API DTO.

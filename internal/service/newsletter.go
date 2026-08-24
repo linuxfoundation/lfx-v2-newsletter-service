@@ -49,10 +49,10 @@ func NewNewsletterService(repo port.NewsletterRepository, pubRepo port.Publicati
 	return &NewsletterService{repo: repo, pubRepo: pubRepo}
 }
 
-// validatePublicationID confirms an optional publication_id resolves to a
-// publication in the same project, so an edition can never be linked to another
-// project's publication (or a nonexistent one). Nil is valid — the edition is
-// left unlinked and later backfilled to the project default.
+// validatePublicationID confirms a publication_id resolves to a publication in
+// the same project, so an edition can never be linked to another project's
+// publication (or a nonexistent one). A nil id is skipped here; requiring it is
+// enforced by the callers, which know whether the field was supplied.
 func (s *NewsletterService) validatePublicationID(ctx context.Context, projectUID string, publicationID *uuid.UUID) error {
 	if publicationID == nil {
 		return nil
@@ -79,8 +79,9 @@ type CreateDraftInput struct {
 	CreatedBy     string
 	// ScheduledAt is optional save-time intent — see validateScheduledAtSave.
 	ScheduledAt *time.Time
-	// PublicationID optionally links the new edition to a publication in the
-	// same project. Nil leaves it unlinked (backfilled to the project default).
+	// PublicationID is required: an edition is always composed inside a
+	// publication in the same project. There is no resolve-to-default fallback,
+	// because a project is not given a publication automatically.
 	PublicationID *uuid.UUID
 }
 
@@ -95,8 +96,14 @@ type UpdateDraftInput struct {
 	// ScheduledAt is full-replace like every other field here: nil clears a
 	// previously-saved schedule.
 	ScheduledAt *time.Time
-	// PublicationID is full-replace: nil unlinks the edition from its publication.
+	// PublicationID moves the edition to another publication in the same
+	// project. It is applied only when PublicationIDSet is true.
 	PublicationID *uuid.UUID
+	// PublicationIDSet reports whether the caller supplied publication_id at
+	// all. When false the edition keeps its current publication. Without this
+	// flag an update that omits the field would unlink the edition, because
+	// every other field on this input is full-replace.
+	PublicationIDSet bool
 }
 
 // CreateDraft validates the input and inserts a new draft row.
@@ -121,6 +128,12 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	}
 	if err := validateScheduledAtSave(in.ScheduledAt); err != nil {
 		return nil, err
+	}
+	// Required, not optional: an edition belongs to a publication from the
+	// moment it is created. The handler rejects an absent field first; this
+	// guards non-HTTP callers.
+	if in.PublicationID == nil {
+		return nil, fmt.Errorf("%w: publication_id is required", domain.ErrInvalidRequest)
 	}
 	if err := s.validatePublicationID(ctx, in.ProjectUID, in.PublicationID); err != nil {
 		return nil, err
@@ -332,7 +345,11 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	existing.EDReplyEmail = strings.TrimSpace(in.EDReplyEmail)
 	existing.CommitteeUIDs = normalizeCommitteeUIDs(in.CommitteeUIDs)
 	existing.ScheduledAt = in.ScheduledAt
-	existing.PublicationID = in.PublicationID
+	// Only move the edition when the caller actually supplied publication_id.
+	// An omitted field preserves the current publication.
+	if in.PublicationIDSet {
+		existing.PublicationID = in.PublicationID
+	}
 
 	return s.repo.Update(ctx, existing, in.ExpectedVersion)
 }

@@ -476,6 +476,22 @@ CREATE INDEX IF NOT EXISTS idx_newsletters_publication ON newsletters (publicati
 CREATE INDEX IF NOT EXISTS idx_newsletters_publication_list
     ON newsletters (project_uid, publication_id, updated_at DESC, id DESC);
 
+-- Backfill: give every project a default publication and attach its existing
+-- editions to it.
+--
+-- NOTE: this attaches all of a project's editions to a single default
+-- publication. It does NOT group them by the subscriber group each send
+-- targeted. A project that ran two distinct audiences therefore backfills into
+-- one publication and must be split by hand before that project relies on
+-- per-publication wrapper, branding, or per-list unsubscribe.
+--
+-- ON CONFLICT targets (project_uid, slug) and PROMOTES the conflicting row
+-- rather than doing nothing. Without a target, a pre-existing NON-default row
+-- already holding slug = 'default' would silently swallow the insert, leaving
+-- the project with no default publication and its editions unattached forever.
+-- Promotion is safe here because the WHERE NOT EXISTS above means we only reach
+-- the insert when the project has no default at all, so setting is_default on
+-- this row cannot collide with uq_publications_one_default_per_project.
 INSERT INTO newsletter_publications (project_uid, slug, name, is_default, created_by)
 SELECT DISTINCT n.project_uid, 'default', 'Newsletter', true, 'system-backfill'
 FROM newsletters n
@@ -483,7 +499,17 @@ WHERE NOT EXISTS (
     SELECT 1 FROM newsletter_publications p
     WHERE p.project_uid = n.project_uid AND p.is_default
 )
-ON CONFLICT DO NOTHING;
+ON CONFLICT (project_uid, slug) DO UPDATE SET is_default = true;
+
+-- The attach step below is an UPDATE on `newsletters`, so it fires
+-- trg_reject_armed_scheduled_mutation for every row that has an armed schedule
+-- (batch_id IS NOT NULL). That trigger exists to stop a LEGACY pod mutating an
+-- armed row mid-rollout; it is not meant to block this backfill, which only
+-- populates the new publication_id column and touches no scheduling state.
+-- Without this authorization the whole schema transaction aborts and the
+-- service fails to start on any database holding an armed scheduled send.
+-- SET LOCAL scopes the flag to the schema-application transaction.
+SET LOCAL app.allow_armed_mutation = 'true';
 
 UPDATE newsletters n
 SET publication_id = p.id
@@ -491,3 +517,5 @@ FROM newsletter_publications p
 WHERE n.publication_id IS NULL
   AND p.project_uid = n.project_uid
   AND p.is_default;
+
+SET LOCAL app.allow_armed_mutation = 'false';
