@@ -6,6 +6,7 @@ package render
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestStripHTMLForTextDropsHeadStyleScript asserts the layout text/plain
@@ -214,5 +215,30 @@ func TestEmailTextMyNewslettersLine(t *testing.T) {
 	withURL.IncludeComplianceFooter = false
 	if text := EmailText(withURL); strings.Contains(text, "Missed an issue?") {
 		t.Fatalf("text body unexpectedly contains My Newsletters line with footer off:\n%s", text)
+	}
+}
+
+// TestEmailHTMLForcesUTF8Charset guards the charset fix for Gmail's "[Message
+// clipped]" trailer (the charset cause, independent of the ~102KB size cause).
+// In SendGrid testing an all-ASCII/Latin-1 newsletter was transmitted as
+// charset=iso-8859-1 and Gmail clipped it. EmailHTML injects a hidden zero-width
+// non-joiner (U+200C), which is unrepresentable in single-byte charsets, so the
+// rendered document must be encoded as UTF-8. This test fails if the guard is
+// removed. See linuxfoundation/lfx-self-serve#1744.
+func TestEmailHTMLForcesUTF8Charset(t *testing.T) {
+	// A newsletter whose subject, display name and body are entirely ASCII.
+	// Without the guard the rendered HTML would be pure ASCII on the wire.
+	html := EmailHTML(Chrome{
+		Subject:     "Weekly update",
+		BodyHTML:    "<p>All ASCII content here.</p>",
+		DisplayName: "Kubernetes",
+	})
+	if !strings.ContainsRune(html, '\u200c') {
+		t.Fatalf("rendered HTML missing the U+200C charset guard:\n%s", html)
+	}
+	// The guard's purpose is a non-ASCII byte stream so the provider encodes
+	// UTF-8. RuneCount < byte length holds iff at least one multibyte rune exists.
+	if utf8.RuneCountInString(html) == len(html) {
+		t.Errorf("rendered HTML is single-byte throughout (would be sent as iso-8859-1); expected a multibyte rune")
 	}
 }
