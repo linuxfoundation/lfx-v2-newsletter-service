@@ -7,6 +7,8 @@ package repository
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/schema"
 )
 
@@ -159,13 +162,90 @@ func TestPublicationList(t *testing.T) {
 		}
 	}
 
-	list, err := repo.List(context.Background(), "project-1")
+	page, err := repo.List(context.Background(), port.PublicationListFilters{ProjectUID: "project-1"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 
-	if len(list) != 2 {
-		t.Errorf("List length: got %d, want 2", len(list))
+	if len(page.Publications) != 2 {
+		t.Errorf("List length: got %d, want 2", len(page.Publications))
+	}
+	if page.NextPageToken != "" {
+		t.Errorf("NextPageToken should be empty when the page is not full, got %q", page.NextPageToken)
+	}
+}
+
+// TestPublicationListPagination walks every page of a project's publications
+// and proves the keyset cursor returns each row exactly once. A project's
+// publication count is unbounded, so an unpaginated List would scan the whole
+// table (including each row's wrapper_content JSONB).
+func TestPublicationListPagination(t *testing.T) {
+	repo := newPublicationIntegrationRepo(t)
+
+	const total = 7
+	const pageSize = 3
+	for i := range total {
+		pub := &model.NewsletterPublication{
+			ProjectUID:     "project-page",
+			Slug:           fmt.Sprintf("pub-%d", i),
+			Name:           fmt.Sprintf("Pub %d", i),
+			WrapperContent: []byte("{}"),
+			CreatedBy:      "user",
+		}
+		if err := repo.Create(context.Background(), pub); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	}
+
+	seen := map[uuid.UUID]int{}
+	token := ""
+	pages := 0
+	for {
+		page, err := repo.List(context.Background(), port.PublicationListFilters{
+			ProjectUID: "project-page",
+			PageToken:  token,
+			Limit:      pageSize,
+		})
+		if err != nil {
+			t.Fatalf("List page %d: %v", pages, err)
+		}
+		pages++
+		if len(page.Publications) > pageSize {
+			t.Fatalf("page %d returned %d rows, over the %d limit", pages, len(page.Publications), pageSize)
+		}
+		for _, pub := range page.Publications {
+			seen[pub.ID]++
+		}
+		if page.NextPageToken == "" {
+			break
+		}
+		token = page.NextPageToken
+		if pages > total {
+			t.Fatal("pagination did not terminate — the cursor is not advancing")
+		}
+	}
+
+	if len(seen) != total {
+		t.Errorf("saw %d distinct publications across %d pages, want %d", len(seen), pages, total)
+	}
+	for id, count := range seen {
+		if count != 1 {
+			t.Errorf("publication %s returned %d times, want exactly once", id, count)
+		}
+	}
+}
+
+// TestPublicationListRejectsMalformedPageToken proves a malformed cursor is a
+// client error rather than a silent full-table scan from page one.
+func TestPublicationListRejectsMalformedPageToken(t *testing.T) {
+	repo := newPublicationIntegrationRepo(t)
+
+	_, err := repo.List(context.Background(), port.PublicationListFilters{
+		ProjectUID: "project-1",
+		PageToken:  "not-a-valid-cursor!!",
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("want ErrInvalidRequest for a malformed page token, got %v", err)
 	}
 }
 

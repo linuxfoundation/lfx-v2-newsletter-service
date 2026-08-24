@@ -53,6 +53,22 @@ type ListPage struct {
 	NextPageToken string
 }
 
+// PublicationListFilters scopes and pages a publication list. Separate from
+// ListFilters because publications carry no status and order by created_at
+// rather than updated_at.
+type PublicationListFilters struct {
+	ProjectUID string
+	PageToken  string
+	Limit      int
+}
+
+// PublicationListPage is one page of publications plus an optional
+// NextPageToken for continuation. Empty NextPageToken means the last page.
+type PublicationListPage struct {
+	Publications  []*model.NewsletterPublication
+	NextPageToken string
+}
+
 // NewsletterRepository persists Newsletter aggregates.
 //
 // Implementations must surface optimistic-locking conflicts as
@@ -147,7 +163,11 @@ type UnsubscribeRepository interface {
 type PublicationRepository interface {
 	Create(ctx context.Context, pub *model.NewsletterPublication) error
 	Get(ctx context.Context, projectUID string, id uuid.UUID) (*model.NewsletterPublication, error)
-	List(ctx context.Context, projectUID string) ([]*model.NewsletterPublication, error)
+	// List returns one bounded page of a project's publications. It is
+	// deliberately paginated rather than returning every row: a project's
+	// publication count is unbounded, and the wrapper_content JSONB on each row
+	// makes an unbounded scan expensive.
+	List(ctx context.Context, filters PublicationListFilters) (*PublicationListPage, error)
 	Update(ctx context.Context, pub *model.NewsletterPublication, expectedVersion int64) error
 	GetDefault(ctx context.Context, projectUID string) (*model.NewsletterPublication, error)
 }

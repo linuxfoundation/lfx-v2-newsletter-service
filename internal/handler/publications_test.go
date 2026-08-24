@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
 	"time"
 
@@ -65,14 +66,17 @@ func (m *MockPublicationRepository) Get(ctx context.Context, projectUID string, 
 	return pub, nil
 }
 
-func (m *MockPublicationRepository) List(ctx context.Context, projectUID string) ([]*model.NewsletterPublication, error) {
+func (m *MockPublicationRepository) List(ctx context.Context, filters port.PublicationListFilters) (*port.PublicationListPage, error) {
 	var result []*model.NewsletterPublication
 	for _, pub := range m.publications {
-		if pub.ProjectUID == projectUID {
+		if pub.ProjectUID == filters.ProjectUID {
 			result = append(result, pub)
 		}
 	}
-	return result, nil
+	// Deterministic order so the handler assertions below are stable; the real
+	// repository orders by (created_at DESC, id DESC).
+	sort.Slice(result, func(i, j int) bool { return result[i].ID.String() > result[j].ID.String() })
+	return &port.PublicationListPage{Publications: result}, nil
 }
 
 func (m *MockPublicationRepository) Update(ctx context.Context, pub *model.NewsletterPublication, expectedVersion int64) error {

@@ -6,8 +6,12 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -15,6 +19,7 @@ import (
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
@@ -63,17 +68,75 @@ func (r *PostgresPublicationRepo) Get(ctx context.Context, projectUID string, id
 }
 
 // List returns all publications in the given project, newest first.
-func (r *PostgresPublicationRepo) List(ctx context.Context, projectUID string) ([]*model.NewsletterPublication, error) {
-	var rows []*model.NewsletterPublication
-	err := r.db.NewSelect().
-		Model(&rows).
-		Where("project_uid = ?", projectUID).
+func (r *PostgresPublicationRepo) List(ctx context.Context, filters port.PublicationListFilters) (*port.PublicationListPage, error) {
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	if limit > maxListLimit {
+		limit = maxListLimit
+	}
+
+	// Fetch one extra row to detect whether a further page exists without a
+	// second COUNT query.
+	q := r.db.NewSelect().
+		Model((*model.NewsletterPublication)(nil)).
+		Where("project_uid = ?", filters.ProjectUID).
 		Order("created_at DESC").
-		Scan(ctx)
-	if err != nil {
+		Order("id DESC").
+		Limit(limit + 1)
+
+	if filters.PageToken != "" {
+		cursor, err := decodePublicationCursor(filters.PageToken)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid pageToken", domain.ErrInvalidRequest)
+		}
+		// Keyset pagination: continue from the (created_at, id) tuple of the last
+		// row of the previous page. Tuple comparison handles ties on created_at,
+		// which a bare OFFSET would skip or duplicate under concurrent inserts.
+		q = q.Where("(created_at, id) < (?, ?)", cursor.CreatedAt, cursor.ID)
+	}
+
+	var rows []*model.NewsletterPublication
+	if err := q.Scan(ctx, &rows); err != nil {
 		return nil, fmt.Errorf("list publications: %w", err)
 	}
-	return rows, nil
+
+	page := &port.PublicationListPage{Publications: rows}
+	if len(rows) > limit {
+		last := rows[limit-1]
+		page.Publications = rows[:limit]
+		page.NextPageToken = encodePublicationCursor(publicationListCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+	}
+	return page, nil
+}
+
+// publicationListCursor is the keyset cursor encoded into NextPageToken for the
+// publication list. Distinct from listCursor because publications order by
+// (created_at, id) rather than (updated_at, id).
+type publicationListCursor struct {
+	CreatedAt time.Time `json:"c"`
+	ID        uuid.UUID `json:"i"`
+}
+
+func encodePublicationCursor(c publicationListCursor) string {
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func decodePublicationCursor(token string) (publicationListCursor, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(token))
+	if err != nil {
+		return publicationListCursor{}, err
+	}
+	var c publicationListCursor
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return publicationListCursor{}, err
+	}
+	return c, nil
 }
 
 // GetDefault returns the default publication for the given project.

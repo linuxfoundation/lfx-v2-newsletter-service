@@ -70,19 +70,22 @@ func (h *Handler) GetPublication(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListPublications(w http.ResponseWriter, r *http.Request) {
 	projectUID := r.PathValue("project_uid")
 
-	pubs, err := h.publication.ListPublications(r.Context(), projectUID)
+	pageToken := r.URL.Query().Get("page_token")
+
+	page, err := h.publication.ListPublications(r.Context(), projectUID, pageToken)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
 
-	apiPubs := make([]publicapi.NewsletterPublication, 0, len(pubs))
-	for _, pub := range pubs {
+	apiPubs := make([]publicapi.NewsletterPublication, 0, len(page.Publications))
+	for _, pub := range page.Publications {
 		apiPubs = append(apiPubs, *toAPIPublication(pub))
 	}
 
 	writeJSON(r.Context(), w, http.StatusOK, publicapi.PublicationListResponse{
-		Publications: apiPubs,
+		Publications:  apiPubs,
+		NextPageToken: page.NextPageToken,
 	})
 }
 

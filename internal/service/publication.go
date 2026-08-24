@@ -112,12 +112,16 @@ func (s *PublicationService) GetPublication(ctx context.Context, projectUID stri
 	return s.repo.Get(ctx, projectUID, id)
 }
 
-// ListPublications returns the project's publications.
-func (s *PublicationService) ListPublications(ctx context.Context, projectUID string) ([]*model.NewsletterPublication, error) {
+// ListPublications returns one page of the project's publications. The caller
+// continues with the returned NextPageToken; an empty token means the last page.
+func (s *PublicationService) ListPublications(ctx context.Context, projectUID string, pageToken string) (*port.PublicationListPage, error) {
 	if err := validateProjectUID(projectUID); err != nil {
 		return nil, err
 	}
-	return s.repo.List(ctx, projectUID)
+	return s.repo.List(ctx, port.PublicationListFilters{
+		ProjectUID: projectUID,
+		PageToken:  pageToken,
+	})
 }
 
 // UpdatePublication applies a partial update under optimistic concurrency.

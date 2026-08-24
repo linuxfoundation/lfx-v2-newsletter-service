@@ -12,6 +12,7 @@ import (
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 )
 
 // fakePubRepo is a minimal port.PublicationRepository for the wiring test — only
@@ -28,8 +29,8 @@ func (f *fakePubRepo) Get(_ context.Context, projectUID string, id uuid.UUID) (*
 	return p, nil
 }
 func (f *fakePubRepo) Create(context.Context, *model.NewsletterPublication) error { return nil }
-func (f *fakePubRepo) List(context.Context, string) ([]*model.NewsletterPublication, error) {
-	return nil, nil
+func (f *fakePubRepo) List(context.Context, port.PublicationListFilters) (*port.PublicationListPage, error) {
+	return &port.PublicationListPage{}, nil
 }
 func (f *fakePubRepo) Update(context.Context, *model.NewsletterPublication, int64) error { return nil }
 func (f *fakePubRepo) GetDefault(context.Context, string) (*model.NewsletterPublication, error) {

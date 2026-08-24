@@ -396,4 +396,8 @@ type UpdatePublicationRequest struct {
 // PublicationListResponse is the body of GET /projects/{project_uid}/newsletter-publications.
 type PublicationListResponse struct {
 	Publications []NewsletterPublication `json:"publications"`
+	// NextPageToken continues the list via ?page_token=. Empty means this is
+	// the last page. The list is bounded, so a caller that ignores this token
+	// sees only the first page.
+	NextPageToken string `json:"next_page_token,omitempty"`
 }
