@@ -136,6 +136,16 @@ func decodePublicationCursor(token string) (publicationListCursor, error) {
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return publicationListCursor{}, err
 	}
+	// A token that decodes but carries no keyset position is rejected rather
+	// than used. An encoded "{}" or "null" unmarshals without error and leaves
+	// both fields zero, and the resulting
+	// "(created_at, id) < ('0001-01-01', uuid-zero)" filter would return an
+	// empty page for a project that has publications. Both fields are always
+	// populated by encodePublicationCursor, so a zero value means the token was
+	// not one we issued.
+	if c.CreatedAt.IsZero() || c.ID == uuid.Nil {
+		return publicationListCursor{}, errors.New("cursor fields must be non-zero")
+	}
 	return c, nil
 }
 
@@ -166,6 +176,12 @@ func (r *PostgresPublicationRepo) Update(ctx context.Context, pub *model.Newslet
 		Set("slug = ?", pub.Slug).
 		Set("wrapper_content = ?", pub.WrapperContent).
 		Set("template_set_id = ?", pub.TemplateSetID).
+		// editor_type and sender_email are part of the same partial update the
+		// service builds, so they belong in the SET list. Without them a caller
+		// changing the composer or the From address would get a 200 and a
+		// response body showing the new value, while the row kept the old one.
+		Set("editor_type = ?", pub.EditorType).
+		Set("sender_email = ?", pub.SenderEmail).
 		Set("view_online_base = ?", pub.ViewOnlineBase).
 		Set("updated_at = now()").
 		Set("version = version + 1").

@@ -87,10 +87,18 @@ type Newsletter struct {
 	// row. Nullable-first during migration (LFXV2-2582); NOT NULL deferred to a
 	// follow-up once backfill has run everywhere.
 	PublicationID *uuid.UUID `bun:"publication_id" json:"publicationId,omitempty"`
-	CreatedBy     string     `bun:"created_by,notnull" json:"createdBy"`
-	Version       int64      `bun:"version,notnull,default:1" json:"version"`
-	CreatedAt     time.Time  `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
-	UpdatedAt     time.Time  `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
+	// PublicationIDSet records that a writer that knows about publications wrote
+	// this row. The repository sets it on every insert and every draft update,
+	// whether or not PublicationID is set, so a null publication_id on a row
+	// with this flag means "deliberately unfiled" while a null on a row without
+	// it means "written before publications existed". The legacy backfill in
+	// schema.sql only touches the latter. Persistence bookkeeping, so it is kept
+	// out of the JSON.
+	PublicationIDSet bool      `bun:"publication_id_set,notnull" json:"-"`
+	CreatedBy        string    `bun:"created_by,notnull" json:"createdBy"`
+	Version          int64     `bun:"version,notnull,default:1" json:"version"`
+	CreatedAt        time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
+	UpdatedAt        time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
 }
 
 // NewsletterOpen records a single open event for a sent newsletter.

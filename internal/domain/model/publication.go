@@ -48,10 +48,10 @@ type NewsletterPublication struct {
 	// SenderEmail is the optional per-publication From address its editions
 	// inherit. Domain approval and the send-time ownership check belong to the
 	// send-from-self work (LFXV2-3316); this field only stores the choice.
-	SenderEmail    *string `bun:"sender_email" json:"senderEmail,omitempty"`
-	ViewOnlineBase *string `bun:"view_online_base" json:"viewOnlineBase,omitempty"`
-	CreatedBy      string          `bun:"created_by,notnull" json:"createdBy"`
-	Version        int64           `bun:"version,notnull,default:1" json:"version"`
-	CreatedAt      time.Time       `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
-	UpdatedAt      time.Time       `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
+	SenderEmail    *string   `bun:"sender_email" json:"senderEmail,omitempty"`
+	ViewOnlineBase *string   `bun:"view_online_base" json:"viewOnlineBase,omitempty"`
+	CreatedBy      string    `bun:"created_by,notnull" json:"createdBy"`
+	Version        int64     `bun:"version,notnull,default:1" json:"version"`
+	CreatedAt      time.Time `bun:"created_at,notnull,default:current_timestamp" json:"createdAt"`
+	UpdatedAt      time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updatedAt"`
 }

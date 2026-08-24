@@ -96,9 +96,13 @@ type UpdateNewsletterRequest struct {
 	//	explicit null/""  -> unfile the edition
 	//	"<uuid>"          -> move the edition to that publication
 	//
-	// With a *string, an absent field and an explicit null are both nil, so a
-	// client that PUTs without the key would silently unfile the edition.
-	PublicationID *json.RawMessage `json:"publication_id,omitempty"`
+	// The type is a value json.RawMessage, not a pointer. encoding/json gives a
+	// pointer field the same nil for an absent key and for an explicit null, so
+	// a *json.RawMessage (or a *string) cannot tell the first two states apart.
+	// A value json.RawMessage stays nil when the key is absent and holds the
+	// four bytes "null" when the client sends null, which is the distinction the
+	// handler needs.
+	PublicationID json.RawMessage `json:"publication_id,omitempty"`
 }
 
 // RecipientCountRequest is the body of POST /projects/{project_uid}/newsletters/recipient-count.

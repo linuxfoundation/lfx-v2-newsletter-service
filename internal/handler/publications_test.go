@@ -145,7 +145,11 @@ func (m *MockNewsletterRepository) Create(ctx context.Context, n *model.Newslett
 }
 
 func (m *MockNewsletterRepository) Get(ctx context.Context, id uuid.UUID) (*model.Newsletter, error) {
-	return nil, nil
+	n, ok := m.newsletters[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	return n, nil
 }
 
 func (m *MockNewsletterRepository) List(ctx context.Context, projectUID string) ([]*model.Newsletter, error) {
@@ -157,7 +161,20 @@ func (m *MockNewsletterRepository) ListSentByCommittee(ctx context.Context, comm
 }
 
 func (m *MockNewsletterRepository) Update(ctx context.Context, n *model.Newsletter, expectedVersion int64) (*model.Newsletter, error) {
-	return nil, nil
+	existing, ok := m.newsletters[n.ID]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	if existing.Version != expectedVersion {
+		return nil, domain.ErrVersionMismatch
+	}
+	// Mirror the real repository: the update replaces the row and bumps the
+	// version, and the stored row is what a later Get returns.
+	stored := *n
+	stored.Version = expectedVersion + 1
+	stored.UpdatedAt = time.Now()
+	m.newsletters[n.ID] = &stored
+	return &stored, nil
 }
 
 func (m *MockNewsletterRepository) Delete(ctx context.Context, id uuid.UUID) error {

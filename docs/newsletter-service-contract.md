@@ -91,7 +91,7 @@ A publication is the parent "newsletter identity" that editions (rows in `newsle
 | `project_uid` | Owning project UID. |
 | `slug` | URL-safe identifier, unique within the project. |
 | `name` | Display name. |
-| `is_default` | Whether this is the project's default publication (editions with no explicit `publication_id` are backfilled to it). |
+| `is_default` | Whether this is the project's default publication. A project that already had newsletters when publications shipped is given one default publication, and those pre-existing editions are filed under it. See the legacy backfill below. |
 | `wrapper_content` | JSON block-template wrapper/branding applied to every edition. Defaults to `{}`. |
 | `template_set_id` | Optional block-template set identifier. |
 | `view_online_base` | Optional base URL used to build each edition's View Online link. |
@@ -107,7 +107,15 @@ Two fields on a publication are inherited by its editions:
 | `editor_type` | Which composer the publication's editions open in, `classic` or `blocks`. Any other value returns `400 invalid_request`. Omitted on create defaults to `classic`, so a caller that predates the block editor keeps its current behavior and every backfilled publication is unchanged. Because the template now lives on the publication, per-edition template selection is not part of the edition contract. |
 | `sender_email` | Optional per-publication From address the editions inherit. This field only stores the choice — approved-domain enforcement and the send-time ownership check belong to the send-from-self work (LFXV2-3316). |
 
-`GET …/newsletter-publications` returns `PublicationListResponse`: a bounded `publications` array plus `next_page_token`, omitted on the last page. The list is keyset-paginated on `(created_at, id)`, so a caller that ignores the token sees only the first page.
+`GET …/newsletter-publications` returns `PublicationListResponse`: a bounded `publications` array plus `next_page_token`, omitted on the last page. The list is keyset-paginated on `(created_at, id)`, so a caller that ignores the token sees only the first page. A `page_token` the service did not issue returns `400 invalid_request`.
+
+### Legacy backfill
+
+Newsletters existed before publications did, so a project that already had newsletters has editions that were never filed anywhere. The service gives each of those projects one default publication and files those editions under it.
+
+The backfill only ever touches an edition written before publications existed. It does not re-file an edition a caller has since unfiled, because unfiled is a valid resting state and re-filing it on the next restart would undo the caller's choice. The service tells the two cases apart with a column on the row, `publication_id_set`, which every write from the current code sets and no older write can set. That column is internal bookkeeping and is not part of the public API.
+
+The distinction is per row rather than a single "migration done" flag on the database. During a rolling deploy the older pods keep serving writes after the newer pods have started, so a single flag would permanently skip any edition an older pod wrote after the flag was set.
 
 ## Optimistic Locking
 

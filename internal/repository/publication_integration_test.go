@@ -281,6 +281,63 @@ func TestPublicationUpdate(t *testing.T) {
 	}
 }
 
+// TestPublicationUpdatePersistsEveryMutableField re-reads the row after an
+// update instead of trusting the in-memory model. Update assigns the model from
+// its own SET list, so a field missing from that list still looks changed to the
+// caller and to the response body while the stored row keeps the old value.
+func TestPublicationUpdatePersistsEveryMutableField(t *testing.T) {
+	repo := newPublicationIntegrationRepo(t)
+	ctx := context.Background()
+
+	pub := &model.NewsletterPublication{
+		ProjectUID:     "project-1",
+		Slug:           "field-coverage",
+		Name:           "Original Name",
+		EditorType:     model.EditorTypeClassic,
+		WrapperContent: []byte("{}"),
+		CreatedBy:      "test-user",
+	}
+	if err := repo.Create(ctx, pub); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	sender := "news@example.org"
+	viewOnline := "https://example.org/archive"
+	templateSet := "set-42"
+	pub.Name = "Updated Name"
+	pub.EditorType = model.EditorTypeBlocks
+	pub.SenderEmail = &sender
+	pub.ViewOnlineBase = &viewOnline
+	pub.TemplateSetID = &templateSet
+	pub.WrapperContent = []byte(`{"header":"hi"}`)
+	if err := repo.Update(ctx, pub, pub.Version); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	stored, err := repo.Get(ctx, "project-1", pub.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Name != "Updated Name" {
+		t.Errorf("stored name = %q, want %q", stored.Name, "Updated Name")
+	}
+	if stored.EditorType != model.EditorTypeBlocks {
+		t.Errorf("stored editor_type = %q, want %q", stored.EditorType, model.EditorTypeBlocks)
+	}
+	if stored.SenderEmail == nil || *stored.SenderEmail != sender {
+		t.Errorf("stored sender_email = %v, want %q", stored.SenderEmail, sender)
+	}
+	if stored.ViewOnlineBase == nil || *stored.ViewOnlineBase != viewOnline {
+		t.Errorf("stored view_online_base = %v, want %q", stored.ViewOnlineBase, viewOnline)
+	}
+	if stored.TemplateSetID == nil || *stored.TemplateSetID != templateSet {
+		t.Errorf("stored template_set_id = %v, want %q", stored.TemplateSetID, templateSet)
+	}
+	if string(stored.WrapperContent) != `{"header":"hi"}` {
+		t.Errorf("stored wrapper_content = %s, want %s", stored.WrapperContent, `{"header":"hi"}`)
+	}
+}
+
 // TestPublicationGetDefault tests fetching the default publication.
 func TestPublicationGetDefault(t *testing.T) {
 	repo := newPublicationIntegrationRepo(t)
@@ -339,14 +396,11 @@ func TestSchemaBackfill(t *testing.T) {
 		t.Fatalf("truncate tables: %v", err)
 	}
 
-	// The legacy backfill is a one-time migration guarded by a completion
-	// marker, so a prior schema.Apply in this database has already claimed it.
-	// Clear the marker so this test actually drives the migration instead of
-	// silently asserting against a skipped no-op.
-	if _, err := pool.Exec(ctx, "DELETE FROM newsletter_schema_migrations WHERE name = 'publications_legacy_backfill'"); err != nil {
-		t.Fatalf("reset backfill marker: %v", err)
-	}
-
+	// The backfill selects rows by publication_id_set, not by a global marker,
+	// so a prior schema.Apply in this database does not stop it. The raw inserts
+	// below leave publication_id_set at its default false, which is what a
+	// pre-publication row looks like.
+	//
 	// Manually insert a newsletter before applying schema (simulate pre-publication rows)
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO newsletters (project_uid, subject, body_html, ed_reply_email, created_by, status)
@@ -529,19 +583,18 @@ func TestPublicationOneDefaultPerProject(t *testing.T) {
 }
 
 // TestBackfillDoesNotReattachUnfiledEditionsOnRestart is the regression test for
-// the backfill being a one-time migration rather than a reconciliation loop.
-// schema.sql is applied on every pod start, and publication_id IS NULL is a
-// legitimate resting state, so a re-run that re-files editions would silently
-// undo a user deliberately unfiling one.
+// the backfill filing legacy rows only, rather than running as a reconciliation
+// loop over every null publication_id. schema.sql is applied on every pod start,
+// and publication_id IS NULL is a legitimate resting state, so a re-run that
+// re-files editions would silently undo a user deliberately unfiling one.
 func TestBackfillDoesNotReattachUnfiledEditionsOnRestart(t *testing.T) {
 	repo := newPublicationIntegrationRepo(t)
 	ctx := context.Background()
 	db := repo.db
 
-	// Clear the marker and any prior state so this test drives the migration
-	// itself rather than inheriting the harness's earlier apply.
+	// Clear any prior state so this test drives the migration itself rather than
+	// inheriting the harness's earlier apply.
 	for _, stmt := range []string{
-		"DELETE FROM newsletter_schema_migrations WHERE name = 'publications_legacy_backfill'",
 		"TRUNCATE newsletters CASCADE",
 		"TRUNCATE newsletter_publications CASCADE",
 	} {
@@ -578,8 +631,10 @@ func TestBackfillDoesNotReattachUnfiledEditionsOnRestart(t *testing.T) {
 		t.Fatal("backfill did not file the pre-existing edition")
 	}
 
-	// The user then deliberately unfiles it.
-	if _, err := db.ExecContext(ctx, "UPDATE newsletters SET publication_id = NULL WHERE id = ?", legacyID); err != nil {
+	// The user then deliberately unfiles it. Both columns are written, which is
+	// what PostgresNewsletterRepo.Update does on every draft update.
+	if _, err := db.ExecContext(ctx,
+		"UPDATE newsletters SET publication_id = NULL, publication_id_set = true WHERE id = ?", legacyID); err != nil {
 		t.Fatalf("unfile: %v", err)
 	}
 
@@ -604,7 +659,6 @@ func TestBackfillSkipsProjectsWithNoEditions(t *testing.T) {
 	db := repo.db
 
 	for _, stmt := range []string{
-		"DELETE FROM newsletter_schema_migrations WHERE name = 'publications_legacy_backfill'",
 		"TRUNCATE newsletters CASCADE",
 		"TRUNCATE newsletter_publications CASCADE",
 	} {
@@ -629,5 +683,65 @@ func TestBackfillSkipsProjectsWithNoEditions(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("backfill created %d publication(s) with no editions to file; publications are created explicitly", count)
+	}
+}
+
+// TestBackfillFilesLegacyRowWrittenAfterAnEarlierApply covers the rolling-deploy
+// window. schema.sql is applied by every pod that starts, and while the rollout
+// is in progress the old pods keep serving writes. A row one of them commits
+// after a new pod has already applied the schema still has no publication_id and
+// no publication_id_set, so the next startup must file it. A completion marker
+// written by the first new pod would have skipped this row forever.
+func TestBackfillFilesLegacyRowWrittenAfterAnEarlierApply(t *testing.T) {
+	repo := newPublicationIntegrationRepo(t)
+	ctx := context.Background()
+	db := repo.db
+
+	for _, stmt := range []string{
+		"TRUNCATE newsletters CASCADE",
+		"TRUNCATE newsletter_publications CASCADE",
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("reset (%s): %v", stmt, err)
+		}
+	}
+
+	pool, err := pgxpool.New(ctx, os.Getenv("NEWSLETTER_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	// A new pod starts and applies the schema. There is nothing to file yet.
+	if err := schema.Apply(ctx, pool); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+
+	// An old pod, still serving during the rollout, writes an edition. It does
+	// not know about publications, so it sets neither column.
+	var lateID uuid.UUID
+	if err := db.QueryRowContext(ctx, `
+        INSERT INTO newsletters (project_uid, subject, body_html, ed_reply_email, created_by, status)
+        VALUES ('project-rollout', 'Written by an old pod', '<p>x</p>', 'ed@example.org', 'user', 'draft')
+        RETURNING id`).Scan(&lateID); err != nil {
+		t.Fatalf("seed late legacy newsletter: %v", err)
+	}
+
+	// The next pod start files it.
+	if err := schema.Apply(ctx, pool); err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+
+	var filedTo *uuid.UUID
+	var flag bool
+	if err := db.QueryRowContext(ctx,
+		"SELECT publication_id, publication_id_set FROM newsletters WHERE id = ?", lateID).Scan(&filedTo, &flag); err != nil {
+		t.Fatalf("read late row: %v", err)
+	}
+	if filedTo == nil {
+		t.Error("a legacy row written after an earlier schema apply was never filed")
+	}
+	if !flag {
+		t.Error("the backfill filed the row without stamping publication_id_set, so a later unfile would be undone on restart")
 	}
 }

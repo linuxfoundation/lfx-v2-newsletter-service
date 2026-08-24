@@ -508,19 +508,52 @@ CREATE INDEX IF NOT EXISTS idx_newsletters_publication ON newsletters (publicati
 CREATE INDEX IF NOT EXISTS idx_newsletters_publication_list
     ON newsletters (project_uid, publication_id, updated_at DESC, id DESC);
 
--- One-time legacy backfill.
+-- publication_id_set marks a row as written by a service version that knows
+-- about publications. It is the discriminator the legacy backfill needs, and it
+-- is not user-facing.
+--
+-- `publication_id IS NULL` alone cannot say why the column is null. It is null
+-- on a legacy row, written before publications existed, which the backfill has
+-- to file. It is also null on a row a user deliberately unfiled, which the
+-- backfill must leave alone. Every insert and every draft update from the
+-- current code sets this column true, whether or not it also sets a
+-- publication, so the two cases are told apart per row:
+--
+--     publication_id_set = false  ->  legacy row, never decided, backfill it
+--     publication_id_set = true   ->  a writer decided; null means unfiled
+--
+-- A per-row flag is used instead of a single "migration completed" marker
+-- because the marker is written by the first new pod that starts. During a
+-- rolling deploy the old pods are still serving, and a row one of them writes
+-- after that moment carries a null publication_id that no later run would ever
+-- look at again. The flag has no such window: an old pod cannot set it, so the
+-- row stays a backfill candidate until a startup files it.
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS publication_id_set BOOLEAN NOT NULL DEFAULT false;
+
+-- Partial index over the backfill candidates only. The sweep below runs on
+-- every startup, and on a database whose migration is long finished this keeps
+-- it an index probe over an empty set rather than a full scan of newsletters.
+CREATE INDEX IF NOT EXISTS idx_newsletters_backfill_candidates
+    ON newsletters (project_uid)
+    WHERE publication_id IS NULL AND NOT publication_id_set;
+
+-- Legacy backfill.
 --
 -- This gives each project that already had newsletters somewhere to keep those
 -- pre-existing editions, and files them there. It is NOT a reconciliation loop
--- and MUST NOT re-run: `publication_id IS NULL` is a legitimate resting state
--- (an unfiled edition), so re-running the attach on every pod start would
--- silently re-file editions a user had deliberately unfiled, and re-create a
--- publication a user had deliberately deleted. schema.sql is applied on every
--- startup, so the whole block is gated behind a completion marker.
+-- over unfiled editions: `publication_id IS NULL` is a legitimate resting state,
+-- so re-filing every null on each pod start would silently undo a user
+-- deliberately unfiling an edition, and re-create a publication a user
+-- deliberately deleted. Both the publication insert and the attach step
+-- therefore select on `publication_id_set = false`, which only a legacy row
+-- can be. Once a row is filed or a writer touches it, it stops being a
+-- candidate, so applying this block on every startup converges and then does
+-- nothing.
 --
--- The marker records which migrations have run. It is a table rather than a
--- schema_version integer so later one-shot data migrations can be added
--- independently without ordering constraints.
+-- The migrations table records when the backfill first found work to do. It is
+-- a record for operators and a place for later one-shot migrations to register
+-- themselves. It does NOT gate this block; see the ALTER above for why.
 CREATE TABLE IF NOT EXISTS newsletter_schema_migrations (
     name        TEXT        PRIMARY KEY,
     applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -528,16 +561,9 @@ CREATE TABLE IF NOT EXISTS newsletter_schema_migrations (
 
 DO $$
 BEGIN
-    IF EXISTS (
-        SELECT 1 FROM newsletter_schema_migrations
-        WHERE name = 'publications_legacy_backfill'
-    ) THEN
-        RETURN;
-    END IF;
-
-    -- Only projects that actually have editions need a home for them. A project
-    -- with no newsletters gets nothing: publications are created explicitly, and
-    -- a project is never handed one it did not ask for.
+    -- Only projects that actually have legacy editions need a home for them. A
+    -- project with no newsletters gets nothing: publications are created
+    -- explicitly, and a project is never handed one it did not ask for.
     --
     -- ON CONFLICT targets (project_uid, slug) and PROMOTES the conflicting row
     -- rather than doing nothing. Without a target, a pre-existing NON-default
@@ -550,6 +576,7 @@ BEGIN
     SELECT DISTINCT n.project_uid, 'default', 'Newsletter', true, 'system-backfill'
     FROM newsletters n
     WHERE n.publication_id IS NULL
+      AND NOT n.publication_id_set
       AND NOT EXISTS (
         SELECT 1 FROM newsletter_publications p
         WHERE p.project_uid = n.project_uid AND p.is_default
@@ -566,15 +593,20 @@ BEGIN
     -- SET LOCAL scopes the flag to the schema-application transaction.
     SET LOCAL app.allow_armed_mutation = 'true';
 
+    -- publication_id_set is stamped along with the link, so a user who later
+    -- unfiles one of these editions keeps it unfiled across restarts.
     UPDATE newsletters n
-    SET publication_id = p.id
+    SET publication_id = p.id,
+        publication_id_set = true
     FROM newsletter_publications p
     WHERE n.publication_id IS NULL
+      AND NOT n.publication_id_set
       AND p.project_uid = n.project_uid
       AND p.is_default;
 
     SET LOCAL app.allow_armed_mutation = 'false';
 
     INSERT INTO newsletter_schema_migrations (name)
-    VALUES ('publications_legacy_backfill');
+    VALUES ('publications_legacy_backfill')
+    ON CONFLICT (name) DO NOTHING;
 END$$;

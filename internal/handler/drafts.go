@@ -195,15 +195,20 @@ func parseOptionalPublicationID(raw *string) (*uuid.UUID, error) {
 // A plain *string collapses "absent" and "null" into nil, so a client PUTting
 // without the key would silently unlink the edition. Every other field on this
 // request is full-replace, which is why the distinction has to be explicit.
-func parseUpdatePublicationID(raw *json.RawMessage) (*uuid.UUID, bool, error) {
-	if raw == nil {
+//
+// The parameter is a value json.RawMessage rather than a pointer because
+// encoding/json sets a pointer field to nil for an explicit null, exactly as it
+// does for an absent key. A value json.RawMessage is nil only when the key is
+// absent, and holds the bytes "null" when the client sent null.
+func parseUpdatePublicationID(raw json.RawMessage) (*uuid.UUID, bool, error) {
+	if len(raw) == 0 {
 		return nil, false, nil
 	}
-	if strings.TrimSpace(string(*raw)) == "null" {
+	if strings.TrimSpace(string(raw)) == "null" {
 		return nil, true, nil
 	}
 	var s string
-	if err := json.Unmarshal(*raw, &s); err != nil {
+	if err := json.Unmarshal(raw, &s); err != nil {
 		return nil, true, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err)
 	}
 	if strings.TrimSpace(s) == "" {

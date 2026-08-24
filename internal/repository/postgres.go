@@ -44,6 +44,10 @@ func NewPostgresNewsletterRepo(db *bun.DB) *PostgresNewsletterRepo {
 // Create inserts a new Newsletter row. Database defaults populate id, version,
 // timestamps; bun copies the generated values back into n.
 func (r *PostgresNewsletterRepo) Create(ctx context.Context, n *model.Newsletter) error {
+	// This code knows about publications, so the row's publication link is a
+	// decision, not an absence — including the decision to leave the edition
+	// unfiled. The legacy backfill uses the flag to skip rows like this one.
+	n.PublicationIDSet = true
 	if _, err := r.db.NewInsert().
 		Model(n).
 		Returning("*").
@@ -213,9 +217,14 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		// json-encodes the slice and PG raises a "malformed array literal".
 		Set("committee_uids = ?", pgdialect.Array(n.CommitteeUIDs)).
 		Set("project_uid = ?", n.ProjectUID).
-		// Full replace: a nil publication_id unlinks the edition from its
-		// publication, consistent with the create/update contract (LFXV2-2582).
+		// A nil publication_id here unlinks the edition from its publication.
+		// The service decides whether to apply the caller's value at all: an
+		// omitted publication_id on PUT preserves the current link, an explicit
+		// null unfiles the edition (LFXV2-2582).
 		Set("publication_id = ?", n.PublicationID).
+		// Stamped on every update so a null publication_id written here reads
+		// as "deliberately unfiled" and the legacy backfill leaves it alone.
+		Set("publication_id_set = true").
 		// Full replace: an omitted/null scheduled_at clears it, consistent with
 		// every other field here (LFXV2-2685).
 		Set("scheduled_at = ?", n.ScheduledAt).
