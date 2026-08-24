@@ -72,6 +72,14 @@ func TestUnsubscribeConfirmNeverMutates(t *testing.T) {
 		if !strings.Contains(body, `method="POST"`) {
 			t.Errorf("call %d: body missing confirmation form: %s", i, body)
 		}
+		// The form action must be query-only, so the browser resolves it
+		// against the URL that delivered the page. An action starting with "/"
+		// or with a scheme would post to the origin root and break a
+		// confirmation page served under a public path prefix.
+		wantAction := `action="?t=` + token + `"`
+		if !strings.Contains(body, wantAction) {
+			t.Errorf("call %d: form action must be the query-only %s; body=%s", i, wantAction, body)
+		}
 	}
 	if len(repo.created) != 0 {
 		t.Errorf("GET must never record an unsubscribe; repo.created = %v", repo.created)
