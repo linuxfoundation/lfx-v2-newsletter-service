@@ -304,7 +304,11 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 		reqBody.Headers = map[string]string{
 			"List-Unsubscribe": "<" + sanitizeHeaderValue(listUnsubscribeURL) + ">",
 		}
-		if in.ListUnsubscribePost {
+		// RFC 8058 requires the one-click URI to be https. Arm the one-click
+		// List-Unsubscribe-Post header only for an https link; a non-https URL
+		// (e.g. a local http override) still gets the RFC 2369 List-Unsubscribe
+		// header, just not the one-click variant a mail client would reject.
+		if in.ListUnsubscribePost && strings.HasPrefix(strings.ToLower(listUnsubscribeURL), "https://") {
 			reqBody.Headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 		}
 	}

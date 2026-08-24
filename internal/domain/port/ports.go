@@ -200,9 +200,14 @@ type SendEmailInput struct {
 	FromDisplayName string
 	ReplyTo         string
 	GroupID         string
-	// ListUnsubscribeURL, when non-empty, arms RFC 8058 one-click unsubscribe:
-	// the dispatcher emits List-Unsubscribe / List-Unsubscribe-Post headers so
-	// mail clients can show a native unsubscribe control (LFXV2-2581).
+	// ListUnsubscribeURL and ListUnsubscribePost carry the recipient's unsubscribe
+	// intent (LFXV2-2581). A non-empty ListUnsubscribeURL produces the RFC 2369
+	// List-Unsubscribe header; the RFC 8058 one-click List-Unsubscribe-Post header
+	// is added only when ListUnsubscribePost is ALSO true and (per RFC 8058) the
+	// URL is https. The SendGrid dispatcher emits these headers today. The
+	// NATS/email-service dispatcher forwards both fields, but the pinned
+	// email-service ignores them, so the default provider does not emit the
+	// headers until email-service adds support.
 	ListUnsubscribeURL  string
 	ListUnsubscribePost bool
 	// SendAt and BatchID arm a scheduled release: when SendAt is non-nil, every

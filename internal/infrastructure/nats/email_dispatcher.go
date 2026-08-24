@@ -133,11 +133,12 @@ type sendEmailWire struct {
 	ListUnsubscribePost bool   `json:"list_unsubscribe_post,omitempty"`
 }
 
-// SendEmail dispatches one email to lfx-v2-email-service. Email-service mints
-// the group_id when missing; we always pass one through so analytics can be
-// aggregated reliably.
-func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
-	envelope := sendEmailWire{
+// newSendEmailWire converts the transport-agnostic send input into the NATS wire
+// shape email-service consumes. Extracted so the field mapping and JSON tags —
+// the only place the unsubscribe intent reaches the default provider — are
+// covered by a focused conversion test rather than only through a fake dispatcher.
+func newSendEmailWire(in port.SendEmailInput) sendEmailWire {
+	return sendEmailWire{
 		To:                  in.To,
 		Subject:             in.Subject,
 		HTML:                in.HTML,
@@ -149,7 +150,13 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 		ListUnsubscribeURL:  in.ListUnsubscribeURL,
 		ListUnsubscribePost: in.ListUnsubscribePost,
 	}
-	data, err := json.Marshal(envelope)
+}
+
+// SendEmail dispatches one email to lfx-v2-email-service. Email-service mints
+// the group_id when missing; we always pass one through so analytics can be
+// aggregated reliably.
+func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
+	data, err := json.Marshal(newSendEmailWire(in))
 	if err != nil {
 		return "", pkgerrors.NewUnexpected("marshal send_email request", err)
 	}
