@@ -7,9 +7,11 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -333,7 +335,18 @@ func TestPublicationUpdatePersistsEveryMutableField(t *testing.T) {
 	if stored.TemplateSetID == nil || *stored.TemplateSetID != templateSet {
 		t.Errorf("stored template_set_id = %v, want %q", stored.TemplateSetID, templateSet)
 	}
-	if string(stored.WrapperContent) != `{"header":"hi"}` {
+	// Compare semantically, not byte-for-byte. wrapper_content is JSONB, and
+	// Postgres reserializes it on the way out (canonical key order, a space
+	// after each colon), so the bytes read back never match the bytes written
+	// even when the value is identical.
+	var storedWrapper, wantWrapper any
+	if err := json.Unmarshal(stored.WrapperContent, &storedWrapper); err != nil {
+		t.Fatalf("stored wrapper_content is not valid JSON (%s): %v", stored.WrapperContent, err)
+	}
+	if err := json.Unmarshal([]byte(`{"header":"hi"}`), &wantWrapper); err != nil {
+		t.Fatalf("want wrapper_content is not valid JSON: %v", err)
+	}
+	if !reflect.DeepEqual(storedWrapper, wantWrapper) {
 		t.Errorf("stored wrapper_content = %s, want %s", stored.WrapperContent, `{"header":"hi"}`)
 	}
 }
