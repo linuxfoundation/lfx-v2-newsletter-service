@@ -72,6 +72,25 @@ func TestStripHTMLForTextTokenizerEdgeCases(t *testing.T) {
 	}
 }
 
+// TestStripHTMLForTextBreakEmitsNewline pins that a <br> becomes a newline in the
+// text/plain part, so lines separated by a line break do not collapse into one
+// run. The regression case is the footer postal address
+// ("The Linux Foundation<br />2810 N Church St...") rendering as
+// "The Linux Foundation2810..." when <br> was dropped without whitespace.
+func TestStripHTMLForTextBreakEmitsNewline(t *testing.T) {
+	// Self-closing <br /> as authored in the layout wrapper's postal-address row.
+	got := StripHTMLForText(`<p>The Linux Foundation<br />2810 N Church St., PMB 57274</p>`)
+	if !strings.Contains(got, "The Linux Foundation\n2810 N Church St., PMB 57274") {
+		t.Errorf("self-closing <br /> did not separate the address lines: %q", got)
+	}
+
+	// Start-tag <br> (author-supplied body content) must also separate its lines.
+	got = StripHTMLForText(`<p>Line one<br>Line two</p>`)
+	if !strings.Contains(got, "Line one\nLine two") {
+		t.Errorf("start-tag <br> did not separate authored lines: %q", got)
+	}
+}
+
 const testMyNewslettersURL = "https://app.lfx.dev/newsletters/my"
 
 func TestEmailHTMLMyNewslettersLine(t *testing.T) {

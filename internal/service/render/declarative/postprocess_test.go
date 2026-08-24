@@ -18,7 +18,7 @@ func TestReconcileCardBorders_RoundsBorderedCell(t *testing.T) {
 		`<table style="border-radius:14px;width:100%">` +
 		`<tbody><tr><td style="border:1px solid #131313;padding:20px 0">Hi</td></tr></tbody>` +
 		`</table></div>`
-	out := reconcileCardBorders(in)
+	out := reconcileCardBorders(in, nil)
 
 	if !strings.Contains(out, `border:1px solid #131313;padding:20px 0;border-radius:14px`) {
 		t.Errorf("bordered cell did not inherit the enclosing border-radius:\n%s", out)
@@ -35,7 +35,7 @@ func TestReconcileCardBorders_LeavesSingleSideBorders(t *testing.T) {
 	in := `<div style="border-radius:14px"><table style="border-radius:14px">` +
 		`<tbody><tr><td style="border-top:1px solid #e5e7eb;padding:24px">Footer</td></tr></tbody>` +
 		`</table></div>`
-	out := reconcileCardBorders(in)
+	out := reconcileCardBorders(in, nil)
 
 	if strings.Contains(out, "border-top:1px solid #e5e7eb;padding:24px;border-radius") {
 		t.Errorf("single-side border-top should not inherit a card radius:\n%s", out)
@@ -46,27 +46,48 @@ func TestReconcileCardBorders_LeavesSingleSideBorders(t *testing.T) {
 // its own border-radius is left alone (no double application).
 func TestReconcileCardBorders_KeepsOwnRadius(t *testing.T) {
 	in := `<div style="border-radius:20px"><span style="border:1px solid #000;border-radius:4px">x</span></div>`
-	out := reconcileCardBorders(in)
+	out := reconcileCardBorders(in, nil)
 	if strings.Count(out, "border-radius") != 2 {
 		t.Errorf("expected the element to keep only its own radius:\n%s", out)
 	}
 }
 
-// TestReconcileCardBorders_AddsShadowToCardCell pins that the card cell (a full
-// border enclosed by a card radius) gets the drop shadow MJML strips, drawn in
-// its own border colour, matching the reference source.
-func TestReconcileCardBorders_AddsShadowToCardCell(t *testing.T) {
-	in := `<div style="border-radius:14px;margin:0px auto;max-width:600px">` +
+// TestReconcileCardBorders_ReAppliesAuthoredShadow pins that each card's AUTHORED
+// box-shadow (captured pre-translation, threaded in as cardShadows in document
+// order) is re-applied to its rounded mj-section wrapper — preserving the real
+// colour/offset instead of synthesising one from the border colour. It covers
+// both a bordered card whose shadow colour differs from its border (a violet
+// shadow on a black border) and a BORDERLESS card (which the old
+// synthesise-from-border path skipped entirely, losing its shadow).
+func TestReconcileCardBorders_ReAppliesAuthoredShadow(t *testing.T) {
+	// Bordered card (violet shadow, black border) then a borderless card (blue
+	// shadow), in document order — mirrors the compiled wrapper/table/cell shape.
+	bordered := `<div style="border-radius:14px;margin:0px auto;max-width:600px">` +
 		`<table style="border-radius:14px;width:100%">` +
 		`<tbody><tr><td style="border:1px solid #131313;padding:20px 0">Hi</td></tr></tbody>` +
 		`</table></div>`
-	out := reconcileCardBorders(in)
-	if !strings.Contains(out, "box-shadow:6px 6px 0 #131313") {
-		t.Errorf("card cell did not get the drop shadow in its border colour:\n%s", out)
+	borderless := `<div style="background:#131313;border-radius:14px;margin:0px auto;max-width:600px">` +
+		`<table style="background:#131313;border-radius:14px;width:100%">` +
+		`<tbody><tr><td style="padding:20px 0">Nums</td></tr></tbody>` +
+		`</table></div>`
+	shadows := []string{"6px 6px 0 #7b4dff", "6px 6px 0 #3d8bff"}
+	out := reconcileCardBorders(bordered+borderless, shadows)
+
+	// The bordered card's wrapper keeps the AUTHORED violet shadow, not one
+	// synthesised from its black border colour.
+	if !strings.Contains(out, "box-shadow:6px 6px 0 #7b4dff") {
+		t.Errorf("bordered card did not get its authored violet shadow:\n%s", out)
 	}
-	// The shadow attaches to the bordered cell, not the table or wrapper.
-	if strings.Count(out, "box-shadow") != 1 {
-		t.Errorf("expected exactly one box-shadow (on the card cell), got %d:\n%s", strings.Count(out, "box-shadow"), out)
+	if strings.Contains(out, "box-shadow:6px 6px 0 #131313") {
+		t.Errorf("bordered card shadow was synthesised from the border colour instead of the authored value:\n%s", out)
+	}
+	// The borderless card keeps its authored blue shadow (previously lost).
+	if !strings.Contains(out, "box-shadow:6px 6px 0 #3d8bff") {
+		t.Errorf("borderless card did not keep its authored blue shadow:\n%s", out)
+	}
+	// Exactly one shadow per card wrapper — not on the cell or inner table.
+	if strings.Count(out, "box-shadow") != 2 {
+		t.Errorf("expected exactly two box-shadows (one per card wrapper), got %d:\n%s", strings.Count(out, "box-shadow"), out)
 	}
 }
 
@@ -79,7 +100,7 @@ func TestReconcileCardBorders_AddsGapToCardWrapper(t *testing.T) {
 		`<table style="border-radius:14px;width:100%"><tbody><tr>` +
 		`<td style="border:1px solid #131313">Hi</td></tr></tbody></table></div>`
 	plain := `<div style="margin:0px auto;max-width:600px"><table><tbody><tr><td>Header</td></tr></tbody></table></div>`
-	out := reconcileCardBorders(card + plain)
+	out := reconcileCardBorders(card+plain, nil)
 	if strings.Count(out, "margin-bottom:24px") != 1 {
 		t.Errorf("expected the card wrapper (only) to get the 24px gap, got %d:\n%s", strings.Count(out, "margin-bottom:24px"), out)
 	}

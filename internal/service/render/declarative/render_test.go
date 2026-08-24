@@ -750,3 +750,31 @@ func TestParse_SelfClosedCustomTagKeepsSiblings(t *testing.T) {
 		t.Errorf("the Text sibling was swallowed: %+v", nodes[0].children[1])
 	}
 }
+
+// TestRender_AuthoredCardShadowSurvives pins finding #5: a card's AUTHORED
+// box-shadow survives translation with its real colour, for both a bordered card
+// whose shadow differs from its border and a BORDERLESS card. hit_reply authors a
+// violet shadow (6px 6px 0 #7b4dff) on a black (#131313) border; by_the_numbers
+// authors a blue shadow (6px 6px 0 #3d8bff) on a borderless card. Before the fix
+// the shadow was synthesised from the border colour (so hit_reply rendered black)
+// and borderless cards got no shadow at all.
+func TestRender_AuthoredCardShadowSurvives(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+	layout := Layout{Blocks: []Block{
+		{BlockType: "hit_reply"},
+		{BlockType: "by_the_numbers"},
+	}}
+	out, err := Render(context.Background(), layout, tmpl, map[string]any{"edition": map[string]any{}})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(out, "box-shadow:6px 6px 0 #7b4dff") {
+		t.Errorf("hit_reply authored violet shadow did not survive:\n%s", out)
+	}
+	if strings.Contains(out, "box-shadow:6px 6px 0 #131313") {
+		t.Errorf("a card shadow was synthesised from the black border colour instead of the authored value:\n%s", out)
+	}
+	if !strings.Contains(out, "box-shadow:6px 6px 0 #3d8bff") {
+		t.Errorf("by_the_numbers borderless card lost its authored blue shadow:\n%s", out)
+	}
+}

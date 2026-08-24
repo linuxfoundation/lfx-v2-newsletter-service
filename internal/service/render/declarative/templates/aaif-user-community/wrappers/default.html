@@ -10,7 +10,8 @@
     "unsubscribe_fallback":     {"type": "text", "label": "Unsubscribe fallback text"},
     "manage_subscriptions_url": {"type": "text", "label": "Manage subscriptions URL"},
     "sender_name":              {"type": "text", "label": "Sender name"},
-    "project_name":             {"type": "text", "label": "Project name"}
+    "project_name":             {"type": "text", "label": "Project name"},
+    "reply_email":              {"type": "text", "label": "Reply-to email"}
   }
 } -->
 
@@ -79,6 +80,7 @@
 <Section style="padding:0">
   <div class="dm-rule" style="text-align:center;padding:20px 20px 0;border-top:1px solid #d8d8db;margin:24px 0 0">
     <Text if="edition.sender_name" class="dm-m" style="font-size:12px;line-height:1.7;margin:0;color:#77777c">Sent by <strong>{{edition.sender_name}}</strong><span if="edition.project_name"> on behalf of <strong>{{edition.project_name}}</strong></span>.</Text>
+    <Text if="edition.reply_email" class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">To reply, email <Link href="mailto:{{edition.reply_email}}" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">{{edition.reply_email}}</Link>.</Text>
     <Text class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">Missed an issue? View past newsletters any time in <Link clicktracking="off" href="{{edition.manage_subscriptions_url}}" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">My Newsletters</Link>.</Text>
     <Text class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">
       <span if="edition.unsubscribe_url"><Link clicktracking="off" href="{{edition.unsubscribe_url}}" class="dm-h" style="color:#131313;text-decoration:underline">Unsubscribe</Link> from <span if="edition.project_name">{{edition.project_name}} </span>newsletters. </span>

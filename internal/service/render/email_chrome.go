@@ -271,6 +271,19 @@ loop:
 			switch string(name) {
 			case "head", "style", "script", "title":
 				skip++
+			case "br":
+				// A line break is visible whitespace in the rendered email, so the
+				// text/plain part must carry a newline — otherwise adjacent lines
+				// (e.g. "The Linux Foundation<br />2810 N Church St...") collapse
+				// into one run. net/html emits <br> as a start tag and <br/> as a
+				// self-closing tag, so both cases emit here and below.
+				if skip == 0 {
+					if inAnchor {
+						anchorText.WriteByte('\n')
+					} else {
+						out.WriteByte('\n')
+					}
+				}
 			case "a":
 				if skip == 0 && !inAnchor {
 					href := ""
@@ -299,6 +312,15 @@ loop:
 		case html.SelfClosingTagToken:
 			name, _ := z.TagName()
 			switch string(name) {
+			case "br":
+				// Self-closing <br/> — emit a newline, matching the start-tag case.
+				if skip == 0 {
+					if inAnchor {
+						anchorText.WriteByte('\n')
+					} else {
+						out.WriteByte('\n')
+					}
+				}
 			case "style", "script", "title":
 				// style/script/title are raw-text/RCDATA elements: the tokenizer
 				// switches to raw-text mode after the start tag even when it is

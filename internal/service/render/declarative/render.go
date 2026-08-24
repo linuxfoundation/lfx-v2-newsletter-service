@@ -40,7 +40,7 @@ const mjmlCompileTimeout = 15 * time.Second
 // ctx bounds the mjml-go (wasm) compile so a slow render can be canceled — e.g.
 // a /render-preview request that hits its deadline.
 func Render(ctx context.Context, layout Layout, templates Templates, wrapperContent map[string]any) (string, error) {
-	mjmlDoc, err := RenderMJML(layout, templates, wrapperContent)
+	mjmlDoc, cardShadows, err := renderMJML(layout, templates, wrapperContent)
 	if err != nil {
 		return "", err
 	}
@@ -59,8 +59,9 @@ func Render(ctx context.Context, layout Layout, templates Templates, wrapperCont
 	}
 	// MJML splits a bordered rounded section's border (inner cell) from its
 	// border-radius (outer table), squaring the corners — reconcile them so cards
-	// render rounded.
-	return reconcileCardBorders(out), nil
+	// render rounded, and re-apply each card's authored drop shadow (which MJML
+	// strips from mj-section), matched to its wrapper in document order.
+	return reconcileCardBorders(out, cardShadows), nil
 }
 
 // RenderMJML performs binding, assembly, and MJML translation but stops before
@@ -70,13 +71,22 @@ func Render(ctx context.Context, layout Layout, templates Templates, wrapperCont
 // wrapperContent is the runtime binding context for the wrapper template; see
 // Render. Pass nil when the wrapper needs no runtime data.
 func RenderMJML(layout Layout, templates Templates, wrapperContent map[string]any) (string, error) {
+	doc, _, err := renderMJML(layout, templates, wrapperContent)
+	return doc, err
+}
+
+// renderMJML performs binding, assembly, and MJML translation, and alongside the
+// MJML document returns the authored card box-shadows (in document order) that
+// Render re-applies post-compile — MJML strips box-shadow from mj-section, so the
+// value must be captured here, before translation. See collectCardShadows.
+func renderMJML(layout Layout, templates Templates, wrapperContent map[string]any) (string, []string, error) {
 	wrapperSrc, err := templates.wrapper(layout.WrapperKey)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	wrapperRoots, err := parseTemplate(wrapperSrc)
 	if err != nil {
-		return "", fmt.Errorf("declarative: parse wrapper: %w", err)
+		return "", nil, fmt.Errorf("declarative: parse wrapper: %w", err)
 	}
 
 	// Bind every top-level block into one assembled body slice. Each block's
@@ -87,7 +97,7 @@ func RenderMJML(layout Layout, templates Templates, wrapperContent map[string]an
 	for _, blk := range layout.Blocks {
 		bound, bindErr := bindBlock(blk, templates)
 		if bindErr != nil {
-			return "", bindErr
+			return "", nil, bindErr
 		}
 		body = append(body, applyBlockSpacing(blk, bound)...)
 	}
@@ -97,7 +107,7 @@ func RenderMJML(layout Layout, templates Templates, wrapperContent map[string]an
 	// <slot name="body" />.
 	assembled, err := bindWrapper(wrapperRoots, body, wrapperContent)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	// Give the semantic authoring classes their canonical styles before
@@ -108,7 +118,11 @@ func RenderMJML(layout Layout, templates Templates, wrapperContent map[string]an
 	// wrapping div.
 	propagateTextAlign(assembled, "")
 
-	return translate(assembled), nil
+	// Capture each card's authored box-shadow before translation drops it (MJML
+	// has no box-shadow on mj-section); Render re-applies it post-compile.
+	cardShadows := collectCardShadows(assembled)
+
+	return translate(assembled), cardShadows, nil
 }
 
 // bindWrapper resolves the wrapper template, replacing the <slot name="body" />

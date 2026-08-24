@@ -18,11 +18,6 @@ var voidElements = map[string]bool{
 	"source": true, "track": true, "wbr": true,
 }
 
-// cardShadowOffset is the AAIF card drop shadow — a hard offset with no blur,
-// drawn in the card's own border colour (matching the reference source). It
-// degrades gracefully: clients that ignore box-shadow simply show the border.
-const cardShadowOffset = "6px 6px 0"
-
 // cardGap is the vertical gap between stacked cards. MJML strips the card's
 // authored margin, so without this the cards butt together (and the shadow has
 // nowhere to show).
@@ -42,13 +37,19 @@ const cardGap = "24px"
 //     FULL border but no radius of its own (the card cell), and sets
 //     border-collapse:separate inline on radiused tables so the cell's radius
 //     takes effect (inline wins over MJML's head-level border-collapse reset);
-//   - re-adds the drop shadow on that same card cell, in its own border colour;
-//   - re-adds the inter-card bottom gap on the card's mj-section wrapper (a
-//     radiused, horizontally-centred element with no border of its own).
+//   - re-adds the card's AUTHORED drop shadow on its mj-section wrapper. The
+//     shadow value (colour and offset) is captured pre-translation by
+//     collectCardShadows and threaded in via cardShadows in document order: the
+//     Nth rounded card wrapper gets the Nth entry. This preserves a card's real
+//     shadow — a violet shadow on a black-bordered card, or a blue shadow on a
+//     borderless card — instead of synthesising one from the border colour (which
+//     dropped the authored colour and skipped borderless cards entirely);
+//   - re-adds the inter-card bottom gap on that same card wrapper (a radiused,
+//     horizontally-centred element with no border of its own).
 //
 // The shadow and gap use inline styles email clients honour where supported, and
 // harmlessly ignore where not.
-func reconcileCardBorders(input string) string {
+func reconcileCardBorders(input string, cardShadows []string) string {
 	z := nethtml.NewTokenizer(strings.NewReader(input))
 	var b strings.Builder
 	// radii is a stack of the border-radius values of the currently-open
@@ -59,6 +60,9 @@ func reconcileCardBorders(input string) string {
 	}
 	var radii []frame
 	depth := 0
+	// shadowIdx advances once per rounded card wrapper encountered, indexing
+	// cardShadows in the same document order collectCardShadows produced it.
+	shadowIdx := 0
 
 	for {
 		tt := z.Next()
@@ -100,13 +104,9 @@ func reconcileCardBorders(input string) string {
 		radius := cssProp(style, "border-radius")
 		border := cssProp(style, "border")
 		// A full-bordered element with no radius of its own IS the card cell: it
-		// inherits the nearest enclosing card radius so its border rounds, and gets
-		// the drop shadow MJML stripped, drawn in its own border colour.
+		// inherits the nearest enclosing card radius so its border rounds.
 		if border != "" && radius == "" && len(radii) > 0 {
 			newStyle = appendStyleDecl(newStyle, "border-radius", radii[len(radii)-1].radius)
-			if color := borderColor(border); color != "" && cssProp(newStyle, "box-shadow") == "" {
-				newStyle = appendStyleDecl(newStyle, "box-shadow", cardShadowOffset+" "+color)
-			}
 		}
 		// A radiused table needs border-collapse:separate for a child cell's
 		// border-radius to render; MJML tables carry cellspacing="0" so this adds
@@ -115,11 +115,22 @@ func reconcileCardBorders(input string) string {
 			newStyle = appendStyleDecl(newStyle, "border-collapse", "separate")
 		}
 		// The card's mj-section wrapper — a radiused, horizontally-centred element
-		// (margin: … auto) with no border of its own — gets the inter-card bottom
-		// gap MJML stripped from the card's margin, so stacked cards don't butt
-		// together and the shadow has room to show.
-		if radius != "" && border == "" && marginIsAutoCentred(cssProp(style, "margin")) && cssProp(style, "margin-bottom") == "" {
-			newStyle = appendStyleDecl(newStyle, "margin-bottom", cardGap)
+		// (margin: … auto) with no border of its own. Consume this card's authored
+		// box-shadow (in document order) and re-add it here, along with the
+		// inter-card bottom gap MJML stripped from the card's margin (so stacked
+		// cards don't butt together and the shadow has room to show).
+		if radius != "" && border == "" && marginIsAutoCentred(cssProp(style, "margin")) {
+			shadow := ""
+			if shadowIdx < len(cardShadows) {
+				shadow = cardShadows[shadowIdx]
+			}
+			shadowIdx++
+			if shadow != "" && cssProp(newStyle, "box-shadow") == "" {
+				newStyle = appendStyleDecl(newStyle, "box-shadow", shadow)
+			}
+			if cssProp(newStyle, "margin-bottom") == "" {
+				newStyle = appendStyleDecl(newStyle, "margin-bottom", cardGap)
+			}
 		}
 
 		if newStyle != style {

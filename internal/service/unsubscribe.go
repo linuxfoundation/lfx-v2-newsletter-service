@@ -28,12 +28,13 @@ import (
 const UnsubscribeURLPlaceholder = "%%UNSUBSCRIBE_URL%%"
 
 // ViewOnlineURLPlaceholder and ManageSubscriptionsURLPlaceholder are the
-// sibling sentinels for the wrapper's other runtime URLs. Render-on-write
-// currently binds BOTH fields empty (no hosted web version and no preferences
-// surface exist yet), so the wrapper's guarded rows are omitted; the send
-// path's substitutions for these two are defensive backstops for bodies
-// rendered before that change, resolving them to empty rather than shipping
-// raw %%…%% text.
+// sibling sentinels for the wrapper's other runtime URLs. Layout render-on-write
+// binds the manage-subscriptions sentinel, and the send path resolves it to the
+// "My Newsletters" archive URL (or empty, de-linking the label, when no
+// Self-Serve base URL is configured). View Online has no hosted surface yet, so
+// render-on-write leaves it empty and its guarded row is omitted; its send-path
+// substitution is a defensive backstop that resolves any leftover sentinel to
+// empty rather than shipping raw %%…%% text. (Layout test sends also zero both.)
 const (
 	ViewOnlineURLPlaceholder          = "%%VIEW_ONLINE_URL%%"
 	ManageSubscriptionsURLPlaceholder = "%%MANAGE_SUBSCRIPTIONS_URL%%"

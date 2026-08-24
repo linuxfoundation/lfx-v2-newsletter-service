@@ -59,6 +59,37 @@ func translate(roots []*node) string {
 	return b.String()
 }
 
+// collectCardShadows walks the assembled node tree in document order and returns
+// the authored box-shadow value of every Section/Row that carries a
+// border-radius — i.e. every node that compiles to a rounded "card" mj-section.
+// The Nth entry lines up with the Nth rounded card wrapper reconcileCardBorders
+// finds in the compiled HTML (empty string when that card authored no
+// box-shadow), so the real authored shadow (its own colour and offset) can be
+// re-applied post-compile.
+//
+// MJML strips box-shadow from mj-section (styleAttr never forwards it, and MJML
+// has no box-shadow attribute), so the value has to be captured here, before
+// translation, rather than recovered from the compiled HTML. Ordered matching is
+// reliable because each border-radius Section/Row produces exactly one rounded
+// mj-section wrapper and translation preserves document order.
+func collectCardShadows(nodes []*node) []string {
+	var out []string
+	var walk func(ns []*node)
+	walk = func(ns []*node) {
+		for _, n := range ns {
+			if n == nil {
+				continue
+			}
+			if (n.Tag == "section" || n.Tag == "row") && cssProp(styleOf(n), "border-radius") != "" {
+				out = append(out, cssProp(styleOf(n), "box-shadow"))
+			}
+			walk(n.Children)
+		}
+	}
+	walk(nodes)
+	return out
+}
+
 // writeBlock emits a top-level/layout node. Anything that is not a layout
 // block is treated as loose inline content and wrapped in a section/column.
 func writeBlock(b *strings.Builder, n *node) {
@@ -353,10 +384,15 @@ func writeBreakoutTable(b *strings.Builder, n *node) {
 	b.WriteString(`<mj-table padding="0" cellpadding="0" cellspacing="0" width="100%"><tr>`)
 	for _, c := range cols {
 		tdStyle := strings.TrimSpace(styleOf(c))
-		if tdStyle != "" && !strings.HasSuffix(tdStyle, ";") {
-			tdStyle += ";"
+		// Only synthesize the equal column width when the column authored none of
+		// its own — an authored width (e.g. spec_watch's 90px status column) must
+		// win, and appending the equal width after it would override it.
+		if cssProp(styleOf(c), "width") == "" {
+			if tdStyle != "" && !strings.HasSuffix(tdStyle, ";") {
+				tdStyle += ";"
+			}
+			tdStyle += fmt.Sprintf("width:%d%%", width)
 		}
-		tdStyle += fmt.Sprintf("width:%d%%", width)
 		b.WriteString(`<td style="` + html.EscapeString(tdStyle) + `">`)
 		writeInline(b, c.Children)
 		b.WriteString(`</td>`)
@@ -766,6 +802,7 @@ func buttonStyleMappings(style string) []styleMapping {
 	cssToAttr := map[string]string{
 		"background-color": "background-color",
 		"color":            "color",
+		"border":           "border",
 		"border-radius":    "border-radius",
 		"font-weight":      "font-weight",
 		"padding":          "inner-padding",
@@ -914,7 +951,7 @@ const (
 var styleAllow = map[styleKind]map[string]bool{
 	styleText:    {"color": true, "padding": true},
 	styleSection: {"background-color": true, "padding": true, "border-radius": true, "text-align": true, "border": true, "border-top": true, "border-bottom": true},
-	styleColumn:  {"background-color": true, "padding": true, "border-radius": true, "vertical-align": true},
+	styleColumn:  {"background-color": true, "padding": true, "border-radius": true, "vertical-align": true, "width": true},
 	styleDivider: {"padding": true, "border-color": true, "border-width": true, "width": true},
 }
 
