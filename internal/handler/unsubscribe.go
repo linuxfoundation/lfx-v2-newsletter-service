@@ -62,7 +62,11 @@ func (h *Handler) UnsubscribeConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	displayName := h.projectDisplayName(ctx, projectUID)
-	actionURL := "/newsletters/unsubscribe?t=" + url.QueryEscape(token)
+	// Query-only relative action: the browser resolves it against the URL that
+	// delivered this page, so a confirmation reached at a path-prefixed public
+	// URL submits back to that same endpoint rather than the origin root (see
+	// NewUnsubscribeService's optional path-prefix behavior).
+	actionURL := "?t=" + url.QueryEscape(token)
 	body := "Confirm that " + html.EscapeString(email) + " should stop receiving " + html.EscapeString(displayName) + " newsletters." +
 		`<form method="POST" action="` + html.EscapeString(actionURL) + `" style="margin-top:24px;">` +
 		`<button type="submit" style="font-size:15px;padding:10px 20px;background:#3B82F6;color:#fff;border:none;border-radius:6px;cursor:pointer;">Unsubscribe</button>` +
