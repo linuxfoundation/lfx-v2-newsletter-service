@@ -46,7 +46,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `GET` | `/projects/{project_uid}/newsletter-opt-outs` | yes | List all unsubscribes for the project — `id`, `email`, and `unsubscribed_at`, ordered by `unsubscribed_at` descending. No pagination (opt-out volumes are small). |
 | `DELETE` | `/projects/{project_uid}/newsletter-opt-outs/{opt_out_id}` | yes | Delete an opt-out entry. Returns `204 No Content` on success, `400` for a malformed `opt_out_id` UUID, `404` for unknown `opt_out_id` or project mismatch. |
 | `POST` | `/projects/{project_uid}/newsletter-publications` | yes | Create a publication (the parent "newsletter identity": wrapper, branding, template set, slug, View Online base). Requires `slug` and `name`. Returns `201` with the publication and its ETag. |
-| `GET` | `/projects/{project_uid}/newsletter-publications` | yes | List the project's publications. Returns `PublicationListResponse`. |
+| `GET` | `/projects/{project_uid}/newsletter-publications` | yes | List the project's publications, newest first. Bounded page; accepts `?page_token=` and returns `next_page_token` until the last page. A malformed token returns `400 invalid_request`. Returns `PublicationListResponse`. |
 | `GET` | `/projects/{project_uid}/newsletter-publications/{publication_uid}` | yes | Get one publication and return its ETag. `404` on project mismatch or unknown id. |
 | `PUT` | `/projects/{project_uid}/newsletter-publications/{publication_uid}` | yes | Update a publication. Requires `If-Match`; missing/malformed → `400`, stale version → `412`. |
 
@@ -66,7 +66,7 @@ Core state:
 | `body_html` | Newsletter HTML body. |
 | `ed_reply_email` | Reply-to address stored on the draft. Fallback only — at send time the orchestrator resolves the sender's own primary email via `lfx.auth-service.user_emails.read` and uses it as Reply-To instead, so replies reach whoever sends rather than whoever last drafted. This field is used only when that resolution fails or the sender's domain isn't in the Reply-To allowlist. |
 | `committee_uids` | Committees used for recipient resolution. |
-| `publication_id` | Optional UUID linking this edition to a `newsletter_publications` row in the same project. Settable on create/update — a value that doesn't resolve to a publication in this project returns `400 invalid_request`; a malformed UUID likewise returns `400`. `PUT` is full-replace: an omitted value unlinks the edition. Null editions are backfilled to the project's default publication by the schema migration. |
+| `publication_id` | Optional UUID filing this edition under a `newsletter_publications` row in the same project. A value that doesn't resolve to a publication in this project returns `400 invalid_request`; a malformed UUID likewise returns `400`. Unfiled (null) is a valid resting state — publications are created explicitly, a project is not given a default one, and server-initiated editions (the weekly brief) have no publication to pick. Unlike every other field on `PUT`, this one is **not** full-replace: an omitted key preserves the edition's current publication, an explicit `null` or `""` unfiles it, and a UUID moves it. |
 | `status` | `draft`, `sending`, `scheduled`, or `sent`. |
 | `sent_at` | Set when status becomes `sent`. |
 | `scheduled_at` | Optional, settable on create/update. Two meanings depending on `status`: while `draft`, it is the author's saved intent — saving it does **not** by itself contact the send provider or send anything. Once `status=scheduled`, it is the committed release time armed at the provider. Null when no schedule has ever been set. `PUT` is full-replace: an omitted value clears a previously-saved schedule. |
@@ -98,7 +98,16 @@ A publication is the parent "newsletter identity" that editions (rows in `newsle
 | `created_by` | Authenticated principal or local fallback. |
 | `version` | Optimistic-locking version. |
 
-`CreatePublicationRequest` requires `slug` + `name` (`wrapper_content`, `template_set_id`, `view_online_base` optional). `UpdatePublicationRequest` carries the same optional fields and requires `If-Match`. `GET …/newsletter-publications` returns `PublicationListResponse` (`publications` array; `next_page_token` reserved, not yet used).
+`CreatePublicationRequest` requires `slug` + `name`; `wrapper_content`, `template_set_id`, `editor_type`, `sender_email`, and `view_online_base` are optional. `slug` and `name` are trimmed and rejected when empty or whitespace-only. `UpdatePublicationRequest` carries the same optional fields and requires `If-Match`; a whitespace-only `name` is rejected rather than blanking the stored one.
+
+Two fields on a publication are inherited by its editions:
+
+| Field | Description |
+| --- | --- |
+| `editor_type` | Which composer the publication's editions open in, `classic` or `blocks`. Any other value returns `400 invalid_request`. Omitted on create defaults to `classic`, so a caller that predates the block editor keeps its current behavior and every backfilled publication is unchanged. Because the template now lives on the publication, per-edition template selection is not part of the edition contract. |
+| `sender_email` | Optional per-publication From address the editions inherit. This field only stores the choice — approved-domain enforcement and the send-time ownership check belong to the send-from-self work (LFXV2-3316). |
+
+`GET …/newsletter-publications` returns `PublicationListResponse`: a bounded `publications` array plus `next_page_token`, omitted on the last page. The list is keyset-paginated on `(created_at, id)`, so a caller that ignores the token sees only the first page.
 
 ## Optimistic Locking
 

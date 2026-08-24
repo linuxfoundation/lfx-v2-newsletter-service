@@ -34,6 +34,8 @@ func (h *Handler) CreatePublication(w http.ResponseWriter, r *http.Request) {
 		Name:           body.Name,
 		WrapperContent: body.WrapperContent,
 		TemplateSetID:  body.TemplateSetID,
+		EditorType:     body.EditorType,
+		SenderEmail:    body.SenderEmail,
 		ViewOnlineBase: body.ViewOnlineBase,
 		CreatedBy:      user,
 	})
@@ -114,6 +116,8 @@ func (h *Handler) UpdatePublication(w http.ResponseWriter, r *http.Request) {
 		Name:           body.Name,
 		WrapperContent: body.WrapperContent,
 		TemplateSetID:  body.TemplateSetID,
+		EditorType:     body.EditorType,
+		SenderEmail:    body.SenderEmail,
 		ViewOnlineBase: body.ViewOnlineBase,
 	})
 	if err != nil {
@@ -150,6 +154,8 @@ func toAPIPublication(pub *model.NewsletterPublication) *publicapi.NewsletterPub
 		IsDefault:      pub.IsDefault,
 		WrapperContent: wrapperContent,
 		TemplateSetID:  pub.TemplateSetID,
+		EditorType:     pub.EditorType,
+		SenderEmail:    pub.SenderEmail,
 		ViewOnlineBase: pub.ViewOnlineBase,
 		CreatedBy:      pub.CreatedBy,
 		Version:        pub.Version,

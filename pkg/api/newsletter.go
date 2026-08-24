@@ -362,13 +362,19 @@ type OptOutListResponse struct {
 
 // NewsletterPublication is the response shape returned by publication endpoints.
 type NewsletterPublication struct {
-	ID             string    `json:"id"`
-	ProjectUID     string    `json:"project_uid"`
-	Slug           string    `json:"slug"`
-	Name           string    `json:"name"`
-	IsDefault      bool      `json:"is_default"`
-	WrapperContent any       `json:"wrapper_content"`
-	TemplateSetID  *string   `json:"template_set_id,omitempty"`
+	ID             string  `json:"id"`
+	ProjectUID     string  `json:"project_uid"`
+	Slug           string  `json:"slug"`
+	Name           string  `json:"name"`
+	IsDefault      bool    `json:"is_default"`
+	WrapperContent any     `json:"wrapper_content"`
+	TemplateSetID  *string `json:"template_set_id,omitempty"`
+	// EditorType is which composer this publication's editions open in,
+	// "classic" or "blocks". Editions inherit it.
+	EditorType string `json:"editor_type"`
+	// SenderEmail is the optional per-publication From address its editions
+	// inherit.
+	SenderEmail    *string   `json:"sender_email,omitempty"`
 	ViewOnlineBase *string   `json:"view_online_base,omitempty"`
 	CreatedBy      string    `json:"created_by"`
 	Version        int64     `json:"version"`
@@ -382,6 +388,10 @@ type CreatePublicationRequest struct {
 	Name           string  `json:"name"`
 	WrapperContent any     `json:"wrapper_content,omitempty"`
 	TemplateSetID  *string `json:"template_set_id,omitempty"`
+	// EditorType is "classic" or "blocks". Omitted defaults to "classic", so an
+	// existing caller that does not know about the field keeps its behaviour.
+	EditorType     *string `json:"editor_type,omitempty"`
+	SenderEmail    *string `json:"sender_email,omitempty"`
 	ViewOnlineBase *string `json:"view_online_base,omitempty"`
 }
 
@@ -390,6 +400,8 @@ type UpdatePublicationRequest struct {
 	Name           *string `json:"name,omitempty"`
 	WrapperContent any     `json:"wrapper_content,omitempty"`
 	TemplateSetID  *string `json:"template_set_id,omitempty"`
+	EditorType     *string `json:"editor_type,omitempty"`
+	SenderEmail    *string `json:"sender_email,omitempty"`
 	ViewOnlineBase *string `json:"view_online_base,omitempty"`
 }
 

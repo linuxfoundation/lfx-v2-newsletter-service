@@ -433,12 +433,44 @@ CREATE TABLE IF NOT EXISTS newsletter_publications (
     is_default        BOOLEAN      NOT NULL DEFAULT false,
     wrapper_content   JSONB        NOT NULL DEFAULT '{}'::jsonb,
     template_set_id   TEXT,
+    -- Which composer a publication's editions open in. Editions inherit this,
+    -- which is what lets per-edition template selection be removed from the
+    -- composer. Defaults to 'classic' so every backfilled publication keeps
+    -- behaving exactly as it does today; only a publication explicitly set to
+    -- 'blocks' opens the block editor.
+    editor_type       TEXT         NOT NULL DEFAULT 'classic'
+        CONSTRAINT newsletter_publications_editor_type_check
+        CHECK (editor_type IN ('classic', 'blocks')),
+    -- Optional per-publication From address its editions inherit. The
+    -- approved-domain constraint and the send-time ownership check are owned by
+    -- the send-from-self work (LFXV2-3316); this column only stores the choice.
+    sender_email      TEXT,
     view_online_base  TEXT,
     created_by        TEXT         NOT NULL,
     version           BIGINT       NOT NULL DEFAULT 1,
     created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
+
+-- CREATE TABLE IF NOT EXISTS above is a no-op on a database that already has
+-- the table, so columns added after the table first shipped need their own
+-- idempotent ALTERs. Same nullable-first, additive shape as publication_id.
+ALTER TABLE newsletter_publications
+    ADD COLUMN IF NOT EXISTS editor_type TEXT NOT NULL DEFAULT 'classic';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletter_publications_editor_type_check'
+    ) THEN
+        ALTER TABLE newsletter_publications
+            ADD CONSTRAINT newsletter_publications_editor_type_check
+            CHECK (editor_type IN ('classic', 'blocks'));
+    END IF;
+END$$;
+
+ALTER TABLE newsletter_publications
+    ADD COLUMN IF NOT EXISTS sender_email TEXT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_publications_project_id
     ON newsletter_publications (project_uid, id);

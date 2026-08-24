@@ -37,6 +37,10 @@ type CreatePublicationInput struct {
 	Name           string
 	WrapperContent any
 	TemplateSetID  *string
+	// EditorType is optional. Nil defaults to model.EditorTypeClassic so a
+	// caller that predates the block editor keeps its current behaviour.
+	EditorType     *string
+	SenderEmail    *string
 	ViewOnlineBase *string
 	CreatedBy      string
 }
@@ -48,6 +52,8 @@ type UpdatePublicationInput struct {
 	Name           *string
 	WrapperContent any
 	TemplateSetID  *string
+	EditorType     *string
+	SenderEmail    *string
 	ViewOnlineBase *string
 }
 
@@ -84,6 +90,14 @@ func (s *PublicationService) CreatePublication(ctx context.Context, in CreatePub
 		return nil, fmt.Errorf("%w: createdBy is required", domain.ErrInvalidRequest)
 	}
 
+	editorType := model.EditorTypeClassic
+	if in.EditorType != nil {
+		editorType = strings.TrimSpace(*in.EditorType)
+		if !model.ValidEditorType(editorType) {
+			return nil, fmt.Errorf("%w: editor_type must be %q or %q", domain.ErrInvalidRequest, model.EditorTypeClassic, model.EditorTypeBlocks)
+		}
+	}
+
 	wrapperContent, err := marshalWrapperContent(in.WrapperContent)
 	if err != nil {
 		return nil, err
@@ -95,6 +109,8 @@ func (s *PublicationService) CreatePublication(ctx context.Context, in CreatePub
 		Name:           name,
 		WrapperContent: wrapperContent,
 		TemplateSetID:  in.TemplateSetID,
+		EditorType:     editorType,
+		SenderEmail:    in.SenderEmail,
 		ViewOnlineBase: in.ViewOnlineBase,
 		CreatedBy:      in.CreatedBy,
 	}
@@ -148,6 +164,18 @@ func (s *PublicationService) UpdatePublication(ctx context.Context, projectUID s
 	}
 	if in.TemplateSetID != nil {
 		pub.TemplateSetID = in.TemplateSetID
+	}
+	// Validate before assigning: an unrecognized value would otherwise reach the
+	// schema CHECK constraint and surface as a 500 instead of a 400.
+	if in.EditorType != nil {
+		editorType := strings.TrimSpace(*in.EditorType)
+		if !model.ValidEditorType(editorType) {
+			return nil, fmt.Errorf("%w: editor_type must be %q or %q", domain.ErrInvalidRequest, model.EditorTypeClassic, model.EditorTypeBlocks)
+		}
+		pub.EditorType = editorType
+	}
+	if in.SenderEmail != nil {
+		pub.SenderEmail = in.SenderEmail
 	}
 	if in.ViewOnlineBase != nil {
 		pub.ViewOnlineBase = in.ViewOnlineBase
