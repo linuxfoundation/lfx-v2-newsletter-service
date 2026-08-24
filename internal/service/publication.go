@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
@@ -57,6 +58,16 @@ type UpdatePublicationInput struct {
 	ViewOnlineBase *string
 }
 
+// maxSlugLength bounds the slug so it stays comfortably inside a URL path
+// segment and inside the unique index on (project_uid, slug).
+const maxSlugLength = 100
+
+// slugPattern is the permitted slug syntax: lowercase alphanumeric words joined
+// by single hyphens. Deliberately strict — the slug is permanent once a
+// per-publication URL is built on it, and it is easier to relax this later than
+// to migrate slugs that are already in circulation.
+var slugPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
 // marshalWrapperContent normalizes an optional wrapper_content value into the
 // JSONB bytes the model persists. Nil yields the empty-object default.
 func marshalWrapperContent(v any) ([]byte, error) {
@@ -81,6 +92,17 @@ func (s *PublicationService) CreatePublication(ctx context.Context, in CreatePub
 	slug := strings.TrimSpace(in.Slug)
 	if slug == "" {
 		return nil, fmt.Errorf("%w: slug is required", domain.ErrInvalidRequest)
+	}
+	// Enforce the syntax, not just non-emptiness. The slug is permanent once a
+	// per-publication View Online URL is built on it, and it goes into a path
+	// segment, so a space, slash, or "?" would either break the URL or silently
+	// change what it addresses. There is no update path for slug, so this is the
+	// only place it can be constrained.
+	if len(slug) > maxSlugLength {
+		return nil, fmt.Errorf("%w: slug must be at most %d characters", domain.ErrInvalidRequest, maxSlugLength)
+	}
+	if !slugPattern.MatchString(slug) {
+		return nil, fmt.Errorf("%w: slug must be lowercase alphanumeric words separated by single hyphens (max %d characters)", domain.ErrInvalidRequest, maxSlugLength)
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {

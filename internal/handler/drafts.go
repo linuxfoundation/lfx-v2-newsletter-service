@@ -169,11 +169,11 @@ func parseUUID(raw string) (uuid.UUID, error) {
 	return id, nil
 }
 
-// parseOptionalPublicationID parses an optional publication_id, used both by
-// create (where absent means the edition is left unfiled) and by the
-// ?publication_id= list filter (where absent means "do not filter"). A
-// non-empty malformed value is a client error rather than being silently
-// dropped.
+// parseOptionalPublicationID parses the create request's optional
+// publication_id. Absent or empty means the edition is left unfiled, which is a
+// valid resting state. A non-empty malformed value is a client error rather
+// than being silently dropped. The list filter parses its own value inline
+// because there absent and empty must be told apart.
 func parseOptionalPublicationID(raw *string) (*uuid.UUID, error) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return nil, nil

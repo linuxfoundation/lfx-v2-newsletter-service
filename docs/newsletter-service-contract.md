@@ -98,7 +98,7 @@ A publication is the parent "newsletter identity" that editions (rows in `newsle
 | `created_by` | Authenticated principal or local fallback. |
 | `version` | Optimistic-locking version. |
 
-`CreatePublicationRequest` requires `slug` + `name`; `wrapper_content`, `template_set_id`, `editor_type`, `sender_email`, and `view_online_base` are optional. `slug` and `name` are trimmed and rejected when empty or whitespace-only. `UpdatePublicationRequest` carries the same optional fields and requires `If-Match`; a whitespace-only `name` is rejected rather than blanking the stored one.
+`CreatePublicationRequest` requires `slug` + `name`; `wrapper_content`, `template_set_id`, `editor_type`, `sender_email`, and `view_online_base` are optional. `slug` and `name` are trimmed and rejected when empty or whitespace-only. `slug` must additionally match `^[a-z0-9]+(-[a-z0-9]+)*$` and be at most 100 characters — lowercase alphanumeric words joined by single hyphens. Anything else returns `400 invalid_request`. The rule is strict because the slug is permanent once a per-publication URL is built on it and there is no update path for it; relaxing it later is easier than migrating slugs already in circulation. `UpdatePublicationRequest` carries the same optional fields and requires `If-Match`; a whitespace-only `name` is rejected rather than blanking the stored one.
 
 Two fields on a publication are inherited by its editions:
 

@@ -339,6 +339,14 @@ func TestSchemaBackfill(t *testing.T) {
 		t.Fatalf("truncate tables: %v", err)
 	}
 
+	// The legacy backfill is a one-time migration guarded by a completion
+	// marker, so a prior schema.Apply in this database has already claimed it.
+	// Clear the marker so this test actually drives the migration instead of
+	// silently asserting against a skipped no-op.
+	if _, err := pool.Exec(ctx, "DELETE FROM newsletter_schema_migrations WHERE name = 'publications_legacy_backfill'"); err != nil {
+		t.Fatalf("reset backfill marker: %v", err)
+	}
+
 	// Manually insert a newsletter before applying schema (simulate pre-publication rows)
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO newsletters (project_uid, subject, body_html, ed_reply_email, created_by, status)
@@ -517,5 +525,109 @@ func TestPublicationOneDefaultPerProject(t *testing.T) {
 	err := repo.Create(context.Background(), pub2)
 	if err == nil {
 		t.Error("Should not allow two default publications for the same project")
+	}
+}
+
+// TestBackfillDoesNotReattachUnfiledEditionsOnRestart is the regression test for
+// the backfill being a one-time migration rather than a reconciliation loop.
+// schema.sql is applied on every pod start, and publication_id IS NULL is a
+// legitimate resting state, so a re-run that re-files editions would silently
+// undo a user deliberately unfiling one.
+func TestBackfillDoesNotReattachUnfiledEditionsOnRestart(t *testing.T) {
+	repo := newPublicationIntegrationRepo(t)
+	ctx := context.Background()
+	db := repo.db
+
+	// Clear the marker and any prior state so this test drives the migration
+	// itself rather than inheriting the harness's earlier apply.
+	for _, stmt := range []string{
+		"DELETE FROM newsletter_schema_migrations WHERE name = 'publications_legacy_backfill'",
+		"TRUNCATE newsletters CASCADE",
+		"TRUNCATE newsletter_publications CASCADE",
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("reset (%s): %v", stmt, err)
+		}
+	}
+
+	// A pre-existing edition with no publication — the legacy case the backfill
+	// is meant to file.
+	var legacyID uuid.UUID
+	if err := db.QueryRowContext(ctx, `
+        INSERT INTO newsletters (project_uid, subject, body_html, ed_reply_email, created_by, status)
+        VALUES ('project-backfill', 'Legacy', '<p>x</p>', 'ed@example.org', 'user', 'draft')
+        RETURNING id`).Scan(&legacyID); err != nil {
+		t.Fatalf("seed legacy newsletter: %v", err)
+	}
+
+	pool, err := pgxpool.New(ctx, os.Getenv("NEWSLETTER_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	// First start: the migration runs and files the legacy edition.
+	if err := schema.Apply(ctx, pool); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	var filedTo *uuid.UUID
+	if err := db.QueryRowContext(ctx, "SELECT publication_id FROM newsletters WHERE id = ?", legacyID).Scan(&filedTo); err != nil {
+		t.Fatalf("read legacy publication_id: %v", err)
+	}
+	if filedTo == nil {
+		t.Fatal("backfill did not file the pre-existing edition")
+	}
+
+	// The user then deliberately unfiles it.
+	if _, err := db.ExecContext(ctx, "UPDATE newsletters SET publication_id = NULL WHERE id = ?", legacyID); err != nil {
+		t.Fatalf("unfile: %v", err)
+	}
+
+	// Second start: the migration must not run again.
+	if err := schema.Apply(ctx, pool); err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+	var afterRestart *uuid.UUID
+	if err := db.QueryRowContext(ctx, "SELECT publication_id FROM newsletters WHERE id = ?", legacyID).Scan(&afterRestart); err != nil {
+		t.Fatalf("re-read legacy publication_id: %v", err)
+	}
+	if afterRestart != nil {
+		t.Errorf("restart re-filed a deliberately unfiled edition into %v — the backfill is running as a reconciliation loop, not a one-time migration", afterRestart)
+	}
+}
+
+// TestBackfillSkipsProjectsWithNoEditions proves a project that never had a
+// newsletter is not handed a publication it did not ask for.
+func TestBackfillSkipsProjectsWithNoEditions(t *testing.T) {
+	repo := newPublicationIntegrationRepo(t)
+	ctx := context.Background()
+	db := repo.db
+
+	for _, stmt := range []string{
+		"DELETE FROM newsletter_schema_migrations WHERE name = 'publications_legacy_backfill'",
+		"TRUNCATE newsletters CASCADE",
+		"TRUNCATE newsletter_publications CASCADE",
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("reset (%s): %v", stmt, err)
+		}
+	}
+
+	pool, err := pgxpool.New(ctx, os.Getenv("NEWSLETTER_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	if err := schema.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM newsletter_publications").Scan(&count); err != nil {
+		t.Fatalf("count publications: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("backfill created %d publication(s) with no editions to file; publications are created explicitly", count)
 	}
 }

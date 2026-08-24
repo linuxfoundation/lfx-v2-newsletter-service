@@ -4,8 +4,13 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 
+	"github.com/google/uuid"
+
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
@@ -21,14 +26,23 @@ func (h *Handler) ListNewsletters(w http.ResponseWriter, r *http.Request) {
 	status := model.Status(q.Get("status"))
 	pageToken := q.Get("page_token")
 
-	var pubRaw *string
-	if v := q.Get("publication_id"); v != "" {
-		pubRaw = &v
-	}
-	publicationID, err := parseOptionalPublicationID(pubRaw)
-	if err != nil {
-		writeError(r.Context(), w, err)
-		return
+	// q.Has, not q.Get: a caller that sends `?publication_id=` (or whitespace)
+	// is asking to filter and has sent a malformed value. Treating that as
+	// "absent" would silently widen the response to every edition in the
+	// project, which is the opposite of what was asked for.
+	var publicationID *uuid.UUID
+	if q.Has("publication_id") {
+		raw := strings.TrimSpace(q.Get("publication_id"))
+		if raw == "" {
+			writeError(r.Context(), w, fmt.Errorf("%w: publication_id filter cannot be empty", domain.ErrInvalidRequest))
+			return
+		}
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			writeError(r.Context(), w, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err))
+			return
+		}
+		publicationID = &parsed
 	}
 
 	page, err := h.newsletter.ListNewsletters(r.Context(), service.ListNewslettersInput{
