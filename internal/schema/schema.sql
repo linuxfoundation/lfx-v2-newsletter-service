@@ -480,6 +480,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_publications_project_slug
 
 CREATE INDEX IF NOT EXISTS idx_publications_project ON newsletter_publications (project_uid);
 
+-- Covers the keyset list: the query filters on project_uid and orders by
+-- (created_at DESC, id DESC), so the index carries the filter and both cursor
+-- columns. idx_publications_project above covers only the filter, which leaves
+-- the ordering to a heap scan plus sort on every page.
+CREATE INDEX IF NOT EXISTS idx_publications_project_list
+    ON newsletter_publications (project_uid, created_at DESC, id DESC);
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_publications_one_default_per_project
     ON newsletter_publications (project_uid) WHERE is_default;
 

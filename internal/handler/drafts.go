@@ -175,10 +175,18 @@ func parseUUID(raw string) (uuid.UUID, error) {
 // than being silently dropped. The list filter parses its own value inline
 // because there absent and empty must be told apart.
 func parseOptionalPublicationID(raw *string) (*uuid.UUID, error) {
-	if raw == nil || strings.TrimSpace(*raw) == "" {
+	// Absent means unfiled. A key that IS present but blank is a different
+	// thing: the caller tried to name a publication and sent nothing usable.
+	// Silently treating that as absence hides a client bug behind a 201 and an
+	// edition filed nowhere.
+	if raw == nil {
 		return nil, nil
 	}
-	id, err := uuid.Parse(strings.TrimSpace(*raw))
+	trimmed := strings.TrimSpace(*raw)
+	if trimmed == "" {
+		return nil, fmt.Errorf("%w: publication_id was supplied but empty: omit the key entirely to leave the edition unfiled", domain.ErrInvalidRequest)
+	}
+	id, err := uuid.Parse(trimmed)
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err)
 	}

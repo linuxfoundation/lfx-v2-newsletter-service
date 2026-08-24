@@ -342,9 +342,14 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	existing.CommitteeUIDs = normalizeCommitteeUIDs(in.CommitteeUIDs)
 	existing.ScheduledAt = in.ScheduledAt
 	// Only move the edition when the caller actually supplied publication_id.
-	// An omitted field preserves the current publication.
+	// An omitted field preserves the current publication AND the stored
+	// publication_id_set flag: marking a legacy row as "decided" just because
+	// someone edited its subject would leave publication_id null while hiding
+	// the row from the backfill forever. The flag is stamped only on a real
+	// file/unfile decision.
 	if in.PublicationIDSet {
 		existing.PublicationID = in.PublicationID
+		existing.PublicationIDSet = true
 	}
 
 	return s.repo.Update(ctx, existing, in.ExpectedVersion)

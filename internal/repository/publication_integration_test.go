@@ -758,3 +758,55 @@ func TestBackfillFilesLegacyRowWrittenAfterAnEarlierApply(t *testing.T) {
 		t.Error("the backfill filed the row without stamping publication_id_set, so a later unfile would be undone on restart")
 	}
 }
+
+// TestUpdatePreservesPublicationIDSetWhenOmitted is the regression test for the
+// flag being stamped unconditionally. A legacy row carries
+// publication_id_set=false, which is what marks it as still needing the
+// backfill. Editing any unrelated field must not flip that to true, or the row
+// is recorded as "a writer decided this is unfiled" and the backfill skips it
+// forever while publication_id stays null.
+func TestUpdatePreservesPublicationIDSetWhenOmitted(t *testing.T) {
+	repo := newPublicationIntegrationRepo(t)
+	ctx := context.Background()
+	db := repo.db
+
+	if _, err := db.ExecContext(ctx, "TRUNCATE newsletters CASCADE"); err != nil {
+		t.Fatalf("truncate newsletters: %v", err)
+	}
+
+	// A legacy row: no publication, never decided by a publication-aware writer.
+	var id uuid.UUID
+	if err := db.QueryRowContext(ctx, `
+        INSERT INTO newsletters (project_uid, subject, body_html, ed_reply_email, created_by, status, publication_id_set)
+        VALUES ('project-flag', 'Legacy', '<p>x</p>', 'ed@example.org', 'user', 'draft', false)
+        RETURNING id`).Scan(&id); err != nil {
+		t.Fatalf("seed legacy newsletter: %v", err)
+	}
+
+	nlRepo := NewPostgresNewsletterRepo(db)
+	existing, err := nlRepo.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	// Edit an unrelated field, exactly as the service does when the caller
+	// omitted publication_id: PublicationID and PublicationIDSet are carried
+	// through from the loaded row untouched.
+	existing.Subject = "Renamed"
+	if _, err := nlRepo.Update(ctx, existing, existing.Version); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var flag bool
+	var pubID *uuid.UUID
+	if err := db.QueryRowContext(ctx,
+		"SELECT publication_id_set, publication_id FROM newsletters WHERE id = ?", id).Scan(&flag, &pubID); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if flag {
+		t.Error("editing an unrelated field flipped publication_id_set to true; the legacy row is now permanently hidden from the backfill")
+	}
+	if pubID != nil {
+		t.Errorf("publication_id changed to %v, want it left null", pubID)
+	}
+}

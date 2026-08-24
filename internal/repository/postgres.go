@@ -222,9 +222,13 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		// omitted publication_id on PUT preserves the current link, an explicit
 		// null unfiles the edition (LFXV2-2582).
 		Set("publication_id = ?", n.PublicationID).
-		// Stamped on every update so a null publication_id written here reads
-		// as "deliberately unfiled" and the legacy backfill leaves it alone.
-		Set("publication_id_set = true").
+		// Carries the model's flag rather than hard-coding true. Stamping true
+		// on every update marked a legacy row as "decided" the first time
+		// anyone edited its subject, which permanently hid it from the backfill
+		// while leaving publication_id null. The service sets this only when
+		// the caller actually filed or unfiled the edition; an update that
+		// omits publication_id round-trips the stored value unchanged.
+		Set("publication_id_set = ?", n.PublicationIDSet).
 		// Full replace: an omitted/null scheduled_at clears it, consistent with
 		// every other field here (LFXV2-2685).
 		Set("scheduled_at = ?", n.ScheduledAt).
