@@ -54,7 +54,7 @@ func TestReconcileCardBorders_KeepsOwnRadius(t *testing.T) {
 
 // TestReconcileCardBorders_AddsShadowToCardCell pins that the card cell (a full
 // border enclosed by a card radius) gets the drop shadow MJML strips, drawn in
-// its own border colour, matching the gatewaze source.
+// its own border colour, matching the reference source.
 func TestReconcileCardBorders_AddsShadowToCardCell(t *testing.T) {
 	in := `<div style="border-radius:14px;margin:0px auto;max-width:600px">` +
 		`<table style="border-radius:14px;width:100%">` +

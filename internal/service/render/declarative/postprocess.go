@@ -19,7 +19,7 @@ var voidElements = map[string]bool{
 }
 
 // cardShadowOffset is the AAIF card drop shadow — a hard offset with no blur,
-// drawn in the card's own border colour (matching the gatewaze source). It
+// drawn in the card's own border colour (matching the reference source). It
 // degrades gracefully: clients that ignore box-shadow simply show the border.
 const cardShadowOffset = "6px 6px 0"
 
@@ -29,7 +29,7 @@ const cardShadowOffset = "6px 6px 0"
 const cardGap = "24px"
 
 // reconcileCardBorders post-processes mjml-compiled HTML so a bordered, rounded
-// "card" renders like the gatewaze source: rounded corners, a drop shadow, and a
+// "card" renders like the reference source: rounded corners, a drop shadow, and a
 // gap between stacked cards.
 //
 // MJML renders a bordered, rounded mj-section with the border-radius on the

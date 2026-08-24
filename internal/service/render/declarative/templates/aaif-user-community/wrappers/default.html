@@ -24,12 +24,12 @@
   Styling model: this template owns 100% of its look with INLINE styles only —
   none of the shared authoring classes (card/eyebrow/title/body/link) are used,
   so a different newsletter can look completely different from its own set. The
-  gatewaze source additionally ships a dark-mode <style> block plus a light/dark
+  reference source additionally ships a dark-mode <style> block plus a light/dark
   logo swap; the LFX declarative renderer emits no <style> and forwards no
   dark-mode toggle, so this port keeps the light design only (a single light
   logo) and drops the dark-mode enhancement. The `dm-*` class names are inert
   here — the renderer's class mapping ignores them — but are kept so this file
-  stays diff-close to the gatewaze source of truth.
+  stays diff-close to the reference source of truth.
 
   Per-brand URLs (Subscribe, socials, postal address) are baked into the markup
   directly. Sender identity and the opt-out row are RUNTIME data guarded by if=

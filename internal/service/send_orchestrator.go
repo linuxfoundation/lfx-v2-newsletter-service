@@ -417,7 +417,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// only a fallback for dev mode or a resolution failure.
 	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), draft.EDReplyEmail)
 
-	// Layout-based newsletters carry the FULL emitter email (gatewaze wrapper +
+	// Layout-based newsletters carry the FULL emitter email (the wrapper +
 	// blocks, MJML-compiled) in body_html, with per-recipient runtime fields as
 	// %%…%% placeholder sentinels. The emitter owns the whole email, so the send
 	// path must NOT re-wrap it in email_chrome — doing so would nest a complete
@@ -1482,7 +1482,7 @@ type bodyRenderInput struct {
 // renderBody returns the HTML and text bodies for a send.
 //
 //   - LAYOUT path (isLayout true): the emitter already produced the full email
-//     (gatewaze wrapper + blocks). Use bodyHTML verbatim as the HTML and derive
+//     (the wrapper + blocks). Use bodyHTML verbatim as the HTML and derive
 //     the text counterpart from it via stripHTML. The email_chrome envelope is
 //     deliberately NOT applied — see the call sites and the COMPLIANCE note in
 //     the package/PR for what the wrapper does and does not carry.
