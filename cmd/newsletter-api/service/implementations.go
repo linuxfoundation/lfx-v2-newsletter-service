@@ -54,6 +54,29 @@ const (
 // finish is recovered by the stuck-sending sweep on the next pod.
 const drainTimeout = 20 * time.Second
 
+// newBunDB builds the shared production bun.DB, with
+// bun.WithDiscardUnknownColumns() so a Returning("*") row carrying a column
+// the destination struct doesn't map is silently ignored instead of erroring
+// the scan. Full rationale, the columns this currently covers, and what it
+// does not cover: see "Rolling deployment and schema column additions" in
+// docs/service-helm-chart.md.
+//
+// Extracted to its own constructor, rather than an inline bun.NewDB call in
+// InitInfrastructure, so TestNewBunDB_DiscardsUnknownColumns
+// (implementations_integration_test.go) can call it directly and exercise
+// the exact wiring it returns. The guarantee is scoped to this function:
+// dropping WithDiscardUnknownColumns() from the line below fails that test.
+// It does NOT guarantee InitInfrastructure keeps calling newBunDB at all — a
+// future edit that reverts the assignment below to an inline
+// bun.NewDB(sqlDB, pgdialect.New()) leaves this function, and the test that
+// covers it, untouched and green, while silently dropping the flag from
+// production. InitInfrastructure's single assignment to bunDB (below) is the
+// only thing that wires this constructor in; keep it that way so there's one
+// call site for a reviewer to check.
+func newBunDB(sqlDB *sql.DB) *bun.DB {
+	return bun.NewDB(sqlDB, pgdialect.New(), bun.WithDiscardUnknownColumns())
+}
+
 // InitInfrastructure wires every singleton in dependency order. Idempotent
 // in the sense that callers should not call it twice.
 func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
@@ -69,7 +92,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	pgPool = pool
 
 	sqlDB = stdlib.OpenDBFromPool(pool)
-	bunDB = bun.NewDB(sqlDB, pgdialect.New())
+	bunDB = newBunDB(sqlDB)
 
 	// Step 2: bootstrap database schema (idempotent, advisory-locked).
 	if err := schema.Apply(ctx, pgPool); err != nil {
