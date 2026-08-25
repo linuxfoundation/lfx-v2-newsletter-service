@@ -52,10 +52,18 @@ type CreatePublicationInput struct {
 type UpdatePublicationInput struct {
 	Name           *string
 	WrapperContent any
-	TemplateSetID  *string
 	EditorType     *string
-	SenderEmail    *string
-	ViewOnlineBase *string
+	// The three nullable columns are each a value plus a presence flag. The
+	// flag is what separates "the caller did not mention this field" from "the
+	// caller asked to clear it": with the flag set and the value nil, the
+	// column is cleared; with the flag unset the stored value is preserved. A
+	// bare *string cannot express both.
+	TemplateSetID     *string
+	TemplateSetIDSet  bool
+	SenderEmail       *string
+	SenderEmailSet    bool
+	ViewOnlineBase    *string
+	ViewOnlineBaseSet bool
 }
 
 // maxSlugLength bounds the slug so it stays comfortably inside a URL path
@@ -187,7 +195,10 @@ func (s *PublicationService) UpdatePublication(ctx context.Context, projectUID s
 		}
 		pub.Name = name
 	}
-	if in.TemplateSetID != nil {
+	// Gate on the presence flag, not on the pointer. Gating on the pointer makes
+	// a nil mean "not mentioned", which silently swallows a request to clear
+	// the column.
+	if in.TemplateSetIDSet {
 		pub.TemplateSetID = in.TemplateSetID
 	}
 	// Validate before assigning: an unrecognized value would otherwise reach the
@@ -199,10 +210,10 @@ func (s *PublicationService) UpdatePublication(ctx context.Context, projectUID s
 		}
 		pub.EditorType = editorType
 	}
-	if in.SenderEmail != nil {
+	if in.SenderEmailSet {
 		pub.SenderEmail = in.SenderEmail
 	}
-	if in.ViewOnlineBase != nil {
+	if in.ViewOnlineBaseSet {
 		pub.ViewOnlineBase = in.ViewOnlineBase
 	}
 	if in.WrapperContent != nil {

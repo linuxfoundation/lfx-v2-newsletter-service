@@ -403,10 +403,22 @@ type CreatePublicationRequest struct {
 type UpdatePublicationRequest struct {
 	Name           *string `json:"name,omitempty"`
 	WrapperContent any     `json:"wrapper_content,omitempty"`
-	TemplateSetID  *string `json:"template_set_id,omitempty"`
 	EditorType     *string `json:"editor_type,omitempty"`
-	SenderEmail    *string `json:"sender_email,omitempty"`
-	ViewOnlineBase *string `json:"view_online_base,omitempty"`
+	// The three nullable columns below are raw messages, not *string, because
+	// they are the only fields a caller can legitimately want to CLEAR. A
+	// *string collapses "key absent" and "key present with value null" into
+	// nil, which leaves no way to express clearing — the field could be set and
+	// changed but never emptied. As raw messages:
+	//
+	//	field absent  -> leave the stored value alone
+	//	null          -> clear the column
+	//	"value"       -> set the column
+	//
+	// Name and EditorType stay *string: both are NOT NULL with a meaningful
+	// default, so clearing them is not a valid operation.
+	TemplateSetID  json.RawMessage `json:"template_set_id,omitempty"`
+	SenderEmail    json.RawMessage `json:"sender_email,omitempty"`
+	ViewOnlineBase json.RawMessage `json:"view_online_base,omitempty"`
 }
 
 // PublicationListResponse is the body of GET /projects/{project_uid}/newsletter-publications.

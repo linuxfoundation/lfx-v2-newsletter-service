@@ -131,13 +131,32 @@ func (h *Handler) UpdatePublication(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	templateSetID, templateSetIDSet, err := parseNullableString(body.TemplateSetID, "template_set_id")
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+	senderEmail, senderEmailSet, err := parseNullableString(body.SenderEmail, "sender_email")
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+	viewOnlineBase, viewOnlineBaseSet, err := parseNullableString(body.ViewOnlineBase, "view_online_base")
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+
 	pub, err := h.publication.UpdatePublication(r.Context(), projectUID, id, expectedVersion, service.UpdatePublicationInput{
-		Name:           body.Name,
-		WrapperContent: body.WrapperContent,
-		TemplateSetID:  body.TemplateSetID,
-		EditorType:     body.EditorType,
-		SenderEmail:    body.SenderEmail,
-		ViewOnlineBase: body.ViewOnlineBase,
+		Name:              body.Name,
+		WrapperContent:    body.WrapperContent,
+		EditorType:        body.EditorType,
+		TemplateSetID:     templateSetID,
+		TemplateSetIDSet:  templateSetIDSet,
+		SenderEmail:       senderEmail,
+		SenderEmailSet:    senderEmailSet,
+		ViewOnlineBase:    viewOnlineBase,
+		ViewOnlineBaseSet: viewOnlineBaseSet,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -154,6 +173,37 @@ func (h *Handler) UpdatePublication(w http.ResponseWriter, r *http.Request) {
 // requires first unlinking or deleting all its editions, which is deferred to a
 // follow-up ticket. The FK constraint makes this safe: any attempt to delete a
 // publication with editions will fail at the database layer.
+
+// parseNullableString decodes an optional, nullable string field on a PATCH-
+// style update body. It returns the value plus whether the caller mentioned the
+// field at all:
+//
+//	field absent  -> (nil, false) — leave the stored value alone
+//	null          -> (nil, true)  — clear the column
+//	"value"       -> (&value, true)
+//
+// The presence flag is the whole point: without it, "absent" and "null" both
+// arrive as nil and the column can be set but never cleared. An empty or
+// whitespace-only string is treated as null, since a blank value in a nullable
+// column is the same intent as clearing it and storing "" would make the column
+// falsy-but-present.
+func parseNullableString(raw json.RawMessage, field string) (*string, bool, error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil, true, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, true, fmt.Errorf("%w: %s must be a string or null", domain.ErrInvalidRequest, field)
+	}
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return nil, true, nil
+	}
+	return &trimmed, true, nil
+}
 
 // toAPIPublication converts a domain model into the public API DTO.
 func toAPIPublication(pub *model.NewsletterPublication) *publicapi.NewsletterPublication {
