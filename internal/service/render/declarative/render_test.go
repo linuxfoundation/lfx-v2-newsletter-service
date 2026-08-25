@@ -780,6 +780,33 @@ func TestRender_AuthoredCardShadowSurvives(t *testing.T) {
 	}
 }
 
+// TestRenderMJML_SlotSeparatorBetweenChildren asserts the <slot><separator>
+// renders the divider BETWEEN consecutive child blocks only — never before the
+// first or after the last — so mlops_community's bricks get an inline rule that
+// matches the composer canvas. One child yields no separator; three yield two.
+func TestRenderMJML_SlotSeparatorBetweenChildren(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+	child := func(title string) Block {
+		return Block{BlockType: "blog_post", Content: map[string]any{"title": title, "description": "<p>d</p>", "blog_link": "https://example.com", "link_text": "read"}}
+	}
+	for _, tc := range []struct {
+		n, wantSeparators int
+	}{{1, 0}, {2, 1}, {3, 2}} {
+		children := make([]Block, 0, tc.n)
+		for i := 0; i < tc.n; i++ {
+			children = append(children, child("brick"))
+		}
+		layout := Layout{Blocks: []Block{{BlockType: "mlops_community", Content: map[string]any{}, Blocks: children}}}
+		out, err := RenderMJML(layout, tmpl, nil)
+		if err != nil {
+			t.Fatalf("n=%d: %v", tc.n, err)
+		}
+		if got := strings.Count(out, "border-top:1px solid #d8d8db"); got != tc.wantSeparators {
+			t.Errorf("%d children: got %d separators, want %d (between-only)", tc.n, got, tc.wantSeparators)
+		}
+	}
+}
+
 // TestRender_SplitCardShadowIndexStaysAligned covers the box-shadow index
 // desync: hot_take's poll uses buttons, so writeSection cannot keep it as one
 // table-safe card and splits it into multiple radiused sibling wrappers (the

@@ -11,7 +11,9 @@
     - Each brick renders inside a <Section class="brick" style="padding:0">.
     - A divider renders BETWEEN bricks (not before the first, not after the
       last) via the <separator> child of <slot>. Each separator is an
-      inline-styled <Hr> — email-safe across Gmail / Apple Mail / Outlook.
+      inline-styled <div> with a top border (like the footer .dm-rule) so both
+      the sent email and the composer canvas render the exact same thin rule —
+      email-safe across Gmail / Apple Mail / Outlook.
     - The card's horizontal inset lives here; bricks use padding:0 so they
       don't double-indent.
 -->
@@ -19,7 +21,7 @@
   <div style="padding:22px 22px 10px">
     <Text class="dm-h" style="margin:0 0 14px;color:#131313;font-size:11px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;line-height:1"><span class="dm-dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:#131313;vertical-align:middle;font-size:0;line-height:0">&nbsp;</span><span class="dm-dot" style="display:inline-block;width:9px;height:9px;background-color:#131313;vertical-align:middle;margin:0 12px 0 5px;font-size:0;line-height:0">&nbsp;</span>AAIF COMMUNITY</Text>
     <slot name="children">
-      <separator><Hr class="dm-rule" style="border:0;border-top:1px solid #d8d8db;margin:0 0 16px" /></separator>
+      <separator><div class="dm-rule" style="border-top:1px solid #d8d8db;margin:0 0 16px"></div></separator>
     </slot>
   </div>
 </Section>

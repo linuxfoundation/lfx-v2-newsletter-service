@@ -119,8 +119,26 @@ func bindNode(n *parsedNode, ctx bindCtx) ([]*node, error) {
 			// assembler, not here. Render nothing.
 			return nil, nil
 		}
+		// A <separator> child of the slot is rendered BETWEEN consecutive child
+		// blocks (never before the first or after the last), giving slotted
+		// children an inline, email-safe divider. Bind it fresh per gap so no
+		// node is shared across the tree — translation mutates nodes in place.
+		var separator []*parsedNode
+		for _, c := range n.children {
+			if c != nil && c.Tag == "separator" {
+				separator = c.children
+				break
+			}
+		}
 		var out []*node
-		for _, child := range ctx.children {
+		for i, child := range ctx.children {
+			if i > 0 && len(separator) > 0 {
+				sep, err := bindNodes(separator, ctx)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, sep...)
+			}
 			rendered, err := bindBlock(child, ctx.templates)
 			if err != nil {
 				return nil, err
