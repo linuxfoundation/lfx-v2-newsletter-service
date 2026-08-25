@@ -472,6 +472,43 @@ func TestLayoutUpdate_TriggerRejectsLegacyBodyHTMLEdit(t *testing.T) {
 	}
 }
 
+func TestLayoutUpdate_TriggerAllowsMetadataOnlyEdit(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	// Make it a layout row.
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_layout = ?::jsonb WHERE id = ?`,
+		`{"wrapper_key":"default","blocks":[]}`, draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("set body_layout: %v", err)
+	}
+
+	// A metadata-only edit that leaves body_html unchanged must pass Guard 2 even
+	// without app.allow_layout_update: the guard is scoped to body_html content
+	// changes (NEW.body_html IS DISTINCT FROM OLD.body_html), so it must not
+	// over-fire on status/metadata updates like MarkSending.
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET subject = ?, version = version + 1 WHERE id = ?`,
+		"metadata-only edit", draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("metadata-only edit of a layout row should be allowed by the trigger: %v", err)
+	}
+
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after metadata-only edit: %v", err)
+	}
+	if n.Subject != "metadata-only edit" {
+		t.Fatalf("subject should be updated, got %q", n.Subject)
+	}
+	if n.BodyHTML != "<p>body</p>" {
+		t.Fatalf("body_html should be unchanged after a metadata-only edit, got %q", n.BodyHTML)
+	}
+}
+
 func TestArmedMutations_TriggerRejectsUnauthorized(t *testing.T) {
 	repo := newIntegrationRepo(t)
 

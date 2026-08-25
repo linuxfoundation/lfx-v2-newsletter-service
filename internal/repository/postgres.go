@@ -269,7 +269,11 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 			return fmt.Errorf("update newsletter rows affected: %w", err)
 		}
 		if rowsAffected == 0 {
-			return r.classifyMissing(ctx, n.ID)
+			// Classify on the enclosing tx, not the pool: running the SELECT on
+			// r.db here would hold this transaction's connection open while
+			// acquiring a second pool connection (pool-exhaustion / deadlock risk),
+			// the hazard the send-transition methods thread tx to avoid.
+			return r.classifyMissingWithDB(ctx, tx, n.ID)
 		}
 		return nil
 	})
@@ -843,10 +847,12 @@ func (r *PostgresNewsletterRepo) DeleteUnsubscribe(ctx context.Context, projectU
 	return nil
 }
 
-// classifyMissing distinguishes ErrNotFound from ErrVersionMismatch after an
-// Update affected zero rows.
-func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UUID) error {
-	exists, err := r.db.NewSelect().
+// classifyMissingWithDB explains a zero-rows Update: not-found vs version
+// mismatch. It takes an explicit bun.IDB so a caller inside a transaction can
+// pass its tx and run the SELECT on that connection rather than acquiring a
+// second pool connection (mirrors classifySendTransitionMissWithDB).
+func (r *PostgresNewsletterRepo) classifyMissingWithDB(ctx context.Context, db bun.IDB, id uuid.UUID) error {
+	exists, err := db.NewSelect().
 		Model((*model.Newsletter)(nil)).
 		Where("id = ?", id).
 		Exists(ctx)
