@@ -76,6 +76,19 @@ const maxSlugLength = 100
 // to migrate slugs that are already in circulation.
 var slugPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// trimOptional trims an optional string, collapsing a blank result to nil so a
+// whitespace-only value is stored as "not set" rather than as padding.
+func trimOptional(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*v)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
 // marshalWrapperContent normalizes an optional wrapper_content value into the
 // JSONB bytes the model persists. Nil yields the empty-object default.
 func marshalWrapperContent(v any) ([]byte, error) {
@@ -133,15 +146,20 @@ func (s *PublicationService) CreatePublication(ctx context.Context, in CreatePub
 		return nil, err
 	}
 
+	// Trim the optional strings the same way the update path does. Without
+	// this, POST with " a@b.com " stores the padding while a later PUT of the
+	// same value silently strips it, so the row changes without the caller
+	// changing anything. Empty after trimming means "not set", matching how an
+	// update treats an explicit null.
 	pub := &model.NewsletterPublication{
 		ProjectUID:     in.ProjectUID,
 		Slug:           slug,
 		Name:           name,
 		WrapperContent: wrapperContent,
-		TemplateSetID:  in.TemplateSetID,
+		TemplateSetID:  trimOptional(in.TemplateSetID),
 		EditorType:     editorType,
-		SenderEmail:    in.SenderEmail,
-		ViewOnlineBase: in.ViewOnlineBase,
+		SenderEmail:    trimOptional(in.SenderEmail),
+		ViewOnlineBase: trimOptional(in.ViewOnlineBase),
 		CreatedBy:      in.CreatedBy,
 	}
 	if err := s.repo.Create(ctx, pub); err != nil {

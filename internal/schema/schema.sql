@@ -472,6 +472,23 @@ END$$;
 ALTER TABLE newsletter_publications
     ADD COLUMN IF NOT EXISTS sender_email TEXT;
 
+-- The slug format is contract, not just convention: it goes into a URL path
+-- segment and is permanent once a per-publication View Online link is built on
+-- it. CreatePublication enforces the same pattern, but that is application code
+-- only — the column would otherwise accept a slash or a space written by any
+-- future path (a migration, a fixture, a direct write). Mirrors the editor_type
+-- check above, including the idempotent guard.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletter_publications_slug_format_check'
+    ) THEN
+        ALTER TABLE newsletter_publications
+            ADD CONSTRAINT newsletter_publications_slug_format_check
+            CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) <= 100);
+    END IF;
+END$$;
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_publications_project_id
     ON newsletter_publications (project_uid, id);
 
