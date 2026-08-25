@@ -23,7 +23,7 @@ The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It ow
 - **Recipient resolution** via NATS request/reply to committee-service (`lfx.committee-api.list_members`).
 - **Email dispatch**: the send orchestrator mints the email-service `group_id`, renders email chrome, and fans out per-recipient sends to `lfx-v2-email-service` over NATS (`lfx.email-service.send_email`).
 - **State transitions** for drafts (draft → sent; a draft is marked sent only when at least one recipient was delivered to).
-- **Unsubscribe**: per-recipient HMAC-signed, project-scoped opt-out links served at `GET /newsletters/unsubscribe`.
+- **Unsubscribe**: per-recipient HMAC-signed, project-scoped opt-out links. Two-stage and unauthenticated (the HMAC token is the authorization): `GET /newsletters/unsubscribe` renders a read-only confirmation page; `POST /newsletters/unsubscribe` performs the opt-out (reached from the confirmation form or an RFC 8058 one-click POST).
 
 > AI content generation does not live in this service; it does not proxy AI calls.
 
@@ -104,7 +104,7 @@ internal/handler/
 ├── list.go                   # GET /projects/{project_uid}/newsletters unified list
 ├── analytics.go              # GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics
 ├── open.go                   # GET /projects/{project_uid}/newsletter-opens/{newsletter_uid} tracking pixel
-├── unsubscribe.go            # GET /newsletters/unsubscribe (unauthenticated, HMAC token)
+├── unsubscribe.go            # GET + POST /newsletters/unsubscribe (unauthenticated, HMAC token)
 ├── health.go                 # /livez, /readyz
 ├── middleware.go             # JWKS auth (AuthValidator), request log
 └── request_id.go             # X-Request-ID propagation

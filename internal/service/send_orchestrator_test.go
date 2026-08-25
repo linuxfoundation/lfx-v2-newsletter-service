@@ -63,6 +63,8 @@ type capturedSend struct {
 	From            string
 	FromDisplayName string
 	ReplyTo         string
+	ListUnsubURL    string
+	ListUnsubPost   bool
 }
 
 type fakeEmailDispatcher struct {
@@ -80,6 +82,8 @@ func (f *fakeEmailDispatcher) SendEmail(_ context.Context, in port.SendEmailInpu
 		From:            in.From,
 		FromDisplayName: in.FromDisplayName,
 		ReplyTo:         in.ReplyTo,
+		ListUnsubURL:    in.ListUnsubscribeURL,
+		ListUnsubPost:   in.ListUnsubscribePost,
 	})
 	return uuid.NewString(), nil
 }
@@ -656,6 +660,15 @@ func TestTestSendRendersComplianceFooterWithRealUnsubscribeLink(t *testing.T) {
 	if !strings.Contains(s.HTML, "https://app.lfx.dev/newsletters/my") || !strings.Contains(s.Text, "https://app.lfx.dev/newsletters/my") {
 		t.Errorf("test-send missing My Newsletters link")
 	}
+
+	// The one-click List-Unsubscribe header must carry the same real,
+	// verifiable link rendered in the body — not a placeholder or a stale URL.
+	if !s.ListUnsubPost {
+		t.Errorf("test-send ListUnsubscribePost=false, want true")
+	}
+	if s.ListUnsubURL != "https://api.example/newsletters/unsubscribe?t="+token {
+		t.Errorf("test-send ListUnsubscribeURL = %q, want the same link rendered in the body", s.ListUnsubURL)
+	}
 }
 
 // TestTestSendUsesParsedAddrSpec asserts a display-name to_email such as
@@ -861,6 +874,69 @@ func TestSendNewsletterPopulatesEnvelope(t *testing.T) {
 		if s.ReplyTo != draft.EDReplyEmail {
 			t.Errorf("send to %s: ReplyTo=%q, want %q", s.To, s.ReplyTo, draft.EDReplyEmail)
 		}
+	}
+}
+
+// TestSendNewsletterPopulatesListUnsubscribeHeaders asserts every per-recipient
+// send carries a one-click List-Unsubscribe URL matching the placeholder
+// substituted into that recipient's own body, plus ListUnsubscribePost=true,
+// whenever the orchestrator's UnsubscribeService is enabled.
+func TestSendNewsletterPopulatesListUnsubscribeHeaders(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 2 {
+		t.Fatalf("got %d sends, want 2", len(email.sends))
+	}
+	for _, s := range email.sends {
+		if !s.ListUnsubPost {
+			t.Errorf("send to %s: ListUnsubscribePost=false, want true", s.To)
+		}
+		if s.ListUnsubURL == "" {
+			t.Errorf("send to %s: ListUnsubscribeURL is empty, want the recipient's unsubscribe link", s.To)
+			continue
+		}
+		if !strings.Contains(s.HTML, s.ListUnsubURL) {
+			t.Errorf("send to %s: ListUnsubscribeURL %q not found in body HTML %q", s.To, s.ListUnsubURL, s.HTML)
+		}
+	}
+}
+
+// TestSendNewsletterOmitsListUnsubscribeWhenDisabled asserts that when the
+// orchestrator's UnsubscribeService is disabled (no HMAC secret configured),
+// sends carry neither a List-Unsubscribe URL nor the one-click Post flag.
+func TestSendNewsletterOmitsListUnsubscribeWhenDisabled(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, nil, "")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	if s.ListUnsubURL != "" || s.ListUnsubPost {
+		t.Errorf("send to %s: ListUnsubscribeURL=%q ListUnsubscribePost=%v, want empty/false when unsubscribe is disabled", s.To, s.ListUnsubURL, s.ListUnsubPost)
 	}
 }
 

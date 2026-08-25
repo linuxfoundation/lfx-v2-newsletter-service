@@ -1016,6 +1016,10 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	}
 
 	var htmlBody, textBody string
+	// The List-Unsubscribe header URL for this test recipient. Set only on the
+	// legacy path, where a real opt-out link is minted for to_email; the layout
+	// test path mints no token, so it stays empty and no header is sent.
+	var testListUnsubURL string
 	if isLayout {
 		// Layout test send: recompile server-side with the opt-out row SUPPRESSED
 		// (unsubFooterSuppressed drops it via the wrapper's if= guard) — a test
@@ -1059,6 +1063,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 			// no HTML-escapable characters, so the footer is byte-identical to a
 			// real send's post-substitution body.
 			chrome.UnsubscribeURL = o.unsub.BuildURL(in.ProjectUID, toEmail)
+			testListUnsubURL = chrome.UnsubscribeURL
 		}
 		if o.selfServeBaseURL != "" {
 			chrome.MyNewslettersURL = o.selfServeBaseURL + myNewslettersPath
@@ -1098,7 +1103,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		dispatchHTML = o.substituteTestPlaceholders(htmlBody)
 		dispatchText = o.substituteTestPlaceholders(textBody)
 	}
-	if _, dispatchErr := o.email.SendEmail(ctx, port.SendEmailInput{
+	sendInput := port.SendEmailInput{
 		To:              toEmail,
 		Subject:         in.Subject,
 		HTML:            dispatchHTML,
@@ -1106,7 +1111,12 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		From:            o.resolveFromAddress(ctx, in.ProjectUID),
 		FromDisplayName: fromDisplayName,
 		ReplyTo:         replyTo,
-	}); dispatchErr != nil {
+	}
+	if testListUnsubURL != "" {
+		sendInput.ListUnsubscribeURL = testListUnsubURL
+		sendInput.ListUnsubscribePost = true
+	}
+	if _, dispatchErr := o.email.SendEmail(ctx, sendInput); dispatchErr != nil {
 		return fmt.Errorf("dispatch test-send: %w", dispatchErr)
 	}
 	slog.InfoContext(ctx, "test-send dispatched",
@@ -1281,9 +1291,18 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 			// body (and its text counterpart). The VIEW_ONLINE / MANAGE sentinels
 			// are layout-only, so env.IsLayout gates them: the legacy path
 			// substitutes ONLY the unsubscribe sentinel, leaving any literal
-			// %%…%% an author placed in body_html untouched.
+			// %%…%% an author placed in body_html untouched. substitutePlaceholders
+			// also embeds the per-recipient unsubscribe URL (o.unsub.BuildURL).
 			recipientHTML := o.substitutePlaceholders(env.HTML, projectUID, recipient.Email, true, env.IsLayout)
 			recipientText := o.substitutePlaceholders(env.Text, projectUID, recipient.Email, false, env.IsLayout)
+			// List-Unsubscribe header (RFC 8058): the raw per-recipient opt-out URL,
+			// the same one substitutePlaceholders embeds in the body — built once
+			// more here because the header needs the unescaped URL, not the
+			// HTML-escaped body form.
+			var listUnsubscribeURL string
+			if o.unsub.Enabled() {
+				listUnsubscribeURL = o.unsub.BuildURL(projectUID, recipient.Email)
+			}
 			// Honour the nil-dispatcher contract documented above. Production
 			// wiring always provides one, but tests and misconfigured local
 			// envs should never panic on an unauthenticated send path.
@@ -1293,7 +1312,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				mu.Unlock()
 				return
 			}
-			_, err := o.email.SendEmail(ctx, port.SendEmailInput{
+			sendInput := port.SendEmailInput{
 				To:              recipient.Email,
 				Subject:         env.Subject,
 				HTML:            recipientHTML,
@@ -1304,7 +1323,12 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				GroupID:         env.GroupID,
 				SendAt:          env.SendAt,
 				BatchID:         env.BatchID,
-			})
+			}
+			if listUnsubscribeURL != "" {
+				sendInput.ListUnsubscribeURL = listUnsubscribeURL
+				sendInput.ListUnsubscribePost = true
+			}
+			_, err := o.email.SendEmail(ctx, sendInput)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {

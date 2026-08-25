@@ -112,21 +112,51 @@ func NewEmailDispatcher(client *Client) *EmailDispatcher {
 	return &EmailDispatcher{client: client}
 }
 
+// sendEmailWire mirrors emailapi.SendEmailRequest (pinned email-service
+// v0.1.5) plus the RFC 8058 one-click unsubscribe fields, which the pinned
+// version does not yet expose. Defined locally for the same reason as
+// openEventWire/emailRecipientWire above — so newsletter-service can forward
+// List-Unsubscribe intent over NATS without a dep bump. email-service ignores
+// the extra fields until it adds support (the SendGrid direct dispatcher
+// already honours them today); collapse this back onto emailapi.SendEmailRequest
+// once the email-service pin gains these fields.
+type sendEmailWire struct {
+	To                  string `json:"to"`
+	Subject             string `json:"subject"`
+	HTML                string `json:"html"`
+	Text                string `json:"text"`
+	From                string `json:"from,omitempty"`
+	FromDisplayName     string `json:"from_display_name,omitempty"`
+	ReplyTo             string `json:"reply_to,omitempty"`
+	GroupID             string `json:"group_id,omitempty"`
+	ListUnsubscribeURL  string `json:"list_unsubscribe_url,omitempty"`
+	ListUnsubscribePost bool   `json:"list_unsubscribe_post,omitempty"`
+}
+
+// newSendEmailWire converts the transport-agnostic send input into the NATS wire
+// shape email-service consumes. Extracted so the field mapping and JSON tags —
+// the only place the unsubscribe intent reaches the default provider — are
+// covered by a focused conversion test rather than only through a fake dispatcher.
+func newSendEmailWire(in port.SendEmailInput) sendEmailWire {
+	return sendEmailWire{
+		To:                  in.To,
+		Subject:             in.Subject,
+		HTML:                in.HTML,
+		Text:                in.Text,
+		From:                in.From,
+		FromDisplayName:     in.FromDisplayName,
+		ReplyTo:             in.ReplyTo,
+		GroupID:             in.GroupID,
+		ListUnsubscribeURL:  in.ListUnsubscribeURL,
+		ListUnsubscribePost: in.ListUnsubscribePost,
+	}
+}
+
 // SendEmail dispatches one email to lfx-v2-email-service. Email-service mints
 // the group_id when missing; we always pass one through so analytics can be
 // aggregated reliably.
 func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
-	envelope := emailapi.SendEmailRequest{
-		To:              in.To,
-		Subject:         in.Subject,
-		HTML:            in.HTML,
-		Text:            in.Text,
-		From:            in.From,
-		FromDisplayName: in.FromDisplayName,
-		ReplyTo:         in.ReplyTo,
-		GroupID:         in.GroupID,
-	}
-	data, err := json.Marshal(envelope)
+	data, err := json.Marshal(newSendEmailWire(in))
 	if err != nil {
 		return "", pkgerrors.NewUnexpected("marshal send_email request", err)
 	}
