@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -58,47 +59,58 @@ func TestNewSendEmailWire_UnsubscribeFields(t *testing.T) {
 	})
 }
 
-// TestSendEmailWire_MatchesUpstreamContract guards the shared fields against
+// sendEmailWireKnownExtraJSONTags are the json tags sendEmailWire is allowed
+// to carry beyond emailapi.SendEmailRequest: the RFC 8058 unsubscribe fields
+// the pinned email-service version does not yet expose (see sendEmailWire's
+// doc comment). Update this alongside sendEmailWire when it gains a field
+// that is deliberately ahead of the pin.
+var sendEmailWireKnownExtraJSONTags = map[string]bool{
+	"list_unsubscribe_url":  true,
+	"list_unsubscribe_post": true,
+}
+
+// TestSendEmailWire_MatchesUpstreamContract guards sendEmailWire against
 // silent drift from the pinned emailapi.SendEmailRequest. sendEmailWire is
 // hand-copied rather than a type alias (see its doc comment), so a pin bump
-// that renames or drops a field (e.g. reply_to, group_id) would otherwise
-// compile clean and ship with that field silently missing from every send —
-// email-service ignores unknown fields and there is no error path to surface
-// the mismatch. This test marshals both shapes from the same input and diffs
-// the JSON so that drift fails loudly instead of shipping quietly.
+// that adds, drops, or renames a field would otherwise compile clean and
+// ship with that field silently missing (or never collapsed back) — email-
+// service ignores unknown fields and there is no error path to surface the
+// mismatch. This compares the two structs' json tag sets by reflection
+// rather than diffing marshalled JSON, so it catches an upstream addition
+// (the case a byte-diff of only-set fields would miss) as well as a drop or
+// rename, and does not false-positive on an upstream field reorder.
 func TestSendEmailWire_MatchesUpstreamContract(t *testing.T) {
-	in := port.SendEmailInput{
-		To:              "a@example.com",
-		Subject:         "s",
-		HTML:            "h",
-		Text:            "t",
-		From:            "f@example.com",
-		FromDisplayName: "F",
-		ReplyTo:         "r@example.com",
-		GroupID:         "g",
+	upstreamTags := jsonTagSet(reflect.TypeOf(emailapi.SendEmailRequest{}))
+	localTags := jsonTagSet(reflect.TypeOf(sendEmailWire{}))
+
+	for tag := range upstreamTags {
+		if !localTags[tag] {
+			t.Errorf("sendEmailWire is missing upstream field %q — emailapi.SendEmailRequest gained a field that isn't mirrored locally", tag)
+		}
 	}
-	want, err := json.Marshal(emailapi.SendEmailRequest{
-		To:              in.To,
-		Subject:         in.Subject,
-		HTML:            in.HTML,
-		Text:            in.Text,
-		From:            in.From,
-		FromDisplayName: in.FromDisplayName,
-		ReplyTo:         in.ReplyTo,
-		GroupID:         in.GroupID,
-	})
-	if err != nil {
-		t.Fatalf("marshal upstream contract: %v", err)
+	for tag := range localTags {
+		if upstreamTags[tag] {
+			continue
+		}
+		if !sendEmailWireKnownExtraJSONTags[tag] {
+			t.Errorf("sendEmailWire has field %q that is neither in emailapi.SendEmailRequest nor sendEmailWireKnownExtraJSONTags — if the pin gained this field, collapse sendEmailWire back onto emailapi.SendEmailRequest per its doc comment; otherwise add it to sendEmailWireKnownExtraJSONTags", tag)
+		}
 	}
-	// newSendEmailWire also carries the unsubscribe fields, which are unset
-	// here and therefore omitempty-dropped, so the shared-field JSON matches.
-	got, err := json.Marshal(newSendEmailWire(in))
-	if err != nil {
-		t.Fatalf("marshal local wire: %v", err)
+}
+
+// jsonTagSet returns the set of json tag names (the part before any comma,
+// e.g. "omitempty") declared on t's exported fields. Fields tagged `json:"-"`
+// or untagged are excluded.
+func jsonTagSet(t reflect.Type) map[string]bool {
+	tags := make(map[string]bool, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		tags[name] = true
 	}
-	if string(got) != string(want) {
-		t.Errorf("sendEmailWire drifted from emailapi.SendEmailRequest for the shared fields:\n got  %s\n want %s", got, want)
-	}
+	return tags
 }
 
 // TestRequestErrIsAmbiguous verifies which failed email-service send requests
