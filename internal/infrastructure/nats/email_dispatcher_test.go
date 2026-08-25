@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	emailapi "github.com/linuxfoundation/lfx-v2-email-service/pkg/api"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
@@ -55,6 +56,49 @@ func TestNewSendEmailWire_UnsubscribeFields(t *testing.T) {
 			t.Errorf("expected unsubscribe fields omitted when unset:\n%s", got)
 		}
 	})
+}
+
+// TestSendEmailWire_MatchesUpstreamContract guards the shared fields against
+// silent drift from the pinned emailapi.SendEmailRequest. sendEmailWire is
+// hand-copied rather than a type alias (see its doc comment), so a pin bump
+// that renames or drops a field (e.g. reply_to, group_id) would otherwise
+// compile clean and ship with that field silently missing from every send —
+// email-service ignores unknown fields and there is no error path to surface
+// the mismatch. This test marshals both shapes from the same input and diffs
+// the JSON so that drift fails loudly instead of shipping quietly.
+func TestSendEmailWire_MatchesUpstreamContract(t *testing.T) {
+	in := port.SendEmailInput{
+		To:              "a@example.com",
+		Subject:         "s",
+		HTML:            "h",
+		Text:            "t",
+		From:            "f@example.com",
+		FromDisplayName: "F",
+		ReplyTo:         "r@example.com",
+		GroupID:         "g",
+	}
+	want, err := json.Marshal(emailapi.SendEmailRequest{
+		To:              in.To,
+		Subject:         in.Subject,
+		HTML:            in.HTML,
+		Text:            in.Text,
+		From:            in.From,
+		FromDisplayName: in.FromDisplayName,
+		ReplyTo:         in.ReplyTo,
+		GroupID:         in.GroupID,
+	})
+	if err != nil {
+		t.Fatalf("marshal upstream contract: %v", err)
+	}
+	// newSendEmailWire also carries the unsubscribe fields, which are unset
+	// here and therefore omitempty-dropped, so the shared-field JSON matches.
+	got, err := json.Marshal(newSendEmailWire(in))
+	if err != nil {
+		t.Fatalf("marshal local wire: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("sendEmailWire drifted from emailapi.SendEmailRequest for the shared fields:\n got  %s\n want %s", got, want)
+	}
 }
 
 // TestRequestErrIsAmbiguous verifies which failed email-service send requests

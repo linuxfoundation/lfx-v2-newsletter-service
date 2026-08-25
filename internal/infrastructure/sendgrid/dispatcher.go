@@ -589,10 +589,13 @@ func (d *Dispatcher) RecipientRecords(ctx context.Context, groupID string) ([]po
 }
 
 // sanitizeHeaderValue strips CR/LF so a value carried into a raw HTTP header
-// cannot inject an additional header line. The unsubscribe URL is minted by
-// this service's own HMAC-signed BuildURL, but recipient email addresses
-// (which BuildURL embeds) are not otherwise validated against control
-// characters, so this is defense in depth rather than a no-op guard.
+// cannot inject an additional header line. BuildURL's token component
+// (project UID + email + MAC) is base64url-encoded, so a recipient address
+// can never contribute a control character there; the one unencoded input to
+// the unsubscribe URL is the operator-configured public base URL
+// (NEWSLETTER_PUBLIC_BASE_URL), which is what this guard actually protects
+// against. Applied unconditionally rather than scoped to that one field so it
+// stays correct if a future header value gains an unencoded component.
 func sanitizeHeaderValue(v string) string {
 	v = strings.ReplaceAll(v, "\r", "")
 	v = strings.ReplaceAll(v, "\n", "")
