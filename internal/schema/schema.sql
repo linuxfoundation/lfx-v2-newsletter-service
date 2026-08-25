@@ -485,7 +485,8 @@ BEGIN
     ) THEN
         ALTER TABLE newsletter_publications
             ADD CONSTRAINT newsletter_publications_slug_format_check
-            CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) <= 100);
+            CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) <= 100)
+            NOT VALID;
     END IF;
 END$$;
 
@@ -519,7 +520,15 @@ BEGIN
             ADD CONSTRAINT newsletters_publication_fk
             FOREIGN KEY (project_uid, publication_id)
             REFERENCES newsletter_publications (project_uid, id)
-            ON DELETE RESTRICT;
+            ON DELETE RESTRICT
+            -- NOT VALID: a validating ADD CONSTRAINT scans all of `newsletters`
+            -- and holds SHARE ROW EXCLUSIVE, inside the same 60-second startup
+            -- transaction that also runs the backfill — stalling writes from
+            -- old pods mid-rollout and risking a timeout on a large table. The
+            -- constraint still enforces every new write. Existing rows are
+            -- safe by construction: publication_id is null until the backfill
+            -- below sets it, and MATCH SIMPLE skips null components.
+            NOT VALID;
     END IF;
 END$$;
 
@@ -607,7 +616,16 @@ BEGIN
         SELECT 1 FROM newsletter_publications p
         WHERE p.project_uid = n.project_uid AND p.is_default
     )
-    ON CONFLICT (project_uid, slug) DO UPDATE SET is_default = true;
+    -- Bump version/updated_at with the promotion. is_default is part of the
+    -- resource a caller holds an ETag for, so changing it without moving the
+    -- version leaves a stale "1" matching a row that no longer matches it.
+    -- (Deliberately NOT done on the attach UPDATE below: bumping updated_at
+    -- there would reshuffle the (updated_at, id) keyset order of every legacy
+    -- edition.)
+    ON CONFLICT (project_uid, slug) DO UPDATE
+        SET is_default = true,
+            version = newsletter_publications.version + 1,
+            updated_at = now();
 
     -- The attach step is an UPDATE on `newsletters`, so it fires
     -- trg_reject_armed_scheduled_mutation for every row with an armed schedule

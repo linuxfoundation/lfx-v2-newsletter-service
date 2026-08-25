@@ -76,6 +76,28 @@ const maxSlugLength = 100
 // to migrate slugs that are already in circulation.
 var slugPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// senderEmailPattern is a deliberately minimal local@domain shape. The point is
+// not full RFC 5322 validation — it is to reject anything that could not be a
+// bare address, which rules out the CR/LF and comma/semicolon sequences a
+// header-injection payload needs.
+var senderEmailPattern = regexp.MustCompile(`^[^\s@,;:<>"]+@[^\s@,;:<>"]+\.[^\s@,;:<>"]+$`)
+
+// validateSenderEmail guards the per-publication From address. TrimSpace alone
+// only strips the ends, so a value like "Name\nBcc: x@y.com" would persist
+// intact — and this column is documented as the address every edition inherits,
+// so it is destined for an email header. Rejecting it here makes the injection
+// structurally impossible rather than something the send-from-self work
+// (LFXV2-3316) has to remember. Nil is valid: the field is optional.
+func validateSenderEmail(v *string) error {
+	if v == nil {
+		return nil
+	}
+	if !senderEmailPattern.MatchString(*v) {
+		return fmt.Errorf("%w: sender_email must be a single plain email address", domain.ErrInvalidRequest)
+	}
+	return nil
+}
+
 // trimOptional trims an optional string, collapsing a blank result to nil so a
 // whitespace-only value is stored as "not set" rather than as padding.
 func trimOptional(v *string) *string {
@@ -141,6 +163,11 @@ func (s *PublicationService) CreatePublication(ctx context.Context, in CreatePub
 		}
 	}
 
+	senderEmail := trimOptional(in.SenderEmail)
+	if err := validateSenderEmail(senderEmail); err != nil {
+		return nil, err
+	}
+
 	wrapperContent, err := marshalWrapperContent(in.WrapperContent)
 	if err != nil {
 		return nil, err
@@ -158,7 +185,7 @@ func (s *PublicationService) CreatePublication(ctx context.Context, in CreatePub
 		WrapperContent: wrapperContent,
 		TemplateSetID:  trimOptional(in.TemplateSetID),
 		EditorType:     editorType,
-		SenderEmail:    trimOptional(in.SenderEmail),
+		SenderEmail:    senderEmail,
 		ViewOnlineBase: trimOptional(in.ViewOnlineBase),
 		CreatedBy:      in.CreatedBy,
 	}
@@ -229,6 +256,9 @@ func (s *PublicationService) UpdatePublication(ctx context.Context, projectUID s
 		pub.EditorType = editorType
 	}
 	if in.SenderEmailSet {
+		if err := validateSenderEmail(in.SenderEmail); err != nil {
+			return nil, err
+		}
 		pub.SenderEmail = in.SenderEmail
 	}
 	if in.ViewOnlineBaseSet {
