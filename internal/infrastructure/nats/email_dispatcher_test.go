@@ -70,47 +70,99 @@ var sendEmailWireKnownExtraJSONTags = map[string]bool{
 }
 
 // TestSendEmailWire_MatchesUpstreamContract guards sendEmailWire against
-// silent drift from the pinned emailapi.SendEmailRequest. sendEmailWire is
-// hand-copied rather than a type alias (see its doc comment), so a pin bump
-// that adds, drops, or renames a field would otherwise compile clean and
-// ship with that field silently missing (or never collapsed back) — email-
-// service ignores unknown fields and there is no error path to surface the
-// mismatch. This compares the two structs' json tag sets by reflection
-// rather than diffing marshalled JSON, so it catches an upstream addition
-// (the case a byte-diff of only-set fields would miss) as well as a drop or
-// rename, and does not false-positive on an upstream field reorder.
+// silent drift from the pinned emailapi.SendEmailRequest, in every direction
+// a hand-copied struct can drift, since email-service ignores unknown fields
+// and there is no error path to surface a mismatch:
+//   - upstream adds a field this struct doesn't mirror
+//   - upstream drops, renames, or retypes a field this struct still claims
+//   - a known local-only extra (an unsubscribe field) appears upstream too,
+//     which is the doc comment's "collapse this back" trigger
+//   - newSendEmailWire's value mapping for a shared field is dropped or
+//     crossed with another field
+//
+// The first three are checked structurally (by reflection, independent of
+// field order); the last needs an actual conversion, so it's checked by
+// marshalling a fully-populated input through both types and comparing JSON.
 func TestSendEmailWire_MatchesUpstreamContract(t *testing.T) {
-	upstreamTags := jsonTagSet(reflect.TypeOf(emailapi.SendEmailRequest{}))
-	localTags := jsonTagSet(reflect.TypeOf(sendEmailWire{}))
+	upstream := jsonFieldSet(reflect.TypeOf(emailapi.SendEmailRequest{}))
+	local := jsonFieldSet(reflect.TypeOf(sendEmailWire{}))
 
-	for tag := range upstreamTags {
-		if !localTags[tag] {
+	for tag, upstreamType := range upstream {
+		localType, ok := local[tag]
+		if !ok {
 			t.Errorf("sendEmailWire is missing upstream field %q — emailapi.SendEmailRequest gained a field that isn't mirrored locally", tag)
+			continue
+		}
+		if localType != upstreamType {
+			t.Errorf("field %q type drifted: emailapi.SendEmailRequest has %s, sendEmailWire has %s", tag, upstreamType, localType)
 		}
 	}
-	for tag := range localTags {
-		if upstreamTags[tag] {
+	for tag := range local {
+		if _, ok := upstream[tag]; ok {
 			continue
 		}
 		if !sendEmailWireKnownExtraJSONTags[tag] {
 			t.Errorf("sendEmailWire has field %q that is neither in emailapi.SendEmailRequest nor sendEmailWireKnownExtraJSONTags — if the pin gained this field, collapse sendEmailWire back onto emailapi.SendEmailRequest per its doc comment; otherwise add it to sendEmailWireKnownExtraJSONTags", tag)
 		}
 	}
+	for tag := range sendEmailWireKnownExtraJSONTags {
+		if _, ok := upstream[tag]; ok {
+			t.Errorf("emailapi.SendEmailRequest now exposes %q — collapse sendEmailWire back onto it per its doc comment instead of carrying it as a local-only extra", tag)
+		}
+	}
+
+	in := port.SendEmailInput{
+		To:              "a@example.com",
+		Subject:         "s",
+		HTML:            "h",
+		Text:            "t",
+		From:            "f@example.com",
+		FromDisplayName: "F",
+		ReplyTo:         "r@example.com",
+		GroupID:         "g",
+	}
+	want, err := json.Marshal(emailapi.SendEmailRequest{
+		To:              in.To,
+		Subject:         in.Subject,
+		HTML:            in.HTML,
+		Text:            in.Text,
+		From:            in.From,
+		FromDisplayName: in.FromDisplayName,
+		ReplyTo:         in.ReplyTo,
+		GroupID:         in.GroupID,
+	})
+	if err != nil {
+		t.Fatalf("marshal upstream contract: %v", err)
+	}
+	// newSendEmailWire also carries the unsubscribe fields, which are unset
+	// here and therefore omitempty-dropped, so the shared-field JSON matches.
+	got, err := json.Marshal(newSendEmailWire(in))
+	if err != nil {
+		t.Fatalf("marshal local wire: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("newSendEmailWire dropped or crossed a shared field:\n got  %s\n want %s", got, want)
+	}
 }
 
-// jsonTagSet returns the set of json tag names (the part before any comma,
-// e.g. "omitempty") declared on t's exported fields. Fields tagged `json:"-"`
-// or untagged are excluded.
-func jsonTagSet(t reflect.Type) map[string]bool {
-	tags := make(map[string]bool, t.NumField())
+// jsonFieldSet maps, for each exported field of t carrying a json tag, the
+// tag name (the part before any comma, e.g. "omitempty") to the field's Go
+// type. Fields tagged `json:"-"`, untagged, or unexported (encoding/json
+// never serializes these) are excluded.
+func jsonFieldSet(t reflect.Type) map[string]reflect.Type {
+	fields := make(map[string]reflect.Type, t.NumField())
 	for i := 0; i < t.NumField(); i++ {
-		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
 		if name == "" || name == "-" {
 			continue
 		}
-		tags[name] = true
+		fields[name] = f.Type
 	}
-	return tags
+	return fields
 }
 
 // TestRequestErrIsAmbiguous verifies which failed email-service send requests
