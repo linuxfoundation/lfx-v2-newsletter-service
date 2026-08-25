@@ -810,3 +810,113 @@ func TestUpdatePreservesPublicationIDSetWhenOmitted(t *testing.T) {
 		t.Errorf("publication_id changed to %v, want it left null", pubID)
 	}
 }
+
+// TestBackfillSweepFilesRowWrittenAfterStartup covers the window schema.Apply
+// cannot: a legacy pod writes an edition AFTER the last new pod has already
+// applied the schema. Startup will not run again until the next deploy, so the
+// periodic sweep is what files it.
+func TestBackfillSweepFilesRowWrittenAfterStartup(t *testing.T) {
+	repo := newPublicationIntegrationRepo(t)
+	ctx := context.Background()
+	db := repo.db
+
+	if _, err := db.ExecContext(ctx, "TRUNCATE newsletters CASCADE"); err != nil {
+		t.Fatalf("truncate newsletters: %v", err)
+	}
+
+	// A legacy write: publication_id_set stays false, which is the only thing
+	// that distinguishes it from a deliberate unfile.
+	var lateID uuid.UUID
+	if err := db.QueryRowContext(ctx, `
+        INSERT INTO newsletters (project_uid, subject, body_html, ed_reply_email, created_by, status, publication_id_set)
+        VALUES ('project-late', 'Late legacy', '<p>x</p>', 'ed@example.org', 'user', 'draft', false)
+        RETURNING id`).Scan(&lateID); err != nil {
+		t.Fatalf("seed late legacy newsletter: %v", err)
+	}
+
+	// A deliberate unfile in the same project: null publication, flag true. The
+	// sweep must not touch it.
+	var unfiledID uuid.UUID
+	if err := db.QueryRowContext(ctx, `
+        INSERT INTO newsletters (project_uid, subject, body_html, ed_reply_email, created_by, status, publication_id_set)
+        VALUES ('project-late', 'Deliberately unfiled', '<p>x</p>', 'ed@example.org', 'user', 'draft', true)
+        RETURNING id`).Scan(&unfiledID); err != nil {
+		t.Fatalf("seed unfiled newsletter: %v", err)
+	}
+
+	filed, err := repo.BackfillLegacyPublications(ctx)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if filed != 1 {
+		t.Errorf("sweep filed %d editions, want exactly 1 (the legacy row, not the deliberate unfile)", filed)
+	}
+
+	var latePub, unfiledPub *uuid.UUID
+	if err := db.QueryRowContext(ctx, "SELECT publication_id FROM newsletters WHERE id = ?", lateID).Scan(&latePub); err != nil {
+		t.Fatalf("read late row: %v", err)
+	}
+	if latePub == nil {
+		t.Error("sweep did not file the late legacy edition")
+	}
+	if err := db.QueryRowContext(ctx, "SELECT publication_id FROM newsletters WHERE id = ?", unfiledID).Scan(&unfiledPub); err != nil {
+		t.Fatalf("read unfiled row: %v", err)
+	}
+	if unfiledPub != nil {
+		t.Errorf("sweep re-filed a deliberately unfiled edition into %v", unfiledPub)
+	}
+
+	// Idempotent: a second pass finds nothing left to do.
+	again, err := repo.BackfillLegacyPublications(ctx)
+	if err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if again != 0 {
+		t.Errorf("second sweep filed %d editions, want 0 — the sweep is not idempotent", again)
+	}
+}
+
+// TestPublicationUpdateClearsNullableFields is the round-trip for the
+// set-then-clear path: the three nullable columns must actually reach NULL in
+// the database, not just be accepted by the service.
+func TestPublicationUpdateClearsNullableFields(t *testing.T) {
+	repo := newPublicationIntegrationRepo(t)
+	ctx := context.Background()
+
+	tmpl, sender, view := "aaif-template", "ed@example.org", "https://example.org/n"
+	pub := &model.NewsletterPublication{
+		ProjectUID:     "project-clear",
+		Slug:           "clearable",
+		Name:           "Clearable",
+		WrapperContent: []byte("{}"),
+		CreatedBy:      "user",
+		TemplateSetID:  &tmpl,
+		SenderEmail:    &sender,
+		ViewOnlineBase: &view,
+	}
+	if err := repo.Create(ctx, pub); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Clear all three, the way the service does when the caller sends null.
+	pub.TemplateSetID = nil
+	pub.SenderEmail = nil
+	pub.ViewOnlineBase = nil
+	if err := repo.Update(ctx, pub, pub.Version); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	stored, err := repo.Get(ctx, "project-clear", pub.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if stored.TemplateSetID != nil {
+		t.Errorf("template_set_id = %v, want NULL after clear", *stored.TemplateSetID)
+	}
+	if stored.SenderEmail != nil {
+		t.Errorf("sender_email = %v, want NULL after clear", *stored.SenderEmail)
+	}
+	if stored.ViewOnlineBase != nil {
+		t.Errorf("view_online_base = %v, want NULL after clear", *stored.ViewOnlineBase)
+	}
+}

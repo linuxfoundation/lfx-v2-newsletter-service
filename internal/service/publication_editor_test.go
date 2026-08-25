@@ -142,3 +142,84 @@ func TestUpdatePublicationEditorType(t *testing.T) {
 		}
 	})
 }
+
+// TestSenderEmailRejectsInjection is the security boundary for the
+// per-publication From address. The column is documented as the address every
+// edition inherits, so the value is destined for an email header; TrimSpace
+// alone strips only the ends and would let an embedded CR/LF through.
+func TestSenderEmailRejectsInjection(t *testing.T) {
+	rejected := []struct {
+		name  string
+		value string
+	}{
+		{"CRLF header injection", "ed@example.org\r\nBcc: attacker@evil.test"},
+		{"bare LF header injection", "ed@example.org\nBcc: attacker@evil.test"},
+		{"display name with newline", "Real Name\nBcc: attacker@evil.test"},
+		{"comma-separated address list", "ed@example.org,attacker@evil.test"},
+		{"semicolon-separated address list", "ed@example.org;attacker@evil.test"},
+		{"angle-bracket display form", "Real Name <ed@example.org>"},
+		{"no domain", "not-an-address"},
+		{"no local part", "@example.org"},
+		{"no dot in domain", "ed@localhost"},
+		{"embedded space", "ed @example.org"},
+	}
+
+	base := CreatePublicationInput{
+		ProjectUID: "project-1",
+		Slug:       "pub",
+		Name:       "Pub",
+		CreatedBy:  "user",
+	}
+
+	for _, tc := range rejected {
+		t.Run("create/"+tc.name, func(t *testing.T) {
+			svc := NewPublicationService(&editorTypeRepo{})
+			in := base
+			in.SenderEmail = strPtr(tc.value)
+			if _, err := svc.CreatePublication(context.Background(), in); !errors.Is(err, domain.ErrInvalidRequest) {
+				t.Fatalf("want ErrInvalidRequest for %q, got %v", tc.value, err)
+			}
+		})
+	}
+
+	for _, tc := range rejected {
+		t.Run("update/"+tc.name, func(t *testing.T) {
+			repo := &editorTypeRepo{}
+			svc := NewPublicationService(repo)
+			pub, err := svc.CreatePublication(context.Background(), base)
+			if err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			_, err = svc.UpdatePublication(context.Background(), "project-1", pub.ID, 1, UpdatePublicationInput{
+				SenderEmail:    strPtr(tc.value),
+				SenderEmailSet: true,
+			})
+			if !errors.Is(err, domain.ErrInvalidRequest) {
+				t.Fatalf("want ErrInvalidRequest for %q, got %v", tc.value, err)
+			}
+		})
+	}
+
+	// A plain address still round-trips, and clearing is still allowed.
+	t.Run("accepts a plain address and an explicit clear", func(t *testing.T) {
+		svc := NewPublicationService(&editorTypeRepo{})
+		in := base
+		in.SenderEmail = strPtr("ed@example.org")
+		pub, err := svc.CreatePublication(context.Background(), in)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pub.SenderEmail == nil || *pub.SenderEmail != "ed@example.org" {
+			t.Fatalf("sender not persisted: %v", pub.SenderEmail)
+		}
+		cleared, err := svc.UpdatePublication(context.Background(), "project-1", pub.ID, 1, UpdatePublicationInput{
+			SenderEmailSet: true,
+		})
+		if err != nil {
+			t.Fatalf("clear: %v", err)
+		}
+		if cleared.SenderEmail != nil {
+			t.Errorf("sender_email = %v, want nil after an explicit clear", cleared.SenderEmail)
+		}
+	})
+}

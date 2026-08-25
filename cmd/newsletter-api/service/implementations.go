@@ -182,8 +182,10 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 
 	// Step 6: recovery sweep for newsletters stranded in 'sending' by a pod
 	// crash mid-fan-out. Runs once at startup (catches strands from previous
-	// pods immediately) and then on a ticker.
-	startStuckSendRecovery(repo, cfg.StuckSendTTL)
+	// pods immediately) and then on a ticker. Also carries the legacy
+	// publication backfill, which needs to keep running after startup to catch
+	// rows an old pod writes at the tail of a rolling deploy.
+	startStuckSendRecovery(repo, publicationRepo, cfg.StuckSendTTL)
 
 	sendgridWebhook, err := newSendGridWebhook(ctx, cfg)
 	if err != nil {
@@ -219,9 +221,16 @@ type stuckSendRecoverer interface {
 	SettleDueScheduled(ctx context.Context, now time.Time) (int64, error)
 }
 
+// legacyPublicationBackfiller files editions written by a service version that
+// predates publications. Separate from stuckSendRecoverer because it lives on
+// the publication repository, not the newsletter one.
+type legacyPublicationBackfiller interface {
+	BackfillLegacyPublications(ctx context.Context) (int64, error)
+}
+
 // startStuckSendRecovery launches the background sweep that settles
 // newsletters stranded in 'sending'. Stopped via recoveryStop in Shutdown.
-func startStuckSendRecovery(repo stuckSendRecoverer, ttl time.Duration) {
+func startStuckSendRecovery(repo stuckSendRecoverer, pubRepo legacyPublicationBackfiller, ttl time.Duration) {
 	recoveryStop = make(chan struct{})
 	go func() {
 		sweep := func() {
@@ -254,6 +263,24 @@ func startStuckSendRecovery(repo stuckSendRecoverer, ttl time.Duration) {
 				slog.InfoContext(ctx, "due-scheduled settlement sweep settled newsletters",
 					"settled", settled,
 				)
+			}
+
+			// Third responsibility: file any edition a legacy pod wrote after the
+			// last new pod applied the schema. schema.Apply covers everything up
+			// to startup; only this sweep closes the tail of a rolling deploy.
+			// Normally a no-op — it matches only publication_id_set = false rows,
+			// which the current code never produces.
+			if pubRepo != nil {
+				filed, err := pubRepo.BackfillLegacyPublications(ctx)
+				if err != nil {
+					slog.ErrorContext(ctx, "legacy publication backfill sweep failed", "error", err)
+					return
+				}
+				if filed > 0 {
+					slog.InfoContext(ctx, "legacy publication backfill sweep filed editions written by a pre-publication service version",
+						"filed", filed,
+					)
+				}
 			}
 		}
 		sweep()

@@ -213,3 +213,76 @@ func (r *PostgresPublicationRepo) Update(ctx context.Context, pub *model.Newslet
 
 	return nil
 }
+
+// BackfillLegacyPublications files editions written before publications existed,
+// and is safe to call repeatedly. It is the same work schema.Apply does at
+// startup, exposed so a periodic sweep can close the one window startup cannot:
+// a legacy pod that writes a row AFTER the last new pod has already applied the
+// schema. Without the sweep such a row stays unfiled until the next deploy.
+//
+// Re-running is safe because it only ever touches rows with
+// publication_id_set = false. The current code stamps that flag on every insert
+// and on any explicit file/unfile, so a row a user deliberately unfiled carries
+// the flag and is invisible here. Only a legacy writer, which does not know the
+// column, can leave it false. That is what makes this a sweep rather than the
+// reconciliation loop an earlier revision had, which could not tell the two
+// apart and re-filed deliberate unfilings on every restart.
+//
+// Returns the number of editions filed.
+func (r *PostgresPublicationRepo) BackfillLegacyPublications(ctx context.Context) (int64, error) {
+	var filed int64
+	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Give each project that has legacy editions somewhere to put them.
+		if _, err := tx.NewRaw(`
+            INSERT INTO newsletter_publications (project_uid, slug, name, is_default, created_by)
+            SELECT DISTINCT n.project_uid, 'default', 'Newsletter', true, 'system-backfill'
+            FROM newsletters n
+            WHERE n.publication_id IS NULL
+              AND NOT n.publication_id_set
+              AND NOT EXISTS (
+                SELECT 1 FROM newsletter_publications p
+                WHERE p.project_uid = n.project_uid AND p.is_default
+              )
+            ON CONFLICT (project_uid, slug) DO UPDATE
+                SET is_default = true,
+                    version = newsletter_publications.version + 1,
+                    updated_at = now()`).Exec(ctx); err != nil {
+			return fmt.Errorf("backfill sweep: create default publications: %w", err)
+		}
+
+		// The attach is an UPDATE on `newsletters`, so it trips the armed-schedule
+		// guard for any row with a live batch_id. Same authorization the startup
+		// path uses, and for the same reason: this only populates publication_id
+		// and touches no scheduling state.
+		if _, err := tx.NewRaw(`SET LOCAL app.allow_armed_mutation = 'true'`).Exec(ctx); err != nil {
+			return fmt.Errorf("backfill sweep: authorize armed mutation: %w", err)
+		}
+
+		// version moves because publication_id is part of the resource a caller
+		// holds an ETag for. updated_at deliberately does not: bumping it would
+		// reshuffle the (updated_at, id) keyset order of every legacy edition and
+		// shove them to the top of the list.
+		res, err := tx.NewRaw(`
+            UPDATE newsletters n
+            SET publication_id = p.id,
+                publication_id_set = true,
+                version = n.version + 1
+            FROM newsletter_publications p
+            WHERE n.publication_id IS NULL
+              AND NOT n.publication_id_set
+              AND p.project_uid = n.project_uid
+              AND p.is_default`).Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("backfill sweep: attach editions: %w", err)
+		}
+		filed, err = res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("backfill sweep: rows affected: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return filed, nil
+}

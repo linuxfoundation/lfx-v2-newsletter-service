@@ -639,9 +639,15 @@ BEGIN
 
     -- publication_id_set is stamped along with the link, so a user who later
     -- unfiles one of these editions keeps it unfiled across restarts.
+    -- version moves because publication_id is part of the resource a caller
+    -- holds an ETag for; changing it without the bump leaves a stale ETag
+    -- matching a row that no longer matches it. updated_at deliberately does
+    -- NOT move: it drives the (updated_at, id) keyset order of the edition
+    -- list, and bumping it would shove every legacy edition to the top.
     UPDATE newsletters n
     SET publication_id = p.id,
-        publication_id_set = true
+        publication_id_set = true,
+        version = n.version + 1
     FROM newsletter_publications p
     WHERE n.publication_id IS NULL
       AND NOT n.publication_id_set
