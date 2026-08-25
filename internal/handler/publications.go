@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
@@ -72,9 +74,26 @@ func (h *Handler) GetPublication(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListPublications(w http.ResponseWriter, r *http.Request) {
 	projectUID := r.PathValue("project_uid")
 
-	pageToken := r.URL.Query().Get("page_token")
+	q := r.URL.Query()
+	pageToken := q.Get("page_token")
 
-	page, err := h.publication.ListPublications(r.Context(), projectUID, pageToken)
+	// page_size is optional. Absent leaves the repository default; a present
+	// value is validated here rather than silently dropped, because the
+	// consumer already sends it and a silently-ignored page size looks like the
+	// server disagreeing about how many rows a page holds. The repository
+	// clamps to its own maximum.
+	pageSize := 0
+	if q.Has("page_size") {
+		raw := strings.TrimSpace(q.Get("page_size"))
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(r.Context(), w, fmt.Errorf("%w: page_size must be a positive integer", domain.ErrInvalidRequest))
+			return
+		}
+		pageSize = parsed
+	}
+
+	page, err := h.publication.ListPublications(r.Context(), projectUID, pageToken, pageSize)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return

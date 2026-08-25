@@ -522,9 +522,11 @@ CREATE INDEX IF NOT EXISTS idx_newsletters_publication_list
 -- `publication_id IS NULL` alone cannot say why the column is null. It is null
 -- on a legacy row, written before publications existed, which the backfill has
 -- to file. It is also null on a row a user deliberately unfiled, which the
--- backfill must leave alone. Every insert and every draft update from the
--- current code sets this column true, whether or not it also sets a
--- publication, so the two cases are told apart per row:
+-- backfill must leave alone. The current code sets this column true on every
+-- insert, and on an update only when the caller actually supplied a
+-- publication_id — filing or unfiling the edition. An update that omits the
+-- field preserves the stored value, so editing an unrelated field on a legacy
+-- row does not mark it as decided. The two cases are told apart per row:
 --
 --     publication_id_set = false  ->  legacy row, never decided, backfill it
 --     publication_id_set = true   ->  a writer decided; null means unfiled

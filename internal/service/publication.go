@@ -152,13 +152,16 @@ func (s *PublicationService) GetPublication(ctx context.Context, projectUID stri
 
 // ListPublications returns one page of the project's publications. The caller
 // continues with the returned NextPageToken; an empty token means the last page.
-func (s *PublicationService) ListPublications(ctx context.Context, projectUID string, pageToken string) (*port.PublicationListPage, error) {
+// pageSize of 0 means "use the repository default"; the repository also clamps
+// anything above its maximum.
+func (s *PublicationService) ListPublications(ctx context.Context, projectUID string, pageToken string, pageSize int) (*port.PublicationListPage, error) {
 	if err := validateProjectUID(projectUID); err != nil {
 		return nil, err
 	}
 	return s.repo.List(ctx, port.PublicationListFilters{
 		ProjectUID: projectUID,
 		PageToken:  pageToken,
+		Limit:      pageSize,
 	})
 }
 

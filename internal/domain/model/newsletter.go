@@ -87,13 +87,17 @@ type Newsletter struct {
 	// row. Nullable-first during migration (LFXV2-2582); NOT NULL deferred to a
 	// follow-up once backfill has run everywhere.
 	PublicationID *uuid.UUID `bun:"publication_id" json:"publicationId,omitempty"`
-	// PublicationIDSet records that a writer that knows about publications wrote
-	// this row. The repository sets it on every insert and every draft update,
-	// whether or not PublicationID is set, so a null publication_id on a row
-	// with this flag means "deliberately unfiled" while a null on a row without
-	// it means "written before publications existed". The legacy backfill in
-	// schema.sql only touches the latter. Persistence bookkeeping, so it is kept
-	// out of the JSON.
+	// PublicationIDSet records that a caller explicitly decided where this row
+	// belongs. It is set on insert, and on an update only when the caller
+	// actually supplied publication_id — filing or unfiling the edition. An
+	// update that omits the field preserves whatever is stored, because
+	// stamping it on unrelated edits would mark a legacy row as decided the
+	// first time anyone changed its subject.
+	//
+	// So a null publication_id with this flag means "deliberately unfiled",
+	// while a null without it means "written before publications existed". The
+	// legacy backfill in schema.sql only touches the latter. Persistence
+	// bookkeeping, so it is kept out of the JSON.
 	PublicationIDSet bool      `bun:"publication_id_set,notnull" json:"-"`
 	CreatedBy        string    `bun:"created_by,notnull" json:"createdBy"`
 	Version          int64     `bun:"version,notnull,default:1" json:"version"`
