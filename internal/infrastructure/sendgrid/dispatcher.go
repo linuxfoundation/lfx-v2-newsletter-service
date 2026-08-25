@@ -300,6 +300,18 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 		}
 	}
 	reqBody.ReplyTo = d.allowedReplyTo(ctx, in.ReplyTo)
+	if listUnsubscribeURL := strings.TrimSpace(in.ListUnsubscribeURL); listUnsubscribeURL != "" {
+		reqBody.Headers = map[string]string{
+			"List-Unsubscribe": "<" + sanitizeHeaderValue(listUnsubscribeURL) + ">",
+		}
+		// RFC 8058 requires the one-click URI to be https. Arm the one-click
+		// List-Unsubscribe-Post header only for an https link; a non-https URL
+		// (e.g. a local http override) still gets the RFC 2369 List-Unsubscribe
+		// header, just not the one-click variant a mail client would reject.
+		if in.ListUnsubscribePost && strings.HasPrefix(strings.ToLower(listUnsubscribeURL), "https://") {
+			reqBody.Headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+		}
+	}
 	if d.sandboxMode {
 		reqBody.MailSettings = &mailSettings{SandboxMode: &toggle{Enable: true}}
 	}
@@ -576,6 +588,20 @@ func (d *Dispatcher) RecipientRecords(ctx context.Context, groupID string) ([]po
 	return d.store.RecipientRecordsByGroupID(ctx, groupID)
 }
 
+// sanitizeHeaderValue strips CR/LF so a value carried into a raw HTTP header
+// cannot inject an additional header line. BuildURL's token component
+// (project UID + email + MAC) is base64url-encoded, so a recipient address
+// can never contribute a control character there; the one unencoded input to
+// the unsubscribe URL is the operator-configured public base URL
+// (NEWSLETTER_PUBLIC_BASE_URL), which is what this guard actually protects
+// against. Applied unconditionally rather than scoped to that one field so it
+// stays correct if a future header value gains an unencoded component.
+func sanitizeHeaderValue(v string) string {
+	v = strings.ReplaceAll(v, "\r", "")
+	v = strings.ReplaceAll(v, "\n", "")
+	return v
+}
+
 // summarizeError renders SendGrid's error body into a single readable string,
 // falling back to the raw (truncated) body when it isn't the expected shape.
 func summarizeError(status int, body []byte) string {
@@ -618,6 +644,10 @@ type mailSendRequest struct {
 	// without batch_id — which SendEmail enforces.
 	SendAt  *int64 `json:"send_at,omitempty"`
 	BatchID string `json:"batch_id,omitempty"`
+	// Headers carries the RFC 8058 one-click unsubscribe headers
+	// (List-Unsubscribe / List-Unsubscribe-Post) when the caller supplies an
+	// unsubscribe URL. SendGrid's v3 API accepts arbitrary custom headers here.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 type personalization struct {

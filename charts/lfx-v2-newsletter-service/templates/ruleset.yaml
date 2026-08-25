@@ -497,15 +497,20 @@ spec:
     # One-click unsubscribe: intentionally unauthenticated. Recipients click
     # the footer link from their mail client with no session. Authorization
     # comes from the HMAC-signed `t` query parameter, verified server-side.
+    #
+    # GET renders a confirmation page only and never mutates. POST performs
+    # the actual unsubscribe — reached either from the confirmation page's
+    # form or directly via an RFC 8058 one-click unsubscribe POST from the
+    # recipient's mail client. Both methods are allowed at the gateway; HEAD
+    # is intentionally excluded (the handler also no-ops HEAD defensively,
+    # but blocking it at the gateway keeps the audit trail clean).
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:unsubscribe"
       allow_encoded_slashes: 'off'
       match:
-        # GET only — HEAD probes from link checkers and mail-client preview
-        # engines must not reach the handler (the handler also no-ops HEAD
-        # defensively, but blocking at the gateway keeps the audit trail clean).
         methods:
           - GET
+          - POST
         routes:
           - path: /newsletters/unsubscribe
       execute:

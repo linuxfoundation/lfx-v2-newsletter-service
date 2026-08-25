@@ -44,7 +44,7 @@ type stubProjectClient struct{}
 func (stubProjectClient) Name(_ context.Context, _ string) (string, error) { return "CNCF", nil }
 func (stubProjectClient) Slug(_ context.Context, _ string) (string, error) { return "cncf", nil }
 
-func TestUnsubscribeHandlerSuccess(t *testing.T) {
+func TestUnsubscribeConfirmNeverMutates(t *testing.T) {
 	repo := &stubUnsubRepo{}
 	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
 	h := &Handler{unsub: unsub, project: stubProjectClient{}}
@@ -52,9 +52,87 @@ func TestUnsubscribeHandlerSuccess(t *testing.T) {
 	url := unsub.BuildURL("proj-1", "alice@example.com")
 	token := url[strings.Index(url, "?t=")+3:]
 
-	req := httptest.NewRequest(http.MethodGet, "/newsletters/unsubscribe?t="+token, nil)
+	// Call GET twice — a link checker or preview engine may fetch the same
+	// URL more than once. Neither call should create an unsubscribe record.
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/newsletters/unsubscribe?t="+token, nil)
+		w := httptest.NewRecorder()
+		h.UnsubscribeConfirm(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("call %d: status = %d, want 200. body=%s", i, w.Code, w.Body.String())
+		}
+		if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+			t.Errorf("call %d: content-type = %q, want text/html", i, ct)
+		}
+		body := w.Body.String()
+		if !strings.Contains(body, "alice@example.com") || !strings.Contains(body, "CNCF") {
+			t.Errorf("call %d: body missing email or project name: %s", i, body)
+		}
+		if !strings.Contains(body, `method="POST"`) {
+			t.Errorf("call %d: body missing confirmation form: %s", i, body)
+		}
+		// The form action must be query-only, so the browser resolves it
+		// against the URL that delivered the page. An action starting with "/"
+		// or with a scheme would post to the origin root and break a
+		// confirmation page served under a public path prefix.
+		wantAction := `action="?t=` + token + `"`
+		if !strings.Contains(body, wantAction) {
+			t.Errorf("call %d: form action must be the query-only %s; body=%s", i, wantAction, body)
+		}
+	}
+	if len(repo.created) != 0 {
+		t.Errorf("GET must never record an unsubscribe; repo.created = %v", repo.created)
+	}
+}
+
+func TestUnsubscribeConfirmHEADIsNoOp(t *testing.T) {
+	repo := &stubUnsubRepo{}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub, project: stubProjectClient{}}
+
+	url := unsub.BuildURL("proj-1", "alice@example.com")
+	token := url[strings.Index(url, "?t=")+3:]
+
+	req := httptest.NewRequest(http.MethodHead, "/newsletters/unsubscribe?t="+token, nil)
 	w := httptest.NewRecorder()
-	h.Unsubscribe(w, req)
+	h.UnsubscribeConfirm(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if len(repo.created) != 0 {
+		t.Errorf("HEAD must not record an unsubscribe; repo.created = %v", repo.created)
+	}
+}
+
+func TestUnsubscribeConfirmInvalidToken(t *testing.T) {
+	unsub := service.NewUnsubscribeService(&stubUnsubRepo{}, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub, project: stubProjectClient{}}
+
+	req := httptest.NewRequest(http.MethodGet, "/newsletters/unsubscribe?t=garbage", nil)
+	w := httptest.NewRecorder()
+	h.UnsubscribeConfirm(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "invalid") && !strings.Contains(w.Body.String(), "Invalid") {
+		t.Errorf("body should mention invalid link: %s", w.Body.String())
+	}
+}
+
+func TestUnsubscribeSubmitSuccess(t *testing.T) {
+	repo := &stubUnsubRepo{}
+	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
+	h := &Handler{unsub: unsub, project: stubProjectClient{}}
+
+	url := unsub.BuildURL("proj-1", "alice@example.com")
+	token := url[strings.Index(url, "?t=")+3:]
+
+	req := httptest.NewRequest(http.MethodPost, "/newsletters/unsubscribe?t="+token, nil)
+	w := httptest.NewRecorder()
+	h.UnsubscribeSubmit(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200. body=%s", w.Code, w.Body.String())
@@ -71,33 +149,13 @@ func TestUnsubscribeHandlerSuccess(t *testing.T) {
 	}
 }
 
-func TestUnsubscribeHandlerHEADIsNoOp(t *testing.T) {
-	repo := &stubUnsubRepo{}
-	unsub := service.NewUnsubscribeService(repo, []byte("k"), "http://localhost")
-	h := &Handler{unsub: unsub, project: stubProjectClient{}}
-
-	url := unsub.BuildURL("proj-1", "alice@example.com")
-	token := url[strings.Index(url, "?t=")+3:]
-
-	req := httptest.NewRequest(http.MethodHead, "/newsletters/unsubscribe?t="+token, nil)
-	w := httptest.NewRecorder()
-	h.Unsubscribe(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	if len(repo.created) != 0 {
-		t.Errorf("HEAD must not record an unsubscribe; repo.created = %v", repo.created)
-	}
-}
-
-func TestUnsubscribeHandlerInvalidToken(t *testing.T) {
+func TestUnsubscribeSubmitInvalidToken(t *testing.T) {
 	unsub := service.NewUnsubscribeService(&stubUnsubRepo{}, []byte("k"), "http://localhost")
 	h := &Handler{unsub: unsub, project: stubProjectClient{}}
 
-	req := httptest.NewRequest(http.MethodGet, "/newsletters/unsubscribe?t=garbage", nil)
+	req := httptest.NewRequest(http.MethodPost, "/newsletters/unsubscribe?t=garbage", nil)
 	w := httptest.NewRecorder()
-	h.Unsubscribe(w, req)
+	h.UnsubscribeSubmit(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", w.Code)
