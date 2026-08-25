@@ -70,9 +70,11 @@ var sendEmailWireKnownExtraJSONTags = map[string]bool{
 }
 
 // TestSendEmailWire_MatchesUpstreamContract guards sendEmailWire against
-// silent drift from the pinned emailapi.SendEmailRequest, in every direction
-// a hand-copied struct can drift, since email-service ignores unknown fields
-// and there is no error path to surface a mismatch:
+// silent drift from the pinned emailapi.SendEmailRequest, for every
+// top-level tagged field (neither struct embeds another today, so promoted
+// fields are out of scope — revisit this test if one ever does), since
+// email-service ignores unknown fields and there is no error path to
+// surface a mismatch:
 //   - upstream adds a field this struct doesn't mirror
 //   - upstream drops, renames, or retypes a field this struct still claims
 //   - a known local-only extra (an unsubscribe field) appears upstream too,
@@ -82,7 +84,10 @@ var sendEmailWireKnownExtraJSONTags = map[string]bool{
 //
 // The first three are checked structurally (by reflection, independent of
 // field order); the last needs an actual conversion, so it's checked by
-// marshalling a fully-populated input through both types and comparing JSON.
+// marshalling a fully-populated input through both types and comparing the
+// decoded values — not the raw JSON bytes, so an upstream field reorder
+// (a no-op on the wire; encoding/json decodes by key, not position) can't
+// fail this the way a byte-diff would.
 func TestSendEmailWire_MatchesUpstreamContract(t *testing.T) {
 	upstream := jsonFieldSet(reflect.TypeOf(emailapi.SendEmailRequest{}))
 	local := jsonFieldSet(reflect.TypeOf(sendEmailWire{}))
@@ -140,8 +145,19 @@ func TestSendEmailWire_MatchesUpstreamContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal local wire: %v", err)
 	}
-	if string(got) != string(want) {
-		t.Errorf("newSendEmailWire dropped or crossed a shared field:\n got  %s\n want %s", got, want)
+	// Decode both sides before comparing, rather than diffing the raw bytes:
+	// json.Marshal emits struct fields in declaration order, so a byte
+	// compare would fail on a harmless upstream field reorder (a no-op on
+	// the wire — email-service decodes by key) and blame the wrong thing.
+	var wantFields, gotFields map[string]any
+	if err := json.Unmarshal(want, &wantFields); err != nil {
+		t.Fatalf("decode upstream contract JSON: %v", err)
+	}
+	if err := json.Unmarshal(got, &gotFields); err != nil {
+		t.Fatalf("decode local wire JSON: %v", err)
+	}
+	if !reflect.DeepEqual(gotFields, wantFields) {
+		t.Errorf("newSendEmailWire dropped or crossed a shared field:\n got  %v\n want %v", gotFields, wantFields)
 	}
 }
 
