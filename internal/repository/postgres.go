@@ -69,6 +69,26 @@ func (r *PostgresNewsletterRepo) Get(ctx context.Context, id uuid.UUID) (*model.
 	return n, nil
 }
 
+// GetMeta is Get without the body_layout column — for hot paths (open pixel,
+// analytics ownership) that only read existence / project_uid / status /
+// group_id and would otherwise pull and decode the full layout JSON they
+// discard. ExcludeColumn mirrors the ListAll / ListSentByCommittee read path.
+func (r *PostgresNewsletterRepo) GetMeta(ctx context.Context, id uuid.UUID) (*model.Newsletter, error) {
+	n := &model.Newsletter{}
+	err := r.db.NewSelect().
+		Model(n).
+		ExcludeColumn("body_layout").
+		Where("n.id = ?", id).
+		Scan(ctx)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("select newsletter meta: %w", err)
+	}
+	return n, nil
+}
+
 // List returns all newsletters in the given project, newest first.
 func (r *PostgresNewsletterRepo) List(ctx context.Context, projectUID string) ([]*model.Newsletter, error) {
 	var rows []*model.Newsletter

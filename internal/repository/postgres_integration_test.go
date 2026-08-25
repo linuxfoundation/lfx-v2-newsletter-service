@@ -648,3 +648,38 @@ func TestRevertScheduled_RejectsStaleBatchID(t *testing.T) {
 		t.Fatalf("Version after stale revert attempt: got %d, want unchanged %d", n.Version, armedB.Version)
 	}
 }
+
+// TestGetMeta_ExcludesBodyLayout pins the hot-path read: GetMeta returns the
+// row without its body_layout (so the open-pixel / analytics routes never
+// decode the layout JSON), while Get still materializes it.
+func TestGetMeta_ExcludesBodyLayout(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	id := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_layout = ?::jsonb WHERE id = ?`,
+		`{"wrapper_key":"default","blocks":[]}`, id,
+	).Exec(ctx); err != nil {
+		t.Fatalf("set body_layout: %v", err)
+	}
+
+	full, err := repo.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(full.BodyLayout) == 0 {
+		t.Fatalf("Get should materialize body_layout")
+	}
+
+	meta, err := repo.GetMeta(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if len(meta.BodyLayout) != 0 {
+		t.Errorf("GetMeta must not materialize body_layout, got %s", meta.BodyLayout)
+	}
+	if meta.ProjectUID != full.ProjectUID {
+		t.Errorf("GetMeta should still return project_uid: got %q want %q", meta.ProjectUID, full.ProjectUID)
+	}
+}

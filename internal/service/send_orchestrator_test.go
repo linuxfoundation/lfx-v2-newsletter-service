@@ -171,6 +171,21 @@ func (r *fakeNewsletterRepo) Get(_ context.Context, id uuid.UUID) (*model.Newsle
 	cp := *n
 	return &cp, nil
 }
+
+// GetMeta mirrors the production read: the returned copy never carries
+// body_layout, so a caller that wrongly depends on the layout on this path fails
+// in tests too.
+func (r *fakeNewsletterRepo) GetMeta(_ context.Context, id uuid.UUID) (*model.Newsletter, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.drafts[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	cp := *n
+	cp.BodyLayout = nil
+	return &cp, nil
+}
 func (r *fakeNewsletterRepo) List(_ context.Context, _ string) ([]*model.Newsletter, error) {
 	return nil, nil
 }

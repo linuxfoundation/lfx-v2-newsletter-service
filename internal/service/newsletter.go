@@ -173,9 +173,10 @@ func (s *NewsletterService) GetNewsletter(ctx context.Context, projectUID string
 // GetNewsletterByID fetches a newsletter by id WITHOUT a project gate. Used
 // internally by handlers that already enforce project ownership (e.g. the
 // open-pixel handler, which validates project_uid from the URL against the
-// stored newsletter).
+// stored newsletter). Reads via GetMeta — the open pixel only needs project_uid,
+// so it never materializes the body_layout on that high-frequency route.
 func (s *NewsletterService) GetNewsletterByID(ctx context.Context, id uuid.UUID) (*model.Newsletter, error) {
-	return s.repo.Get(ctx, id)
+	return s.repo.GetMeta(ctx, id)
 }
 
 // ListNewslettersInput is the typed input for ListNewsletters.
@@ -257,8 +258,9 @@ func (s *NewsletterService) Analytics(ctx context.Context, projectUID string, id
 func (s *NewsletterService) RecordOpenWithHash(ctx context.Context, newsletterID uuid.UUID, recipientHash string) error {
 	// Verify the newsletter exists so we can return ErrNotFound for genuinely
 	// bad IDs; we deliberately don't enforce status='sent' so test/preview
-	// pipelines can light up the same tracking.
-	if _, err := s.repo.Get(ctx, newsletterID); err != nil {
+	// pipelines can light up the same tracking. GetMeta: this is a pure
+	// existence check on the busiest (per-open) route, so skip the layout JSON.
+	if _, err := s.repo.GetMeta(ctx, newsletterID); err != nil {
 		return err
 	}
 	hash := strings.TrimSpace(recipientHash)

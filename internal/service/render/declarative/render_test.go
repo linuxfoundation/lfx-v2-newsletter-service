@@ -6,6 +6,7 @@ package declarative
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -776,5 +777,34 @@ func TestRender_AuthoredCardShadowSurvives(t *testing.T) {
 	}
 	if !strings.Contains(out, "box-shadow:6px 6px 0 #3d8bff") {
 		t.Errorf("by_the_numbers borderless card lost its authored blue shadow:\n%s", out)
+	}
+}
+
+// TestRender_SplitCardShadowIndexStaysAligned covers the box-shadow index
+// desync: hot_take's poll uses buttons, so writeSection cannot keep it as one
+// table-safe card and splits it into multiple radiused sibling wrappers (the
+// breakout row carries the card's border-radius/margin). A shadow slice that
+// counted one entry per AUTHORED card would advance the re-shadow index twice
+// for hot_take, so the next card would read past the slice and lose its authored
+// shadow. Assert the trailing by_the_numbers keeps its blue shadow behind a
+// splitting hot_take.
+func TestRender_SplitCardShadowIndexStaysAligned(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+	layout := Layout{Blocks: []Block{
+		{BlockType: "hot_take"},       // button poll → not table-safe → splits into sibling sections
+		{BlockType: "by_the_numbers"}, // borderless card with a distinct blue shadow
+	}}
+	out, err := Render(context.Background(), layout, tmpl, map[string]any{"edition": map[string]any{}})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	// Assert the blue shadow lands on by_the_numbers' OWN card, not just anywhere:
+	// its dark (#131313) borderless wrapper must carry box-shadow #3d8bff in the
+	// same style attribute. On a desync the blue shadow would instead attach to
+	// hot_take's (white) breakout wrapper, so a bare Contains(#3d8bff) would still
+	// pass while by_the_numbers rendered shadowless.
+	darkCardBlueShadow := regexp.MustCompile(`background-color:#131313[^"]*box-shadow:6px 6px 0 #3d8bff|box-shadow:6px 6px 0 #3d8bff[^"]*background-color:#131313`)
+	if !darkCardBlueShadow.MatchString(out) {
+		t.Errorf("by_the_numbers' dark card lost its authored blue shadow behind a splitting hot_take (shadow index desync):\n%s", out)
 	}
 }
