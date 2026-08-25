@@ -229,36 +229,52 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		return nil, fmt.Errorf("%w: cannot update armed scheduled row", domain.ErrInvalidRequest)
 	}
 
-	res, err := r.db.NewUpdate().
-		Model(n).
-		Set("subject = ?", n.Subject).
-		Set("body_html = ?", n.BodyHTML).
-		// body_layout is the editor's structured layout; nil persists SQL NULL so
-		// updating a layout-less draft doesn't write an empty JSONB value.
-		Set("body_layout = ?", nullableJSONB(n.BodyLayout)).
-		Set("ed_reply_email = ?", n.EDReplyEmail).
-		// pgdialect.Array forces a Postgres text[] literal; without it bun
-		// json-encodes the slice and PG raises a "malformed array literal".
-		Set("committee_uids = ?", pgdialect.Array(n.CommitteeUIDs)).
-		Set("project_uid = ?", n.ProjectUID).
-		// Full replace: an omitted/null scheduled_at clears it, consistent with
-		// every other field here (LFXV2-2685).
-		Set("scheduled_at = ?", n.ScheduledAt).
-		Set("updated_at = now()").
-		Set("version = version + 1").
-		Where("id = ? AND version = ?", n.ID, expectedVersion).
-		Returning("*").
-		Exec(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("update newsletter: %w", err)
-	}
+	// Wrap the GUC flag and UPDATE in the same transaction so reject_legacy_layout_send
+	// sees it. This is the layout-aware update path: it rewrites body_html and
+	// body_layout together (including explicit layout removal via nullableJSONB), so
+	// the derived HTML stays consistent with the layout. Setting app.allow_layout_update
+	// authorizes that body_html rewrite on a layout row; a legacy pod (which ignores
+	// body_layout) never sets it and is blocked from an HTML-only edit that would leave
+	// body_layout stale. SET LOCAL only applies inside a transaction.
+	txErr := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_layout_update = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set layout update flag: %w", err)
+		}
+		res, err := tx.NewUpdate().
+			Model(n).
+			Set("subject = ?", n.Subject).
+			Set("body_html = ?", n.BodyHTML).
+			// body_layout is the editor's structured layout; nil persists SQL NULL so
+			// updating a layout-less draft doesn't write an empty JSONB value.
+			Set("body_layout = ?", nullableJSONB(n.BodyLayout)).
+			Set("ed_reply_email = ?", n.EDReplyEmail).
+			// pgdialect.Array forces a Postgres text[] literal; without it bun
+			// json-encodes the slice and PG raises a "malformed array literal".
+			Set("committee_uids = ?", pgdialect.Array(n.CommitteeUIDs)).
+			Set("project_uid = ?", n.ProjectUID).
+			// Full replace: an omitted/null scheduled_at clears it, consistent with
+			// every other field here (LFXV2-2685).
+			Set("scheduled_at = ?", n.ScheduledAt).
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("id = ? AND version = ?", n.ID, expectedVersion).
+			Returning("*").
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("update newsletter: %w", err)
+		}
 
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("update newsletter rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return nil, r.classifyMissing(ctx, n.ID)
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("update newsletter rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			return r.classifyMissing(ctx, n.ID)
+		}
+		return nil
+	})
+	if txErr != nil {
+		return nil, txErr
 	}
 
 	// bun's Returning("*") populated n with the new row state.

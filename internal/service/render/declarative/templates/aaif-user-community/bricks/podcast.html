@@ -11,11 +11,19 @@
 <Section class="brick" style="padding:0">
   <Heading if="title" class="dm-h" style="margin:0 0 8px;font-size:22px;font-weight:bold;color:#131313;line-height:1.2;letter-spacing:-0.2px">{{title}}</Heading>
   <richtext field="description" class="dm-t" style="font-size:16px;color:#3c3c3f;line-height:1.5" />
+  <!-- All three links are independent optional fields. The template `if` is
+       single-field truthiness (no boolean AND/OR) and whitespace-only text nodes
+       are dropped at parse, so a punctuation separator (" · ") that only renders
+       between two present links is not expressible without leaving a leading or
+       dangling separator for some combination. Use separator-free spacing instead:
+       each present link is spaced from the next by a non-breaking gap baked into
+       the preceding link's label (a bare space node would be stripped), so every
+       combination — including a single link — renders cleanly. -->
   <Text class="dm-t" style="font-size:16px;color:#3c3c3f;line-height:1.5;margin-top:8px">
     <strong>
-      <Link if="video_link" href="{{video_link}}" class="dm-h" style="color:#131313;text-decoration:underline">Video</Link>
-      <span if="spotify_link"> &middot; <Link href="{{spotify_link}}" class="dm-h" style="color:#131313;text-decoration:underline">Spotify</Link></span>
-      <span if="apple_link"> &middot; <Link href="{{apple_link}}" class="dm-h" style="color:#131313;text-decoration:underline">Apple</Link></span>
+      <Link if="video_link" href="{{video_link}}" class="dm-h" style="color:#131313;text-decoration:underline">Video&nbsp;&nbsp;</Link>
+      <Link if="spotify_link" href="{{spotify_link}}" class="dm-h" style="color:#131313;text-decoration:underline">Spotify&nbsp;&nbsp;</Link>
+      <Link if="apple_link" href="{{apple_link}}" class="dm-h" style="color:#131313;text-decoration:underline">Apple</Link>
     </strong>
   </Text>
 </Section>

@@ -761,14 +761,21 @@ func writeAttr(b *strings.Builder, name, value string) {
 	b.WriteString(`"`)
 }
 
-// writeImage emits an mj-image. src/alt/width carry across; remaining styling
-// is dropped (MJML controls image layout via its own attributes).
+// writeImage emits an mj-image. src/alt/width/href carry across; presentational
+// declarations MJML exposes as attributes (border, border-radius) are mapped from
+// the authored inline style so they survive MJML strict validation — the image
+// templates rely on border-radius:8px for rounded corners. The remaining
+// declarations (display / width / max-width / height responsiveness, outline) are
+// MJML defaults for mj-image and are dropped.
 func writeImage(b *strings.Builder, n *node) {
 	b.WriteString("<mj-image")
 	writeAttr(b, "src", n.Attrs["src"])
 	writeAttr(b, "alt", n.Attrs["alt"])
 	writeAttr(b, "width", n.Attrs["width"])
 	writeAttr(b, "href", n.Attrs["href"])
+	for _, m := range imageStyleMappings(n.Attrs["style"]) {
+		writeAttr(b, m.attr, m.val)
+	}
 	b.WriteString(" />")
 }
 
@@ -792,20 +799,14 @@ type styleMapping struct {
 	val  string
 }
 
-// buttonStyleMappings maps a subset of inline CSS onto mj-button attributes.
-// MJML strict mode rejects an arbitrary inline `style` on mj-button, so only
-// recognized declarations are forwarded; the rest are dropped.
-func buttonStyleMappings(style string) []styleMapping {
+// mapStyleDecls forwards the inline CSS declarations whose property is present in
+// cssToAttr onto the named MJML attribute, preserving authored order. Declarations
+// that don't parse, have an unrecognized property, or carry an empty value are
+// dropped. MJML strict mode rejects an arbitrary inline `style` on mj-button /
+// mj-image, so callers allowlist only the declarations MJML exposes as attributes.
+func mapStyleDecls(style string, cssToAttr map[string]string) []styleMapping {
 	if style == "" {
 		return nil
-	}
-	cssToAttr := map[string]string{
-		"background-color": "background-color",
-		"color":            "color",
-		"border":           "border",
-		"border-radius":    "border-radius",
-		"font-weight":      "font-weight",
-		"padding":          "inner-padding",
 	}
 	var out []styleMapping
 	for _, decl := range strings.Split(style, ";") {
@@ -820,6 +821,29 @@ func buttonStyleMappings(style string) []styleMapping {
 		}
 	}
 	return out
+}
+
+// buttonStyleMappings maps a subset of inline CSS onto mj-button attributes.
+func buttonStyleMappings(style string) []styleMapping {
+	return mapStyleDecls(style, map[string]string{
+		"background-color": "background-color",
+		"color":            "color",
+		"border":           "border",
+		"border-radius":    "border-radius",
+		"font-weight":      "font-weight",
+		"padding":          "inner-padding",
+	})
+}
+
+// imageStyleMappings maps a subset of inline CSS onto mj-image attributes. Only
+// border / border-radius are forwarded; mj-image handles sizing responsively via
+// its own defaults, so authored width / max-width / height / display / outline are
+// deliberately dropped.
+func imageStyleMappings(style string) []styleMapping {
+	return mapStyleDecls(style, map[string]string{
+		"border":        "border",
+		"border-radius": "border-radius",
+	})
 }
 
 // classStyleDefs are the canonical inline-style definitions for the template

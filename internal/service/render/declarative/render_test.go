@@ -835,3 +835,100 @@ func TestRender_SplitCardShadowIndexStaysAligned(t *testing.T) {
 		t.Errorf("by_the_numbers' dark card lost its authored blue shadow behind a splitting hot_take (shadow index desync):\n%s", out)
 	}
 }
+
+// TestRenderMJML_ImageBorderRadiusCarried pins the authored image styling that
+// the new templates rely on: MJML strict mode drops an arbitrary inline `style`
+// on mj-image, so writeImage forwards the supported presentational declarations
+// (border, border-radius) onto mj-image attributes. Without this, meme_of_week /
+// last_weeks_take / sponsored_ad lose their intended border-radius:8px rounding.
+func TestRenderMJML_ImageBorderRadiusCarried(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+
+	layout := Layout{
+		Blocks: []Block{
+			{
+				BlockType: "meme_of_week",
+				Content: map[string]any{
+					"image_url": "https://cdn.example/meme.png",
+				},
+			},
+		},
+	}
+
+	doc, err := RenderMJML(layout, tmpl, nil)
+	if err != nil {
+		t.Fatalf("RenderMJML: %v", err)
+	}
+	if !strings.Contains(doc, "<mj-image") {
+		t.Fatalf("expected an mj-image for the meme image:\n%s", doc)
+	}
+	if !strings.Contains(doc, `border-radius="8px"`) {
+		t.Errorf("expected authored border-radius:8px carried onto mj-image as an attribute:\n%s", doc)
+	}
+}
+
+// TestRenderMJML_PodcastSeparatorsNoDangling covers the podcast brick's optional
+// platform links. All three fields (video/spotify/apple) are independent optional
+// fields, so the previous per-link " · " separators produced a leading separator
+// for combinations like spotify-only ("· Spotify"). The brick now uses
+// separator-free spacing, so no punctuation separator may appear for any
+// combination while every present link still renders.
+func TestRenderMJML_PodcastSeparatorsNoDangling(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+
+	cases := []struct {
+		name    string
+		content map[string]any
+		want    []string
+	}{
+		{
+			name:    "spotify only",
+			content: map[string]any{"title": "Ep 1", "spotify_link": "https://open.spotify.com/x"},
+			want:    []string{"Spotify"},
+		},
+		{
+			name:    "apple only",
+			content: map[string]any{"title": "Ep 1", "apple_link": "https://podcasts.apple.com/x"},
+			want:    []string{"Apple"},
+		},
+		{
+			name: "video and apple, no spotify",
+			content: map[string]any{
+				"title":      "Ep 1",
+				"video_link": "https://youtu.be/x",
+				"apple_link": "https://podcasts.apple.com/x",
+			},
+			want: []string{"Video", "Apple"},
+		},
+		{
+			name: "all three",
+			content: map[string]any{
+				"title":        "Ep 1",
+				"video_link":   "https://youtu.be/x",
+				"spotify_link": "https://open.spotify.com/x",
+				"apple_link":   "https://podcasts.apple.com/x",
+			},
+			want: []string{"Video", "Spotify", "Apple"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			layout := Layout{Blocks: []Block{{BlockType: "podcast", Content: tc.content}}}
+			doc, err := RenderMJML(layout, tmpl, nil)
+			if err != nil {
+				t.Fatalf("RenderMJML: %v", err)
+			}
+			for _, sep := range []string{"·", "&middot;", "&#183;", "&#xB7;"} {
+				if strings.Contains(doc, sep) {
+					t.Errorf("expected no %q separator for %s:\n%s", sep, tc.name, doc)
+				}
+			}
+			for _, label := range tc.want {
+				if !strings.Contains(doc, ">"+label) {
+					t.Errorf("expected %q link label present for %s:\n%s", label, tc.name, doc)
+				}
+			}
+		})
+	}
+}

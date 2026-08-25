@@ -400,6 +400,78 @@ func TestLayoutSend_TriggerRejectsLegacyClaim(t *testing.T) {
 	}
 }
 
+// TestLayoutUpdate_TriggerRejectsLegacyBodyHTMLEdit covers the second edge of
+// reject_legacy_layout_send: a legacy pod editing a layout row's body_html. On a
+// layout row, body_html is DERIVED from body_layout, so a legacy pod (which
+// ignores body_layout) that rewrites only body_html leaves the two inconsistent;
+// the next layout-aware send re-renders the stale body_layout and silently
+// discards the edit. The trigger blocks that body_html mutation unless the caller
+// sets app.allow_layout_update. A raw legacy UPDATE never does and is rejected;
+// the layout-aware repo.Update sets it (rewriting body_html and body_layout
+// together, including explicit layout removal) and succeeds.
+func TestLayoutUpdate_TriggerRejectsLegacyBodyHTMLEdit(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	// Mark the row as a layout newsletter. OLD.body_layout is NULL on this first
+	// write, so the body_html guard does not fire (and body_html is untouched).
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_layout = ?::jsonb WHERE id = ?`,
+		`{"wrapper_key":"default","blocks":[]}`, draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("set body_layout: %v", err)
+	}
+
+	// A legacy pod's HTML-only edit is a raw body_html UPDATE with no layout-update
+	// GUC; the trigger must reject it because body_layout would be left stale.
+	_, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_html = ?, version = version + 1 WHERE id = ?`,
+		"<p>legacy html-only edit</p>", draftID,
+	).Exec(ctx)
+	if err == nil {
+		t.Fatalf("legacy body_html edit of a layout row should have been rejected by the trigger but succeeded")
+	}
+	if !strings.Contains(err.Error(), "cannot edit layout newsletter body_html") && !strings.Contains(err.Error(), "service version mismatch") {
+		t.Fatalf("unexpected rejection message: %v", err)
+	}
+
+	// The row is untouched: body_html is still the seeded value (rejected UPDATE
+	// rolled back).
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after rejected edit: %v", err)
+	}
+	if n.BodyHTML != "<p>body</p>" {
+		t.Fatalf("body_html should be unchanged after rejected legacy edit, got %q", n.BodyHTML)
+	}
+
+	// The layout-aware Update path sets app.allow_layout_update, so editing the
+	// same layout row's body_html (re-derived alongside body_layout) succeeds.
+	n.BodyHTML = "<p>layout-aware re-render</p>"
+	updated, err := repo.Update(ctx, n, n.Version)
+	if err != nil {
+		t.Fatalf("layout-aware Update should succeed: %v", err)
+	}
+	if updated.BodyHTML != "<p>layout-aware re-render</p>" {
+		t.Fatalf("body_html after layout-aware Update: got %q", updated.BodyHTML)
+	}
+
+	// Explicit layout removal is also part of the layout-aware path: dropping
+	// body_layout to NULL while rewriting body_html must be allowed (the guard
+	// keys on OLD.body_layout, and Update sets the GUC).
+	updated.BodyLayout = nil
+	updated.BodyHTML = "<p>layout removed</p>"
+	removed, err := repo.Update(ctx, updated, updated.Version)
+	if err != nil {
+		t.Fatalf("layout-aware Update removing the layout should succeed: %v", err)
+	}
+	if removed.BodyLayout != nil {
+		t.Fatalf("body_layout should be cleared after explicit removal, got %q", string(removed.BodyLayout))
+	}
+}
+
 func TestArmedMutations_TriggerRejectsUnauthorized(t *testing.T) {
 	repo := newIntegrationRepo(t)
 
