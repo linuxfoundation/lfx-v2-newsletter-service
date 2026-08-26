@@ -67,7 +67,9 @@ func newIntegrationRepo(t *testing.T) *PostgresNewsletterRepo {
 		t.Fatalf("apply schema: %v", err)
 	}
 
-	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
+	// Mirror the production bun.DB config (cmd/newsletter-api/service) so these
+	// tests exercise the same rolling-deploy resilience the service ships with.
+	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New(), bun.WithDiscardUnknownColumns())
 	t.Cleanup(func() {
 		_ = db.Close()
 		pool.Close()
@@ -506,6 +508,43 @@ func TestLayoutUpdate_TriggerAllowsMetadataOnlyEdit(t *testing.T) {
 	}
 	if n.BodyHTML != "<p>body</p>" {
 		t.Fatalf("body_html should be unchanged after a metadata-only edit, got %q", n.BodyHTML)
+	}
+}
+
+// TestWrites_TolerateUnknownColumn pins the rolling-deploy resilience from
+// bun.WithDiscardUnknownColumns: a RETURNING "*" write must not fail when the
+// table carries a column this binary's model does not know — the exact skew a
+// newer pod's additive migration creates for an older pod mid-deploy. Without the
+// option, Bun errors scanning the extra column, 500ing after an autocommitted
+// write. Seed (Create) and Update both use RETURNING "*", so both are exercised.
+func TestWrites_TolerateUnknownColumn(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	if _, err := repo.db.NewRaw(`ALTER TABLE newsletters ADD COLUMN IF NOT EXISTS bogus_future_col TEXT`).Exec(ctx); err != nil {
+		t.Fatalf("add unknown column: %v", err)
+	}
+	// Keep the test self-contained: drop the throwaway column so it doesn't leak
+	// schema state onto the shared test database for later tests.
+	t.Cleanup(func() {
+		_, _ = repo.db.NewRaw(`ALTER TABLE newsletters DROP COLUMN IF EXISTS bogus_future_col`).Exec(context.Background())
+	})
+
+	// Create (RETURNING "*") with the unknown column present must succeed.
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// Update (RETURNING "*") with the unknown column present must succeed too.
+	n.Subject = "edited after an unknown column was added"
+	updated, err := repo.Update(ctx, n, n.Version)
+	if err != nil {
+		t.Fatalf("Update with an unknown column present should succeed, got %v", err)
+	}
+	if updated.Subject != "edited after an unknown column was added" {
+		t.Fatalf("Update did not apply, got %q", updated.Subject)
 	}
 }
 
