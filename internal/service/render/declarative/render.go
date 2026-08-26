@@ -23,6 +23,53 @@ import (
 // compiles in well under a second — so only genuinely pathological input hits it.
 const mjmlCompileTimeout = 15 * time.Second
 
+// maxLayoutBlocks and maxLayoutDepth bound a layout's total block count
+// (including nested) and container nesting depth. The pre-compile pipeline in
+// renderMJML — template parse, recursive block binding, spacing expansion, and
+// MJML generation — runs BEFORE the mjmlCompileTimeout deadline, so without these
+// a pathological layout near the 1 MiB request cap (thousands of blocks or deep
+// nesting) could amplify into heavy CPU/memory work that ignores cancellation. A
+// real edition has at most dozens of blocks a few levels deep, so these ceilings
+// sit far above any legitimate newsletter while capping the pre-compile work by
+// construction.
+const (
+	maxLayoutBlocks = 1000
+	maxLayoutDepth  = 16
+)
+
+// checkLayoutBounds rejects a layout whose total block count or container nesting
+// depth exceeds the render limits, before renderMJML runs the unbounded
+// pre-compile pipeline. The walk is cheap and short-circuits at the first breach,
+// so it cannot become the amplification it guards against. Returns
+// ErrUnrenderableLayout (→ 422 at the callers), matching how any other layout the
+// emitter cannot process surfaces.
+func checkLayoutBounds(blocks []Block) error {
+	total := 0
+	// walk visits every block at the given depth. It guards the DESCENT (only
+	// recurses into non-empty children, and only when the child level is within
+	// the limit) rather than the entry, so a leaf at exactly maxLayoutDepth is
+	// allowed while a block whose children would sit one level deeper is refused.
+	var walk func(bs []Block, depth int) error
+	walk = func(bs []Block, depth int) error {
+		for i := range bs {
+			total++
+			if total > maxLayoutBlocks {
+				return fmt.Errorf("%w: layout exceeds %d blocks", ErrUnrenderableLayout, maxLayoutBlocks)
+			}
+			if len(bs[i].Blocks) > 0 {
+				if depth+1 > maxLayoutDepth {
+					return fmt.Errorf("%w: layout nesting exceeds %d levels", ErrUnrenderableLayout, maxLayoutDepth)
+				}
+				if err := walk(bs[i].Blocks, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walk(blocks, 1)
+}
+
 // Render binds a structured newsletter Layout against the declarative
 // templates, assembles the bound blocks into the wrapper's <slot name="body">,
 // translates the result into MJML, and compiles it into email-safe HTML.
@@ -80,6 +127,11 @@ func RenderMJML(layout Layout, templates Templates, wrapperContent map[string]an
 // Render re-applies post-compile — MJML strips box-shadow from mj-section, so the
 // value must be captured here, before translation. See collectCardShadows.
 func renderMJML(layout Layout, templates Templates, wrapperContent map[string]any) (string, []string, error) {
+	// Bound the pre-compile work before any parsing/binding runs — this stage is
+	// not covered by the mjmlCompileTimeout that wraps only the wasm compile.
+	if err := checkLayoutBounds(layout.Blocks); err != nil {
+		return "", nil, err
+	}
 	wrapperSrc, err := templates.wrapper(layout.WrapperKey)
 	if err != nil {
 		return "", nil, err

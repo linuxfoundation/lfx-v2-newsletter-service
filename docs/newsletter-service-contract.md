@@ -218,14 +218,14 @@ Every outbound send (`send_orchestrator.go`, both the real fan-out and test-send
 | Newsletter is scheduled (edit/delete/send/schedule attempted) | 409 | `scheduled` |
 | Cancel-schedule requested inside the cancel buffer | 409 | `cancel_window_closed` |
 | Invalid request | 400 | `invalid_request` |
-| A layout cannot be rendered — unknown `block_type`, an unknown/unembedded `template_key`, malformed markup, MJML compile failure (on `render-preview`, or render-on-write during create/update) | 422 | `unprocessable_entity` |
+| A layout cannot be rendered — unknown `block_type`, an unknown/unembedded `template_key`, malformed markup, MJML compile failure, or a layout exceeding the block-count / nesting-depth limits (on `render-preview`, or render-on-write during create/update) | 422 | `unprocessable_entity` |
 | Upstream conflict (typed `pkgerrors.Conflict`) | 409 | `conflict` |
 | Upstream dependency unavailable | 503 | `service_unavailable` |
 | Unexpected server error | 500 | `internal_error` |
 
 Domain sentinels match first; typed `pkgerrors.*` wrappers from the NATS upstream clients (committee, project, email-dispatcher) match by `errors.As`. 5xx responses intentionally use a generic client message. Details are logged server-side.
 
-`422 unprocessable_entity` is a client/markup error — the request was well-formed but its layout could not be rendered. This includes a `template_key` that names a block library the binary does not embed. The same status applies whether the layout fails on `render-preview` or on render-on-write during create/update, so an editor that previews then saves the same bad layout sees a consistent code. It is distinct from a failure to load the *default* render library, which is a deployment defect (the templates ship with the binary) and surfaces as `500 internal_error`.
+`422 unprocessable_entity` is a client/markup error — the request was well-formed but its layout could not be rendered. This includes a `template_key` that names a block library the binary does not embed, and a layout that exceeds the block-count or container-nesting-depth ceilings — bounded so the pre-compile render pipeline (parse, recursive bind, spacing expansion), which runs before the compile timeout, cannot be driven into pathological CPU/memory work. The same status applies whether the layout fails on `render-preview` or on render-on-write during create/update, so an editor that previews then saves the same bad layout sees a consistent code. It is distinct from a failure to load the *default* render library, which is a deployment defect (the templates ship with the binary) and surfaces as `500 internal_error`.
 
 ## Change Checklist
 

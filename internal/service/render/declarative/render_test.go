@@ -526,6 +526,65 @@ func TestRender_ClientLayoutFailuresAreUnrenderable(t *testing.T) {
 	}
 }
 
+// TestCheckLayoutBounds pins the EXACT block-count and nesting-depth boundaries:
+// a layout at each ceiling passes, one over is rejected as ErrUnrenderableLayout.
+// (A layout at maxLayoutDepth must pass — a leaf sitting at the deepest allowed
+// level is legitimate; only children one level deeper breach the limit.)
+func TestCheckLayoutBounds(t *testing.T) {
+	leaf := Block{BlockType: "x"}
+
+	atCount := make([]Block, maxLayoutBlocks)
+	for i := range atCount {
+		atCount[i] = leaf
+	}
+	if err := checkLayoutBounds(atCount); err != nil {
+		t.Errorf("a layout at maxLayoutBlocks (%d) should pass, got %v", maxLayoutBlocks, err)
+	}
+	overCount := make([]Block, maxLayoutBlocks+1)
+	for i := range overCount {
+		overCount[i] = leaf
+	}
+	if err := checkLayoutBounds(overCount); !errors.Is(err, ErrUnrenderableLayout) {
+		t.Errorf("a layout over maxLayoutBlocks should be rejected, got %v", err)
+	}
+
+	// chain builds a single nested chain n blocks deep, a leaf at the deepest level.
+	chain := func(n int) []Block {
+		b := Block{BlockType: "x"}
+		for i := 1; i < n; i++ {
+			b = Block{BlockType: "x", Blocks: []Block{b}}
+		}
+		return []Block{b}
+	}
+	if err := checkLayoutBounds(chain(maxLayoutDepth)); err != nil {
+		t.Errorf("a chain at maxLayoutDepth (%d) should pass, got %v", maxLayoutDepth, err)
+	}
+	if err := checkLayoutBounds(chain(maxLayoutDepth + 1)); !errors.Is(err, ErrUnrenderableLayout) {
+		t.Errorf("a chain over maxLayoutDepth should be rejected, got %v", err)
+	}
+}
+
+// TestRenderMJML_RejectsOversizedLayout confirms the bound is wired into
+// renderMJML (the choke point every render path funnels through), so an
+// oversized layout surfaces as ErrUnrenderableLayout (→ 422) and a small
+// legitimate layout is unaffected.
+func TestRenderMJML_RejectsOversizedLayout(t *testing.T) {
+	tmpl := loadTestTemplates(t)
+
+	tooMany := Layout{Blocks: make([]Block, maxLayoutBlocks+1)}
+	for i := range tooMany.Blocks {
+		tooMany.Blocks[i] = Block{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>x</p>"}}
+	}
+	if _, err := RenderMJML(tooMany, tmpl, nil); !errors.Is(err, ErrUnrenderableLayout) {
+		t.Errorf("oversized layout via RenderMJML err = %v, want ErrUnrenderableLayout", err)
+	}
+
+	ok := Layout{Blocks: []Block{{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Body.</p>"}}}}
+	if _, err := RenderMJML(ok, tmpl, nil); err != nil {
+		t.Errorf("small valid layout should render, got %v", err)
+	}
+}
+
 // TestRender_NumericBindingNoScientificNotation binds a large numeric field — as
 // JSON decodes it into content, a float64 — and asserts it renders as a plain
 // integer, not the "1e+06" exponent form fmt's %v produces for float64 >= 1e6.
