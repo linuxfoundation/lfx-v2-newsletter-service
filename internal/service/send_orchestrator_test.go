@@ -597,6 +597,59 @@ func TestSendIncludesMyNewslettersLink(t *testing.T) {
 	}
 }
 
+// TestSendNewsletterRefusesEmptyLegacyBody pins that a legacy (non-layout) draft
+// cleared to an empty body_html via the editor escape hatch saves but cannot
+// send — dispatching it would ship a header/footer-only email. The send path
+// must refuse before any recipient dispatch or the draft → sending transition.
+func TestSendNewsletterRefusesEmptyLegacyBody(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	repo.drafts[draft.ID].BodyHTML = "" // escape-hatch cleared the body, no layout
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if err == nil {
+		t.Fatalf("expected SendNewsletter to refuse an empty legacy body")
+	}
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("want ErrInvalidRequest, got %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 0 {
+		t.Fatalf("empty-body refusal must dispatch nothing, got %d sends", len(email.sends))
+	}
+	if repo.drafts[draft.ID].Status != model.StatusDraft {
+		t.Fatalf("draft must stay in draft after refusal, got %v", repo.drafts[draft.ID].Status)
+	}
+}
+
+// TestSubstituteTestPlaceholdersZeroesRuntimeSentinels pins that a test send
+// resolves the per-recipient runtime sentinels — including
+// %%MANAGE_SUBSCRIPTIONS_URL%% — to empty. A test mints no per-recipient
+// context, so the layout wrapper drops those rows and no live manage/opt-out
+// link is minted for an arbitrary test address.
+func TestSubstituteTestPlaceholdersZeroesRuntimeSentinels(t *testing.T) {
+	repo := newFakeRepo()
+	orch := newTestOrchestrator(repo, &fakeCommitteeClient{}, &fakeEmailDispatcher{}, NewUnsubscribeService(repo, []byte("k"), ""))
+	body := UnsubscribeURLPlaceholder + "|" + ManageSubscriptionsURLPlaceholder + "|" + ViewOnlineURLPlaceholder
+	got := orch.substituteTestPlaceholders(body)
+	for _, ph := range []string{UnsubscribeURLPlaceholder, ManageSubscriptionsURLPlaceholder, ViewOnlineURLPlaceholder} {
+		if strings.Contains(got, ph) {
+			t.Errorf("sentinel %q should resolve empty in a test send, got: %q", ph, got)
+		}
+	}
+	if got != "||" {
+		t.Errorf("all runtime sentinels should resolve empty in a test send, got: %q", got)
+	}
+}
+
 // TestTestSendRendersComplianceFooterWithRealUnsubscribeLink asserts a
 // test-send body carries the same compliance footer as a real send, with a
 // working unsubscribe link minted directly for the to_email recipient.

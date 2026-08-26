@@ -437,6 +437,18 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// newsletters have no layout to re-render and dispatch draft.BodyHTML unchanged.
 	isLayout := layoutPresent(draft.BodyLayout)
 	sendBodyHTML := draft.BodyHTML
+	// A legacy (non-layout) draft can be persisted with an empty body_html — the
+	// block-editor→basic-editor escape hatch clears a layout with no replacement
+	// body yet (see the BodyLayoutSet branch in NewsletterService.Update). Such a
+	// draft is allowed to SAVE but must not SEND: dispatching it would ship a
+	// header/footer-only email. The layout path always yields content below (the
+	// re-render produces a body or refuses), so this guards only the legacy path,
+	// before recipient dispatch and the draft → sending transition.
+	if !isLayout {
+		if err := validateBodyHTML(sendBodyHTML); err != nil {
+			return nil, fmt.Errorf("newsletter send: %w", err)
+		}
+	}
 	if isLayout {
 		if rerendered, ok := o.reRenderLayoutBody(ctx, draft, replyTo); ok {
 			sendBodyHTML = rerendered
