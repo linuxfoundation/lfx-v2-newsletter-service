@@ -630,6 +630,39 @@ func TestSendNewsletterRefusesEmptyLegacyBody(t *testing.T) {
 	}
 }
 
+// TestSendNewsletterRefusesEmptyBlocksLayout pins that a layout draft with no
+// blocks — which re-renders to wrapper/header/footer chrome only — is refused at
+// send time rather than shipping an empty newsletter, even though save-time
+// allows an empty editor draft.
+func TestSendNewsletterRefusesEmptyBlocksLayout(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	repo.drafts[draft.ID].BodyLayout = json.RawMessage(`{"wrapper_key":"default","blocks":[]}`)
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if err == nil {
+		t.Fatalf("expected SendNewsletter to refuse an empty-blocks layout")
+	}
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("want ErrInvalidRequest, got %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 0 {
+		t.Fatalf("empty-blocks layout refusal must dispatch nothing, got %d sends", len(email.sends))
+	}
+	if repo.drafts[draft.ID].Status != model.StatusDraft {
+		t.Fatalf("draft must stay in draft after refusal, got %v", repo.drafts[draft.ID].Status)
+	}
+}
+
 // TestSubstituteTestPlaceholdersZeroesRuntimeSentinels pins that a test send
 // resolves the per-recipient runtime sentinels — including
 // %%MANAGE_SUBSCRIPTIONS_URL%% — to empty. A test mints no per-recipient

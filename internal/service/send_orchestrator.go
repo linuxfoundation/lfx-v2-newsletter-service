@@ -437,17 +437,20 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// newsletters have no layout to re-render and dispatch draft.BodyHTML unchanged.
 	isLayout := layoutPresent(draft.BodyLayout)
 	sendBodyHTML := draft.BodyHTML
-	// A legacy (non-layout) draft can be persisted with an empty body_html — the
-	// block-editor→basic-editor escape hatch clears a layout with no replacement
-	// body yet (see the BodyLayoutSet branch in NewsletterService.Update). Such a
-	// draft is allowed to SAVE but must not SEND: dispatching it would ship a
-	// header/footer-only email. The layout path always yields content below (the
-	// re-render produces a body or refuses), so this guards only the legacy path,
-	// before recipient dispatch and the draft → sending transition.
-	if !isLayout {
-		if err := validateBodyHTML(sendBodyHTML); err != nil {
-			return nil, fmt.Errorf("newsletter send: %w", err)
+	// A draft with no sendable content saves but must not send — dispatching it
+	// would ship a header/footer-only email. Two shapes reach here empty: a legacy
+	// draft cleared to an empty body_html (the block-editor→basic-editor escape
+	// hatch, see the BodyLayoutSet branch in NewsletterService.Update), and a
+	// layout with no blocks, which re-renders to wrapper chrome only. Refuse both
+	// before recipient dispatch and the draft → sending transition. (An unparseable
+	// layout is caught by the re-render below.)
+	if isLayout {
+		var parsed declarative.Layout
+		if json.Unmarshal(draft.BodyLayout, &parsed) == nil && len(parsed.Blocks) == 0 {
+			return nil, fmt.Errorf("newsletter send: %w: layout has no content to send", domain.ErrInvalidRequest)
 		}
+	} else if err := validateBodyHTML(sendBodyHTML); err != nil {
+		return nil, fmt.Errorf("newsletter send: %w", err)
 	}
 	if isLayout {
 		if rerendered, ok := o.reRenderLayoutBody(ctx, draft, replyTo); ok {
