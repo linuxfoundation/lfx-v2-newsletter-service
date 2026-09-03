@@ -171,6 +171,39 @@ app:
         name: ""
         key: "sendgrid-webhook-public-key"
 
+  # s3 configures S3 storage for newsletter images (optional; image routes not
+  # registered if S3Bucket is unset). When enabled, uploaded images are validated,
+  # resized, re-encoded (with EXIF metadata stripped), and stored in S3 keyed by
+  # content hash. The service then serves images at public unauthenticated URLs
+  # for email clients.
+  s3:
+    # bucket is the S3 bucket name. Required to enable image uploads.
+    # Empty (default) disables image upload routes.
+    bucket: ""
+    # region is the AWS region of the bucket.
+    region: ""
+    # endpoint is the S3-compatible endpoint (for MinIO/LocalStack). Empty means
+    # real AWS S3.
+    endpoint: ""
+    # createMissingBucket idempotently ensures the bucket exists at startup.
+    # Only allowed in local/dev LFX_ENVIRONMENT; must be false in production.
+    createMissingBucket: false
+    # cdnURLPrefix is the optional CDN prefix for image URLs. When set, images
+    # are served from this origin instead of the service's own download route.
+    # Empty means service download routes.
+    cdnURLPrefix: ""
+    # image contains limits for uploaded image processing.
+    image:
+      # maxBytes is the maximum file size in bytes (default: 20 MB).
+      # Go duration-like strings not supported; use integer bytes.
+      maxBytes: "20971520"
+      # maxPixels is the maximum total pixels (width * height) allowed.
+      # Used for decompression-bomb defense (default: 40 megapixels).
+      maxPixels: "40000000"
+      # maxWidth is the maximum width in pixels. Images are resized preserving
+      # aspect ratio if either dimension exceeds this (default: 1200).
+      maxWidth: "1200"
+
   # selfServeBaseURL is the base URL of the LFX Self-Serve web app, used to
   # build the "My Newsletters" deep link in the email compliance footer
   # (<selfServeBaseURL>/newsletters/my). Empty falls back to the app default

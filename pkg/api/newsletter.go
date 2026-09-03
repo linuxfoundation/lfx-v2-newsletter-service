@@ -339,3 +339,20 @@ type OptOut struct {
 type OptOutListResponse struct {
 	OptOuts []OptOut `json:"opt_outs"`
 }
+
+// UploadImageRequest is the body of POST /projects/{project_uid}/newsletters/images.
+// The body is raw image bytes (not multipart); Content-Type header specifies the image format.
+type UploadImageRequest struct {
+	// No fields; body is raw binary image data.
+	// Content-Type header (image/png, image/jpeg, or image/webp) is the declared format.
+}
+
+// UploadImageResponse is the body of POST /projects/{project_uid}/newsletters/images.
+type UploadImageResponse struct {
+	Hash        string `json:"hash"`
+	ContentType string `json:"content_type"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	ByteSize    int    `json:"byte_size"`
+	PublicURL   string `json:"public_url"`
+}

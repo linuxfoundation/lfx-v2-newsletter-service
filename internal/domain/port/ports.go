@@ -375,6 +375,15 @@ type GroupEngagementDetail struct {
 	FailedRecipients []string
 }
 
+// ImageStore persists and serves newsletter image bytes, keyed by content hash.
+//
+// Implementations must surface a missing key as domain.ErrNotFound.
+type ImageStore interface {
+	Put(ctx context.Context, key string, data []byte, contentType string) error
+	Get(ctx context.Context, key string) (data []byte, contentType string, err error)
+	PublicURL(key string) string
+}
+
 // GroupDetailFromRecords builds a GroupEngagementDetail from bounded in-memory
 // per-recipient records. It backs the email-service reader (whose by-group reply
 // is bounded), keeping unique-opens, the daily series, lastEvent, and failed

@@ -278,6 +278,29 @@ spec:
                   name: {{ .Values.database.external.secretName }}
                   key: {{ .Values.database.external.secretKey }}
             {{- end }}
+            {{- if .Values.app.s3.bucket }}
+            # S3 image storage (optional; routes not registered if bucket is unset).
+            - name: S3_BUCKET
+              value: {{ .Values.app.s3.bucket | quote }}
+            - name: S3_REGION
+              value: {{ .Values.app.s3.region | quote }}
+            {{- with .Values.app.s3.endpoint }}
+            - name: S3_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: S3_CREATE_MISSING_BUCKET
+              value: {{ .Values.app.s3.createMissingBucket | quote }}
+            {{- with .Values.app.s3.cdnURLPrefix }}
+            - name: CDN_URL_PREFIX
+              value: {{ . | quote }}
+            {{- end }}
+            - name: IMAGE_MAX_BYTES
+              value: {{ .Values.app.s3.image.maxBytes | quote }}
+            - name: IMAGE_MAX_PIXELS
+              value: {{ .Values.app.s3.image.maxPixels | quote }}
+            - name: IMAGE_MAX_WIDTH
+              value: {{ .Values.app.s3.image.maxWidth | quote }}
+            {{- end }}
             {{- with .Values.app.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
