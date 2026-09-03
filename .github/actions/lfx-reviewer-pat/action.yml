@@ -1,0 +1,80 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+#
+# Fetch the lfx-reviewer PAT from AWS Secrets Manager via OIDC and (by
+# default) map it to GH_TOKEN for the remaining JOB steps. This is the single
+# home of the role ARN / region / secret id used by every agentic workflow.
+#
+# Fail soft: until the OIDC role trust covers this repo, the AWS steps error
+# and `present` comes back "false", so callers skip green and the setup can
+# merge before the wiring exists. The calling job must hold id-token: write.
+#
+# NOTE: composite `shell: bash` runs with -eo pipefail — stricter than a
+# default workflow run step (bash -e only). The PAT-check body below is
+# pipeline-free and guards its only optional variable, so that is safe; audit
+# any future step added here the same way.
+---
+name: lfx-reviewer PAT
+description: >-
+  Fetch the lfx-reviewer PAT from AWS Secrets Manager via OIDC (fail-soft)
+  and expose whether it is present; optionally export it as GH_TOKEN for the
+  remaining job steps.
+inputs:
+  flow-name:
+    description: >-
+      Flow name used in the skip summary when the PAT is unavailable, e.g.
+      "agentic escalation".
+    required: true
+  map-token:
+    description: >-
+      When "true" (the default), export GH_TOKEN into the job env and write
+      the skip summary when the PAT is missing. Any other value only sets the
+      `present` output — the gate variant, whose write steps map
+      GH_TOKEN from env.GH_PAT per step and carry their own guards.
+    required: false
+    default: "true"
+outputs:
+  present:
+    description: Whether the lfx-reviewer PAT is available ("true"/"false").
+    value: ${{ steps.cfg.outputs.present }}
+runs:
+  using: composite
+  steps:
+    - name: Configure AWS credentials
+      continue-on-error: true
+      uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6
+      with:
+        role-to-assume: arn:aws:iam::788942260905:role/github-actions-deploy
+        aws-region: us-east-2
+
+    - name: Get lfx-reviewer token from AWS Secrets Manager
+      continue-on-error: true
+      uses: aws-actions/aws-secretsmanager-get-secrets@3a411b6ec5cace3d626412dd917e7bfeac242cfa  # v3
+      with:
+        secret-ids: |
+          GH, /cloudops/managed-secrets/cloud/github/linuxfoundation/lfx-reviewer-pat
+        parse-json-secrets: true
+
+    - name: Check reviewer PAT
+      id: cfg
+      shell: bash
+      env:
+        FLOW_NAME: ${{ inputs.flow-name }}
+        MAP_TOKEN: ${{ inputs.map-token }}
+      run: |
+        # The Secrets Manager step exports the secret's `PAT` key as GH_PAT.
+        # Map it to GH_TOKEN (what gh reads) for the remaining steps, and skip
+        # (green) when it is not available, so a missing role grant shows up
+        # as a clear skip instead of an opaque auth failure.
+        if [ -z "${GH_PAT:-}" ]; then
+          if [ "$MAP_TOKEN" = "true" ]; then
+            echo "lfx-reviewer PAT unavailable (OIDC role or secret not wired); $FLOW_NAME skipped." \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "present=false" >> "$GITHUB_OUTPUT"
+        else
+          if [ "$MAP_TOKEN" = "true" ]; then
+            echo "GH_TOKEN=$GH_PAT" >> "$GITHUB_ENV"
+          fi
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        fi
