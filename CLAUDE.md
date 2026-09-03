@@ -140,6 +140,59 @@ make check       # fmt + lint + license-check + go vet
 make lint        # golangci-lint
 ```
 
+### Go Toolchain Version
+
+Freely bump `go.mod`'s `go` directive to the latest available *patch*
+release (e.g. `1.X.Y` → `1.X.{Y+1}`) to pick up security fixes. Do **not**
+bump the *minor* version (e.g. `1.X.x` → `1.{X+1}.x`) unless the user
+explicitly asks for it, **and** you've validated it against the Go version
+MegaLinter itself bundles -- MegaLinter runs several linters (e.g.
+`golangci-lint`) against its own bundled Go version, and a `go.mod`
+directive newer than that bundled version breaks those checks. The hard
+ceiling is specific to `golangci-lint`'s own precompiled binary, which is
+statically built against a specific Go version baked into the MegaLinter
+Docker image and refuses newer `go.mod` directives; `GOTOOLCHAIN: auto`
+does not help here since it only affects `go` command invocations, not
+precompiled binaries. (`REPOSITORY_OSV_SCANNER`, MegaLinter's dependency
+vulnerability check, runs `osv-scanner`/`trivy`, not `govulncheck`, so it
+is unaffected by this ceiling.)
+
+To find MegaLinter's bundled Go version:
+
+```bash
+# 1. Find the MegaLinter flavor and pinned version tag used in CI.
+grep -A1 'oxsecurity/megalinter' .github/workflows/*.yml
+# e.g. "uses: oxsecurity/megalinter/flavors/<flavor>@<sha>  # <tag>"
+
+# 2. Fetch that flavor's Dockerfile and read its GO_ALPINE_VERSION (or
+#    GO_IMAGE_VERSION) build arg.
+curl -s "https://raw.githubusercontent.com/oxsecurity/megalinter/<tag>/flavors/<flavor>/Dockerfile" \
+  | grep -i 'GO_ALPINE_VERSION\|GO_IMAGE_VERSION'
+```
+
+`go.mod`'s `go` directive must never exceed that bundled version. Staying
+one minor version behind it (rather than matching its minor *and* patch
+exactly) leaves room to always take the latest patch release for security
+fixes without ever being blocked by MegaLinter's own bundled patch version
+lagging behind a newly disclosed vulnerability.
+
+Note that `GO_ALPINE_VERSION` is only a *proxy* for the Go version
+`golangci-lint`'s precompiled binary was actually built with, not a
+guarantee. If MegaLinter still fails on a `go.mod` bump after following
+the procedure above, check `golangci-lint --version` inside the pinned
+MegaLinter image directly to confirm the real ceiling.
+
+There's no built-in `go` subcommand to look up the latest patch release for
+a given minor version -- query the official `go.dev/dl` JSON feed instead:
+
+```bash
+# Find the latest patch release for the minor version pinned in go.mod.
+MINOR=$(grep '^go ' go.mod | awk '{print $2}' | cut -d. -f1,2)
+curl -s "https://go.dev/dl/?mode=json&include=all" \
+  | jq -r --arg m "go${MINOR}." '.[].version | select(startswith($m))' \
+  | sort -V | tail -1
+```
+
 ## Work cycle — post-commit and pre-PR reviews
 
 > **CRITICAL — while the branch is pre-PR, local review is mandatory.** After every
