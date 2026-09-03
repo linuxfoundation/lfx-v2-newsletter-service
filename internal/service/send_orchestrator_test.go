@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -364,6 +365,115 @@ func (r *fakeNewsletterRepo) DeleteUnsubscribe(_ context.Context, _ string, _ uu
 	return nil
 }
 
+// fakeSendRecipientRepository records every FanOutSendRecipients call and
+// replays a simplified in-memory version of the real Postgres keyset
+// pagination (ON CONFLICT (send_id, email) DO NOTHING semantics), so
+// orchestrator tests can assert chunking and idempotency without a database.
+type fakeSendRecipientRepository struct {
+	mu    sync.Mutex
+	calls []fanOutCall
+	// inserted tracks (sendID, email) pairs already materialized, so a
+	// replayed page inserts nothing new — mirroring the unique index.
+	inserted map[string]map[string]struct{}
+	// err, if set, is returned by every call instead of computing a page.
+	err error
+}
+
+type fanOutCall struct {
+	NewsletterID  uuid.UUID
+	SendID        string
+	BatchID       string
+	AfterEmail    string
+	PageSize      int
+	NumRecipients int
+}
+
+func newFakeSendRecipientRepository() *fakeSendRecipientRepository {
+	return &fakeSendRecipientRepository{inserted: make(map[string]map[string]struct{})}
+}
+
+func (f *fakeSendRecipientRepository) FanOutSendRecipients(
+	_ context.Context,
+	newsletterID uuid.UUID,
+	sendID string,
+	batchID string,
+	recipients []model.CommitteeMember,
+	afterEmail string,
+	pageSize int,
+) (port.FanOutPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fanOutCall{
+		NewsletterID:  newsletterID,
+		SendID:        sendID,
+		BatchID:       batchID,
+		AfterEmail:    afterEmail,
+		PageSize:      pageSize,
+		NumRecipients: len(recipients),
+	})
+	if f.err != nil {
+		return port.FanOutPage{}, f.err
+	}
+	if len(recipients) == 0 || pageSize <= 0 {
+		return port.FanOutPage{}, nil
+	}
+
+	sorted := make([]string, 0, len(recipients))
+	for _, r := range recipients {
+		sorted = append(sorted, strings.ToLower(r.Email))
+	}
+	sort.Strings(sorted)
+
+	start := 0
+	if afterEmail != "" {
+		start = sort.SearchStrings(sorted, strings.ToLower(afterEmail)+"\x00")
+	}
+	end := start + pageSize
+	if end > len(sorted) {
+		end = len(sorted)
+	}
+	page := sorted[start:end]
+
+	if f.inserted[sendID] == nil {
+		f.inserted[sendID] = make(map[string]struct{})
+	}
+	inserted := 0
+	for _, email := range page {
+		if _, ok := f.inserted[sendID][email]; ok {
+			continue
+		}
+		f.inserted[sendID][email] = struct{}{}
+		inserted++
+	}
+
+	var lastCursor string
+	if len(page) > 0 {
+		lastCursor = page[len(page)-1]
+	} else {
+		lastCursor = afterEmail
+	}
+
+	return port.FanOutPage{
+		Inserted:   inserted,
+		LastCursor: lastCursor,
+		Remaining:  end < len(sorted),
+	}, nil
+}
+
+func (f *fakeSendRecipientRepository) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (f *fakeSendRecipientRepository) allCalls() []fanOutCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]fanOutCall, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
+
 // fakeUserMetadataReader stands in for the auth-service NATS client. The
 // orchestrator only calls it when a Principal is provided, so existing tests
 // that leave Principal empty exercise the dev-mode fallback path without ever
@@ -434,6 +544,23 @@ func newTestOrchestratorWithUserEmail(repo *fakeNewsletterRepo, committee *fakeC
 		Unsubscribe:   unsub,
 		Concurrency:   2,
 		FanoutEnabled: true,
+	})
+}
+
+// newTestOrchestratorWithSendRecipients wires a fake SendRecipientRepository
+// (and optional page size override) so tests can drive materializeSendRecipients
+// deterministically.
+func newTestOrchestratorWithSendRecipients(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService, sendRecipients port.SendRecipientRepository, fanOutPageSize int) *SendOrchestrator {
+	return NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:           repo,
+		Committee:      committee,
+		Project:        &fakeProjectClient{},
+		Email:          email,
+		Unsubscribe:    unsub,
+		Concurrency:    2,
+		FanoutEnabled:  true,
+		SendRecipients: sendRecipients,
+		FanOutPageSize: fanOutPageSize,
 	})
 }
 
@@ -1956,5 +2083,151 @@ func TestSendNewsletter_StampsSendProvider(t *testing.T) {
 	}
 	if got.SendProvider != model.SendProviderSendGrid {
 		t.Errorf("send_provider = %q, want %q", got.SendProvider, model.SendProviderSendGrid)
+	}
+}
+
+// TestMaterializeSendRecipientsWiresGroupIDAndBatchID asserts runSendJob calls
+// FanOutSendRecipients before dispatch with the send's newsletter ID, the
+// envelope's group_id as send_id, and the envelope's batch_id, looping in
+// fanOutPageSize chunks until every recipient is materialized.
+func TestMaterializeSendRecipientsWiresGroupIDAndBatchID(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {
+			{Email: "alice@example.com"},
+			{Email: "bob@example.com"},
+			{Email: "carol@example.com"},
+		},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	sendRecipients := newFakeSendRecipientRepository()
+	// pageSize 2 over 3 recipients forces exactly two FanOutSendRecipients
+	// calls, exercising the chunking loop.
+	orch := newTestOrchestratorWithSendRecipients(repo, committee, email, unsub, sendRecipients, 2)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	res, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 3 {
+		t.Fatalf("got %d dispatches, want 3", len(email.sends))
+	}
+
+	calls := sendRecipients.allCalls()
+	if len(calls) != 2 {
+		t.Fatalf("FanOutSendRecipients calls: got %d, want 2 (3 recipients / pageSize 2)", len(calls))
+	}
+	for i, c := range calls {
+		if c.NewsletterID != draft.ID {
+			t.Errorf("call %d: NewsletterID = %v, want %v", i, c.NewsletterID, draft.ID)
+		}
+		if c.SendID != res.GroupID {
+			t.Errorf("call %d: SendID = %q, want envelope group_id %q", i, c.SendID, res.GroupID)
+		}
+		if c.NumRecipients != 3 {
+			t.Errorf("call %d: NumRecipients = %d, want 3 (full recipient list passed every call)", i, c.NumRecipients)
+		}
+		if c.PageSize != 2 {
+			t.Errorf("call %d: PageSize = %d, want 2", i, c.PageSize)
+		}
+	}
+	if calls[0].AfterEmail != "" {
+		t.Errorf("first call AfterEmail = %q, want empty", calls[0].AfterEmail)
+	}
+	if calls[1].AfterEmail == "" {
+		t.Errorf("second call AfterEmail is empty, want the first page's cursor")
+	}
+
+	total := 0
+	for _, m := range sendRecipients.inserted[res.GroupID] {
+		_ = m
+		total++
+	}
+	if total != 3 {
+		t.Errorf("materialized rows for send_id %q: got %d, want 3", res.GroupID, total)
+	}
+}
+
+// TestMaterializeSendRecipientsNilRepoIsNoOp asserts an orchestrator wired
+// without a SendRecipientRepository (the common case in existing tests, and
+// any deployment that hasn't opted in) sends normally without attempting
+// materialization.
+func TestMaterializeSendRecipientsNilRepoIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d dispatches, want 1", len(email.sends))
+	}
+}
+
+// TestMaterializeSendRecipientsErrorDoesNotBlockSend asserts a
+// FanOutSendRecipients failure is logged and swallowed: the actual email
+// fan-out is the source of truth for delivery, so materialization errors must
+// never prevent recipients from receiving the newsletter.
+func TestMaterializeSendRecipientsErrorDoesNotBlockSend(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	sendRecipients := newFakeSendRecipientRepository()
+	sendRecipients.err = errors.New("db unavailable")
+	orch := newTestOrchestratorWithSendRecipients(repo, committee, email, unsub, sendRecipients, 100)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 2 {
+		t.Fatalf("got %d dispatches, want 2 (materialization failure must not block send)", len(email.sends))
+	}
+	if sendRecipients.callCount() != 1 {
+		t.Fatalf("FanOutSendRecipients calls: got %d, want 1 (loop must stop after the erroring page)", sendRecipients.callCount())
+	}
+
+	got := repo.get(draft.ID)
+	if got.Status != model.StatusSent {
+		t.Fatalf("newsletter status = %q, want %q (send outcome unaffected by materialization error)", got.Status, model.StatusSent)
+	}
+}
+
+// TestMaterializeSendRecipientsEmptyRecipientsSkipsCall asserts
+// materializeSendRecipients never calls FanOutSendRecipients when there are
+// no recipients to materialize.
+func TestMaterializeSendRecipientsEmptyRecipientsSkipsCall(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{} // no members for any committee
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	sendRecipients := newFakeSendRecipientRepository()
+	orch := newTestOrchestratorWithSendRecipients(repo, committee, email, unsub, sendRecipients, 100)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if sendRecipients.callCount() != 0 {
+		t.Fatalf("FanOutSendRecipients calls: got %d, want 0 (no recipients)", sendRecipients.callCount())
 	}
 }
