@@ -216,44 +216,66 @@ not poll for a verdict that cannot come.
        exit 1; }
      push_out="$(git push origin "HEAD:$BRANCH" 2>&1)" || {
        printf '%s\n' "$push_out" >&2
-       echo "push: rejected" >&2; exit 1; }
-     printf '%s\n' "$push_out"
+       case "$push_out" in
+         *non-fast-forward*|*"fetch first"*)
+           echo "push failed: non-fast-forward; likely competing writer" >&2 ;;
+         *) echo "push failed: delivery unverified (auth/network/hook)" >&2 ;;
+       esac
+       exit 2; }
+     printf 'pushed: %s\n%s\n' "$ROUND_SHA" "$push_out"
      remote_row="$(git ls-remote --exit-code origin "refs/heads/$BRANCH")" \
-       || { echo "verify: ls-remote failed or ref missing" >&2; exit 1; }
+       || { echo "pushed, unverified: ls-remote failed or ref missing" >&2
+            exit 3; }
      remote_sha="$(printf '%s\n' "$remote_row" | awk \
        'NR == 1 && $1 != "" { print $1; ok = 1 }
         END { if (NR != 1 || !ok) exit 1 }')" \
-       || { echo "verify: zero, empty or multiple ref rows" >&2; exit 1; }
+       || { echo "pushed, unverified: zero, empty or multiple ref rows" >&2
+            exit 3; }
      [ "$remote_sha" = "$ROUND_SHA" ] || {
-       echo "writer race: remote $remote_sha != round $ROUND_SHA" >&2
-       exit 1; }
+       echo "pushed, head moved: remote $remote_sha != round $ROUND_SHA" >&2
+       exit 4; }
      ```
 
      `ls-remote` prints `<sha>\t<ref>` rows, never a bare SHA, so only
      the non-empty first field of the single row is compared, and it is
      compared to `ROUND_SHA`, which the block has already proven equal to
-     local HEAD. Read the result this way: a rejected or non-fast-forward
-     push, or a remote SHA that differs from `ROUND_SHA`, indicates a
-     competing writer on the branch; an unsubstituted, empty or malformed
-     `PR` or `ROUND_SHA`, a failed or empty `REPO` or `BRANCH` lookup, an
-     unreadable or partial local HEAD, a local HEAD that no longer equals
-     `ROUND_SHA` (a stray amend or commit after replying), a failing
-     `ls-remote`, a missing ref, or zero, empty or multiple rows means
-     the round commit could not be pushed or verified and fails closed —
-     not by itself proof of another writer.
-     Both classes — **push/verification failure or writer race** — take
-     the same path: do **not** force-push, rebase, recreate the commit,
-     repair HEAD, retry the push, or continue the loop, and never proceed
-     to step 6 after a nonzero exit. Post a concise correction only on
-     the **affected** threads: on each fix thread whose reply cited the
-     unpushed `ROUND_SHA`, that the fix did not verifiably reach the PR;
-     on each rebuttal thread whose adjudication depended on this push,
-     that the rebuttal was not submitted for adjudication. Ordinary
-     replies that depended on neither need no correction. Then stop and
-     report per "Authority bounds" with the push output when a push ran,
-     `local_sha`, `ROUND_SHA`, and the remote row/SHA when available.
-     Only a verified push counts: fixes and rebuttals are adjudicated at
-     it — an accepted rebuttal clears the thread as `rebutted-valid`.
+     local HEAD. The exit status says what happened, and the block
+     tracks whether the push itself succeeded — read it this way:
+     - **Exit 1 — not pushed.** A precheck failed (unsubstituted, empty or
+       malformed `PR` or `ROUND_SHA`; failed or empty `REPO` or `BRANCH`
+       lookup; unreadable or partial local HEAD; a local HEAD that no
+       longer equals `ROUND_SHA` after a stray amend or commit). Nothing
+       reached the remote.
+     - **Exit 2 — push failed, delivery unverified.** The push command
+       returned nonzero. That is not by itself a writer race: an
+       authentication, network, hook or unknown failure looks the same.
+       Only output that proves a non-fast-forward (`non-fast-forward`,
+       `fetch first`) identifies a likely competing writer, and the block
+       says so; otherwise report a push failure with its preserved output.
+     - **Exit 3 — pushed, remote state unverified.** The push succeeded
+       but `ls-remote` failed, the ref was missing, or the row could not
+       be parsed. Say exactly that; do not claim a writer race or
+       non-delivery.
+     - **Exit 4 — pushed, head moved.** The push succeeded, then the PR
+       branch advanced or otherwise no longer points at `ROUND_SHA`. The
+       round commit did reach the PR; it is no longer the current head.
+     Every nonzero exit takes the same path: do **not** force-push,
+     rebase, recreate the commit, repair HEAD, retry the push, or continue
+     the loop, and never proceed to step 6. Post a concise correction only
+     on the **affected** threads, worded by outcome: after exit 1 or 2, on
+     each fix thread whose reply cited `ROUND_SHA`, that the fix did not
+     verifiably reach the PR, and on each rebuttal thread whose
+     adjudication depended on this push, that the rebuttal was not
+     submitted for adjudication; after exit 3, that delivery of the cited
+     commit could not be verified; after exit 4, that the cited commit is
+     no longer the current PR head, naming the observed remote SHA, and
+     that rebuttal adjudication is likewise no longer anchored on the
+     expected head. Ordinary replies that depended on neither need no
+     correction. Then stop and report per "Authority bounds" with the
+     exit status, the push output when a push ran, `local_sha`,
+     `ROUND_SHA`, and the remote row/SHA when available. Only a verified
+     push counts: fixes and rebuttals are adjudicated at it — an accepted
+     rebuttal clears the thread as `rebutted-valid`.
 6. **Wait for the verdict** on the new, verified head (command below; a
    round takes 10–20 minutes), then loop from step 1.
 7. **Stop at the goal**: the check reads `✅ clean` on the current head and
@@ -306,7 +328,12 @@ In the body: the headline gives the blocking count, the **Blocking** table
 names what stands between you and clean, and the ledger's `- id:` rows
 record every adjudicated thread with its status (`fixed`, `obsolete`,
 `outstanding`, `rebutted-valid`, `rebutted-invalid`) and reason.
-`outstanding` and `rebutted-invalid` rows are your work list.
+`outstanding` and `rebutted-invalid` rows are the conductor's **blocking
+subset** — what the check gates on — not your work list. The ledger omits
+`[nit]` and human-authored threads, so build the round's complete work list
+from the paginated union in "The round loop" step 2: every unresolved
+thread plus every unanswered thread (`totalCount < 2`), nit and human
+threads included.
 
 ## Waiting for the verdict
 
@@ -619,18 +646,20 @@ Call TaskStop on the monitor before your final report.
   survives two of your fix attempts; roughly five rounds pass without
   convergence; a round appears dead per the bounded-wait diagnostics
   (report the workflow-run evidence, do not push again); or the round's
-  one self-contained push-and-verify block exits nonzero —
-  push/verification failure or writer race (a rejected push or a remote
-  SHA that is not `ROUND_SHA` indicates a competing writer; a failed PR,
-  `ROUND_SHA`, repo or branch resolution, a local HEAD that no longer
-  equals `ROUND_SHA`, an `ls-remote` error, missing ref, ambiguous rows,
-  or unreadable local HEAD means the round commit could not be pushed or
-  verified). In that case post the correction only on the affected
-  threads — fix replies that cited the unpushed `ROUND_SHA`, and
-  rebuttals whose adjudication depended on that push — then stop with
-  the push output when a push ran, `local_sha`, `ROUND_SHA`, and the
-  remote row/SHA when available; never force, rebase, recreate, repair,
-  retry, or continue. The `needs-human`
+  one self-contained push-and-verify block exits nonzero — not pushed
+  (exit 1: a failed PR, `ROUND_SHA`, repo or branch resolution, or a
+  local HEAD that no longer equals `ROUND_SHA`), push failed with
+  delivery unverified (exit 2: a competing writer only when the output
+  proves a non-fast-forward; otherwise an auth, network, hook or unknown
+  failure), pushed but remote state unverified (exit 3: `ls-remote`
+  error, missing ref, ambiguous rows), or pushed but head moved (exit 4:
+  the remote head is no longer `ROUND_SHA`). In that case post the
+  correction only on the affected threads, worded by outcome per step 5
+  — fix replies that cited `ROUND_SHA`, and rebuttals whose adjudication
+  depended on that push — then stop with the exit status, the push
+  output when a push ran, `local_sha`, `ROUND_SHA`, and the remote
+  row/SHA when available; never force, rebase, recreate, repair, retry,
+  or continue. The `needs-human`
   label is NOT a stop condition — report it and keep driving per "The
   needs-human label".
 - **Must never**: merge — you have no merge authority under any
@@ -657,9 +686,11 @@ were and whether each was fixed or rebutted.
   self-contained call bound to `ROUND_SHA` — the fix commit, or the empty
   adjudication commit no rebuttal cites — local HEAD must still be it
   before the push, and the remote branch head must be it after — a
-  nonzero exit is a push/verification failure or writer race: correct
-  only the affected threads (fix replies citing the unpushed commit,
-  rebuttals whose adjudication depended on the push), stop, report.
+  nonzero exit is not pushed, push failed, remote unverified, or head
+  moved (exit 1–4; a competing writer only when a push failure proves
+  non-fast-forward): correct only the affected threads, worded by
+  outcome (fix replies citing the commit, rebuttals whose adjudication
+  depended on the push), stop, report.
 - Verify every finding, blocking or not, bot- or human-authored; fix each
   genuine in-scope issue or rebut it with evidence; say how you fixed it —
   citing the fix commit and its validation — or why it stands, then resolve
