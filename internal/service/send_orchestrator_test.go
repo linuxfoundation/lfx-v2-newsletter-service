@@ -142,6 +142,14 @@ func (r *fakeNewsletterRepo) addDraft(projectUID string, committeeUIDs []string)
 	return &cp
 }
 
+// setScheduledAt writes scheduled_at on a stored draft, standing in for an
+// author who saved a schedule intent without arming it.
+func (r *fakeNewsletterRepo) setScheduledAt(id uuid.UUID, at *time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.drafts[id].ScheduledAt = at
+}
+
 // get returns a snapshot of the stored newsletter for test assertions.
 func (r *fakeNewsletterRepo) get(id uuid.UUID) model.Newsletter {
 	r.mu.Lock()
@@ -223,6 +231,10 @@ func (r *fakeNewsletterRepo) MarkSending(_ context.Context, id uuid.UUID, groupI
 		n.ScheduledAt = &sa
 		b := batchID
 		n.BatchID = &b
+	} else {
+		// Mirrors the repository: an immediate send clears the draft's
+		// saved-but-unarmed schedule intent.
+		n.ScheduledAt = nil
 	}
 	n.Version++
 	cp := *n
@@ -1730,6 +1742,61 @@ func TestSendNewsletterAcceptsBeforeFanOutCompletes(t *testing.T) {
 	}
 	if len(gate.recipients()) != 2 {
 		t.Fatalf("dispatched %d, want 2", len(gate.recipients()))
+	}
+}
+
+// TestSendNewsletterClearsSavedScheduleIntentSoPermalinkResolves asserts that
+// an immediate send of a draft carrying a saved-but-unarmed scheduled_at clears
+// that column as it claims the row, and that the row is publicly viewable for
+// the whole fan-out. The orchestrator embeds the "View Online" permalink in the
+// email before the fan-out starts, and model.Newsletter.PubliclyViewable hides a
+// sending row that still holds a future release time. A leftover intent would
+// therefore 404 every recipient at the front of the fan-out (LFXV2-2579).
+func TestSendNewsletterClearsSavedScheduleIntentSoPermalinkResolves(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	gate := &gatedEmailDispatcher{release: make(chan struct{}), started: make(chan struct{}, 1)}
+	orch := newGatedOrchestrator(repo, committee, gate)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	future := time.Now().UTC().Add(48 * time.Hour)
+	repo.setScheduledAt(draft.ID, &future)
+
+	res, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	if res.Newsletter.ScheduledAt != nil {
+		t.Errorf("accepted send returned scheduled_at %v, want nil", res.Newsletter.ScheduledAt)
+	}
+
+	now := time.Now().UTC()
+	sending := repo.get(draft.ID)
+	if sending.Status != model.StatusSending {
+		t.Fatalf("row status %q while fan-out in flight, want %q", sending.Status, model.StatusSending)
+	}
+	if sending.ScheduledAt != nil {
+		t.Errorf("immediate send left scheduled_at %v on the sending row, want nil", sending.ScheduledAt)
+	}
+	if !sending.PubliclyViewable(now) {
+		t.Errorf("sending row is not publicly viewable, so the embedded View Online permalink 404s during the fan-out")
+	}
+
+	close(gate.release)
+	orch.Drain(ctx)
+
+	settled := repo.get(draft.ID)
+	if settled.Status != model.StatusSent {
+		t.Fatalf("row settled to %q, want %q", settled.Status, model.StatusSent)
+	}
+	if settled.ScheduledAt != nil {
+		t.Errorf("settled row carries scheduled_at %v, want nil", settled.ScheduledAt)
+	}
+	if !settled.PubliclyViewable(time.Now().UTC()) {
+		t.Errorf("settled row is not publicly viewable")
 	}
 }
 

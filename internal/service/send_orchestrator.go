@@ -603,11 +603,8 @@ func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsle
 	//
 	// Deliberately keyed off envelope.SendAt — set only when THIS request
 	// armed a schedule (SendNewsletter's in.Schedule branch) — and not off
-	// sending.ScheduledAt. A plain immediate send never clears scheduled_at
-	// on a draft that has one saved-but-unarmed (MarkSending only touches
-	// that column when it is itself asked to persist a schedule), so
-	// sending.ScheduledAt can be non-nil purely as leftover saved intent.
-	// Branching on that column would misfile an ordinary send as scheduled.
+	// sending.ScheduledAt. envelope.SendAt is this request's own decision, so
+	// it cannot be confused with any schedule the row carried before.
 	if envelope.SendAt != nil {
 		if _, err := o.repo.MarkScheduled(persistCtx, sending.ID, sending.Version); err != nil {
 			if errors.Is(err, domain.ErrAlreadySent) || errors.Is(err, domain.ErrScheduled) {

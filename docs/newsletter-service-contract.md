@@ -65,7 +65,7 @@ Core state:
 | `committee_uids` | Committees used for recipient resolution. |
 | `status` | `draft`, `sending`, `scheduled`, or `sent`. |
 | `sent_at` | Set when status becomes `sent`. |
-| `scheduled_at` | Optional, settable on create/update. Two meanings depending on `status`: while `draft`, it is the author's saved intent — saving it does **not** by itself contact the send provider or send anything. Once `status=scheduled`, it is the committed release time armed at the provider. Null when no schedule has ever been set. `PUT` is full-replace: an omitted value clears a previously-saved schedule. |
+| `scheduled_at` | Optional, settable on create/update. Two meanings depending on `status`: while `draft`, it is the author's saved intent — saving it does **not** by itself contact the send provider or send anything. Once `status=scheduled`, it is the committed release time armed at the provider. Null when no schedule has ever been set. `PUT` is full-replace: an omitted value clears a previously-saved schedule. An immediate `POST .../send` clears a saved intent as it accepts the send, so on a row past `draft` this field is only ever a committed release time. |
 | `total_recipients` | Recipient count snapshot taken at send-acceptance time. |
 | `group_id` | `lfx-v2-email-service` correlation ID, minted by this service when a send is accepted. Null on drafts. |
 | `created_by` | Authenticated principal or local fallback. |
@@ -132,6 +132,8 @@ Real sends and test-sends render a compliance footer containing sender attributi
 Real sends only (never test-sends) also render a "View Online" link pointing at `<LFX_SELF_SERVE_BASE_URL>/newsletters/{project_uid}/{newsletter_uid}/view`, the Self-Serve public page backed by `GET …/newsletters/{newsletter_uid}/public` above. It sits alongside the "My Newsletters" line, above the unsubscribe small print, in both the HTML and plain-text bodies.
 
 The send orchestrator embeds that link in the email chrome before it fans out to recipients, and it marks the row `sent` only after the whole fan-out finishes. A recipient at the front of a large fan-out can therefore open the link while the row is still `sending`. This is why the public read is gated on whether the body has been dispatched (`model.Newsletter.PubliclyViewable`) and not on `status='sent'`. Gating on `status='sent'` alone would return `404` for the length of the fan-out, for content already in that recipient's inbox.
+
+An immediate send clears any saved-but-unarmed `scheduled_at` as it accepts the send. A draft that carried a future `scheduled_at` and was then sent immediately therefore has no release time left on the row, and its permalink resolves for the whole fan-out. Only a send that armed a real schedule holds a release time, and that edition stays hidden until the release time passes.
 
 ## Analytics, Open Tracking, And Unsubscribe
 

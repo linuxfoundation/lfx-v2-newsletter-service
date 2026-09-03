@@ -48,7 +48,9 @@ type Newsletter struct {
 	// newsletter is a draft, it is the author's saved intent — saving it does
 	// not by itself contact SendGrid. Once the newsletter is scheduled (via
 	// POST .../schedule), it is the committed release time. Null when no
-	// schedule has ever been set.
+	// schedule has ever been set. An immediate send clears a saved intent as
+	// it accepts the send, so on a newsletter past draft this field is only
+	// ever a committed release time.
 	ScheduledAt     *time.Time `json:"scheduled_at,omitempty"`
 	TotalRecipients int        `json:"total_recipients"`
 	CreatedBy       string     `json:"created_by"`

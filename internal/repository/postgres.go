@@ -293,7 +293,8 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 // scheduledAt/batchID (LFXV2-2685) are persisted in the same UPDATE when this
 // fan-out is arming a scheduled release, so a crash immediately afterwards
 // still leaves RecoverStuckSending enough state to settle to 'scheduled'
-// rather than 'sent'. Nil/empty for an immediate send.
+// rather than 'sent'. Nil/empty for an immediate send, which clears any
+// saved-but-unarmed scheduled_at the draft carried.
 func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, groupID, sendProvider string, totalRecipients int, expectedVersion int64, scheduledAt *time.Time, batchID string) (*model.Newsletter, error) {
 	updated := &model.Newsletter{}
 
@@ -337,13 +338,23 @@ func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, 
 		return updated, err
 	}
 
-	// Non-scheduled send: no GUC needed, just run the UPDATE directly
+	// Non-scheduled send: no GUC needed, just run the UPDATE directly. The row
+	// is a draft here, so batch_id is NULL and the armed-mutation trigger passes.
+	//
+	// scheduled_at is cleared. On a draft the column holds the author's saved
+	// intent, which an immediate send does not act on. Leaving a future value on
+	// the row would make a sending row look like it were still holding a release
+	// time, and model.Newsletter.PubliclyViewable would hide the "View Online"
+	// permalink for the length of the fan-out, for content already in the
+	// recipient's inbox (LFXV2-2579). Clearing it keeps the column's meaning
+	// single: on a row past draft, scheduled_at is a committed release time.
 	res, err := r.db.NewUpdate().
 		Model(updated).
 		Set("status = ?", model.StatusSending).
 		Set("group_id = ?", groupID).
 		Set("send_provider = ?", sendProvider).
 		Set("total_recipients = ?", totalRecipients).
+		Set("scheduled_at = NULL").
 		Set("updated_at = now()").
 		Set("version = version + 1").
 		Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusDraft).
@@ -562,10 +573,9 @@ func (r *PostgresNewsletterRepo) SettleDueScheduled(ctx context.Context, now tim
 // still holding those messages for a future release, so flipping straight to
 // sent would misreport our display state (and the next SettleDueScheduled
 // sweep will catch up once scheduled_at actually passes). Keyed off batch_id,
-// not scheduled_at, because MarkSending preserves saved scheduled_at on
-// immediate sends; a crash during MarkSending would misclassify an immediate
-// send with saved-but-unarmed intent as scheduled if we checked scheduled_at
-// instead. See the port doc for why recovery lands on sent (or scheduled)
+// not scheduled_at, because batch_id is written only when a schedule is armed
+// at the provider, so it is the one column that says a release is pending.
+// See the port doc for why recovery lands on sent (or scheduled)
 // rather than draft. group_id was persisted at the sending transition, so the
 // status='sent' ⇒ group_id NOT NULL CHECK holds either way.
 func (r *PostgresNewsletterRepo) RecoverStuckSending(ctx context.Context, olderThan time.Duration) (int64, error) {

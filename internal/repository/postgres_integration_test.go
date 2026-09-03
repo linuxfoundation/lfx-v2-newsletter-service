@@ -401,6 +401,44 @@ func TestArmedMutations_TriggerRejectsUnauthorized(t *testing.T) {
 	}
 }
 
+// TestMarkSending_ImmediateSendClearsSavedSchedule covers an immediate send of
+// a draft that carries a saved-but-unarmed scheduled_at. MarkSending must clear
+// that column, so the row does not read as one still holding a future release
+// time. The public "View Online" permalink is embedded in the email before the
+// fan-out starts, and model.Newsletter.PubliclyViewable hides a sending row with
+// a future release time, so a leftover intent would 404 every recipient at the
+// front of the fan-out (LFXV2-2579).
+func TestMarkSending_ImmediateSendClearsSavedSchedule(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+	draft, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get seeded draft: %v", err)
+	}
+	future := time.Now().UTC().Add(48 * time.Hour)
+	draft.ScheduledAt = &future
+	saved, err := repo.Update(ctx, draft, draft.Version)
+	if err != nil {
+		t.Fatalf("save schedule intent: %v", err)
+	}
+	if saved.ScheduledAt == nil {
+		t.Fatalf("schedule intent was not saved on the draft")
+	}
+
+	sending, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "email-service", 2, saved.Version, nil, "")
+	if err != nil {
+		t.Fatalf("MarkSending for an immediate send: %v", err)
+	}
+	if sending.ScheduledAt != nil {
+		t.Errorf("scheduled_at after an immediate send: got %v, want nil", sending.ScheduledAt)
+	}
+	if !sending.PubliclyViewable(time.Now().UTC()) {
+		t.Errorf("sending row is not publicly viewable, so the embedded View Online permalink 404s during the fan-out")
+	}
+}
+
 // TestMarkSent_ArmedRow covers a zero-recipient scheduled send: MarkSending
 // arms the row with a non-nil batch_id, and the zero-recipient branch of
 // SendNewsletter settles straight to sent via MarkSent without ever calling

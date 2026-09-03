@@ -109,10 +109,10 @@ type Newsletter struct {
 //     released the batch, and the recovery sweep has not yet settled the row.
 //   - StatusDraft: never viewable.
 //
-// A plain immediate send of a draft that carries a future but unarmed
-// ScheduledAt (saved author intent that MarkSending leaves untouched) reads as
-// not viewable here. That is the safe direction, and the permalink starts
-// resolving when the fan-out settles the row to StatusSent.
+// ScheduledAt is only a release time once the row is past draft. An immediate
+// send clears the author's saved-but-unarmed ScheduledAt as it claims the row
+// (see the repository's MarkSending), so a draft that carried a future
+// ScheduledAt and was then sent immediately is viewable for its whole fan-out.
 func (n *Newsletter) PubliclyViewable(now time.Time) bool {
 	switch n.Status {
 	case StatusSent:
