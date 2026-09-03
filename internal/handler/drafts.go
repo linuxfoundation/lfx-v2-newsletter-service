@@ -4,6 +4,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -31,6 +32,12 @@ func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
 		user = "anonymous"
 	}
 
+	publicationID, err := parseOptionalPublicationID(body.PublicationID)
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+
 	draft, err := h.newsletter.CreateDraft(r.Context(), service.CreateDraftInput{
 		ProjectUID:    projectUID,
 		Subject:       body.Subject,
@@ -39,6 +46,7 @@ func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
 		CommitteeUIDs: body.CommitteeUIDs,
 		CreatedBy:     user,
 		ScheduledAt:   body.ScheduledAt,
+		PublicationID: publicationID,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -90,14 +98,22 @@ func (h *Handler) UpdateNewsletter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	publicationID, publicationIDSet, err := parseUpdatePublicationID(body.PublicationID)
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+
 	updated, err := h.newsletter.UpdateDraft(r.Context(), projectUID, service.UpdateDraftInput{
-		ID:              id,
-		ExpectedVersion: expectedVersion,
-		Subject:         body.Subject,
-		BodyHTML:        body.BodyHTML,
-		EDReplyEmail:    body.EDReplyEmail,
-		CommitteeUIDs:   body.CommitteeUIDs,
-		ScheduledAt:     body.ScheduledAt,
+		ID:               id,
+		ExpectedVersion:  expectedVersion,
+		Subject:          body.Subject,
+		BodyHTML:         body.BodyHTML,
+		EDReplyEmail:     body.EDReplyEmail,
+		CommitteeUIDs:    body.CommitteeUIDs,
+		ScheduledAt:      body.ScheduledAt,
+		PublicationID:    publicationID,
+		PublicationIDSet: publicationIDSet,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -153,8 +169,73 @@ func parseUUID(raw string) (uuid.UUID, error) {
 	return id, nil
 }
 
+// parseOptionalPublicationID parses the create request's optional
+// publication_id. Absent or empty means the edition is left unfiled, which is a
+// valid resting state. A non-empty malformed value is a client error rather
+// than being silently dropped. The list filter parses its own value inline
+// because there absent and empty must be told apart.
+func parseOptionalPublicationID(raw *string) (*uuid.UUID, error) {
+	// Absent means unfiled. A key that IS present but blank is a different
+	// thing: the caller tried to name a publication and sent nothing usable.
+	// Silently treating that as absence hides a client bug behind a 201 and an
+	// edition filed nowhere.
+	if raw == nil {
+		return nil, nil
+	}
+	trimmed := strings.TrimSpace(*raw)
+	if trimmed == "" {
+		return nil, fmt.Errorf("%w: publication_id was supplied but empty: omit the key entirely to leave the edition unfiled", domain.ErrInvalidRequest)
+	}
+	id, err := uuid.Parse(trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err)
+	}
+	return &id, nil
+}
+
+// parseUpdatePublicationID decodes the update request's publication_id, which
+// is a raw message so the three JSON states stay distinguishable:
+//
+//	field absent      -> set=false, preserve the edition's current publication
+//	explicit null/""  -> set=true with a nil id, unfile the edition
+//	"<uuid>"          -> set=true with that id, move the edition
+//
+// A plain *string collapses "absent" and "null" into nil, so a client PUTting
+// without the key would silently unlink the edition. Every other field on this
+// request is full-replace, which is why the distinction has to be explicit.
+//
+// The parameter is a value json.RawMessage rather than a pointer because
+// encoding/json sets a pointer field to nil for an explicit null, exactly as it
+// does for an absent key. A value json.RawMessage is nil only when the key is
+// absent, and holds the bytes "null" when the client sent null.
+func parseUpdatePublicationID(raw json.RawMessage) (*uuid.UUID, bool, error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil, true, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, true, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err)
+	}
+	if strings.TrimSpace(s) == "" {
+		return nil, true, nil
+	}
+	id, err := uuid.Parse(strings.TrimSpace(s))
+	if err != nil {
+		return nil, true, fmt.Errorf("%w: invalid publication_id: %v", domain.ErrInvalidRequest, err)
+	}
+	return &id, true, nil
+}
+
 // toAPINewsletter converts a domain model into the public API DTO.
 func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
+	var publicationID *string
+	if n.PublicationID != nil {
+		pubIDStr := n.PublicationID.String()
+		publicationID = &pubIDStr
+	}
 	return &publicapi.Newsletter{
 		ID:              n.ID.String(),
 		ProjectUID:      n.ProjectUID,
@@ -166,6 +247,7 @@ func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
 		SentAt:          n.SentAt,
 		GroupID:         n.GroupID,
 		ScheduledAt:     n.ScheduledAt,
+		PublicationID:   publicationID,
 		TotalRecipients: n.TotalRecipients,
 		CreatedBy:       n.CreatedBy,
 		Version:         n.Version,

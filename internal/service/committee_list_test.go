@@ -37,7 +37,7 @@ func (r *fakeNewsletterRepo) addSent(projectUID string, committeeUIDs []string, 
 }
 
 func TestListCommitteeNewsletters_RequiresCommitteeUID(t *testing.T) {
-	svc := NewNewsletterService(newFakeRepo())
+	svc := NewNewsletterService(newFakeRepo(), nil)
 
 	for _, uid := range []string{"", "   "} {
 		_, err := svc.ListCommitteeNewsletters(context.Background(), ListCommitteeNewslettersInput{CommitteeUID: uid})
@@ -49,7 +49,7 @@ func TestListCommitteeNewsletters_RequiresCommitteeUID(t *testing.T) {
 
 func TestListCommitteeNewsletters_ReturnsOnlySentForCommittee(t *testing.T) {
 	repo := newFakeRepo()
-	svc := NewNewsletterService(repo)
+	svc := NewNewsletterService(repo, nil)
 
 	sentAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	want := repo.addSent("project-1", []string{"committee-a", "committee-b"}, sentAt)

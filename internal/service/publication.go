@@ -1,0 +1,279 @@
+// Copyright The Linux Foundation and each contributor to LFX.
+// SPDX-License-Identifier: MIT
+
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/google/uuid"
+
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
+)
+
+// PublicationService owns the business rules for newsletter publications:
+// validation, wrapper_content normalization, and the update field-merge.
+// Handlers stay transport-only and delegate here, matching the draft/newsletter
+// layering. Editions are listed via the flat newsletter list filtered by
+// publication_id, which lives in the newsletter service, not here.
+type PublicationService struct {
+	repo port.PublicationRepository
+}
+
+// NewPublicationService wires a PublicationService over the publication repository.
+func NewPublicationService(repo port.PublicationRepository) *PublicationService {
+	return &PublicationService{repo: repo}
+}
+
+// CreatePublicationInput is the typed input for CreatePublication.
+type CreatePublicationInput struct {
+	ProjectUID     string
+	Slug           string
+	Name           string
+	WrapperContent any
+	TemplateSetID  *string
+	// EditorType is optional. Nil defaults to model.EditorTypeClassic so a
+	// caller that predates the block editor keeps its current behaviour.
+	EditorType     *string
+	SenderEmail    *string
+	ViewOnlineBase *string
+	CreatedBy      string
+}
+
+// UpdatePublicationInput is the typed input for UpdatePublication. Each pointer
+// field is applied only when non-nil (a partial update); WrapperContent is
+// applied only when non-nil for the same reason.
+type UpdatePublicationInput struct {
+	Name           *string
+	WrapperContent any
+	EditorType     *string
+	// The three nullable columns are each a value plus a presence flag. The
+	// flag is what separates "the caller did not mention this field" from "the
+	// caller asked to clear it": with the flag set and the value nil, the
+	// column is cleared; with the flag unset the stored value is preserved. A
+	// bare *string cannot express both.
+	TemplateSetID     *string
+	TemplateSetIDSet  bool
+	SenderEmail       *string
+	SenderEmailSet    bool
+	ViewOnlineBase    *string
+	ViewOnlineBaseSet bool
+}
+
+// maxSlugLength bounds the slug so it stays comfortably inside a URL path
+// segment and inside the unique index on (project_uid, slug).
+const maxSlugLength = 100
+
+// slugPattern is the permitted slug syntax: lowercase alphanumeric words joined
+// by single hyphens. Deliberately strict — the slug is permanent once a
+// per-publication URL is built on it, and it is easier to relax this later than
+// to migrate slugs that are already in circulation.
+var slugPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// senderEmailPattern is a deliberately minimal local@domain shape. The point is
+// not full RFC 5322 validation — it is to reject anything that could not be a
+// bare address, which rules out the CR/LF and comma/semicolon sequences a
+// header-injection payload needs.
+var senderEmailPattern = regexp.MustCompile(`^[^\s@,;:<>"]+@[^\s@,;:<>"]+\.[^\s@,;:<>"]+$`)
+
+// validateSenderEmail guards the per-publication From address. TrimSpace alone
+// only strips the ends, so a value like "Name\nBcc: x@y.com" would persist
+// intact — and this column is documented as the address every edition inherits,
+// so it is destined for an email header. Rejecting it here makes the injection
+// structurally impossible rather than something the send-from-self work
+// (LFXV2-3316) has to remember. Nil is valid: the field is optional.
+func validateSenderEmail(v *string) error {
+	if v == nil {
+		return nil
+	}
+	if !senderEmailPattern.MatchString(*v) {
+		return fmt.Errorf("%w: sender_email must be a single plain email address", domain.ErrInvalidRequest)
+	}
+	return nil
+}
+
+// trimOptional trims an optional string, collapsing a blank result to nil so a
+// whitespace-only value is stored as "not set" rather than as padding.
+func trimOptional(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*v)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
+// marshalWrapperContent normalizes an optional wrapper_content value into the
+// JSONB bytes the model persists. Nil yields the empty-object default.
+func marshalWrapperContent(v any) ([]byte, error) {
+	if v == nil {
+		return []byte("{}"), nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid wrapper_content", domain.ErrInvalidRequest)
+	}
+	return b, nil
+}
+
+// CreatePublication validates the input and inserts a new publication row.
+func (s *PublicationService) CreatePublication(ctx context.Context, in CreatePublicationInput) (*model.NewsletterPublication, error) {
+	if err := validateProjectUID(in.ProjectUID); err != nil {
+		return nil, err
+	}
+	// Trim before the emptiness check: an untrimmed check lets a whitespace-only
+	// slug or name through, and the slug in particular is permanent once a
+	// per-publication URL is built on it.
+	slug := strings.TrimSpace(in.Slug)
+	if slug == "" {
+		return nil, fmt.Errorf("%w: slug is required", domain.ErrInvalidRequest)
+	}
+	// Enforce the syntax, not just non-emptiness. The slug is permanent once a
+	// per-publication View Online URL is built on it, and it goes into a path
+	// segment, so a space, slash, or "?" would either break the URL or silently
+	// change what it addresses. There is no update path for slug, so this is the
+	// only place it can be constrained.
+	if len(slug) > maxSlugLength {
+		return nil, fmt.Errorf("%w: slug must be at most %d characters", domain.ErrInvalidRequest, maxSlugLength)
+	}
+	if !slugPattern.MatchString(slug) {
+		return nil, fmt.Errorf("%w: slug must be lowercase alphanumeric words separated by single hyphens (max %d characters)", domain.ErrInvalidRequest, maxSlugLength)
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return nil, fmt.Errorf("%w: name is required", domain.ErrInvalidRequest)
+	}
+	if in.CreatedBy == "" {
+		return nil, fmt.Errorf("%w: createdBy is required", domain.ErrInvalidRequest)
+	}
+
+	editorType := model.EditorTypeClassic
+	if in.EditorType != nil {
+		editorType = strings.TrimSpace(*in.EditorType)
+		if !model.ValidEditorType(editorType) {
+			return nil, fmt.Errorf("%w: editor_type must be %q or %q", domain.ErrInvalidRequest, model.EditorTypeClassic, model.EditorTypeBlocks)
+		}
+	}
+
+	senderEmail := trimOptional(in.SenderEmail)
+	if err := validateSenderEmail(senderEmail); err != nil {
+		return nil, err
+	}
+
+	wrapperContent, err := marshalWrapperContent(in.WrapperContent)
+	if err != nil {
+		return nil, err
+	}
+
+	// Trim the optional strings the same way the update path does. Without
+	// this, POST with " a@b.com " stores the padding while a later PUT of the
+	// same value silently strips it, so the row changes without the caller
+	// changing anything. Empty after trimming means "not set", matching how an
+	// update treats an explicit null.
+	pub := &model.NewsletterPublication{
+		ProjectUID:     in.ProjectUID,
+		Slug:           slug,
+		Name:           name,
+		WrapperContent: wrapperContent,
+		TemplateSetID:  trimOptional(in.TemplateSetID),
+		EditorType:     editorType,
+		SenderEmail:    senderEmail,
+		ViewOnlineBase: trimOptional(in.ViewOnlineBase),
+		CreatedBy:      in.CreatedBy,
+	}
+	if err := s.repo.Create(ctx, pub); err != nil {
+		return nil, err
+	}
+	return pub, nil
+}
+
+// GetPublication fetches a publication scoped to the project.
+func (s *PublicationService) GetPublication(ctx context.Context, projectUID string, id uuid.UUID) (*model.NewsletterPublication, error) {
+	if err := validateProjectUID(projectUID); err != nil {
+		return nil, err
+	}
+	return s.repo.Get(ctx, projectUID, id)
+}
+
+// ListPublications returns one page of the project's publications. The caller
+// continues with the returned NextPageToken; an empty token means the last page.
+// pageSize of 0 means "use the repository default"; the repository also clamps
+// anything above its maximum.
+func (s *PublicationService) ListPublications(ctx context.Context, projectUID string, pageToken string, pageSize int) (*port.PublicationListPage, error) {
+	if err := validateProjectUID(projectUID); err != nil {
+		return nil, err
+	}
+	return s.repo.List(ctx, port.PublicationListFilters{
+		ProjectUID: projectUID,
+		PageToken:  pageToken,
+		Limit:      pageSize,
+	})
+}
+
+// UpdatePublication applies a partial update under optimistic concurrency.
+func (s *PublicationService) UpdatePublication(ctx context.Context, projectUID string, id uuid.UUID, expectedVersion int64, in UpdatePublicationInput) (*model.NewsletterPublication, error) {
+	if err := validateProjectUID(projectUID); err != nil {
+		return nil, err
+	}
+
+	pub, err := s.repo.Get(ctx, projectUID, id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Trim and reject rather than assigning the pointer value straight through:
+	// a whitespace-only replacement would otherwise blank the publication's
+	// name, and name is NOT NULL-with-meaning in the UI (it is how a user picks
+	// the publication to compose into).
+	if in.Name != nil {
+		name := strings.TrimSpace(*in.Name)
+		if name == "" {
+			return nil, fmt.Errorf("%w: name cannot be empty", domain.ErrInvalidRequest)
+		}
+		pub.Name = name
+	}
+	// Gate on the presence flag, not on the pointer. Gating on the pointer makes
+	// a nil mean "not mentioned", which silently swallows a request to clear
+	// the column.
+	if in.TemplateSetIDSet {
+		pub.TemplateSetID = in.TemplateSetID
+	}
+	// Validate before assigning: an unrecognized value would otherwise reach the
+	// schema CHECK constraint and surface as a 500 instead of a 400.
+	if in.EditorType != nil {
+		editorType := strings.TrimSpace(*in.EditorType)
+		if !model.ValidEditorType(editorType) {
+			return nil, fmt.Errorf("%w: editor_type must be %q or %q", domain.ErrInvalidRequest, model.EditorTypeClassic, model.EditorTypeBlocks)
+		}
+		pub.EditorType = editorType
+	}
+	if in.SenderEmailSet {
+		if err := validateSenderEmail(in.SenderEmail); err != nil {
+			return nil, err
+		}
+		pub.SenderEmail = in.SenderEmail
+	}
+	if in.ViewOnlineBaseSet {
+		pub.ViewOnlineBase = in.ViewOnlineBase
+	}
+	if in.WrapperContent != nil {
+		wrapperContent, err := marshalWrapperContent(in.WrapperContent)
+		if err != nil {
+			return nil, err
+		}
+		pub.WrapperContent = wrapperContent
+	}
+
+	if err := s.repo.Update(ctx, pub, expectedVersion); err != nil {
+		return nil, err
+	}
+	return pub, nil
+}

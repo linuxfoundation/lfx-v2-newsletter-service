@@ -44,6 +44,10 @@ func NewPostgresNewsletterRepo(db *bun.DB) *PostgresNewsletterRepo {
 // Create inserts a new Newsletter row. Database defaults populate id, version,
 // timestamps; bun copies the generated values back into n.
 func (r *PostgresNewsletterRepo) Create(ctx context.Context, n *model.Newsletter) error {
+	// This code knows about publications, so the row's publication link is a
+	// decision, not an absence — including the decision to leave the edition
+	// unfiled. The legacy backfill uses the flag to skip rows like this one.
+	n.PublicationIDSet = true
 	if _, err := r.db.NewInsert().
 		Model(n).
 		Returning("*").
@@ -105,6 +109,10 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 
 	if len(filters.Statuses) > 0 {
 		q = q.Where("status IN (?)", bun.In(filters.Statuses))
+	}
+
+	if filters.PublicationID != nil {
+		q = q.Where("publication_id = ?", filters.PublicationID)
 	}
 
 	if filters.PageToken != "" {
@@ -209,6 +217,18 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		// json-encodes the slice and PG raises a "malformed array literal".
 		Set("committee_uids = ?", pgdialect.Array(n.CommitteeUIDs)).
 		Set("project_uid = ?", n.ProjectUID).
+		// A nil publication_id here unlinks the edition from its publication.
+		// The service decides whether to apply the caller's value at all: an
+		// omitted publication_id on PUT preserves the current link, an explicit
+		// null unfiles the edition (LFXV2-2582).
+		Set("publication_id = ?", n.PublicationID).
+		// Carries the model's flag rather than hard-coding true. Stamping true
+		// on every update marked a legacy row as "decided" the first time
+		// anyone edited its subject, which permanently hid it from the backfill
+		// while leaving publication_id null. The service sets this only when
+		// the caller actually filed or unfiled the edition; an update that
+		// omits publication_id round-trips the stored value unchanged.
+		Set("publication_id_set = ?", n.PublicationIDSet).
 		// Full replace: an omitted/null scheduled_at clears it, consistent with
 		// every other field here (LFXV2-2685).
 		Set("scheduled_at = ?", n.ScheduledAt).

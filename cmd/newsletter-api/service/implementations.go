@@ -54,6 +54,29 @@ const (
 // finish is recovered by the stuck-sending sweep on the next pod.
 const drainTimeout = 20 * time.Second
 
+// newBunDB builds the shared production bun.DB, with
+// bun.WithDiscardUnknownColumns() so a Returning("*") row carrying a column
+// the destination struct doesn't map is silently ignored instead of erroring
+// the scan. Full rationale, the columns this currently covers, and what it
+// does not cover: see "Rolling deployment and schema column additions" in
+// docs/service-helm-chart.md.
+//
+// Extracted to its own constructor, rather than an inline bun.NewDB call in
+// InitInfrastructure, so TestNewBunDB_DiscardsUnknownColumns
+// (implementations_integration_test.go) can call it directly and exercise
+// the exact wiring it returns. The guarantee is scoped to this function:
+// dropping WithDiscardUnknownColumns() from the line below fails that test.
+// It does NOT guarantee InitInfrastructure keeps calling newBunDB at all — a
+// future edit that reverts the assignment below to an inline
+// bun.NewDB(sqlDB, pgdialect.New()) leaves this function, and the test that
+// covers it, untouched and green, while silently dropping the flag from
+// production. InitInfrastructure's single assignment to bunDB (below) is the
+// only thing that wires this constructor in; keep it that way so there's one
+// call site for a reviewer to check.
+func newBunDB(sqlDB *sql.DB) *bun.DB {
+	return bun.NewDB(sqlDB, pgdialect.New(), bun.WithDiscardUnknownColumns())
+}
+
 // InitInfrastructure wires every singleton in dependency order. Idempotent
 // in the sense that callers should not call it twice.
 func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
@@ -69,7 +92,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	pgPool = pool
 
 	sqlDB = stdlib.OpenDBFromPool(pool)
-	bunDB = bun.NewDB(sqlDB, pgdialect.New())
+	bunDB = newBunDB(sqlDB)
 
 	// Step 2: bootstrap database schema (idempotent, advisory-locked).
 	if err := schema.Apply(ctx, pgPool); err != nil {
@@ -141,7 +164,9 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 
 	// Step 5: domain wiring.
 	repo := repository.NewPostgresNewsletterRepo(bunDB)
-	newsletterSvc := service.NewNewsletterService(repo)
+	publicationRepo := repository.NewPostgresPublicationRepo(bunDB)
+	newsletterSvc := service.NewNewsletterService(repo, publicationRepo)
+	publicationSvc := service.NewPublicationService(publicationRepo)
 	unsubSvc := service.NewUnsubscribeService(repo, []byte(cfg.UnsubscribeSecret), cfg.PublicBaseURL)
 	sendSvc = service.NewSendOrchestrator(service.SendOrchestratorConfig{
 		Repo:                  repo,
@@ -180,8 +205,10 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 
 	// Step 6: recovery sweep for newsletters stranded in 'sending' by a pod
 	// crash mid-fan-out. Runs once at startup (catches strands from previous
-	// pods immediately) and then on a ticker.
-	startStuckSendRecovery(repo, cfg.StuckSendTTL)
+	// pods immediately) and then on a ticker. Also carries the legacy
+	// publication backfill, which needs to keep running after startup to catch
+	// rows an old pod writes at the tail of a rolling deploy.
+	startStuckSendRecovery(repo, publicationRepo, cfg.StuckSendTTL)
 
 	sendgridWebhook, err := newSendGridWebhook(ctx, cfg)
 	if err != nil {
@@ -193,6 +220,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		Send:            sendSvc,
 		Analytics:       analyticsSvc,
 		Unsubscribe:     unsubSvc,
+		Publication:     publicationSvc,
 		Project:         projectClient,
 		DB:              sqlDB,
 		Auth:            authImpl,
@@ -216,9 +244,16 @@ type stuckSendRecoverer interface {
 	SettleDueScheduled(ctx context.Context, now time.Time) (int64, error)
 }
 
+// legacyPublicationBackfiller files editions written by a service version that
+// predates publications. Separate from stuckSendRecoverer because it lives on
+// the publication repository, not the newsletter one.
+type legacyPublicationBackfiller interface {
+	BackfillLegacyPublications(ctx context.Context) (int64, error)
+}
+
 // startStuckSendRecovery launches the background sweep that settles
 // newsletters stranded in 'sending'. Stopped via recoveryStop in Shutdown.
-func startStuckSendRecovery(repo stuckSendRecoverer, ttl time.Duration) {
+func startStuckSendRecovery(repo stuckSendRecoverer, pubRepo legacyPublicationBackfiller, ttl time.Duration) {
 	recoveryStop = make(chan struct{})
 	go func() {
 		sweep := func() {
@@ -251,6 +286,24 @@ func startStuckSendRecovery(repo stuckSendRecoverer, ttl time.Duration) {
 				slog.InfoContext(ctx, "due-scheduled settlement sweep settled newsletters",
 					"settled", settled,
 				)
+			}
+
+			// Third responsibility: file any edition a legacy pod wrote after the
+			// last new pod applied the schema. schema.Apply covers everything up
+			// to startup; only this sweep closes the tail of a rolling deploy.
+			// Normally a no-op — it matches only publication_id_set = false rows,
+			// which the current code never produces.
+			if pubRepo != nil {
+				filed, err := pubRepo.BackfillLegacyPublications(ctx)
+				if err != nil {
+					slog.ErrorContext(ctx, "legacy publication backfill sweep failed", "error", err)
+					return
+				}
+				if filed > 0 {
+					slog.InfoContext(ctx, "legacy publication backfill sweep filed editions written by a pre-publication service version",
+						"filed", filed,
+					)
+				}
 			}
 		}
 		sweep()

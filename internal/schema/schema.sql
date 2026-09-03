@@ -413,3 +413,250 @@ CREATE TABLE IF NOT EXISTS sendgrid_click_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sg_click_events_email ON sendgrid_click_events (email_id);
+
+-- ---------------------------------------------------------------------------
+-- Newsletter Publications (LFXV2-2582)
+--
+-- newsletter_publications is the parent "newsletter identity": wrapper,
+-- branding, block-template set, subscriber list, slug, and the base URL used
+-- to build each edition's View Online link. An edition (a row in
+-- `newsletters`) belongs to exactly one publication via publication_id.
+--
+-- publication_id is nullable-first, NOT NULL deferred to a follow-up migration
+-- once the backfill has run everywhere; this is the reversibility mechanism.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS newsletter_publications (
+    id                UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_uid       TEXT         NOT NULL,
+    slug              TEXT         NOT NULL,
+    name              TEXT         NOT NULL,
+    is_default        BOOLEAN      NOT NULL DEFAULT false,
+    wrapper_content   JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    template_set_id   TEXT,
+    -- Which composer a publication's editions open in. Editions inherit this,
+    -- which is what lets per-edition template selection be removed from the
+    -- composer. Defaults to 'classic' so every backfilled publication keeps
+    -- behaving exactly as it does today; only a publication explicitly set to
+    -- 'blocks' opens the block editor.
+    editor_type       TEXT         NOT NULL DEFAULT 'classic'
+        CONSTRAINT newsletter_publications_editor_type_check
+        CHECK (editor_type IN ('classic', 'blocks')),
+    -- Optional per-publication From address its editions inherit. The
+    -- approved-domain constraint and the send-time ownership check are owned by
+    -- the send-from-self work (LFXV2-3316); this column only stores the choice.
+    sender_email      TEXT,
+    view_online_base  TEXT,
+    created_by        TEXT         NOT NULL,
+    version           BIGINT       NOT NULL DEFAULT 1,
+    created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+-- CREATE TABLE IF NOT EXISTS above is a no-op on a database that already has
+-- the table, so columns added after the table first shipped need their own
+-- idempotent ALTERs. Same nullable-first, additive shape as publication_id.
+ALTER TABLE newsletter_publications
+    ADD COLUMN IF NOT EXISTS editor_type TEXT NOT NULL DEFAULT 'classic';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletter_publications_editor_type_check'
+    ) THEN
+        ALTER TABLE newsletter_publications
+            ADD CONSTRAINT newsletter_publications_editor_type_check
+            CHECK (editor_type IN ('classic', 'blocks'));
+    END IF;
+END$$;
+
+ALTER TABLE newsletter_publications
+    ADD COLUMN IF NOT EXISTS sender_email TEXT;
+
+-- The slug format is contract, not just convention: it goes into a URL path
+-- segment and is permanent once a per-publication View Online link is built on
+-- it. CreatePublication enforces the same pattern, but that is application code
+-- only — the column would otherwise accept a slash or a space written by any
+-- future path (a migration, a fixture, a direct write). Mirrors the editor_type
+-- check above, including the idempotent guard.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletter_publications_slug_format_check'
+    ) THEN
+        ALTER TABLE newsletter_publications
+            ADD CONSTRAINT newsletter_publications_slug_format_check
+            CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) <= 100)
+            NOT VALID;
+    END IF;
+END$$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_publications_project_id
+    ON newsletter_publications (project_uid, id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_publications_project_slug
+    ON newsletter_publications (project_uid, slug);
+
+CREATE INDEX IF NOT EXISTS idx_publications_project ON newsletter_publications (project_uid);
+
+-- Covers the keyset list: the query filters on project_uid and orders by
+-- (created_at DESC, id DESC), so the index carries the filter and both cursor
+-- columns. idx_publications_project above covers only the filter, which leaves
+-- the ordering to a heap scan plus sort on every page.
+CREATE INDEX IF NOT EXISTS idx_publications_project_list
+    ON newsletter_publications (project_uid, created_at DESC, id DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_publications_one_default_per_project
+    ON newsletter_publications (project_uid) WHERE is_default;
+
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS publication_id UUID;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_publication_fk'
+    ) THEN
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_publication_fk
+            FOREIGN KEY (project_uid, publication_id)
+            REFERENCES newsletter_publications (project_uid, id)
+            ON DELETE RESTRICT
+            -- NOT VALID: a validating ADD CONSTRAINT scans all of `newsletters`
+            -- and holds SHARE ROW EXCLUSIVE, inside the same 60-second startup
+            -- transaction that also runs the backfill — stalling writes from
+            -- old pods mid-rollout and risking a timeout on a large table. The
+            -- constraint still enforces every new write. Existing rows are
+            -- safe by construction: publication_id is null until the backfill
+            -- below sets it, and MATCH SIMPLE skips null components.
+            NOT VALID;
+    END IF;
+END$$;
+
+CREATE INDEX IF NOT EXISTS idx_newsletters_publication ON newsletters (publication_id);
+
+-- Covers the publication-scoped editions list: the ListAll keyset query filters
+-- by (project_uid, publication_id) and orders by (updated_at DESC, id DESC), so
+-- the index carries both the filter and the cursor columns to avoid a per-call
+-- heap scan + sort. Mirrors idx_newsletters_list with publication_id spliced in.
+CREATE INDEX IF NOT EXISTS idx_newsletters_publication_list
+    ON newsletters (project_uid, publication_id, updated_at DESC, id DESC);
+
+-- publication_id_set marks a row as written by a service version that knows
+-- about publications. It is the discriminator the legacy backfill needs, and it
+-- is not user-facing.
+--
+-- `publication_id IS NULL` alone cannot say why the column is null. It is null
+-- on a legacy row, written before publications existed, which the backfill has
+-- to file. It is also null on a row a user deliberately unfiled, which the
+-- backfill must leave alone. The current code sets this column true on every
+-- insert, and on an update only when the caller actually supplied a
+-- publication_id — filing or unfiling the edition. An update that omits the
+-- field preserves the stored value, so editing an unrelated field on a legacy
+-- row does not mark it as decided. The two cases are told apart per row:
+--
+--     publication_id_set = false  ->  legacy row, never decided, backfill it
+--     publication_id_set = true   ->  a writer decided; null means unfiled
+--
+-- A per-row flag is used instead of a single "migration completed" marker
+-- because the marker is written by the first new pod that starts. During a
+-- rolling deploy the old pods are still serving, and a row one of them writes
+-- after that moment carries a null publication_id that no later run would ever
+-- look at again. The flag has no such window: an old pod cannot set it, so the
+-- row stays a backfill candidate until a startup files it.
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS publication_id_set BOOLEAN NOT NULL DEFAULT false;
+
+-- Partial index over the backfill candidates only. The sweep below runs on
+-- every startup, and on a database whose migration is long finished this keeps
+-- it an index probe over an empty set rather than a full scan of newsletters.
+CREATE INDEX IF NOT EXISTS idx_newsletters_backfill_candidates
+    ON newsletters (project_uid)
+    WHERE publication_id IS NULL AND NOT publication_id_set;
+
+-- Legacy backfill.
+--
+-- This gives each project that already had newsletters somewhere to keep those
+-- pre-existing editions, and files them there. It is NOT a reconciliation loop
+-- over unfiled editions: `publication_id IS NULL` is a legitimate resting state,
+-- so re-filing every null on each pod start would silently undo a user
+-- deliberately unfiling an edition, and re-create a publication a user
+-- deliberately deleted. Both the publication insert and the attach step
+-- therefore select on `publication_id_set = false`, which only a legacy row
+-- can be. Once a row is filed or a writer touches it, it stops being a
+-- candidate, so applying this block on every startup converges and then does
+-- nothing.
+--
+-- The migrations table records when the backfill first found work to do. It is
+-- a record for operators and a place for later one-shot migrations to register
+-- themselves. It does NOT gate this block; see the ALTER above for why.
+CREATE TABLE IF NOT EXISTS newsletter_schema_migrations (
+    name        TEXT        PRIMARY KEY,
+    applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+DO $$
+BEGIN
+    -- Only projects that actually have legacy editions need a home for them. A
+    -- project with no newsletters gets nothing: publications are created
+    -- explicitly, and a project is never handed one it did not ask for.
+    --
+    -- ON CONFLICT targets (project_uid, slug) and PROMOTES the conflicting row
+    -- rather than doing nothing. Without a target, a pre-existing NON-default
+    -- row already holding slug = 'default' would silently swallow the insert,
+    -- leaving the project with no default and its editions unattached. Promotion
+    -- is safe because the NOT EXISTS below means we only insert when the project
+    -- has no default at all, so this cannot collide with
+    -- uq_publications_one_default_per_project.
+    INSERT INTO newsletter_publications (project_uid, slug, name, is_default, created_by)
+    SELECT DISTINCT n.project_uid, 'default', 'Newsletter', true, 'system-backfill'
+    FROM newsletters n
+    WHERE n.publication_id IS NULL
+      AND NOT n.publication_id_set
+      AND NOT EXISTS (
+        SELECT 1 FROM newsletter_publications p
+        WHERE p.project_uid = n.project_uid AND p.is_default
+    )
+    -- Bump version/updated_at with the promotion. is_default is part of the
+    -- resource a caller holds an ETag for, so changing it without moving the
+    -- version leaves a stale "1" matching a row that no longer matches it.
+    -- (Deliberately NOT done on the attach UPDATE below: bumping updated_at
+    -- there would reshuffle the (updated_at, id) keyset order of every legacy
+    -- edition.)
+    ON CONFLICT (project_uid, slug) DO UPDATE
+        SET is_default = true,
+            version = newsletter_publications.version + 1,
+            updated_at = now();
+
+    -- The attach step is an UPDATE on `newsletters`, so it fires
+    -- trg_reject_armed_scheduled_mutation for every row with an armed schedule
+    -- (batch_id IS NOT NULL). That trigger exists to stop a LEGACY pod mutating
+    -- an armed row mid-rollout; it is not meant to block this backfill, which
+    -- only populates publication_id and touches no scheduling state. Without
+    -- this authorization the whole schema transaction aborts and the service
+    -- fails to start on any database holding an armed scheduled send.
+    -- SET LOCAL scopes the flag to the schema-application transaction.
+    SET LOCAL app.allow_armed_mutation = 'true';
+
+    -- publication_id_set is stamped along with the link, so a user who later
+    -- unfiles one of these editions keeps it unfiled across restarts.
+    -- version moves because publication_id is part of the resource a caller
+    -- holds an ETag for; changing it without the bump leaves a stale ETag
+    -- matching a row that no longer matches it. updated_at deliberately does
+    -- NOT move: it drives the (updated_at, id) keyset order of the edition
+    -- list, and bumping it would shove every legacy edition to the top.
+    UPDATE newsletters n
+    SET publication_id = p.id,
+        publication_id_set = true,
+        version = n.version + 1
+    FROM newsletter_publications p
+    WHERE n.publication_id IS NULL
+      AND NOT n.publication_id_set
+      AND p.project_uid = n.project_uid
+      AND p.is_default;
+
+    SET LOCAL app.allow_armed_mutation = 'false';
+
+    INSERT INTO newsletter_schema_migrations (name)
+    VALUES ('publications_legacy_backfill')
+    ON CONFLICT (name) DO NOTHING;
+END$$;

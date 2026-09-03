@@ -50,6 +50,42 @@ func TestSentCursorRejectsPartiallyZeroCursors(t *testing.T) {
 	}
 }
 
+func TestPublicationCursorRoundTrip(t *testing.T) {
+	in := publicationListCursor{CreatedAt: time.Date(2026, 8, 2, 9, 15, 0, 0, time.UTC), ID: uuid.New()}
+
+	out, err := decodePublicationCursor(encodePublicationCursor(in))
+	if err != nil {
+		t.Fatalf("decodePublicationCursor: %v", err)
+	}
+	if !out.CreatedAt.Equal(in.CreatedAt) || out.ID != in.ID {
+		t.Errorf("round trip: got %+v, want %+v", out, in)
+	}
+}
+
+func TestPublicationCursorRejectsMalformedTokens(t *testing.T) {
+	// "e30" is base64url("{}") and "bnVsbA" is base64url("null"): both decode
+	// and unmarshal cleanly but leave zero cursor fields. Used as a filter they
+	// would return an empty page for a project that has publications, so they
+	// must be rejected as invalid tokens.
+	for _, token := range []string{"not-base64!", "bm90LWpzb24", "e30", "bnVsbA"} {
+		if _, err := decodePublicationCursor(token); err == nil {
+			t.Errorf("decodePublicationCursor(%q): expected error, got nil", token)
+		}
+	}
+}
+
+func TestPublicationCursorRejectsPartiallyZeroCursors(t *testing.T) {
+	createdAt := time.Date(2026, 8, 2, 9, 15, 0, 0, time.UTC)
+	for name, c := range map[string]publicationListCursor{
+		"zero id":         {CreatedAt: createdAt},
+		"zero created_at": {ID: uuid.New()},
+	} {
+		if _, err := decodePublicationCursor(encodePublicationCursor(c)); err == nil {
+			t.Errorf("%s: expected error, got nil", name)
+		}
+	}
+}
+
 func TestListCursorRoundTrip(t *testing.T) {
 	in := listCursor{UpdatedAt: time.Date(2026, 6, 15, 8, 0, 0, 0, time.UTC), ID: uuid.New()}
 

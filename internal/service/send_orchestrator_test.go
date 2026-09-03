@@ -1897,7 +1897,7 @@ func TestSendNewsletterZeroRecipientsSettlesSynchronously(t *testing.T) {
 func TestDraftGuardsWhileSending(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
-	svc := NewNewsletterService(repo)
+	svc := NewNewsletterService(repo, nil)
 
 	draft := repo.addDraft("p1", []string{"c1"})
 	if _, err := repo.MarkSending(ctx, draft.ID, uuid.NewString(), model.SendProviderEmailService, 1, draft.Version, nil, ""); err != nil {

@@ -6,7 +6,10 @@
 // the rest of the V2 services (committee, project, meeting).
 package api
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Status enumerates newsletter lifecycle states.
 type Status string
@@ -50,6 +53,7 @@ type Newsletter struct {
 	// POST .../schedule), it is the committed release time. Null when no
 	// schedule has ever been set.
 	ScheduledAt     *time.Time `json:"scheduled_at,omitempty"`
+	PublicationID   *string    `json:"publication_id,omitempty"`
 	TotalRecipients int        `json:"total_recipients"`
 	CreatedBy       string     `json:"created_by"`
 	Version         int64      `json:"version"`
@@ -67,6 +71,11 @@ type CreateNewsletterRequest struct {
 	// save time — arming the schedule (72h horizon, minimum lead) is
 	// validated separately by POST .../schedule.
 	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+	// PublicationID optionally files the edition under a publication. Omitting
+	// it leaves the edition unfiled, which is valid: publications are created
+	// explicitly, a project is not given a default one, and server-initiated
+	// editions (the weekly brief) have no publication to pick.
+	PublicationID *string `json:"publication_id,omitempty"`
 }
 
 // UpdateNewsletterRequest is the body of PUT /projects/{project_uid}/newsletters/{newsletter_uid}.
@@ -79,6 +88,21 @@ type UpdateNewsletterRequest struct {
 	EDReplyEmail  string     `json:"ed_reply_email"`
 	CommitteeUIDs []string   `json:"committee_uids"`
 	ScheduledAt   *time.Time `json:"scheduled_at,omitempty"`
+	// PublicationID is deliberately NOT full-replace, unlike the fields above.
+	// It is a raw message so the handler can tell three states apart that a
+	// *string collapses into one:
+	//
+	//	field absent      -> preserve the edition's current publication
+	//	explicit null/""  -> unfile the edition
+	//	"<uuid>"          -> move the edition to that publication
+	//
+	// The type is a value json.RawMessage, not a pointer. encoding/json gives a
+	// pointer field the same nil for an absent key and for an explicit null, so
+	// a *json.RawMessage (or a *string) cannot tell the first two states apart.
+	// A value json.RawMessage stays nil when the key is absent and holds the
+	// four bytes "null" when the client sends null, which is the distinction the
+	// handler needs.
+	PublicationID json.RawMessage `json:"publication_id,omitempty"`
 }
 
 // RecipientCountRequest is the body of POST /projects/{project_uid}/newsletters/recipient-count.
@@ -338,4 +362,70 @@ type OptOut struct {
 // OptOutListResponse is the body of GET /projects/{project_uid}/newsletter-opt-outs.
 type OptOutListResponse struct {
 	OptOuts []OptOut `json:"opt_outs"`
+}
+
+// NewsletterPublication is the response shape returned by publication endpoints.
+type NewsletterPublication struct {
+	ID             string  `json:"id"`
+	ProjectUID     string  `json:"project_uid"`
+	Slug           string  `json:"slug"`
+	Name           string  `json:"name"`
+	IsDefault      bool    `json:"is_default"`
+	WrapperContent any     `json:"wrapper_content"`
+	TemplateSetID  *string `json:"template_set_id,omitempty"`
+	// EditorType is which composer this publication's editions open in,
+	// "classic" or "blocks". Editions inherit it.
+	EditorType string `json:"editor_type"`
+	// SenderEmail is the optional per-publication From address its editions
+	// inherit.
+	SenderEmail    *string   `json:"sender_email,omitempty"`
+	ViewOnlineBase *string   `json:"view_online_base,omitempty"`
+	CreatedBy      string    `json:"created_by"`
+	Version        int64     `json:"version"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// CreatePublicationRequest is the body of POST /projects/{project_uid}/newsletter-publications.
+type CreatePublicationRequest struct {
+	Slug           string  `json:"slug"`
+	Name           string  `json:"name"`
+	WrapperContent any     `json:"wrapper_content,omitempty"`
+	TemplateSetID  *string `json:"template_set_id,omitempty"`
+	// EditorType is "classic" or "blocks". Omitted defaults to "classic", so an
+	// existing caller that does not know about the field keeps its behaviour.
+	EditorType     *string `json:"editor_type,omitempty"`
+	SenderEmail    *string `json:"sender_email,omitempty"`
+	ViewOnlineBase *string `json:"view_online_base,omitempty"`
+}
+
+// UpdatePublicationRequest is the body of PUT /projects/{project_uid}/newsletter-publications/{publication_uid}.
+type UpdatePublicationRequest struct {
+	Name           *string `json:"name,omitempty"`
+	WrapperContent any     `json:"wrapper_content,omitempty"`
+	EditorType     *string `json:"editor_type,omitempty"`
+	// The three nullable columns below are raw messages, not *string, because
+	// they are the only fields a caller can legitimately want to CLEAR. A
+	// *string collapses "key absent" and "key present with value null" into
+	// nil, which leaves no way to express clearing — the field could be set and
+	// changed but never emptied. As raw messages:
+	//
+	//	field absent  -> leave the stored value alone
+	//	null          -> clear the column
+	//	"value"       -> set the column
+	//
+	// Name and EditorType stay *string: both are NOT NULL with a meaningful
+	// default, so clearing them is not a valid operation.
+	TemplateSetID  json.RawMessage `json:"template_set_id,omitempty"`
+	SenderEmail    json.RawMessage `json:"sender_email,omitempty"`
+	ViewOnlineBase json.RawMessage `json:"view_online_base,omitempty"`
+}
+
+// PublicationListResponse is the body of GET /projects/{project_uid}/newsletter-publications.
+type PublicationListResponse struct {
+	Publications []NewsletterPublication `json:"publications"`
+	// NextPageToken continues the list via ?page_token=. Empty means this is
+	// the last page. The list is bounded, so a caller that ignores this token
+	// sees only the first page.
+	NextPageToken string `json:"next_page_token,omitempty"`
 }
