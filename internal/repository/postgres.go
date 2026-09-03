@@ -69,6 +69,26 @@ func (r *PostgresNewsletterRepo) Get(ctx context.Context, id uuid.UUID) (*model.
 	return n, nil
 }
 
+// GetMeta is Get without the body_layout column — for hot paths (open pixel,
+// analytics ownership) that only read existence / project_uid / status /
+// group_id and would otherwise pull and decode the full layout JSON they
+// discard. ExcludeColumn mirrors the ListAll / ListSentByCommittee read path.
+func (r *PostgresNewsletterRepo) GetMeta(ctx context.Context, id uuid.UUID) (*model.Newsletter, error) {
+	n := &model.Newsletter{}
+	err := r.db.NewSelect().
+		Model(n).
+		ExcludeColumn("body_layout").
+		Where("n.id = ?", id).
+		Scan(ctx)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("select newsletter meta: %w", err)
+	}
+	return n, nil
+}
+
 // List returns all newsletters in the given project, newest first.
 func (r *PostgresNewsletterRepo) List(ctx context.Context, projectUID string) ([]*model.Newsletter, error) {
 	var rows []*model.Newsletter
@@ -98,6 +118,11 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 
 	q := r.db.NewSelect().
 		Model((*model.Newsletter)(nil)).
+		// body_layout can approach the 1 MiB request cap; list rows discard it
+		// (see toAPIListItem), so never materialize it here — a 100-row page would
+		// otherwise fetch up to ~100 MiB of JSON only to throw it away. Get/single
+		// -row paths still SELECT it (they need the layout).
+		ExcludeColumn("body_layout").
 		Where("project_uid = ?", filters.ProjectUID).
 		Order("updated_at DESC").
 		Order("id DESC").
@@ -140,6 +165,10 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 func (r *PostgresNewsletterRepo) ListSentByCommittee(ctx context.Context, committeeUID string, pageToken string) (*port.ListPage, error) {
 	q := r.db.NewSelect().
 		Model((*model.Newsletter)(nil)).
+		// body_layout can approach the 1 MiB request cap; committee-list rows
+		// discard it (see toAPICommitteeNewsletter), so never materialize it here
+		// — matching ListAll.
+		ExcludeColumn("body_layout").
 		Where("status = ?", model.StatusSent).
 		// pgdialect.Array forces a Postgres text[] literal for the containment
 		// operand; without it bun json-encodes the slice (see Update's
@@ -200,33 +229,56 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		return nil, fmt.Errorf("%w: cannot update armed scheduled row", domain.ErrInvalidRequest)
 	}
 
-	res, err := r.db.NewUpdate().
-		Model(n).
-		Set("subject = ?", n.Subject).
-		Set("body_html = ?", n.BodyHTML).
-		Set("ed_reply_email = ?", n.EDReplyEmail).
-		// pgdialect.Array forces a Postgres text[] literal; without it bun
-		// json-encodes the slice and PG raises a "malformed array literal".
-		Set("committee_uids = ?", pgdialect.Array(n.CommitteeUIDs)).
-		Set("project_uid = ?", n.ProjectUID).
-		// Full replace: an omitted/null scheduled_at clears it, consistent with
-		// every other field here (LFXV2-2685).
-		Set("scheduled_at = ?", n.ScheduledAt).
-		Set("updated_at = now()").
-		Set("version = version + 1").
-		Where("id = ? AND version = ?", n.ID, expectedVersion).
-		Returning("*").
-		Exec(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("update newsletter: %w", err)
-	}
+	// Wrap the GUC flag and UPDATE in the same transaction so reject_legacy_layout_send
+	// sees it. This is the layout-aware update path: it rewrites body_html and
+	// body_layout together (including explicit layout removal via nullableJSONB), so
+	// the derived HTML stays consistent with the layout. Setting app.allow_layout_update
+	// authorizes that body_html rewrite on a layout row; a legacy pod (which ignores
+	// body_layout) never sets it and is blocked from an HTML-only edit that would leave
+	// body_layout stale. SET LOCAL only applies inside a transaction.
+	txErr := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_layout_update = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set layout update flag: %w", err)
+		}
+		res, err := tx.NewUpdate().
+			Model(n).
+			Set("subject = ?", n.Subject).
+			Set("body_html = ?", n.BodyHTML).
+			// body_layout is the editor's structured layout; nil persists SQL NULL so
+			// updating a layout-less draft doesn't write an empty JSONB value.
+			Set("body_layout = ?", nullableJSONB(n.BodyLayout)).
+			Set("ed_reply_email = ?", n.EDReplyEmail).
+			// pgdialect.Array forces a Postgres text[] literal; without it bun
+			// json-encodes the slice and PG raises a "malformed array literal".
+			Set("committee_uids = ?", pgdialect.Array(n.CommitteeUIDs)).
+			Set("project_uid = ?", n.ProjectUID).
+			// Full replace: an omitted/null scheduled_at clears it, consistent with
+			// every other field here (LFXV2-2685).
+			Set("scheduled_at = ?", n.ScheduledAt).
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("id = ? AND version = ?", n.ID, expectedVersion).
+			Returning("*").
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("update newsletter: %w", err)
+		}
 
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("update newsletter rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return nil, r.classifyMissing(ctx, n.ID)
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("update newsletter rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			// Classify on the enclosing tx, not the pool: running the SELECT on
+			// r.db here would hold this transaction's connection open while
+			// acquiring a second pool connection (pool-exhaustion / deadlock risk),
+			// the hazard the send-transition methods thread tx to avoid.
+			return r.classifyMissingWithDB(ctx, tx, n.ID)
+		}
+		return nil
+	})
+	if txErr != nil {
+		return nil, txErr
 	}
 
 	// bun's Returning("*") populated n with the new row state.
@@ -301,9 +353,15 @@ func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, 
 	// If scheduling, authorize armed mutations by setting the GUC before the update.
 	if scheduledAt != nil {
 		err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-			// Set the GUC flag in this transaction
+			// Set the GUC flags in this transaction: armed-mutation authorizes the
+			// batch_id write against reject_armed_scheduled_mutation, and layout-send
+			// authorizes the draft -> sending claim of a layout row against
+			// reject_legacy_layout_send.
 			if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
 				return fmt.Errorf("set armed mutation flag: %w", err)
+			}
+			if _, err := tx.NewRaw("SET LOCAL app.allow_layout_send = 'true'").Exec(ctx); err != nil {
+				return fmt.Errorf("set layout send flag: %w", err)
 			}
 			// Now run the UPDATE in the same transaction
 			res, err := tx.NewUpdate().
@@ -337,29 +395,39 @@ func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, 
 		return updated, err
 	}
 
-	// Non-scheduled send: no GUC needed, just run the UPDATE directly
-	res, err := r.db.NewUpdate().
-		Model(updated).
-		Set("status = ?", model.StatusSending).
-		Set("group_id = ?", groupID).
-		Set("send_provider = ?", sendProvider).
-		Set("total_recipients = ?", totalRecipients).
-		Set("updated_at = now()").
-		Set("version = version + 1").
-		Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusDraft).
-		Returning("*").
-		Exec(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("mark sending: %w", err)
-	}
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("mark sending rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return nil, r.classifySendTransitionMiss(ctx, id, expectedVersion)
-	}
-	return updated, nil
+	// Non-scheduled (immediate) send. Wrap the UPDATE in a transaction so the
+	// layout-send GUC is visible to reject_legacy_layout_send, which blocks a
+	// legacy pod from claiming a body_layout row for dispatch (it would wrap the
+	// stored body_html in email_chrome a second time). SET LOCAL only applies
+	// inside a transaction, so an immediate send now uses one too.
+	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_layout_send = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set layout send flag: %w", err)
+		}
+		res, err := tx.NewUpdate().
+			Model(updated).
+			Set("status = ?", model.StatusSending).
+			Set("group_id = ?", groupID).
+			Set("send_provider = ?", sendProvider).
+			Set("total_recipients = ?", totalRecipients).
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusDraft).
+			Returning("*").
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("mark sending: %w", err)
+		}
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("mark sending rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			return r.classifySendTransitionMissWithDB(ctx, tx, id, expectedVersion)
+		}
+		return nil
+	})
+	return updated, err
 }
 
 // MarkSent transitions sending → sent, gated on the version produced by
@@ -779,10 +847,12 @@ func (r *PostgresNewsletterRepo) DeleteUnsubscribe(ctx context.Context, projectU
 	return nil
 }
 
-// classifyMissing distinguishes ErrNotFound from ErrVersionMismatch after an
-// Update affected zero rows.
-func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UUID) error {
-	exists, err := r.db.NewSelect().
+// classifyMissingWithDB explains a zero-rows Update: not-found vs version
+// mismatch. It takes an explicit bun.IDB so a caller inside a transaction can
+// pass its tx and run the SELECT on that connection rather than acquiring a
+// second pool connection (mirrors classifySendTransitionMissWithDB).
+func (r *PostgresNewsletterRepo) classifyMissingWithDB(ctx context.Context, db bun.IDB, id uuid.UUID) error {
+	exists, err := db.NewSelect().
 		Model((*model.Newsletter)(nil)).
 		Where("id = ?", id).
 		Exists(ctx)
@@ -795,23 +865,15 @@ func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UU
 	return domain.ErrVersionMismatch
 }
 
-// classifySendTransitionMiss distinguishes the reasons a MarkSending or
+// classifySendTransitionMissWithDB distinguishes the reasons a MarkSending or
 // MarkSent update can affect zero rows: not found, already sent, another send
-// in progress, or wrong version. Status checks take precedence over the
-// version check because the send-transition UPDATEs bump the version — a row
-// that moved to sending/sent necessarily has a different version too, and the
-// status is the more actionable signal for the caller.
-//
-// Use classifySendTransitionMissWithDB to classify through a transaction,
-// avoiding pool connection exhaustion when classifying within a transaction.
-func (r *PostgresNewsletterRepo) classifySendTransitionMiss(ctx context.Context, id uuid.UUID, expectedVersion int64) error {
-	return r.classifySendTransitionMissWithDB(ctx, r.db, id, expectedVersion)
-}
-
-// classifySendTransitionMissWithDB classifies through an arbitrary bun.IDB
-// (pool or transaction). Use this when classifying within a transaction to
-// avoid holding a transaction open while acquiring another pool connection
-// (pool exhaustion / deadlock risk).
+// in progress, scheduled, or wrong version. Status checks take precedence over
+// the version check because the send-transition UPDATEs bump the version — a
+// row that moved to sending/sent necessarily has a different version too, and
+// the status is the more actionable signal for the caller. It classifies
+// through an arbitrary bun.IDB (pool or transaction); pass the enclosing tx
+// when classifying inside one, so it does not hold that transaction open while
+// acquiring another pool connection (pool exhaustion / deadlock risk).
 func (r *PostgresNewsletterRepo) classifySendTransitionMissWithDB(ctx context.Context, db bun.IDB, id uuid.UUID, expectedVersion int64) error {
 	existing := &model.Newsletter{}
 	err := db.NewSelect().
@@ -838,6 +900,17 @@ func (r *PostgresNewsletterRepo) classifySendTransitionMissWithDB(ctx context.Co
 	}
 	// Unreachable in practice — fall back to version mismatch.
 	return domain.ErrVersionMismatch
+}
+
+// nullableJSONB normalizes a raw JSON value for a nullable JSONB column. An
+// empty or nil payload becomes an untyped nil so the driver writes SQL NULL —
+// a zero-length []byte would otherwise be sent as an empty string, which JSONB
+// rejects.
+func nullableJSONB(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	return raw
 }
 
 // listCursor is the keyset cursor encoded into NextPageToken for ListAll.

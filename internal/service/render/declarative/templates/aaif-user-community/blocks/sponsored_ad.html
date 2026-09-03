@@ -1,0 +1,22 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
+<!-- SCHEMA: {
+  "sponsor_name":{"type":"text","label":"Sponsor name"},
+  "headline":{"type":"text","label":"Headline"},
+  "image_url":{"type":"image","label":"Image"},
+  "image_link":{"type":"text","label":"Image click link"},
+  "body":{"type":"richtext","label":"Body"},
+  "cta_text":{"type":"text","label":"CTA text"},
+  "cta_link":{"type":"text","label":"CTA link"}
+} -->
+<!-- Style C SPONSORED AD — "PRESENTED BY" eyebrow, headline, image, body, CTA. -->
+<Section class="dm-card" style="width:100%;max-width:650px;margin:0 auto 24px;background-color:#ffffff;border:1px solid #131313;border-collapse:separate;border-radius:14px;box-shadow:6px 6px 0 #131313;color:#131313">
+  <div style="padding:22px 22px 10px">
+    <Text class="dm-h" style="margin:0 0 14px;color:#131313;font-size:11px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;line-height:1"><span class="dm-dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:#131313;vertical-align:middle;font-size:0;line-height:0">&nbsp;</span><span class="dm-dot" style="display:inline-block;width:9px;height:9px;background-color:#131313;vertical-align:middle;margin:0 12px 0 5px;font-size:0;line-height:0">&nbsp;</span>PRESENTED BY {{sponsor_name}}</Text>
+    <Heading if="headline" class="dm-h" style="margin:0 0 10px;font-size:23px;font-weight:bold;color:#131313;line-height:1.2">{{headline}}</Heading>
+    <Link if="image_url" href="{{image_link}}"><Img src="{{image_url}}" alt="{{sponsor_name}}" style="display:block;width:100%;max-width:100%;height:auto;border:0;border-radius:8px" /></Link>
+    <richtext field="body" class="dm-t" style="font-size:16px;color:#3c3c3f;line-height:1.5" />
+    <Text if="cta_text" class="dm-t" style="font-size:16px;color:#3c3c3f;line-height:1.5;margin-top:12px"><strong><Link href="{{cta_link}}" class="dm-h" style="color:#131313;text-decoration:underline">{{cta_text}}</Link></strong></Text>
+  </div>
+</Section>

@@ -67,7 +67,9 @@ func newIntegrationRepo(t *testing.T) *PostgresNewsletterRepo {
 		t.Fatalf("apply schema: %v", err)
 	}
 
-	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
+	// Mirror the production bun.DB config (cmd/newsletter-api/service) so these
+	// tests exercise the same rolling-deploy resilience the service ships with.
+	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New(), bun.WithDiscardUnknownColumns())
 	t.Cleanup(func() {
 		_ = db.Close()
 		pool.Close()
@@ -344,6 +346,208 @@ func TestArmedMutations_AllMethodsSucceed(t *testing.T) {
 	}
 }
 
+// TestLayoutSend_TriggerRejectsLegacyClaim covers the rolling-deploy / rollback
+// guard for block-layout newsletters. A legacy pod (one that predates the
+// feature and so never sets app.allow_layout_send) must not be able to claim a
+// body_layout row for dispatch: it ignores body_layout and would wrap the
+// stored body_html in the legacy email_chrome a second time. The
+// reject_legacy_layout_send trigger blocks the draft -> sending edge unless the
+// layout-aware GUC is set. The new binary's MarkSending sets it, so a normal
+// claim still succeeds. Mirrors TestArmedMutations_TriggerRejectsUnauthorized.
+func TestLayoutSend_TriggerRejectsLegacyClaim(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	// Mark the row as a layout newsletter. A plain draft UPDATE does not touch
+	// the draft -> sending edge, so the guard lets body_layout be set.
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_layout = ?::jsonb WHERE id = ?`,
+		`{"wrapper_key":"default","blocks":[]}`, draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("set body_layout: %v", err)
+	}
+
+	// A legacy pod's claim is a raw draft -> sending UPDATE with no layout GUC;
+	// the trigger must reject it.
+	_, err := repo.db.NewRaw(
+		`UPDATE newsletters SET status = ?, group_id = ?, version = version + 1 WHERE id = ? AND status = ?`,
+		model.StatusSending, uuid.NewString(), draftID, model.StatusDraft,
+	).Exec(ctx)
+	if err == nil {
+		t.Fatalf("legacy layout claim should have been rejected by the trigger but succeeded")
+	}
+	if !strings.Contains(err.Error(), "cannot send layout newsletter") && !strings.Contains(err.Error(), "service version mismatch") {
+		t.Fatalf("unexpected rejection message: %v", err)
+	}
+
+	// The row is untouched: still a draft (the rejected UPDATE rolled back).
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after rejected claim: %v", err)
+	}
+	if n.Status != model.StatusDraft {
+		t.Fatalf("Status should be unchanged StatusDraft, got %v", n.Status)
+	}
+
+	// The new binary's MarkSending sets app.allow_layout_send, so a real claim
+	// of the same layout row succeeds.
+	sending, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "sendgrid", 100, 1, nil, "")
+	if err != nil {
+		t.Fatalf("layout-aware MarkSending should succeed: %v", err)
+	}
+	if sending.Status != model.StatusSending {
+		t.Fatalf("Status after MarkSending: got %v, want StatusSending", sending.Status)
+	}
+}
+
+// TestLayoutUpdate_TriggerRejectsLegacyBodyHTMLEdit covers the second edge of
+// reject_legacy_layout_send: a legacy pod editing a layout row's body_html. On a
+// layout row, body_html is DERIVED from body_layout, so a legacy pod (which
+// ignores body_layout) that rewrites only body_html leaves the two inconsistent;
+// the next layout-aware send re-renders the stale body_layout and silently
+// discards the edit. The trigger blocks that body_html mutation unless the caller
+// sets app.allow_layout_update. A raw legacy UPDATE never does and is rejected;
+// the layout-aware repo.Update sets it (rewriting body_html and body_layout
+// together, including explicit layout removal) and succeeds.
+func TestLayoutUpdate_TriggerRejectsLegacyBodyHTMLEdit(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	// Mark the row as a layout newsletter. OLD.body_layout is NULL on this first
+	// write, so the body_html guard does not fire (and body_html is untouched).
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_layout = ?::jsonb WHERE id = ?`,
+		`{"wrapper_key":"default","blocks":[]}`, draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("set body_layout: %v", err)
+	}
+
+	// A legacy pod's HTML-only edit is a raw body_html UPDATE with no layout-update
+	// GUC; the trigger must reject it because body_layout would be left stale.
+	_, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_html = ?, version = version + 1 WHERE id = ?`,
+		"<p>legacy html-only edit</p>", draftID,
+	).Exec(ctx)
+	if err == nil {
+		t.Fatalf("legacy body_html edit of a layout row should have been rejected by the trigger but succeeded")
+	}
+	if !strings.Contains(err.Error(), "cannot edit layout newsletter body_html") && !strings.Contains(err.Error(), "service version mismatch") {
+		t.Fatalf("unexpected rejection message: %v", err)
+	}
+
+	// The row is untouched: body_html is still the seeded value (rejected UPDATE
+	// rolled back).
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after rejected edit: %v", err)
+	}
+	if n.BodyHTML != "<p>body</p>" {
+		t.Fatalf("body_html should be unchanged after rejected legacy edit, got %q", n.BodyHTML)
+	}
+
+	// The layout-aware Update path sets app.allow_layout_update, so editing the
+	// same layout row's body_html (re-derived alongside body_layout) succeeds.
+	n.BodyHTML = "<p>layout-aware re-render</p>"
+	updated, err := repo.Update(ctx, n, n.Version)
+	if err != nil {
+		t.Fatalf("layout-aware Update should succeed: %v", err)
+	}
+	if updated.BodyHTML != "<p>layout-aware re-render</p>" {
+		t.Fatalf("body_html after layout-aware Update: got %q", updated.BodyHTML)
+	}
+
+	// Explicit layout removal is also part of the layout-aware path: dropping
+	// body_layout to NULL while rewriting body_html must be allowed (the guard
+	// keys on OLD.body_layout, and Update sets the GUC).
+	updated.BodyLayout = nil
+	updated.BodyHTML = "<p>layout removed</p>"
+	removed, err := repo.Update(ctx, updated, updated.Version)
+	if err != nil {
+		t.Fatalf("layout-aware Update removing the layout should succeed: %v", err)
+	}
+	if removed.BodyLayout != nil {
+		t.Fatalf("body_layout should be cleared after explicit removal, got %q", string(removed.BodyLayout))
+	}
+}
+
+func TestLayoutUpdate_TriggerAllowsMetadataOnlyEdit(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	// Make it a layout row.
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_layout = ?::jsonb WHERE id = ?`,
+		`{"wrapper_key":"default","blocks":[]}`, draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("set body_layout: %v", err)
+	}
+
+	// A metadata-only edit that leaves body_html unchanged must pass Guard 2 even
+	// without app.allow_layout_update: the guard is scoped to body_html content
+	// changes (NEW.body_html IS DISTINCT FROM OLD.body_html), so it must not
+	// over-fire on status/metadata updates like MarkSending.
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET subject = ?, version = version + 1 WHERE id = ?`,
+		"metadata-only edit", draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("metadata-only edit of a layout row should be allowed by the trigger: %v", err)
+	}
+
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after metadata-only edit: %v", err)
+	}
+	if n.Subject != "metadata-only edit" {
+		t.Fatalf("subject should be updated, got %q", n.Subject)
+	}
+	if n.BodyHTML != "<p>body</p>" {
+		t.Fatalf("body_html should be unchanged after a metadata-only edit, got %q", n.BodyHTML)
+	}
+}
+
+// TestWrites_TolerateUnknownColumn pins the rolling-deploy resilience from
+// bun.WithDiscardUnknownColumns: a RETURNING "*" write must not fail when the
+// table carries a column this binary's model does not know — the exact skew a
+// newer pod's additive migration creates for an older pod mid-deploy. Without the
+// option, Bun errors scanning the extra column, 500ing after an autocommitted
+// write. Seed (Create) and Update both use RETURNING "*", so both are exercised.
+func TestWrites_TolerateUnknownColumn(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	if _, err := repo.db.NewRaw(`ALTER TABLE newsletters ADD COLUMN IF NOT EXISTS bogus_future_col TEXT`).Exec(ctx); err != nil {
+		t.Fatalf("add unknown column: %v", err)
+	}
+	// Keep the test self-contained: drop the throwaway column so it doesn't leak
+	// schema state onto the shared test database for later tests.
+	t.Cleanup(func() {
+		_, _ = repo.db.NewRaw(`ALTER TABLE newsletters DROP COLUMN IF EXISTS bogus_future_col`).Exec(context.Background())
+	})
+
+	// Create (RETURNING "*") with the unknown column present must succeed.
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// Update (RETURNING "*") with the unknown column present must succeed too.
+	n.Subject = "edited after an unknown column was added"
+	updated, err := repo.Update(ctx, n, n.Version)
+	if err != nil {
+		t.Fatalf("Update with an unknown column present should succeed, got %v", err)
+	}
+	if updated.Subject != "edited after an unknown column was added" {
+		t.Fatalf("Update did not apply, got %q", updated.Subject)
+	}
+}
+
 func TestArmedMutations_TriggerRejectsUnauthorized(t *testing.T) {
 	repo := newIntegrationRepo(t)
 
@@ -590,5 +794,40 @@ func TestRevertScheduled_RejectsStaleBatchID(t *testing.T) {
 	}
 	if n.Version != armedB.Version {
 		t.Fatalf("Version after stale revert attempt: got %d, want unchanged %d", n.Version, armedB.Version)
+	}
+}
+
+// TestGetMeta_ExcludesBodyLayout pins the hot-path read: GetMeta returns the
+// row without its body_layout (so the open-pixel / analytics routes never
+// decode the layout JSON), while Get still materializes it.
+func TestGetMeta_ExcludesBodyLayout(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	id := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_layout = ?::jsonb WHERE id = ?`,
+		`{"wrapper_key":"default","blocks":[]}`, id,
+	).Exec(ctx); err != nil {
+		t.Fatalf("set body_layout: %v", err)
+	}
+
+	full, err := repo.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(full.BodyLayout) == 0 {
+		t.Fatalf("Get should materialize body_layout")
+	}
+
+	meta, err := repo.GetMeta(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if len(meta.BodyLayout) != 0 {
+		t.Errorf("GetMeta must not materialize body_layout, got %s", meta.BodyLayout)
+	}
+	if meta.ProjectUID != full.ProjectUID {
+		t.Errorf("GetMeta should still return project_uid: got %q want %q", meta.ProjectUID, full.ProjectUID)
 	}
 }

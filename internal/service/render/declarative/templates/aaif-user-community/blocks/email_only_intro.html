@@ -1,0 +1,21 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
+<!--
+  Email-only Intro — identical layout to intro_paragraph but rendered ONLY in
+  the sent email. The portal /View Online/ page filters any block whose
+  block_type starts with `email_only_` so this content never reaches the
+  public archive. Use for apology / correction headers on re-sends, or any
+  other inbox-only content.
+
+  Component: see modules/newsletters/admin/components/puck/email-blocks/
+             blocks/EmailOnlyIntro.tsx
+  Portal filter: modules/newsletters/portal/pages/[collection]/[edition].tsx
+  Block-def seed: modules/newsletters/migrations/058_email_only_intro_block_def.sql
+-->
+<!-- SCHEMA: { "text": {"type":"richtext","label":"Text"} } -->
+<Section style="width:100%;max-width:650px;margin:0 auto 24px">
+  <div style="text-align:center;padding:0 30px">
+    <richtext field="text" class="dm-h" style="font-family:Georgia,'Times New Roman',serif;font-size:20px;font-style:italic;line-height:1.55;color:#131313;margin:0" />
+  </div>
+</Section>

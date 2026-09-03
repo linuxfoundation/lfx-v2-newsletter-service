@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,6 +24,7 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render/declarative"
 )
 
 // recipientHashPattern matches the lowercase-hex SHA-256 token used in
@@ -39,18 +41,30 @@ const (
 // NewsletterService implements business logic for draft management.
 type NewsletterService struct {
 	repo port.NewsletterRepository
+	// unsubEnabled mirrors UnsubscribeService.Enabled(). When false the
+	// render-on-write step renders the reply-based opt-out fallback copy
+	// (unsubFooterReplyFallback) instead of a link whose href would
+	// substitute to an empty string at send time.
+	unsubEnabled bool
 }
 
 // NewNewsletterService wires a NewsletterService over the given repository.
-func NewNewsletterService(repo port.NewsletterRepository) *NewsletterService {
-	return &NewsletterService{repo: repo}
+// unsubEnabled must reflect whether the unsubscribe service is configured
+// (UnsubscribeService.Enabled()).
+func NewNewsletterService(repo port.NewsletterRepository, unsubEnabled bool) *NewsletterService {
+	return &NewsletterService{repo: repo, unsubEnabled: unsubEnabled}
 }
 
 // CreateDraftInput is the typed input for CreateDraft.
+//
+// BodyLayout is optional. When non-nil, the service renders it to HTML via the
+// declarative emitter and stores both the layout and the derived BodyHTML; any
+// BodyHTML supplied in the input is ignored. When nil, BodyHTML is taken as-is.
 type CreateDraftInput struct {
 	ProjectUID    string
 	Subject       string
 	BodyHTML      string
+	BodyLayout    *declarative.Layout
 	EDReplyEmail  string
 	CommitteeUIDs []string
 	CreatedBy     string
@@ -59,11 +73,19 @@ type CreateDraftInput struct {
 }
 
 // UpdateDraftInput is the typed input for UpdateDraft.
+//
+// BodyLayout is tri-state, carried by BodyLayoutSet: when BodyLayoutSet is
+// false the request omitted body_layout (a layout newsletter keeps its stored
+// layout); when true with a nil BodyLayout the request sent an explicit null
+// (the layout is cleared and the newsletter becomes html-only); when true with
+// a non-nil BodyLayout the layout is replaced and body_html re-derived.
 type UpdateDraftInput struct {
 	ID              uuid.UUID
 	ExpectedVersion int64
 	Subject         string
 	BodyHTML        string
+	BodyLayoutSet   bool
+	BodyLayout      *declarative.Layout
 	EDReplyEmail    string
 	CommitteeUIDs   []string
 	// ScheduledAt is full-replace like every other field here: nil clears a
@@ -79,9 +101,6 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	if err := validateSubject(in.Subject); err != nil {
 		return nil, err
 	}
-	if err := validateBodyHTML(in.BodyHTML); err != nil {
-		return nil, err
-	}
 	if err := validateEDReplyEmail(in.EDReplyEmail); err != nil {
 		return nil, err
 	}
@@ -95,10 +114,32 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 		return nil, err
 	}
 
+	// When a layout is supplied the emitter owns the whole email: body_html is
+	// DERIVED from it and the request's body_html is ignored. Otherwise the
+	// legacy body_html-only path applies and body_html must be valid as-is.
+	bodyHTML := in.BodyHTML
+	var bodyLayout json.RawMessage
+	if in.BodyLayout != nil {
+		html, raw, err := renderLayout(ctx, in.BodyLayout, in.Subject, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled), true)
+		if err != nil {
+			return nil, err
+		}
+		// Bound the DERIVED body_html to the same ceiling the legacy path enforces
+		// — the layout input is only 1 MiB-capped, and MJML compilation expands it,
+		// so an unbounded derived body could otherwise be persisted + emailed.
+		if err := validateDerivedBodyHTML(html); err != nil {
+			return nil, err
+		}
+		bodyHTML, bodyLayout = html, raw
+	} else if err := validateBodyHTML(in.BodyHTML); err != nil {
+		return nil, err
+	}
+
 	n := &model.Newsletter{
 		ProjectUID:    in.ProjectUID,
 		Subject:       strings.TrimSpace(in.Subject),
-		BodyHTML:      in.BodyHTML,
+		BodyHTML:      bodyHTML,
+		BodyLayout:    bodyLayout,
 		EDReplyEmail:  strings.TrimSpace(in.EDReplyEmail),
 		CommitteeUIDs: normalizeCommitteeUIDs(in.CommitteeUIDs),
 		Status:        model.StatusDraft,
@@ -132,9 +173,10 @@ func (s *NewsletterService) GetNewsletter(ctx context.Context, projectUID string
 // GetNewsletterByID fetches a newsletter by id WITHOUT a project gate. Used
 // internally by handlers that already enforce project ownership (e.g. the
 // open-pixel handler, which validates project_uid from the URL against the
-// stored newsletter).
+// stored newsletter). Reads via GetMeta — the open pixel only needs project_uid,
+// so it never materializes the body_layout on that high-frequency route.
 func (s *NewsletterService) GetNewsletterByID(ctx context.Context, id uuid.UUID) (*model.Newsletter, error) {
-	return s.repo.Get(ctx, id)
+	return s.repo.GetMeta(ctx, id)
 }
 
 // ListNewslettersInput is the typed input for ListNewsletters.
@@ -216,8 +258,9 @@ func (s *NewsletterService) Analytics(ctx context.Context, projectUID string, id
 func (s *NewsletterService) RecordOpenWithHash(ctx context.Context, newsletterID uuid.UUID, recipientHash string) error {
 	// Verify the newsletter exists so we can return ErrNotFound for genuinely
 	// bad IDs; we deliberately don't enforce status='sent' so test/preview
-	// pipelines can light up the same tracking.
-	if _, err := s.repo.Get(ctx, newsletterID); err != nil {
+	// pipelines can light up the same tracking. GetMeta: this is a pure
+	// existence check on the busiest (per-open) route, so skip the layout JSON.
+	if _, err := s.repo.GetMeta(ctx, newsletterID); err != nil {
 		return err
 	}
 	hash := strings.TrimSpace(recipientHash)
@@ -250,9 +293,6 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 		return nil, err
 	}
 	if err := validateSubject(in.Subject); err != nil {
-		return nil, err
-	}
-	if err := validateBodyHTML(in.BodyHTML); err != nil {
 		return nil, err
 	}
 	if err := validateEDReplyEmail(in.EDReplyEmail); err != nil {
@@ -288,8 +328,76 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 		return nil, domain.ErrScheduled
 	}
 
+	// Resolve the body. A render failure returns before repo.Update, so nothing
+	// is persisted.
+	bodyHTML := in.BodyHTML
+	var bodyLayout json.RawMessage
+	switch {
+	case in.BodyLayoutSet && in.BodyLayout != nil:
+		// New / updated layout: the emitter owns the whole email; body_html is
+		// DERIVED and the request's body_html is ignored.
+		html, raw, renderErr := renderLayout(ctx, in.BodyLayout, in.Subject, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled), true)
+		if renderErr != nil {
+			return nil, renderErr
+		}
+		// Bound the DERIVED body_html to the same ceiling the legacy path
+		// enforces, but as 422 (matching render-preview for the same output).
+		if validateErr := validateDerivedBodyHTML(html); validateErr != nil {
+			return nil, validateErr
+		}
+		bodyHTML, bodyLayout = html, raw
+	case in.BodyLayoutSet:
+		// EXPLICIT NULL: clear the stored layout and convert to an html-only
+		// newsletter, taking body_html from the request. This is the documented
+		// escape hatch back from the layout path (bodyLayout stays nil, which
+		// the repository persists as SQL NULL).
+		//
+		// An EMPTY body is allowed here: switching an existing draft from the
+		// block editor back to the basic editor clears the layout with no
+		// replacement body yet, a deliberate discard the author must be able to
+		// persist. Rejecting it would strand the old layout and silently revert
+		// the switch on reload. The send path still requires content, so an
+		// emptied draft saves but cannot send. A non-empty body is still
+		// length-checked. This mirrors an empty (blocks: []) layout, which the
+		// non-null branch above already persists.
+		if validateErr := validateOptionalBodyHTML(in.BodyHTML); validateErr != nil {
+			return nil, validateErr
+		}
+	case len(existing.BodyLayout) > 0:
+		// The saved newsletter IS a layout newsletter and this update omits
+		// body_layout — KEEP the stored layout rather than silently downgrading
+		// to plain body_html (which would make the next send re-wrap the full
+		// emitter document in email_chrome → a broken email). The request's
+		// body_html is ignored on this branch; sending an explicit
+		// "body_layout": null is the way to convert back to html-only.
+		//
+		// body_html is RE-DERIVED from the stored layout instead of copied:
+		// render-on-write bakes request-scoped values (the reply-to mailto in
+		// the wrapper footer) into the derived HTML, so an update that changes
+		// ed_reply_email while omitting body_layout must not preserve a footer
+		// pointing at the previous address.
+		var stored declarative.Layout
+		if err := json.Unmarshal(existing.BodyLayout, &stored); err != nil {
+			return nil, fmt.Errorf("unmarshal stored body_layout: %w", err)
+		}
+		html, raw, renderErr := renderLayout(ctx, &stored, in.Subject, in.EDReplyEmail, sendUnsubFooterMode(s.unsubEnabled), true)
+		if renderErr != nil {
+			return nil, renderErr
+		}
+		if validateErr := validateDerivedBodyHTML(html); validateErr != nil {
+			return nil, validateErr
+		}
+		bodyHTML, bodyLayout = html, raw
+	default:
+		// Legacy html-only newsletter: body_html must be valid as authored.
+		if validateErr := validateBodyHTML(in.BodyHTML); validateErr != nil {
+			return nil, validateErr
+		}
+	}
+
 	existing.Subject = strings.TrimSpace(in.Subject)
-	existing.BodyHTML = in.BodyHTML
+	existing.BodyHTML = bodyHTML
+	existing.BodyLayout = bodyLayout
 	existing.EDReplyEmail = strings.TrimSpace(in.EDReplyEmail)
 	existing.CommitteeUIDs = normalizeCommitteeUIDs(in.CommitteeUIDs)
 	existing.ScheduledAt = in.ScheduledAt
@@ -340,9 +448,36 @@ func validateSubject(subject string) error {
 	return nil
 }
 
+// validateDerivedBodyHTML bounds the DERIVED (layout-rendered) body_html.
+// Unlike validateBodyHTML this classifies an oversized document as
+// ErrUnprocessable (422) with the same message render-preview uses: the
+// request itself was well-formed and the request's body_html is ignored on
+// the layout path, so a 400 blaming body_html would be misleading.
+func validateDerivedBodyHTML(html string) error {
+	if len(html) > maxBodyHTMLLength {
+		return fmt.Errorf("%w: rendered HTML exceeds %d bytes", domain.ErrUnprocessable, maxBodyHTMLLength)
+	}
+	return nil
+}
+
 func validateBodyHTML(bodyHTML string) error {
 	if strings.TrimSpace(bodyHTML) == "" {
 		return fmt.Errorf("%w: body_html is required", domain.ErrInvalidRequest)
+	}
+	if len(bodyHTML) > maxBodyHTMLLength {
+		return fmt.Errorf("%w: body_html exceeds %d characters", domain.ErrInvalidRequest, maxBodyHTMLLength)
+	}
+	return nil
+}
+
+// validateOptionalBodyHTML permits an empty body — used when clearing an
+// existing draft's layout back to html-only with no replacement body yet — but
+// still enforces the length ceiling when a body is present. Distinct from
+// validateBodyHTML, which requires a non-empty body (create and the legacy
+// html-only update path).
+func validateOptionalBodyHTML(bodyHTML string) error {
+	if strings.TrimSpace(bodyHTML) == "" {
+		return nil
 	}
 	if len(bodyHTML) > maxBodyHTMLLength {
 		return fmt.Errorf("%w: body_html exceeds %d characters", domain.ErrInvalidRequest, maxBodyHTMLLength)
@@ -415,7 +550,325 @@ func normalizeCommitteeUIDs(in []string) []string {
 	return out
 }
 
+// renderLayout derives the email-safe body_html from a structured layout and
+// returns it alongside the raw layout JSON to persist. The emitter owns the
+// whole email (wrapper chrome + blocks), so the wrapper's runtime fields are
+// bound here: write-time-known values (the reply email) bind directly,
+// send-time-known values bind to PLACEHOLDER sentinels that the send path
+// substitutes later.
+//
+// Fields bound EMPTY are dropped by the wrapper's `if=` guards at render time
+// (rather than emitting a row whose href would substitute to empty at send):
+//   - edition.view_online_link: no hosted "view online" surface yet.
+//   - edition.unsubscribe_url when the unsubscribe service is not configured:
+//     the row is dropped instead of shipping a broken link.
+//
+// A render failure is surfaced as ErrUnprocessable (422), matching render-preview
+// for the same unrenderable layout — the request itself is well-formed.
+func renderLayout(ctx context.Context, layout *declarative.Layout, subject, replyEmail string, mode unsubFooterMode, manageEnabled bool) (bodyHTML string, raw json.RawMessage, err error) {
+	html, err := renderLayoutBody(ctx, layout, LayoutWrapperContent(subject, replyEmail, mode, manageEnabled))
+	if err != nil {
+		return "", nil, err
+	}
+
+	raw, err = json.Marshal(layout)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: marshal body_layout: %v", domain.ErrUnprocessable, err)
+	}
+	return html, raw, nil
+}
+
+// renderLayoutBody selects a layout's template set by template_key, renders it
+// against the supplied wrapper binding context, and maps failures to the domain
+// sentinels by cause:
+//
+//   - Unknown template_key (a client-selected library the binary doesn't embed)
+//     → 422.
+//   - A CLIENT-driven render failure — unknown wrapper key or block_type, or
+//     content the emitter cannot compile — is flagged by the emitter with
+//     declarative.ErrUnrenderableLayout → 422.
+//   - Anything else is a packaging/deployment defect: a present-but-broken
+//     embedded library that fails to load or parse (the templates ship with the
+//     binary) → untyped, so callers surface it as a 500. This keeps the
+//     "present-but-broken library" 500 real instead of collapsing every render
+//     failure to a client 422.
+//
+// It is the shared core behind render-on-write (renderLayout) and the stateless
+// editor preview (NewsletterService.RenderPreview), so both classify identically.
+// The two paths differ only in the wrapper content they pass: the write path uses
+// the persisted reply email; the preview merges the client's wrapper_content over
+// the send-path footer defaults.
+func renderLayoutBody(ctx context.Context, layout *declarative.Layout, wrapperContent map[string]any) (string, error) {
+	if err := validateNoReservedPlaceholders(layout.Blocks); err != nil {
+		return "", err
+	}
+	// Normalize in place so the persisted layout (renderLayout marshals this
+	// same pointer after we return) carries the same template_key this render
+	// actually resolved against — otherwise a whitespace-padded key renders
+	// successfully here but persists untrimmed, and can't match any catalog key
+	// on a later reload.
+	layout.TemplateKey = strings.TrimSpace(layout.TemplateKey)
+	templates, err := declarative.LoadEmbeddedTemplateCached(layout.TemplateKey)
+	if err != nil {
+		if errors.Is(err, declarative.ErrTemplateNotFound) {
+			return "", fmt.Errorf("%w: unknown template_key %q", domain.ErrUnprocessable, layout.TemplateKey)
+		}
+		return "", fmt.Errorf("load render templates: %w", err)
+	}
+
+	html, err := declarative.Render(ctx, *layout, templates, wrapperContent)
+	if err != nil {
+		if errors.Is(err, declarative.ErrUnrenderableLayout) {
+			return "", fmt.Errorf("%w: render body_layout: %v", domain.ErrUnprocessable, err)
+		}
+		// Not attributable to the client layout — an embedded template that will
+		// not parse is a packaging defect; stay untyped so it surfaces as a 500.
+		return "", fmt.Errorf("render body_layout: %w", err)
+	}
+	return html, nil
+}
+
+// reservedPlaceholders are the send-time sentinel tokens substitutePlaceholders
+// (send_orchestrator.go) swaps in verbatim, unconditionally, across the entire
+// rendered body at send time. Only the service-owned wrapper content
+// (LayoutWrapperContent) may legitimately carry one — writer-controlled block
+// content never should, since bind.go's scheme gate lets a href/src value
+// through unmodified when it exactly matches a sentinel, and richtext content
+// renders verbatim with no scheme gate at all. A writer field (or richtext
+// HTML) that happens to contain one of these tokens would otherwise have it
+// silently swapped on send — e.g. an <img src> equal to %%UNSUBSCRIBE_URL%%
+// auto-fires an unsubscribe when the recipient's mail client loads the image,
+// with no recipient action. The per-recipient URL sentinels are the dangerous
+// case; the send-scope name sentinels (%%SENDER_NAME%%/%%PROJECT_NAME%%) are
+// also globally substituted (substituteSendScope), so they are rejected too for
+// consistency — a whole-value token in a URL field bypasses bindAttrs' scheme
+// gate and would be rewritten after the check.
+var reservedPlaceholders = []string{
+	UnsubscribeURLPlaceholder,
+	ViewOnlineURLPlaceholder,
+	ManageSubscriptionsURLPlaceholder,
+	SenderNamePlaceholder,
+	ProjectNamePlaceholder,
+	SendDatePlaceholder,
+}
+
+// validateNoReservedPlaceholders rejects a layout whose block content —
+// including richtext fields and each= array items (bind.go's lookupSlice
+// resolves each= against []any elements holding map[string]any), which are
+// stored in the same Content map as any other field — contains a reserved
+// send-time sentinel token verbatim, at any nesting depth.
+func validateNoReservedPlaceholders(blocks []declarative.Block) error {
+	for _, b := range blocks {
+		for field, v := range b.Content {
+			if token, ok := findReservedPlaceholder(v); ok {
+				return fmt.Errorf("%w: block_type %q field %q contains reserved placeholder token %q", domain.ErrInvalidRequest, b.BlockType, field, token)
+			}
+		}
+		if err := validateNoReservedPlaceholders(b.Blocks); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// findReservedPlaceholder recursively inspects a Content value — a string,
+// or a JSON-decoded []any / map[string]any produced by each= array items and
+// nested object fields — for a reserved placeholder token.
+func findReservedPlaceholder(v any) (string, bool) {
+	switch val := v.(type) {
+	case string:
+		for _, token := range reservedPlaceholders {
+			if strings.Contains(val, token) {
+				return token, true
+			}
+		}
+	case []any:
+		for _, item := range val {
+			if token, ok := findReservedPlaceholder(item); ok {
+				return token, true
+			}
+		}
+	case map[string]any:
+		for _, item := range val {
+			if token, ok := findReservedPlaceholder(item); ok {
+				return token, true
+			}
+		}
+	}
+	return "", false
+}
+
+// RenderPreview renders a layout to email-safe HTML for the stateless editor
+// preview. It runs the SAME template selection, render, and derived-output size
+// policy as the create/update render-on-write path (renderLayoutBody +
+// validateDerivedBodyHTML), so a preview and the eventual persisted render agree
+// on which template_key resolves, which failures are 422 vs 500, and the output
+// ceiling. clientWrapperContent is the caller's wrapper_content; it is merged
+// over the send-path footer defaults (previewWrapperContent) so the preview's
+// footer structure and byte size match the email that will be sent.
+func (s *NewsletterService) RenderPreview(ctx context.Context, layout *declarative.Layout, clientWrapperContent map[string]any, unsubEnabled bool) (string, error) {
+	html, err := renderLayoutBody(ctx, layout, previewWrapperContent(clientWrapperContent, sendUnsubFooterMode(unsubEnabled)))
+	if err != nil {
+		return "", err
+	}
+	if err := validateDerivedBodyHTML(html); err != nil {
+		return "", err
+	}
+	return html, nil
+}
+
+// previewFooterSentinelKeys are the edition.* fields the send path substitutes
+// per recipient (unsubscribe URL, sender/project name) or per send
+// (manage_subscriptions_url → the "My Newsletters" archive link). A client's
+// wrapper_content must NOT override these — the preview keeps the send-path
+// sentinels so its footer structure and byte size match the sent email.
+var previewFooterSentinelKeys = map[string]struct{}{
+	"unsubscribe_url":          {},
+	"unsubscribe_fallback":     {},
+	"sender_name":              {},
+	"project_name":             {},
+	"manage_subscriptions_url": {},
+}
+
+// previewWrapperContent merges a client-supplied wrapper_content over the
+// send-path footer defaults for the stateless render-preview.
+//
+// It starts from LayoutWrapperContent (the send-path defaults: footer sentinels
+// plus reply_email taken from the client when supplied) and overlays the
+// client's edition.* bindings on top, so client-owned fields like edition.date
+// and edition.view_online_link are honored while the footer sentinels
+// (unsubscribe / sender / project) and the already-applied reply_email are
+// preserved. Only the edition sub-map is deep-merged; that is the only shape the
+// wrapper contract defines.
+func previewWrapperContent(clientWC map[string]any, mode unsubFooterMode) map[string]any {
+	base := LayoutWrapperContent("", replyEmailFromWrapperContent(clientWC), mode, true)
+
+	clientEdition, ok := clientWC["edition"].(map[string]any)
+	if !ok {
+		return base
+	}
+	baseEdition, ok := base["edition"].(map[string]any)
+	if !ok {
+		return base
+	}
+	for k, v := range clientEdition {
+		if _, sentinel := previewFooterSentinelKeys[k]; sentinel {
+			// Footer sentinel: keep the send-path value so preview size matches.
+			continue
+		}
+		if k == "reply_email" {
+			// Already applied via LayoutWrapperContent (trimmed); don't re-overlay.
+			continue
+		}
+		baseEdition[k] = v
+	}
+	return base
+}
+
+// replyEmailFromWrapperContent best-effort extracts edition.reply_email from a
+// client-supplied wrapper_content map (shape: {"edition": {"reply_email": ...}}).
+// render-preview is stateless, so this is the only place the reply-to address
+// can come from; anything missing or mis-typed yields "" and the preview simply
+// omits the reply row (the wrapper's if= guard drops it).
+func replyEmailFromWrapperContent(wc map[string]any) string {
+	edition, ok := wc["edition"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	replyEmail, _ := edition["reply_email"].(string)
+	return replyEmail
+}
+
+// unsubFooterMode selects how a layout wrapper's opt-out row renders.
+type unsubFooterMode int
+
+const (
+	// unsubFooterLink: a working per-recipient unsubscribe link is available
+	// (the unsubscribe service is enabled). The wrapper renders the link.
+	unsubFooterLink unsubFooterMode = iota
+	// unsubFooterReplyFallback: no unsubscribe link can be minted (the service
+	// is disabled/misconfigured), but this is a REAL send, so the email must
+	// still carry an opt-out mechanism. The wrapper renders reply-based copy,
+	// matching the legacy chrome path's fallback (see email_chrome.go).
+	unsubFooterReplyFallback
+	// unsubFooterSuppressed: omit the opt-out row entirely. Used only by test
+	// sends, which mint no real token and are not commercial mailings.
+	unsubFooterSuppressed
+)
+
+// unsubscribeReplyFallbackText is the reply-based opt-out copy used when no
+// unsubscribe link can be minted for a real send. It mirrors the legacy chrome
+// footer's fallback and mints no token, so it is compliant without the
+// unsubscribe service configured.
+const unsubscribeReplyFallbackText = "To unsubscribe, reply with UNSUBSCRIBE."
+
+// sendUnsubFooterMode maps the deployment's unsubscribe-enabled flag to the
+// footer mode for a REAL send or preview: a link when enabled, the reply-based
+// fallback when not. A real send is never suppressed — it always needs an
+// opt-out mechanism (only test sends suppress).
+func sendUnsubFooterMode(unsubEnabled bool) unsubFooterMode {
+	if unsubEnabled {
+		return unsubFooterLink
+	}
+	return unsubFooterReplyFallback
+}
+
+// LayoutWrapperContent builds the wrapper template's runtime binding context for
+// the layout render path. Send-time-known values bind to PLACEHOLDER sentinels
+// that the send path substitutes per recipient (unsubscribe URL, sender name,
+// project name); write-time-known values (the reply email) bind directly.
+// Fields left empty are dropped by the wrapper's `if=` guards at render time,
+// so a compiled body only carries the rows that will actually resolve. The
+// opt-out row is driven by mode: a real unsubscribe link (sentinel), the
+// reply-based fallback copy, or nothing (test sends) — the wrapper renders
+// exactly one via mutually-exclusive `if=` guards on unsubscribe_url and
+// unsubscribe_fallback.
+//
+// It is the single source of truth for that context so every layout-render
+// caller — render-on-write (renderLayout) and the stateless render-preview
+// handler — produces the SAME footer structure, and a preview's byte size
+// therefore matches the email that will be sent.
+func LayoutWrapperContent(subject, replyEmail string, mode unsubFooterMode, manageEnabled bool) map[string]any {
+	unsubURL := ""
+	unsubFallback := ""
+	switch mode {
+	case unsubFooterLink:
+		unsubURL = UnsubscribeURLPlaceholder
+	case unsubFooterReplyFallback:
+		unsubFallback = unsubscribeReplyFallbackText
+	case unsubFooterSuppressed:
+		// Both empty: the opt-out row is dropped entirely.
+	}
+	// The "My Newsletters" archive link is a send-time-known value: its URL is
+	// the orchestrator's Self-Serve base URL, so it binds to a sentinel the send
+	// path substitutes. When My Newsletters is unavailable (no base URL bound),
+	// the field stays empty and the wrapper renders the label without a link.
+	manageURL := ""
+	if manageEnabled {
+		manageURL = ManageSubscriptionsURLPlaceholder
+	}
+	return map[string]any{
+		"edition": map[string]any{
+			"date":                     SendDatePlaceholder,
+			"title":                    strings.TrimSpace(subject),
+			"view_online_link":         "",
+			"unsubscribe_url":          unsubURL,
+			"unsubscribe_fallback":     unsubFallback,
+			"manage_subscriptions_url": manageURL,
+			"sender_name":              SenderNamePlaceholder,
+			"project_name":             ProjectNamePlaceholder,
+			"reply_email":              strings.TrimSpace(replyEmail),
+		},
+	}
+}
+
 // IsValidationError reports whether err is a validation/domain ErrInvalidRequest.
 func IsValidationError(err error) bool {
 	return errors.Is(err, domain.ErrInvalidRequest)
+}
+
+// IsUnprocessableError reports whether err is a domain ErrUnprocessable (422) —
+// e.g. a well-formed request whose body_layout could not be rendered.
+func IsUnprocessableError(err error) bool {
+	return errors.Is(err, domain.ErrUnprocessable)
 }

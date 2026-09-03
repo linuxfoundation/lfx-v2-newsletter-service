@@ -14,6 +14,8 @@ package render
 import (
 	"regexp"
 	"strings"
+
+	"golang.org/x/net/html"
 )
 
 // Chrome carries everything the renderer needs to wrap a body in the outer
@@ -111,11 +113,6 @@ var bodyTagStyles = map[string]string{
 	"b":          "color:" + colorGray900 + ";font-weight:600;",
 }
 
-// inlineBodyStylesTagOrder is the deterministic walk order for inlineBodyStyles.
-// Map iteration in Go is randomized; without this every render would produce a
-// different style attribute (harmless functionally, noisy in tests/diffs).
-var inlineBodyStylesTagOrder = []string{"p", "h2", "h3", "ul", "ol", "li", "blockquote", "hr", "a", "strong", "b"}
-
 // htmlEscaper escapes the five characters that need HTML entity treatment in
 // chrome strings (subject, display name, sender, reply-to). bodyHtml is NOT
 // run through this — see the package trust boundary comment.
@@ -131,54 +128,63 @@ func escapeHTML(value string) string {
 	return htmlEscaper.Replace(value)
 }
 
-// inlineBodyStyles injects an inline `style="..."` attribute on each supported
-// tag. Tags that already carry a `style=` attribute are skipped so Quill-emitted
-// overrides win — the matched paragraph loses the base margin/line-height but
-// keeps its alignment, which is the right precedence for an authoring tool
-// that intentionally set the style.
-func inlineBodyStyles(html string) string {
-	result := html
-	for _, tag := range inlineBodyStylesTagOrder {
-		style := bodyTagStyles[tag]
-		// (?i) case-insensitive. Optional trailing `/` so `<hr/>` is also styled.
-		re := regexp.MustCompile(`(?i)<` + tag + `(\s[^>]*)?/?>`)
-		result = re.ReplaceAllStringFunc(result, func(match string) string {
-			attrs := extractAttrs(match, tag)
-			if hasStyleAttr(attrs) {
-				return match
+// inlineBodyStyles injects an inline style="..." attribute on each supported
+// body tag that does not already carry one, so Quill-emitted overrides win. It
+// tokenizes with golang.org/x/net/html rather than regex-matching each tag: the
+// prior regex was not quote-aware, so a quoted attribute value containing '>'
+// or an unquoted value ending in '/' could corrupt the outbound markup. Tags
+// that are not styled, and styled tags that already carry a style attribute,
+// are re-emitted byte-for-byte (z.Raw); only a styled start tag missing a style
+// attribute is reconstructed, with the style injected first and the existing
+// attributes preserved in order and re-escaped exactly once.
+func inlineBodyStyles(body string) string {
+	z := html.NewTokenizer(strings.NewReader(body))
+	var b strings.Builder
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			// ErrorToken is io.EOF once the input is fully consumed (the reader is
+			// in-memory, so no other read error is possible); the document has been
+			// emitted, so stop.
+			return b.String()
+		}
+		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
+			b.Write(z.Raw())
+			continue
+		}
+		name, hasAttr := z.TagName()
+		style, styled := bodyTagStyles[string(name)]
+		if !styled {
+			b.Write(z.Raw())
+			continue
+		}
+		type attr struct{ key, val string }
+		var attrs []attr
+		hasStyle := false
+		for hasAttr {
+			var k, v []byte
+			k, v, hasAttr = z.TagAttr()
+			if string(k) == "style" {
+				hasStyle = true
 			}
-			if attrs != "" {
-				return "<" + tag + ` style="` + style + `"` + attrs + ">"
-			}
-			return "<" + tag + ` style="` + style + `">`
-		})
+			attrs = append(attrs, attr{key: string(k), val: string(v)})
+		}
+		if hasStyle {
+			// Author already set a style attribute — preserve the tag verbatim so
+			// their override wins.
+			b.Write(z.Raw())
+			continue
+		}
+		b.WriteString("<" + string(name) + ` style="` + style + `"`)
+		for _, a := range attrs {
+			b.WriteString(" " + a.key + `="` + html.EscapeString(a.val) + `"`)
+		}
+		if tt == html.SelfClosingTagToken {
+			b.WriteString("/>")
+		} else {
+			b.WriteString(">")
+		}
 	}
-	return result
-}
-
-// extractAttrs returns the attribute string of a tag match (everything between
-// the tag name and the closing `>`/`/>`), or empty.
-func extractAttrs(match, tag string) string {
-	// match is like "<p attrs...>" or "<p>" or "<hr/>".
-	inner := strings.TrimPrefix(match, "<")
-	inner = strings.TrimSuffix(inner, ">")
-	inner = strings.TrimSuffix(inner, "/")
-	inner = strings.TrimSpace(inner)
-	// Strip the leading tag name (case-insensitive).
-	lower := strings.ToLower(inner)
-	if strings.HasPrefix(lower, strings.ToLower(tag)) {
-		inner = inner[len(tag):]
-	}
-	return inner
-}
-
-var styleAttrRe = regexp.MustCompile(`(?i)\sstyle\s*=`)
-
-func hasStyleAttr(attrs string) bool {
-	if attrs == "" {
-		return false
-	}
-	return styleAttrRe.MatchString(attrs)
 }
 
 // ctaButtonStyle is the inline button style for standalone-link CTAs.
@@ -204,58 +210,144 @@ func convertStandaloneCtas(html string) string {
 	})
 }
 
-var linkRe = regexp.MustCompile(`(?is)<a\b[^>]*href=("|')(.*?)("|')[^>]*>([\s\S]*?)</a>`)
-
-// preserveLinkDestinations rewrites `<a href="X">label</a>` to `label (X)` so
-// link targets survive the strip-html pass for the plain-text fallback. Skips
-// the parenthesized URL when the label already equals the href (raw URL pasted
-// as link text).
-func preserveLinkDestinations(html string) string {
-	return linkRe.ReplaceAllStringFunc(html, func(match string) string {
-		sub := linkRe.FindStringSubmatch(match)
-		if len(sub) < 5 {
-			return match
-		}
-		href := sub[2]
-		label := sub[4]
-		trimmedLabel := strings.TrimSpace(label)
-		if href == "" || trimmedLabel == href {
-			return label
-		}
-		return label + " (" + href + ")"
-	})
-}
-
-var tagRe = regexp.MustCompile(`<[^>]+>`)
-var entityRe = regexp.MustCompile(`&(amp|lt|gt|quot|#39|nbsp);`)
 var multispaceRe = regexp.MustCompile(`[\t ]+`)
 var multiNewlineRe = regexp.MustCompile(`\n{3,}`)
 
-// stripHTML removes tags and decodes the small entity set we emit. The output
-// is suitable for the plain-text fallback (not for indexing or other downstream
-// consumers).
-func stripHTML(html string) string {
-	out := tagRe.ReplaceAllString(html, "")
-	out = entityRe.ReplaceAllStringFunc(out, func(e string) string {
-		switch e {
-		case "&amp;":
-			return "&"
-		case "&lt;":
-			return "<"
-		case "&gt;":
-			return ">"
-		case "&quot;":
-			return `"`
-		case "&#39;":
-			return "'"
-		case "&nbsp;":
-			return " "
+// htmlToText derives a plain-text body from an HTML fragment or full document
+// for the text/plain part of an email. It tokenizes with golang.org/x/net/html
+// rather than parsing HTML structure with regexes, which fixes two failure
+// modes of the old regex approach:
+//
+//   - Non-rendered content never leaks: text inside <head>, <style>, <script>,
+//     and <title> is dropped. A self-closing <style/> or a '>' inside an
+//     attribute value could defeat the old regex skip-scanner and spill CSS/JS
+//     into the recipient-visible text; the tokenizer tracks real element
+//     boundaries, so it cannot.
+//   - Link destinations survive: <a href="X">label</a> becomes "label (X)",
+//     unless the label is already the raw URL (or the href is empty), matching
+//     the old preserveLinkDestinations behavior.
+//
+// Entities are decoded by the tokenizer (so &amp; etc. need no manual table);
+// decoded &nbsp; (U+00A0) is normalized to a plain space, then the same
+// whitespace collapse as before is applied.
+func htmlToText(input string) string {
+	z := html.NewTokenizer(strings.NewReader(input))
+	var out strings.Builder
+	skip := 0 // depth inside <head>/<style>/<script>/<title> — their text is dropped
+	inAnchor := false
+	anchorHref := ""
+	var anchorText strings.Builder
+
+	flushAnchor := func() {
+		if !inAnchor {
+			return
 		}
-		return e
-	})
-	out = multispaceRe.ReplaceAllString(out, " ")
-	out = multiNewlineRe.ReplaceAllString(out, "\n\n")
-	return strings.TrimSpace(out)
+		label := anchorText.String()
+		out.WriteString(label)
+		if anchorHref != "" && strings.TrimSpace(label) != anchorHref {
+			out.WriteString(" (" + anchorHref + ")")
+		}
+		inAnchor = false
+		anchorHref = ""
+		anchorText.Reset()
+	}
+
+loop:
+	for {
+		switch z.Next() {
+		case html.ErrorToken:
+			break loop // io.EOF or a parse error — emit what we have
+		case html.TextToken:
+			if skip > 0 {
+				continue
+			}
+			if inAnchor {
+				anchorText.Write(z.Text())
+			} else {
+				out.Write(z.Text())
+			}
+		case html.StartTagToken:
+			name, hasAttr := z.TagName()
+			switch string(name) {
+			case "head", "style", "script", "title":
+				skip++
+			case "br":
+				// A line break is visible whitespace in the rendered email, so the
+				// text/plain part must carry a newline — otherwise adjacent lines
+				// (e.g. "The Linux Foundation<br />2810 N Church St...") collapse
+				// into one run. net/html emits <br> as a start tag and <br/> as a
+				// self-closing tag, so both cases emit here and below.
+				if skip == 0 {
+					if inAnchor {
+						anchorText.WriteByte('\n')
+					} else {
+						out.WriteByte('\n')
+					}
+				}
+			case "a":
+				if skip == 0 && !inAnchor {
+					href := ""
+					for hasAttr {
+						k, v, more := z.TagAttr()
+						if string(k) == "href" {
+							href = string(v)
+						}
+						hasAttr = more
+					}
+					inAnchor = true
+					anchorHref = href
+					anchorText.Reset()
+				}
+			}
+		case html.EndTagToken:
+			name, _ := z.TagName()
+			switch string(name) {
+			case "head", "style", "script", "title":
+				if skip > 0 {
+					skip--
+				}
+			case "a":
+				flushAnchor()
+			}
+		case html.SelfClosingTagToken:
+			name, _ := z.TagName()
+			switch string(name) {
+			case "br":
+				// Self-closing <br/> — emit a newline, matching the start-tag case.
+				if skip == 0 {
+					if inAnchor {
+						anchorText.WriteByte('\n')
+					} else {
+						out.WriteByte('\n')
+					}
+				}
+			case "style", "script", "title":
+				// style/script/title are raw-text/RCDATA elements: the tokenizer
+				// switches to raw-text mode after the start tag even when it is
+				// written self-closing (HTML ignores the slash on these), so the
+				// following content arrives as one text token and must be dropped
+				// until the matching close (or EOF). This is exactly the
+				// self-closing <style/> case the old regex skip-scanner missed.
+				skip++
+			}
+			// Other self-closing/void tags (<br/>, <img/>, …) contribute no text.
+		}
+	}
+	flushAnchor() // document ended mid-anchor (unterminated <a>)
+
+	text := strings.ReplaceAll(out.String(), " ", " ")
+	text = multispaceRe.ReplaceAllString(text, " ")
+	text = multiNewlineRe.ReplaceAllString(text, "\n\n")
+	return strings.TrimSpace(text)
+}
+
+// StripHTMLForText derives a plain-text body from a full HTML email. It is the
+// exported counterpart to EmailText for the layout-based send path, where the
+// emitter already owns the whole email and there is no Chrome to wrap. Link
+// destinations are preserved (`label (href)`); non-rendered <head>/<style>/
+// <script> content is dropped by the tokenizer.
+func StripHTMLForText(input string) string {
+	return htmlToText(input)
 }
 
 // renderComplianceFooterHTML emits the sender attribution + reply-to + UNSUBSCRIBE
@@ -379,7 +471,7 @@ func EmailText(input Chrome) string {
 	if subject == "" {
 		subject = "Untitled"
 	}
-	body := stripHTML(preserveLinkDestinations(input.BodyHTML))
+	body := htmlToText(input.BodyHTML)
 
 	lines := []string{display + " · Newsletter", subject, "", body}
 

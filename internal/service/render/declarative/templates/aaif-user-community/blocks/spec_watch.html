@@ -1,0 +1,32 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
+<!-- SCHEMA: {
+  "title": {"type":"text","label":"Title"},
+  "items": {"type":"array","label":"Standards rows","fields":{
+    "status":{"type":"text","label":"Status pill (e.g. SHIPPED / RFC / DRAFT)"},
+    "title":{"type":"text","label":"Standard name"},
+    "url":{"type":"text","label":"Link"},
+    "description":{"type":"text","label":"Description (inline, follows the name)"}
+  }}
+} -->
+<!--
+  Style C SPEC WATCH — standards status board. Each row is a status pill + text.
+  The pill uses one filled style for every status (SHIPPED / RFC / DRAFT); the
+  mockup's outline/dashed pill variants per status are a later refinement (the
+  declarative format can't branch styling on a field's value).
+-->
+<Section class="dm-card" style="width:100%;max-width:650px;margin:0 auto 24px;background-color:#ffffff;border:1px solid #131313;border-collapse:separate;border-radius:14px;box-shadow:6px 6px 0 #131313;color:#131313">
+  <div style="padding:22px 22px 14px">
+    <Text class="dm-h" style="margin:0 0 14px;color:#131313;font-size:11px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;line-height:1"><span class="dm-dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:#131313;vertical-align:middle;font-size:0;line-height:0">&nbsp;</span><span class="dm-dot" style="display:inline-block;width:9px;height:9px;background-color:#131313;vertical-align:middle;margin:0 12px 0 5px;font-size:0;line-height:0">&nbsp;</span>SPEC WATCH</Text>
+    <Heading if="title" class="dm-h" style="margin:0 0 16px;font-size:26px;font-weight:bold;color:#131313;line-height:1.15;letter-spacing:-0.3px">{{title}}</Heading>
+    <Row each="items" style="margin:0 0 6px">
+      <Column width="90" style="vertical-align:top;padding:0 12px 14px 0;width:90px">
+        <Text class="dm-chip" style="background-color:#131313;color:#f0f0f0;font-size:10px;font-weight:bold;letter-spacing:1px;text-align:center;padding:4px 6px;border-radius:100px;margin:0">{{status}}</Text>
+      </Column>
+      <Column style="vertical-align:top;padding:0 0 14px">
+        <Text class="dm-t" style="margin:0;font-size:16px;line-height:1.5;color:#3c3c3f"><strong><Link href="{{url}}" class="dm-h" style="color:#131313;text-decoration:underline">{{title}}</Link></strong> {{description}}</Text>
+      </Column>
+    </Row>
+  </div>
+</Section>

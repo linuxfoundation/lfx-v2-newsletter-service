@@ -1,0 +1,92 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: {
+  "edition": {
+    "date":                     {"type": "text", "label": "Edition date"},
+    "title":                    {"type": "text", "label": "Edition title"},
+    "preheader":                {"type": "text", "label": "Preheader"},
+    "view_online_link":         {"type": "text", "label": "View Online URL"},
+    "unsubscribe_url":          {"type": "text", "label": "Unsubscribe URL"},
+    "unsubscribe_fallback":     {"type": "text", "label": "Unsubscribe fallback text"},
+    "manage_subscriptions_url": {"type": "text", "label": "Manage subscriptions URL"},
+    "sender_name":              {"type": "text", "label": "Sender name"},
+    "project_name":             {"type": "text", "label": "Project name"},
+    "reply_email":              {"type": "text", "label": "Reply-to email"}
+  }
+} -->
+
+<!--
+  AAIF User Community newsletter wrapper — "Style C".
+
+  Header / footer chrome for every edition, authored as a declarative template
+  the platform parses into a templates_wrappers row. The edition body renders
+  inside the <slot name="body" /> below.
+
+  Styling model: this template owns 100% of its look with INLINE styles only —
+  none of the shared authoring classes (card/eyebrow/title/body/link) are used,
+  so a different newsletter can look completely different from its own set. The
+  reference source additionally ships a dark-mode <style> block plus a light/dark
+  logo swap; the LFX declarative renderer emits no <style> and forwards no
+  dark-mode toggle, so this port keeps the light design only (a single light
+  logo) and drops the dark-mode enhancement. The `dm-*` class names are inert
+  here — the renderer's class mapping ignores them — but are kept so this file
+  stays diff-close to the reference source of truth.
+
+  Per-brand URLs (Subscribe, socials, postal address) are baked into the markup
+  directly. Sender identity and the opt-out row are RUNTIME data guarded by if=
+  so an absent field drops its row:
+    {{edition.date}} · {{edition.view_online_link}} · {{edition.sender_name}} ·
+    {{edition.project_name}} · {{edition.unsubscribe_url}} ·
+    {{edition.unsubscribe_fallback}}
+  The "My Newsletters" archive line is NOT if=-guarded — its sentence always
+  renders and only the {{edition.manage_subscriptions_url}} link de-links when
+  the value is empty (bindAttrs drops an empty/unsafe href), so no dangling
+  href="" ships.
+
+  The opt-out row is compliance-critical: a real send always carries an opt-out.
+  When the unsubscribe service is available, edition.unsubscribe_url renders the
+  Unsubscribe link; when it is not (reply-fallback mode), edition.unsubscribe_url
+  is empty and edition.unsubscribe_fallback carries the reply instructions. The
+  two guards are mutually exclusive by how the send path binds them, so exactly
+  one opt-out mechanism renders.
+-->
+
+<Section>
+  <div style="text-align:center;padding:6px 0 0">
+    <Img alt="Agentic AI Foundation" width="230px" href="https://aaif.live" src="https://data.aaif.live/storage/v1/object/public/media/branding/logo_dark.png" style="display:block;margin:0 auto;width:230px;max-width:100%;height:auto" />
+    <Text class="dm-m" style="color:#77777c;font-size:11px;letter-spacing:3px;text-transform:uppercase;margin:14px 0 0;line-height:1.5">USER COMMUNITY</Text>
+    <Text class="dm-m" style="color:#77777c;font-size:13px;line-height:24px;margin:8px 0 0">
+      <span if="edition.date">{{edition.date}} &nbsp;&middot;&nbsp; </span>
+      <span if="edition.view_online_link"><Link href="{{edition.view_online_link}}" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">View Online</Link> &nbsp;&middot;&nbsp; </span>
+      <Link href="https://aaif.live/newsletters/usercommunity/" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">Subscribe</Link>
+    </Text>
+  </div>
+</Section>
+
+<slot name="body" />
+
+<Section style="padding:0">
+  <div style="text-align:center;padding:6px 20px 0">
+    <Text class="dm-t" style="font-size:14px;line-height:1.6;margin:0;color:#3c3c3f">Thanks for reading. See you on
+      <Link href="https://discord.com/invite/9zTwngHAMy" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">Discord</Link>,
+      <Link href="https://www.youtube.com/@AgenticAI-Foundation" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">YouTube</Link>,
+      <Link href="https://github.com/aaif" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">GitHub</Link>,
+      <Link href="https://x.com/AgenticAIFdn" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">X</Link>, and
+      <Link href="https://www.linkedin.com/company/agentic-ai-foundation" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">LinkedIn</Link>.
+    </Text>
+  </div>
+</Section>
+
+<Section style="padding:0">
+  <div class="dm-rule" style="text-align:center;padding:20px 20px 0;border-top:1px solid #d8d8db;margin:24px 0 0">
+    <Text if="edition.sender_name" class="dm-m" style="font-size:12px;line-height:1.7;margin:0;color:#77777c">Sent by <strong>{{edition.sender_name}}</strong><span if="edition.project_name"> on behalf of <strong>{{edition.project_name}}</strong></span>.</Text>
+    <Text if="edition.reply_email" class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">To reply, email <Link href="mailto:{{edition.reply_email}}" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">{{edition.reply_email}}</Link>.</Text>
+    <Text class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">Missed an issue? View past newsletters any time in <Link clicktracking="off" href="{{edition.manage_subscriptions_url}}" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">My Newsletters</Link>.</Text>
+    <Text class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">
+      <span if="edition.unsubscribe_url"><Link clicktracking="off" href="{{edition.unsubscribe_url}}" class="dm-h" style="color:#131313;text-decoration:underline">Unsubscribe</Link> from <span if="edition.project_name">{{edition.project_name}} </span>newsletters. </span>
+      <span if="edition.unsubscribe_fallback">{{edition.unsubscribe_fallback}} </span>
+      Delivered by <Link href="https://lfx.linuxfoundation.org" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">LFX</Link>.
+    </Text>
+    <Text class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">The Linux Foundation<br />2810 N Church St., PMB 57274, Wilmington, Delaware 19802-4447, United States</Text>
+  </div>
+</Section>

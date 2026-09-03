@@ -1,0 +1,18 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
+<!-- SCHEMA: {
+  "section_title": {"type":"text","label":"Eyebrow label"},
+  "title": {"type":"text","label":"Title"},
+  "description": {"type":"richtext","label":"Description"},
+  "link": {"type":"text","label":"Link URL"},
+  "link_text": {"type":"text","label":"Link text"}
+} -->
+<Section class="brick" style="padding:0">
+  <Text if="section_title" class="dm-h" style="margin:0 0 8px;font-size:11px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;color:#131313;line-height:1"><span class="dm-dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:#131313;vertical-align:middle;font-size:0;line-height:0">&nbsp;</span><span class="dm-dot" style="display:inline-block;width:9px;height:9px;background-color:#131313;vertical-align:middle;margin:0 12px 0 5px;font-size:0;line-height:0">&nbsp;</span>{{section_title}}</Text>
+  <Heading if="title" class="dm-h" style="margin:0 0 8px;font-size:22px;font-weight:bold;color:#131313;line-height:1.2;letter-spacing:-0.2px">{{title}}</Heading>
+  <richtext field="description" class="dm-t" style="font-size:16px;color:#3c3c3f;line-height:1.5" />
+  <Text if="link" class="dm-t" style="font-size:16px;color:#3c3c3f;line-height:1.5;margin-top:8px">
+    <strong><Link href="{{link}}" class="dm-h" style="color:#131313;text-decoration:underline">{{link_text}}</Link></strong>
+  </Text>
+</Section>

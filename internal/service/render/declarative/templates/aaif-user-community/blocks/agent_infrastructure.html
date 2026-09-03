@@ -1,0 +1,27 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
+<!-- SCHEMA: {
+  "title": {"type":"text","label":"Title"},
+  "body": {"type":"richtext","label":"Body"},
+  "useful_links": {"type":"array","label":"Useful links","fields":{
+    "title":{"type":"text","label":"Link title"},
+    "url":{"type":"text","label":"URL"},
+    "description":{"type":"text","label":"Description"}
+  }}
+} -->
+<!-- Style C AGENT INFRASTRUCTURE — body + optional "Useful links" list. -->
+<Section class="dm-card" style="width:100%;max-width:650px;margin:0 auto 24px;background-color:#ffffff;border:1px solid #131313;border-collapse:separate;border-radius:14px;box-shadow:6px 6px 0 #131313;color:#131313">
+  <div style="padding:22px 22px 10px">
+    <Text class="dm-h" style="margin:0 0 14px;color:#131313;font-size:11px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;line-height:1"><span class="dm-dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:#131313;vertical-align:middle;font-size:0;line-height:0">&nbsp;</span><span class="dm-dot" style="display:inline-block;width:9px;height:9px;background-color:#131313;vertical-align:middle;margin:0 12px 0 5px;font-size:0;line-height:0">&nbsp;</span>AGENT INFRASTRUCTURE</Text>
+    <Heading if="title" class="dm-h" style="margin:0 0 8px;font-size:26px;font-weight:bold;color:#131313;line-height:1.15;letter-spacing:-0.3px">{{title}}</Heading>
+    <richtext field="body" class="dm-t" style="font-size:16px;color:#3c3c3f;line-height:1.5" />
+    <div if="useful_links">
+      <Hr class="dm-rule" style="border:0;border-top:1px solid #d8d8db;margin:16px 0" />
+      <Heading class="dm-h" style="margin:0 0 8px;font-size:22px;font-weight:bold;color:#131313;line-height:1.2">Useful links</Heading>
+      <Text each="useful_links" class="dm-t" style="font-size:16px;color:#3c3c3f;line-height:1.5;margin:0 0 12px">
+        <strong><Link href="{{url}}" class="dm-h" style="color:#131313;text-decoration:underline">{{title}}</Link></strong> {{description}}
+      </Text>
+    </div>
+  </div>
+</Section>

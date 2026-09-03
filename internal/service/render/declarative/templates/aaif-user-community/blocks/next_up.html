@@ -1,0 +1,29 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+
+<!-- SCHEMA: {
+  "day": {"type":"text","label":"Day (e.g. 13)"},
+  "month": {"type":"text","label":"Month (e.g. AUGUST)"},
+  "eyebrow": {"type":"text","label":"Eyebrow (e.g. CONFERENCE · 10 DAYS AWAY)"},
+  "title": {"type":"text","label":"Event title"},
+  "subtitle": {"type":"text","label":"Details line"},
+  "cta_text": {"type":"text","label":"CTA button text","default":"Register →"},
+  "cta_link": {"type":"text","label":"CTA button link"}
+} -->
+<!-- Style C NEXT UP — event countdown: date block + details + CTA. -->
+<Section class="dm-card" style="width:100%;max-width:650px;margin:0 auto 24px;background-color:#ffffff;border:1px solid #131313;border-collapse:separate;border-radius:14px;box-shadow:6px 6px 0 #131313;color:#131313">
+  <div style="padding:22px">
+    <Row>
+      <Column width="110" style="vertical-align:top;padding:0 18px 0 0;width:110px">
+        <Text class="dm-inv dm-inv-txt" style="background-color:#131313;color:#f0f0f0;text-align:center;padding:14px 8px 4px;border-radius:10px 10px 0 0;font-size:34px;font-weight:bold;line-height:1;margin:0">{{day}}</Text>
+        <Text class="dm-inv dm-inv-sub" style="background-color:#131313;color:#a9a9a9;text-align:center;padding:0 8px 14px;border-radius:0 0 10px 10px;font-size:12px;font-weight:bold;letter-spacing:2px;margin:0">{{month}}</Text>
+      </Column>
+      <Column style="vertical-align:top">
+        <Text if="eyebrow" class="dm-m" style="color:#77777c;font-size:11px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;margin:0 0 8px">{{eyebrow}}</Text>
+        <Heading if="title" class="dm-h" style="margin:0 0 4px;font-size:22px;font-weight:bold;color:#131313;line-height:1.2;letter-spacing:-0.2px">{{title}}</Heading>
+        <Text if="subtitle" class="dm-m" style="font-size:14px;color:#77777c;line-height:1.5;margin:0 0 12px">{{subtitle}}</Text>
+        <Button if="cta_text" href="{{cta_link}}" class="dm-btn dm-btn-a" style="display:inline-block;background-color:#131313;color:#ffffff;font-weight:bold;text-decoration:none;padding:10px 20px;border-radius:8px;line-height:120%">{{cta_text}}</Button>
+      </Column>
+    </Row>
+  </div>
+</Section>

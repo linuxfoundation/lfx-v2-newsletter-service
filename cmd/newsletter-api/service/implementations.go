@@ -69,7 +69,14 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	pgPool = pool
 
 	sqlDB = stdlib.OpenDBFromPool(pool)
-	bunDB = bun.NewDB(sqlDB, pgdialect.New())
+	// WithDiscardUnknownColumns makes RETURNING "*" scans tolerate columns the
+	// compiled model does not know. This is rolling-deploy resilience: when a new
+	// pod applies an additive schema migration (ADD COLUMN IF NOT EXISTS) while an
+	// older binary is still serving, the old pod's writes would otherwise fail
+	// scanning the extra column into its model — a 500 after an autocommitted
+	// write, risking duplicate/stranded state. Discarding unknown columns keeps
+	// every pod forward-compatible with an added column across the deploy window.
+	bunDB = bun.NewDB(sqlDB, pgdialect.New(), bun.WithDiscardUnknownColumns())
 
 	// Step 2: bootstrap database schema (idempotent, advisory-locked).
 	if err := schema.Apply(ctx, pgPool); err != nil {
@@ -141,8 +148,8 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 
 	// Step 5: domain wiring.
 	repo := repository.NewPostgresNewsletterRepo(bunDB)
-	newsletterSvc := service.NewNewsletterService(repo)
 	unsubSvc := service.NewUnsubscribeService(repo, []byte(cfg.UnsubscribeSecret), cfg.PublicBaseURL)
+	newsletterSvc := service.NewNewsletterService(repo, unsubSvc.Enabled())
 	sendSvc = service.NewSendOrchestrator(service.SendOrchestratorConfig{
 		Repo:                  repo,
 		Committee:             committeeClient,

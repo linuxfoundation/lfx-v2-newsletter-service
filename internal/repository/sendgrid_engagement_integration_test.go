@@ -43,7 +43,10 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	if err := schema.Apply(ctx, pool); err != nil {
 		t.Fatalf("schema apply: %v", err)
 	}
-	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
+	// WithDiscardUnknownColumns mirrors the production bun.DB config (the same
+	// bunDB backs this store and the newsletter repo in prod), so the harness
+	// matches production and cannot drift.
+	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New(), bun.WithDiscardUnknownColumns())
 	t.Cleanup(func() { _ = db.Close() })
 
 	store := repository.NewSendGridEngagementStore(db)
@@ -378,7 +381,10 @@ func TestSchemaMigration_SendProviderUpgradePath(t *testing.T) {
 	}
 	t.Cleanup(pool.Close) // runs before the database drop, after the row work
 	must(t, schema.Apply(ctx, pool))
-	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
+	// WithDiscardUnknownColumns mirrors the production bun.DB config (the same
+	// bunDB backs this store and the newsletter repo in prod), so the harness
+	// matches production and cannot drift.
+	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New(), bun.WithDiscardUnknownColumns())
 	t.Cleanup(func() { _ = db.Close() })
 
 	id := "mig-row"
@@ -472,7 +478,10 @@ func TestSendGridRevertConcurrency_Integration(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	must(t, schema.Apply(ctx, pool))
-	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
+	// WithDiscardUnknownColumns mirrors the production bun.DB config (the same
+	// bunDB backs this store and the newsletter repo in prod), so the harness
+	// matches production and cannot drift.
+	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New(), bun.WithDiscardUnknownColumns())
 	t.Cleanup(func() { _ = db.Close() })
 	store := repository.NewSendGridEngagementStore(db)
 

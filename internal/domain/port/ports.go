@@ -58,6 +58,13 @@ type ListPage struct {
 type NewsletterRepository interface {
 	Create(ctx context.Context, n *model.Newsletter) error
 	Get(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
+	// GetMeta reads a newsletter WITHOUT its body_layout column. Use it on hot
+	// paths that only need existence, ownership (project_uid), or send-state
+	// (status / group_id) — the open-pixel and analytics routes — so they never
+	// pull and decode the layout JSON (up to ~1 MiB) they immediately discard.
+	// The returned model's BodyLayout is always nil. Missing records surface as
+	// domain.ErrNotFound.
+	GetMeta(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
 	List(ctx context.Context, projectUID string) ([]*model.Newsletter, error)
 	ListAll(ctx context.Context, filters ListFilters) (*ListPage, error)
 	// ListSentByCommittee returns a page of sent newsletters whose audience
