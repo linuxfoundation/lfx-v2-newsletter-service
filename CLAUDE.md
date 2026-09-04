@@ -58,7 +58,7 @@ Use `lfx-skills:lfx` if an owner repo is missing locally, a path has moved, or t
 
 ## Key Technologies
 
-- **Language**: Go 1.25+
+- **Language**: Go 1.26.8+
 - **HTTP**: stdlib `net/http` with Go 1.22+ mux pattern
 - **Messaging**: NATS request/reply for service-to-service calls (committee, project, email, auth). Exception: when `EMAIL_PROVIDER=sendgrid`, newsletter delivery and engagement go direct to SendGrid over HTTPS (a signed event webhook feeds a local engagement store); email-service/SES over NATS is the default
 - **Database**: PostgreSQL via [pgx](https://github.com/jackc/pgx) + [bun](https://bun.uptrace.dev), provisioned by [CloudNativePG](https://cloudnative-pg.io)
