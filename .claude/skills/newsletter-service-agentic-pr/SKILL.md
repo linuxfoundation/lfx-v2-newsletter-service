@@ -110,14 +110,22 @@ not poll for a verdict that cannot come.
    (reopen, force-push back) a matching `head:` alone is not proof the check
    is current — anchor on the round's own pending stamp per "Waiting for the
    verdict".
-2. **Build the round's work list** from the full thread listing (command
-   under "Threads", every page). It is the union of: every thread that is
-   not resolved; and every thread whose first-comment connection has
-   `totalCount < 2` — unanswered — even if someone already resolved it.
-   Resolution is cosmetic to the gate, which reads reply counts, so a
-   resolved-but-unanswered thread still withholds approval and is still
-   your work. The list includes the check's blocking rows, its `[nit]`
-   rows, and human-authored threads alike. `[critical]`, `[high]`, and
+2. **Build the round's work list** as the union of three sources, and
+   never narrow it: (a) every thread that is not resolved, from the full
+   paginated listing (command under "Threads", every page); (b) every
+   thread whose first-comment connection has `totalCount < 2` —
+   unanswered — even if someone already resolved it; (c) every thread id
+   the newest authoritative check ledger carries as `outstanding` or
+   `rebutted-invalid`, even when that thread is already answered and
+   resolved — a carried-forward blocking row is still your work until the
+   conductor adjudicates it clean. Resolution is cosmetic to the gate,
+   which reads reply counts and the ledger, so a resolved-but-unanswered
+   thread or a resolved-but-still-blocking thread withholds approval and
+   stays on the list. Reconcile every ledger id against the fully
+   paginated thread corpus; an id that matches no thread is not dropped
+   silently — stop and report it per "Authority bounds". The list
+   includes the check's blocking rows, its `[nit]` rows, and
+   human-authored threads alike. `[critical]`, `[high]`, and
    `[should-fix]` are what the conductor's check blocks on; `[nit]` never
    blocks it. That classification steers what the check reports — it does
    not reduce what you owe each item. Steps 3 and 4 apply to every one of
@@ -227,9 +235,11 @@ not poll for a verdict that cannot come.
        || { echo "pushed, unverified: ls-remote failed or ref missing" >&2
             exit 3; }
      remote_sha="$(printf '%s\n' "$remote_row" | awk \
-       'NR == 1 && $1 != "" { print $1; ok = 1 }
+       'NR == 1 && length($1) == 40 && $1 ~ /^[0-9a-f]+$/ { print $1; ok = 1 }
         END { if (NR != 1 || !ok) exit 1 }')" \
-       || { echo "pushed, unverified: zero, empty or multiple ref rows" >&2
+       || { printf 'ls-remote rows:\n%s\n' "$remote_row" >&2
+            echo "pushed, unverified: zero, empty, multiple or malformed" \
+              "ref rows" >&2
             exit 3; }
      [ "$remote_sha" = "$ROUND_SHA" ] || {
        echo "pushed, head moved: remote $remote_sha != round $ROUND_SHA" >&2
@@ -237,7 +247,9 @@ not poll for a verdict that cannot come.
      ```
 
      `ls-remote` prints `<sha>\t<ref>` rows, never a bare SHA, so only
-     the non-empty first field of the single row is compared, and it is
+     the 40-hex first field of the single row is compared (a parse failure
+     echoes the captured rows to stderr — ref output only, never a
+     secret), and it is
      compared to `ROUND_SHA`, which the block has already proven equal to
      local HEAD. The exit status says what happened, and the block
      tracks whether the push itself succeeded — read it this way:
@@ -253,9 +265,10 @@ not poll for a verdict that cannot come.
        `fetch first`) identifies a likely competing writer, and the block
        says so; otherwise report a push failure with its preserved output.
      - **Exit 3 — pushed, remote state unverified.** The push succeeded
-       but `ls-remote` failed, the ref was missing, or the row could not
-       be parsed. Say exactly that; do not claim a writer race or
-       non-delivery.
+       but `ls-remote` failed, the ref was missing, or the captured rows
+       could not be parsed as exactly one `<40-hex sha>\t<ref>` row (the
+       rows are echoed to stderr for the report). Say exactly that; do
+       not claim a writer race or non-delivery.
      - **Exit 4 — pushed, head moved.** The push succeeded, then the PR
        branch advanced or otherwise no longer points at `ROUND_SHA`. The
        round commit did reach the PR; it is no longer the current head.
@@ -329,11 +342,15 @@ names what stands between you and clean, and the ledger's `- id:` rows
 record every adjudicated thread with its status (`fixed`, `obsolete`,
 `outstanding`, `rebutted-valid`, `rebutted-invalid`) and reason.
 `outstanding` and `rebutted-invalid` rows are the conductor's **blocking
-subset** — what the check gates on — not your work list. The ledger omits
-`[nit]` and human-authored threads, so build the round's complete work list
-from the paginated union in "The round loop" step 2: every unresolved
-thread plus every unanswered thread (`totalCount < 2`), nit and human
-threads included.
+subset** — what the check gates on — and they are only one of the three
+sources of your work list, never the whole of it. The ledger omits `[nit]`
+and human-authored threads, so build the round's complete work list per
+"The round loop" step 2: every paginated unresolved thread, plus every
+paginated unanswered thread (`totalCount < 2`), plus every `outstanding`
+or `rebutted-invalid` ledger id carried forward — even one whose thread is
+already answered and resolved. Reconcile each ledger id to a thread in the
+fully paginated corpus; if one cannot be reconciled, do not drop it —
+stop and report per "Authority bounds".
 
 ## Waiting for the verdict
 
@@ -384,10 +401,13 @@ gh run list --repo "$REPO" --workflow=agentic-escalation.yml --limit 5
 
 ## Threads: fixing, rebutting, answering, resolving
 
-List threads and find the unanswered ones (`totalCount < 2` means no reply
-beyond the finding). Paginate the full connection, exactly as the gate
-does — a long PR can carry more than 100 threads, and a work list built from
-page one alone cannot satisfy the answer-every-thread rule:
+List threads and find the unresolved and the unanswered ones
+(`totalCount < 2` means no reply beyond the finding); the check ledger's
+`outstanding` and `rebutted-invalid` ids are the third source of the work
+list (step 2). Paginate the full connection, exactly as the gate does — a
+long PR can carry more than 100 threads, a work list built from page one
+alone cannot satisfy the answer-every-thread rule, and a ledger id can
+only be reconciled against the complete corpus:
 
 ```bash
 gh api graphql --paginate -f query='query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
@@ -645,7 +665,10 @@ Call TaskStop on the monitor before your final report.
   design decision or its fix is not obviously safe; the same finding family
   survives two of your fix attempts; roughly five rounds pass without
   convergence; a round appears dead per the bounded-wait diagnostics
-  (report the workflow-run evidence, do not push again); or the round's
+  (report the workflow-run evidence, do not push again); a check-ledger
+  `outstanding` or `rebutted-invalid` id reconciles to no thread in the
+  fully paginated corpus (report the id and the ledger comment id; do not
+  drop it); or the round's
   one self-contained push-and-verify block exits nonzero — not pushed
   (exit 1: a failed PR, `ROUND_SHA`, repo or branch resolution, or a
   local HEAD that no longer equals `ROUND_SHA`), push failed with
@@ -691,6 +714,11 @@ were and whether each was fixed or rebutted.
   non-fast-forward): correct only the affected threads, worded by
   outcome (fix replies citing the commit, rebuttals whose adjudication
   depended on the push), stop, report.
+- The round's work list is the three-way union — every paginated
+  unresolved thread, every paginated unanswered thread, and every
+  `outstanding`/`rebutted-invalid` ledger id carried forward, resolved or
+  not — and nothing narrows it; a ledger id that reconciles to no thread
+  stops the round and is reported, never dropped.
 - Verify every finding, blocking or not, bot- or human-authored; fix each
   genuine in-scope issue or rebut it with evidence; say how you fixed it —
   citing the fix commit and its validation — or why it stands, then resolve
