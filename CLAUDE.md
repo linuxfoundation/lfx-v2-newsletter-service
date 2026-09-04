@@ -2,16 +2,13 @@
 
 > **Central LFX skills:**
 >
-> - `lfx-skills:lfx`: cross-repo topology, ownership routing, repo discovery, and missing-checkout handling.
-> - `lfx-skills:lfx-platform-architecture`: platform composition, service classes, query-service/FGA/indexer flow, Helm and ArgoCD handoffs, and cross-service responsibility boundaries.
+> - `/lfx-skills:lfx`: cross-repo topology, ownership routing, repo discovery, and missing-checkout handling.
+> - `/lfx-skills:lfx-platform-architecture`: platform composition, service classes, query-service/FGA/indexer flow, Helm and ArgoCD handoffs, and cross-service responsibility boundaries.
 >
 > **Repo-local skills:**
 >
-> - `newsletter-service-dev`: auto-attaches on Go, chart, and service-owned doc paths. It owns this repo's Go conventions, HTTP handler shape, Postgres/Bun persistence, embedded schema, recipient resolution, public `pkg/api` DTO contract, tests, formatting, linting, and license headers. See `.claude/skills/newsletter-service-dev/SKILL.md`.
-> - `newsletter-service-pr-readiness`: pre-PR shape check only: branch/JIRA/conventional commits/rebase/DCO + GPG/diff size/protected files. See `.claude/skills/newsletter-service-pr-readiness/SKILL.md`.
-> - `newsletter-service-preflight`: Go mechanical before-PR pipeline: working tree, license, formatting, lint/vet, build, tests, protected files, commit verification, and PR change summary. See `.claude/skills/newsletter-service-preflight/SKILL.md`.
-> - `newsletter-service-agentic-pr`: the PR driver's operating manual for driving an OPEN PR through the agentic review flow — read the lfx-reviewer check comment, fix or rebut blocking findings, answer every thread, push one round at a time, and loop until green. On PR open, the main session launches the PR driver (worktree-isolated background agent) with a minimal prompt pointing at this skill. See `.claude/skills/newsletter-service-agentic-pr/SKILL.md`.
-> - `newsletter-service-cut-release`: cuts a new GitHub release/tag from `main`, verifies the tagged build published the image and Helm chart, then opens a version-bump PR on `lfx-v2-argocd` pinning the target environments (never `dev`) to the new version. Opens the argocd PR only — never merges it. See `.claude/skills/newsletter-service-cut-release/SKILL.md`.
+> - `/newsletter-service-dev`: auto-attaches on Go, chart, and service-owned doc paths. It owns this repo's Go conventions, HTTP handler shape, Postgres/Bun persistence, embedded schema, recipient resolution, public `pkg/api` DTO contract, tests, formatting, linting, and license headers. See `.claude/skills/newsletter-service-dev/SKILL.md`.
+> - `/newsletter-service-cut-release`: cuts a new GitHub release/tag from `main`, verifies the tagged build published the image and Helm chart, then opens a version-bump PR on `lfx-v2-argocd` pinning the target environments (never `dev`) to the new version. Opens the argocd PR only — never merges it. See `.claude/skills/newsletter-service-cut-release/SKILL.md`.
 >
 > If the plugin is missing, install with `/plugin marketplace add linuxfoundation/lfx-skills` then `/plugin install lfx-skills@lfx-skills`.
 
@@ -54,7 +51,7 @@ Read the relevant contract before changing `pkg/api`, handlers, database schema,
 - Shared service chart conventions: `lfx-v2-helm/docs/service-chart-patterns.md`
 - Deployed values, image tags, database secrets, ExternalSecret wiring: `lfx-v2-argocd`
 
-Use `lfx-skills:lfx` if an owner repo is missing locally, a path has moved, or the task needs additional peer repos.
+Use `/lfx-skills:lfx` if an owner repo is missing locally, a path has moved, or the task needs additional peer repos.
 
 ## Key Technologies
 
@@ -140,134 +137,17 @@ make check       # fmt + lint + license-check + go vet
 make lint        # golangci-lint
 ```
 
-## Work cycle — post-commit and pre-PR reviews
+## Review lifecycle configuration
 
-> **CRITICAL — while the branch is pre-PR, local review is mandatory.** After every
-> commit on the local branch, run `/lfx-skills:lfx-local-review`. It runs three reviewers in
-> parallel — the central `general` brain plus this repo's own two brains — on Pi
-> when Pi is available, and Claude subagents otherwise. Each returns an ordinary
-> Markdown report. Before opening a PR, local review must come back with no
-> findings (or with the remaining ones explicitly documented as trade-offs), AND
-> `/newsletter-service-pr-readiness` must clear every Critical finding before
-> `/newsletter-service-preflight` runs.
->
-> **Local review stops at PR-open.** Once the PR exists, the agentic review flow
-> owns iteration — do not run local review on iteration commits.
+Load and follow `/lfx-skills:lfx-local-review` as the sole owner of the review
+lifecycle. The values below configure that skill and do not replace or override
+its instructions.
 
-This repo owns two of the three reviewer brains, so they are versioned with the
-code they describe:
-
-- `.claude/skills/newsletter-service-code-reviewer/SKILL.md` — audits the change
-  against this repo's written rule surface (`CLAUDE.md`, the repo-local skills, the
-  `docs/` contracts). Every finding quotes a repo rule verbatim.
-- `.claude/skills/newsletter-service-learnings-reviewer/SKILL.md` — matches the
-  change against `docs/reviews/knowledge-base/`, the empirical patterns real
-  reviewers have flagged on this repo's PRs. Every finding quotes a KB entry.
-
-The `local-code-review` and `local-learnings-review` symlinks beside them are the
-launcher's stable discovery aliases. They are directory symlinks — each points at
-the sibling brain *directory*, not at its `SKILL.md` — and the launcher resolves
-the alias to the physical file inside. Keep them pointing at those two
-directories, and keep exactly one prose copy of each brain. `.agents/skills/` links
-to the same two directories for non-Claude hosts. The `general` brain stays central; this repo never
-holds a copy.
-
-When you change this repo's conventions, contracts or KB, update the brain that
-cites them in the same PR.
-
-### Post-commit (pre-PR phase, after every commit)
-
-1. **Commit your work.** `git commit -s -S`.
-2. **Run `/lfx-skills:lfx-local-review`** — exactly that, from this repo, with no
-   argument. It reviews **the newest commit only**: `HEAD^..HEAD`, the diff that
-   commit introduced against its first parent. A caller may supply a direct base
-   range instead; there is no repository-wide, cumulative or main-relative review.
-   The host pins the target and base
-   commits once and gives all three reviewers the same values, and the *code
-   evidence* — the diff, the repo files under review, and the knowledge base —
-   comes from those pinned Git objects, not from your checkout. Two things do
-   not: the reviewers' own instruction files, which the launcher loads from your
-   checkout by path, and any build, test or linter a reviewer chooses to run,
-   which necessarily uses the working tree. So editing while a review runs is
-   safe for ordinary code — but editing a reviewer's own `SKILL.md` mid-run
-   changes the rulebook it is judging your commit by, and an optional check must
-   be skipped or explicitly disclaimed as non-evidence if tracked content moved
-   while it ran.
-3. **Read the three Markdown reports in this session.** There is no report file and
-   nothing is retained — the run lives and dies with the session, and a lost
-   session means a fresh full run.
-4. **Act on what they say:**
-   - **No findings** — nothing to do; keep working.
-   - **Findings** — the main session, never a reviewer, makes the fixes. Roll every
-     supported finding into a follow-up commit, then rerun the complete trio on it.
-     A finding you disagree with is a trade-off you document, not one you silently
-     drop.
-   - **A report whose first line is `INCOMPLETE — <reason>`, or a reviewer the host
-     reports as failed or empty** — **not a pass.** The whole cycle is incomplete
-     and the other two reports do not rescue it. Resolve the cause and rerun the
-     **complete trio under one harness**. Never hand-patch a failed role, never
-     rerun a single role, and never mix Pi and Claude results for the same run.
-5. **Reviewer-driven follow-ups are ordinary commits.** Sign them (`git commit -s -S`)
-   and use a conventional `fix(<scope>): ...` — or plain `fix: ...` where no scope
-   fits — then rerun the complete trio.
-6. **If the run used the Claude Opus fallback**, say so when you report it. It is
-   not the intended Pi/GitHub-Copilot cross-model review.
-
-### Pre-PR (drain, then open)
-
-When the work is done and no more code commits are planned:
-
-1. **Drain the reviews** — every commit has had its own clean local review, with no
-   outstanding findings and no incomplete run. Local review is per-commit only:
-   there is no cumulative sweep to run at the end, so a commit that never got a
-   clean review does not get one retroactively here.
-2. **Run `/newsletter-service-pr-readiness`** for branch name, JIRA reference,
-   conventional commits, rebase status, DCO + GPG signing, diff size, and protected
-   files.
-3. **Run `/newsletter-service-preflight`** for working tree status, license headers,
-   formatting, lint/vet, build, tests, protected files, commit verification, and the
-   PR change summary.
-4. **Only then push and open the PR** — and immediately launch the PR driver (see
-   Post-PR iteration below).
-
-Local review is **author-side only**. Reviewers may use ordinary local tooling —
-shell, git, read-only GitHub inspection, and non-fixing builds, tests and linters
-— but they never edit tracked source or config, run auto-fixing formatters or
-generators, commit, reset, push, or create or update a label, status, check,
-review, approval, comment or merge. Their checks may leave caches, binaries or
-coverage files behind; that debris is yours to clean up, not theirs. If a reviewer
-reports that a command modified tracked files, it is telling you deliberately
-rather than fixing it silently. Nothing they produce feeds the conductor, the
-escalation judge or the merge gate; their reports inform you, and you decide.
-
-### Post-PR iteration (responding to bot feedback on an open PR)
-
-Once the PR is open, the agentic review flow owns iteration, and the main
-session's only job is to hand it off: **immediately after opening any PR —
-without waiting to be asked — launch the PR driver**, a worktree-isolated
-background general-purpose agent whose prompt is, in essence, "load the
-`newsletter-service-agentic-pr` skill — or, if it is unavailable, read
-`<main-checkout>/.claude/skills/newsletter-service-agentic-pr/SKILL.md`,
-where `<main-checkout>` is a placeholder the main session substitutes with
-its checkout's actual absolute filesystem path (never the literal
-placeholder, and never the driver's own worktree copy, whose snapshot may
-be stale) — and drive PR #N by it to a green check on the
-current head with every thread answered, then report which ending applies",
-plus the PR number, head SHA, and current status anchor per the skill's
-"Launching the PR driver" section. The skill is the driver's operating
-manual — do not restate its loop, conventions, liveness protocol, or
-authority bounds in the prompt. The main session stays free for other work;
-relay the driver's round notes to the user, including the final ending: the
-driver drives the check to green even when the `needs-human` label is set,
-and reports either "needs human review before merge" (label set) or "clear
-for the gate/automerge path" — the latter only once the gate's approval
-exists, or a current-head `needs-human: no` verdict does with no later
-`needs-human` unlabel (the gate rejects a verdict superseded by an
-unlabel it cannot attribute to an allowlisted human; label absence alone
-means escalation is still pending, not clear). The driver has no merge
-authority under any circumstances — a green, gate-approved PR is merged
-from the main session only, and only on explicit human instruction. Only
-skip the launch if the user asked to work the loop in this session.
+- repo code reviewer: `/newsletter-service-code-reviewer`
+- repo learnings reviewer: `/newsletter-service-learnings-reviewer`
+- readiness action: `/newsletter-service-pr-readiness origin/main`
+- preflight action: `/newsletter-service-preflight origin/main --report-only`
+- post-PR extension: `/newsletter-service-agentic-pr`
 
 ## Conventions
 

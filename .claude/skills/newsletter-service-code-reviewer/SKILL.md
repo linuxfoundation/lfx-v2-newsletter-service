@@ -1,6 +1,6 @@
 ---
 name: newsletter-service-code-reviewer
-description: Repo-owned code-review brain for local pre-PR review on lfx-v2-newsletter-service. Audits the reviewed change against this repo's written rule surface — CLAUDE.md, the repo-local skills, and the service-owned contract docs — and returns an ordinary Markdown review in which every finding quotes a repo rule verbatim. Loaded directly by the `lfx-local-review` launcher through the `local-code-review` discovery alias; not a skill a developer invokes by hand.
+description: Repo-owned code reviewer skill `/newsletter-service-code-reviewer` for lfx-v2-newsletter-service, loaded through the `/lfx-skills:lfx-local-review` lifecycle. Audits the reviewed change against this repo's written rule surface — CLAUDE.md, the repo-local skills, and the service-owned contract docs — and returns an ordinary Markdown review in which every finding quotes a repo rule verbatim. Not a skill a developer invokes by hand.
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
