@@ -1,6 +1,6 @@
 ---
 name: newsletter-service-learnings-reviewer
-description: Repo-owned learnings review brain for local pre-PR review on lfx-v2-newsletter-service. Matches the reviewed change against the empirical pattern knowledge base in docs/reviews/knowledge-base/ — patterns extracted from real past PR review comments on this repo — and returns an ordinary Markdown review in which every finding quotes a KB pattern entry. Loaded directly by the `lfx-local-review` launcher through the `local-learnings-review` discovery alias; not a skill a developer invokes by hand.
+description: Repo-owned learnings reviewer skill `/newsletter-service-learnings-reviewer` for lfx-v2-newsletter-service, loaded through the `/lfx-skills:lfx-local-review` lifecycle. Matches the reviewed change against the empirical pattern knowledge base in docs/reviews/knowledge-base/ — patterns extracted from real past PR review comments on this repo — and returns an ordinary Markdown review in which every finding quotes a KB pattern entry. Not a skill a developer invokes by hand.
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
