@@ -30,7 +30,7 @@ Two supported paths for running the service locally:
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.26.8+
 - A running PostgreSQL 16+ instance (Path A) **or** OrbStack/kind with `kubectl`,
   `helm` 3.8+, and [`ko`](https://ko.build) (Path B)
 - A reachable `lfx-v2-query-service` (or a stubbed `COMMITTEE_SERVICE_URL` —
@@ -188,7 +188,7 @@ psql postgres://localhost/postgres -c 'DROP DATABASE IF EXISTS newsletters;'
 
 ## Key Technologies
 
-- **Language**: Go 1.25+
+- **Language**: Go 1.26.8+
 - **HTTP**: stdlib `net/http` with Go 1.22+ mux pattern
 - **Database**: PostgreSQL via [pgx](https://github.com/jackc/pgx) + [bun](https://bun.uptrace.dev),
   provisioned by [CloudNativePG](https://cloudnative-pg.io) in cluster
