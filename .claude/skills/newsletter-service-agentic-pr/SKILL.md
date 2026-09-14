@@ -561,10 +561,12 @@ head, the newest PR-bound stamp, the `needs-human` label, the gate's
 approval **for the current head** (approvals are commit-bound: the gate only
 honors one whose `commit_id` is the head, and a previous head's approval can
 stay visible until the dismissal run completes, so the fingerprint filters
-the same way), the current head's escalation verdict, and the
-unanswered-thread count across ALL pages (`totalCount < 2`, matching the
-gate's tidiness check — resolution state is cosmetic and deliberately not
-fingerprinted) — and emits an event on any change, plus `stall` events when
+the same way), the current head's escalation verdict, the unanswered-thread
+count across ALL pages (`totalCount < 2`, matching the gate's tidiness
+check), and the set of unresolved thread ids across ALL pages (the work list
+requires every unresolved thread, so an already-answered thread that is
+reopened or newly opened must wake you even though the gate itself does not
+read resolution state) — and emits an event on any change, plus `stall` events when
 the current round produces no stamp newer than its baseline or `pending`
 outlives its deadline, so it stays a wake source after the clean stamp goes
 quiet (including when the authoritative `needs-human: no` verdict lands
@@ -597,7 +599,7 @@ while true; do
     verdicts=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq ".[] | select(.user.login==\"lfx-reviewer\" and (.body | contains(\"agentic:needs-human\")) and (.body | contains(\"head: $head\"))) | .body" 2>/dev/null) || ok=0
   fi
   if [ "$ok" -eq 1 ]; then
-    pages=$(gh api graphql --paginate -f query='query($o:String!,$n:String!,$p:Int!,$endCursor:String){repository(owner:$o,name:$n){pullRequest(number:$p){reviewThreads(first:100,after:$endCursor){nodes{comments(first:1){totalCount}} pageInfo{hasNextPage endCursor}}}}}' -f o="${REPO%/*}" -f n="${REPO#*/}" -F p="$PR" --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.comments.totalCount < 2)] | length' 2>/dev/null) || ok=0
+    threads=$(gh api graphql --paginate -f query='query($o:String!,$n:String!,$p:Int!,$endCursor:String){repository(owner:$o,name:$n){pullRequest(number:$p){reviewThreads(first:100,after:$endCursor){nodes{id isResolved comments(first:1){totalCount}} pageInfo{hasNextPage endCursor}}}}}' -f o="${REPO%/*}" -f n="${REPO#*/}" -F p="$PR" --jq '.data.repository.pullRequest.reviewThreads.nodes[] | [.id, (.isResolved|tostring), (.comments.totalCount|tostring)] | @tsv' 2>/dev/null) || ok=0
   fi
   if [ "$ok" -ne 1 ]; then
     fails=$((fails+1)); [ "$fails" -ge 5 ] && { echo "poll-error: state queries failing repeatedly"; fails=0; }
@@ -611,7 +613,12 @@ while true; do
   sid=$(printf '%s' "$stamp" | cut -f1); sid=${sid:-0}
   approved=$([ -n "$approvals" ] && echo true || echo false)
   verdict=$(printf '%s\n' "$verdicts" | grep -o "needs-human: [a-z]*" | tail -1)
-  unanswered=$(printf '%s\n' "$pages" | awk '{s+=$1} END{print s+0}')
+  # Both thread views come from the same paginated listing: the unanswered
+  # COUNT mirrors the gate's tidiness check; the unresolved ID SET mirrors the
+  # work list, so a thread reopened or newly opened after being answered still
+  # changes the fingerprint. IDs are sorted and hashed so the line stays stable.
+  unanswered=$(printf '%s\n' "$threads" | awk -F'\t' 'NF==3 && $3+0 < 2 {n++} END{print n+0}')
+  unresolved=$(printf '%s\n' "$threads" | awk -F'\t' 'NF==3 && $2=="false" {print $1}' | sort | shasum -a 256 | cut -c1-12)
   # Round epoch + deadline heartbeat: a round is live only once a stamp NEWER
   # than the baseline exists. On a reused SHA the newest visible stamp can be
   # a past occurrence's terminal state — never this round's verdict — so an
@@ -628,7 +635,7 @@ while true; do
       *pending*) waits=$((waits+1)); [ "$waits" -eq 20 ] && echo "stall: pending outlived ~40m — run the bounded-wait diagnostics";;
     esac
   fi
-  fp="head=$head stamp=${stamp:-none} label=$label approved=$approved verdict=${verdict:-none} unanswered=$unanswered"
+  fp="head=$head stamp=${stamp:-none} label=$label approved=$approved verdict=${verdict:-none} unanswered=$unanswered unresolved=$unresolved"
   [ "$fp" != "$prev" ] && { echo "$fp"; prev="$fp"; }
   sleep 120
 done
