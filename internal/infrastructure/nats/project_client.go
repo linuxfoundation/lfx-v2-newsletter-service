@@ -82,11 +82,18 @@ func (p *ProjectClient) get(ctx context.Context, subject, projectUID string) (st
 //   - Plain non-empty string not starting with '{'      → success
 //
 // Structural guarantee: success values returned by this function never start
-// with '{'. Combined with the '{' prefix guard in projectServiceErrorCode, this
-// makes success and failure payloads disjoint at the byte level — no reply
-// starting with '{' is ever returned as a success string. A '{'-prefixed payload
-// that does not carry a recognised error code is treated as Unexpected rather
-// than silently forwarded as a project attribute value.
+// with '{'. This is provable by two complementary constraints in the peer
+// contract (lfx-v2-project-service PR #121):
+//
+//  1. Design-layer: ProjectNameAttribute carries Pattern("^[^{]") so names
+//     starting with '{' are rejected at the API boundary before storage.
+//  2. Handler-layer: handleProjectGetAttribute rejects any stored value whose
+//     first byte is '{' at runtime, providing defence-in-depth.
+//
+// Combined with the '{' prefix guard in projectServiceErrorCode, these make
+// success and failure payloads disjoint at the byte level — no reply starting
+// with '{' is ever returned as a success string. A '{'-prefixed payload that
+// does not carry a recognised error code is treated as Unexpected.
 func parseProjectReply(subject, projectUID string, reply []byte) (string, error) {
 	switch code := projectServiceErrorCode(reply); code {
 	case "not_found":
