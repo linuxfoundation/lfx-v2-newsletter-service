@@ -75,23 +75,38 @@ func (p *ProjectClient) get(ctx context.Context, subject, projectUID string) (st
 // Classification:
 //   - JSON error envelope ({"error":"not_found",...})   → pkgerrors.NotFound
 //   - JSON error envelope ({"error":"<other code>",...}) → pkgerrors.Unexpected
-//   - Empty body                                         → pkgerrors.Unexpected
+//   - Any payload starting with '{'                     → pkgerrors.Unexpected
+//     (see structural guarantee below)
+//   - Empty body                                        → pkgerrors.Unexpected
 //     (transport/dispatch failure; confirmed absences arrive as {"error":"not_found"})
-//   - Plain non-empty string                             → success
+//   - Plain non-empty string not starting with '{'      → success
+//
+// Structural guarantee: success values returned by this function never start
+// with '{'. Combined with the '{' prefix guard in projectServiceErrorCode, this
+// makes success and failure payloads disjoint at the byte level — no reply
+// starting with '{' is ever returned as a success string. A '{'-prefixed payload
+// that does not carry a recognised error code is treated as Unexpected rather
+// than silently forwarded as a project attribute value.
 func parseProjectReply(subject, projectUID string, reply []byte) (string, error) {
 	switch code := projectServiceErrorCode(reply); code {
 	case "not_found":
 		return "", pkgerrors.NewNotFound(fmt.Sprintf("project %s not found", projectUID))
 	case "":
-		// No error key — either a plain success payload or an empty body.
-		value := string(reply)
-		if value == "" {
+		// No recognised error key — either a plain success payload, an empty body,
+		// or a JSON object with no 'error' key (e.g. a future response shape).
+		if len(reply) == 0 {
 			// An empty body is a transport/dispatch failure — project-service always
-			// returns {"error":"not_found"} for missing projects under the coordinated
-			// RPC contract. An empty body cannot be treated as a confirmed absence.
+			// returns {"error":"not_found"} for missing projects.
 			return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service returned empty reply for %s on %s", projectUID, subject))
 		}
-		return value, nil
+		if reply[0] == '{' {
+			// A '{'-prefixed payload that was not classified as an error envelope is
+			// ambiguous: it could be a future error shape or a project name that
+			// happens to be a JSON object. We reject it as Unexpected to uphold the
+			// structural guarantee that success values never start with '{'.
+			return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service returned ambiguous JSON-shaped reply for %s on %s", projectUID, subject))
+		}
+		return string(reply), nil
 	default:
 		return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service error for %s (code=%s)", projectUID, code))
 	}
