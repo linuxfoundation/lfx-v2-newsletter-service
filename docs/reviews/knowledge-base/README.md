@@ -3,7 +3,7 @@
 
 # Newsletter Service Review Knowledge Base
 
-This is a **GROWING KB** — an empirical, repo-owned record of the patterns that human reviewers and review bots have actually flagged on `lfx-v2-newsletter-service` PRs, distilled into mechanically-detectable rules. It is read by the repo-owned `newsletter-service-learnings-reviewer` brain (`.claude/skills/newsletter-service-learnings-reviewer/SKILL.md`, reached by the `local-learnings-review` discovery alias), which matches a patch against these patterns and emits only findings that quote a pattern entry.
+This is a **GROWING KB** — an empirical, repo-owned record of the patterns that human reviewers and review bots have actually flagged on `lfx-v2-newsletter-service` PRs, distilled into mechanically-detectable rules. It is read by the repo-owned `/newsletter-service-learnings-reviewer` brain (`.claude/skills/newsletter-service-learnings-reviewer/SKILL.md`, loaded through the `/lfx-skills:lfx-local-review` lifecycle), which matches a patch against these patterns and emits only findings that quote a pattern entry.
 
 This KB is the *empirical* surface. It deliberately does NOT duplicate:
 
