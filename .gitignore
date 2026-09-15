@@ -73,3 +73,7 @@ debug.test
 
 # OAS local agent instances and worktrees
 /local-agents/
+
+# IDE/agent tooling
+.cursor/
+.claude/

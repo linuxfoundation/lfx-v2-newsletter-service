@@ -207,9 +207,6 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 // HTTPHandler returns the http.Handler wired by InitInfrastructure.
 func HTTPHandler() http.Handler { return httpHandler }
 
-// SQLDB returns the runtime *sql.DB for use by health probes during startup.
-func SQLDB() *sql.DB { return sqlDB }
-
 // stuckSendRecoverer is the narrow repository slice the recovery sweep needs.
 type stuckSendRecoverer interface {
 	RecoverStuckSending(ctx context.Context, olderThan time.Duration) (int64, error)
