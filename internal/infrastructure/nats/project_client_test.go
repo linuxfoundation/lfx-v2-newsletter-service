@@ -42,11 +42,12 @@ func TestParseProjectReply(t *testing.T) {
 	const uid = "00000000-0000-0000-0000-000000000001"
 
 	tests := []struct {
-		name         string
-		reply        []byte
-		wantValue    string
-		wantNotFound bool
-		wantErr      bool
+		name           string
+		reply          []byte
+		wantValue      string
+		wantNotFound   bool
+		wantUnexpected bool // non-not-found error cases must produce pkgerrors.Unexpected
+		wantErr        bool
 	}{
 		{
 			name:      "success plain string",
@@ -60,24 +61,28 @@ func TestParseProjectReply(t *testing.T) {
 			wantErr:      true,
 		},
 		{
-			name:    "internal envelope → pkgerrors.Unexpected (not NotFound)",
-			reply:   []byte(`{"error":"internal","message":"service error"}`),
-			wantErr: true,
+			name:           "internal envelope → pkgerrors.Unexpected",
+			reply:          []byte(`{"error":"internal","message":"service error"}`),
+			wantUnexpected: true,
+			wantErr:        true,
 		},
 		{
-			name:    "unknown future code → pkgerrors.Unexpected (not NotFound)",
-			reply:   []byte(`{"error":"unknown_code"}`),
-			wantErr: true,
+			name:           "unknown future code → pkgerrors.Unexpected",
+			reply:          []byte(`{"error":"unknown_code"}`),
+			wantUnexpected: true,
+			wantErr:        true,
 		},
 		{
-			name:    "empty body → pkgerrors.Unexpected (transport failure, not NotFound)",
-			reply:   []byte(""),
-			wantErr: true,
+			name:           "empty body → pkgerrors.Unexpected (transport failure)",
+			reply:          []byte(""),
+			wantUnexpected: true,
+			wantErr:        true,
 		},
 		{
-			name:    "nil body → pkgerrors.Unexpected (transport failure, not NotFound)",
-			reply:   nil,
-			wantErr: true,
+			name:           "nil body → pkgerrors.Unexpected (transport failure)",
+			reply:          nil,
+			wantUnexpected: true,
+			wantErr:        true,
 		},
 	}
 
@@ -96,6 +101,12 @@ func TestParseProjectReply(t *testing.T) {
 				}
 				if !tt.wantNotFound && isNotFound {
 					t.Errorf("parseProjectReply() error = pkgerrors.NotFound, must NOT be NotFound for this case")
+				}
+				if tt.wantUnexpected {
+					var ux pkgerrors.Unexpected
+					if !errors.As(err, &ux) {
+						t.Errorf("parseProjectReply() error = %T (%v), want pkgerrors.Unexpected", err, err)
+					}
 				}
 				return
 			}
