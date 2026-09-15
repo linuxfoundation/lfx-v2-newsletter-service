@@ -42,11 +42,11 @@ func TestParseProjectReply(t *testing.T) {
 	const uid = "00000000-0000-0000-0000-000000000001"
 
 	tests := []struct {
-		name        string
-		reply       []byte
-		wantValue   string
+		name         string
+		reply        []byte
+		wantValue    string
 		wantNotFound bool
-		wantErr     bool
+		wantErr      bool
 	}{
 		{
 			name:      "success plain string",
