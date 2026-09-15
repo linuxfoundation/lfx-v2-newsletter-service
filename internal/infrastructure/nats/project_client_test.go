@@ -13,23 +13,36 @@ import (
 // TestProjectServiceErrorCode pins the envelope parser used by parseProjectReply.
 func TestProjectServiceErrorCode(t *testing.T) {
 	tests := []struct {
-		name    string
-		data    []byte
-		wantErr string
+		name      string
+		data      []byte
+		wantCode  string
+		wantErr   bool
 	}{
-		{name: "not_found code", data: []byte(`{"error":"not_found"}`), wantErr: "not_found"},
-		{name: "internal code", data: []byte(`{"error":"internal"}`), wantErr: "internal"},
-		{name: "unknown code", data: []byte(`{"error":"foo"}`), wantErr: "foo"},
-		{name: "success plain string", data: []byte("my-slug"), wantErr: ""},
-		{name: "success json without error key", data: []byte(`{"slug":"k8s"}`), wantErr: ""},
-		{name: "empty body", data: []byte{}, wantErr: ""},
-		{name: "nil body", data: nil, wantErr: ""},
+		{name: "not_found code", data: []byte(`{"error":"not_found"}`), wantCode: "not_found"},
+		{name: "internal code", data: []byte(`{"error":"internal"}`), wantCode: "internal"},
+		{name: "unknown code", data: []byte(`{"error":"foo"}`), wantCode: "foo"},
+		{name: "success plain string", data: []byte("my-slug"), wantCode: ""},
+		// JSON without "error" key: code is "", no error (caller classifies).
+		{name: "success json without error key — caller must classify", data: []byte(`{"slug":"k8s"}`), wantCode: ""},
+		{name: "empty body", data: []byte{}, wantCode: ""},
+		{name: "nil body", data: nil, wantCode: ""},
+		// Malformed JSON starting with '{': non-nil error is returned.
+		{name: "malformed JSON — unmarshal error propagated", data: []byte(`{not-json`), wantCode: "", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := projectServiceErrorCode(tt.data)
-			if got != tt.wantErr {
-				t.Errorf("projectServiceErrorCode(%q) = %q, want %q", tt.data, got, tt.wantErr)
+			got, err := projectServiceErrorCode(tt.data)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("projectServiceErrorCode(%q) error = nil, want non-nil", tt.data)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("projectServiceErrorCode(%q) unexpected error: %v", tt.data, err)
+			}
+			if got != tt.wantCode {
+				t.Errorf("projectServiceErrorCode(%q) = %q, want %q", tt.data, got, tt.wantCode)
 			}
 		})
 	}
@@ -53,6 +66,13 @@ func TestParseProjectReply(t *testing.T) {
 			name:      "success plain string",
 			reply:     []byte("Test Project"),
 			wantValue: "Test Project",
+		},
+		{
+			// Embedded braces are valid in display names; only the prefix matters.
+			// A mistaken bytes.Contains(reply, '{') guard would fail this case.
+			name:      "success — brace in middle of name is accepted",
+			reply:     []byte("Foo {Bar} Working Group"),
+			wantValue: "Foo {Bar} Working Group",
 		},
 		{
 			// Structural disjointness: a '{'-prefixed payload that has no recognised
@@ -90,6 +110,14 @@ func TestParseProjectReply(t *testing.T) {
 		{
 			name:           "nil body → pkgerrors.Unexpected (transport failure)",
 			reply:          nil,
+			wantUnexpected: true,
+			wantErr:        true,
+		},
+		{
+			// Malformed JSON starting with '{': projectServiceErrorCode returns an
+			// error that parseProjectReply propagates as Unexpected.
+			name:           "malformed JSON starting with '{' → pkgerrors.Unexpected",
+			reply:          []byte(`{not valid json`),
 			wantUnexpected: true,
 			wantErr:        true,
 		},

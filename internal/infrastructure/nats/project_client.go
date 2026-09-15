@@ -12,27 +12,23 @@ import (
 )
 
 // projectServiceErrorCode returns the error code from a project-service error
-// envelope ({"error":"not_found",...} or {"error":"internal",...}), or "" if
-// data is a success payload.
-//
-// Structural guarantee: only byte slices that start with '{' are tested as
-// JSON objects. Project-service success payloads for all string-valued RPC
-// subjects are raw UTF-8 text (display names, URL-safe slugs, HTTPS logo URLs,
-// UUID strings); none of those formats begins with '{'. An error envelope is
-// always a JSON object and therefore always starts with '{'. The '{' prefix
-// check makes success and failure structurally disjoint at the byte level for
-// every subject this client calls.
-func projectServiceErrorCode(data []byte) string {
+// envelope ({"error":"not_found",...} or {"error":"internal",...}), or "" when
+// no error code could be extracted (caller must classify the reply as success
+// or a different failure). "" is returned for: empty body, non-JSON content,
+// JSON that does not contain an "error" key, or an "error" key with an empty
+// value. A non-nil error is returned only when data starts with '{' but is not
+// valid JSON — the caller should surface it as an Unexpected error.
+func projectServiceErrorCode(data []byte) (string, error) {
 	if len(data) == 0 || data[0] != '{' {
-		return ""
+		return "", nil
 	}
 	var env struct {
 		Error string `json:"error"`
 	}
-	if json.Unmarshal(data, &env) != nil {
-		return ""
+	if jsonErr := json.Unmarshal(data, &env); jsonErr != nil {
+		return "", pkgerrors.NewUnexpected("malformed project-service reply envelope", jsonErr)
 	}
-	return env.Error
+	return env.Error, nil
 }
 
 // ProjectClient implements port.ProjectMetadataClient over the
@@ -85,19 +81,25 @@ func (p *ProjectClient) get(ctx context.Context, subject, projectUID string) (st
 // with '{'. This is provable by two complementary constraints in the peer
 // contract (lfx-v2-project-service PR #121):
 //
-//  1. Design-layer: ProjectNameAttribute carries Pattern("^[^{]") so names
-//     starting with '{' are rejected at the API boundary before storage.
-//  2. Handler-layer: handleProjectGetAttribute rejects any stored value whose
-//     first byte is '{' at runtime, providing defence-in-depth.
+//  1. Handler-layer: handleProjectGetAttribute rejects any stored value whose
+//     TrimSpace'd form starts with '{' at runtime, returning RPCErrorInternal
+//     rather than forwarding the ambiguous payload.
+//  2. Write-layer: validateProjectName rejects new names that start with '{'
+//     (after TrimSpace) in CreateProject / UpdateProjectBase, preventing new
+//     ambiguous values from being stored.
 //
 // Combined with the '{' prefix guard in projectServiceErrorCode, these make
 // success and failure payloads disjoint at the byte level — no reply starting
 // with '{' is ever returned as a success string. A '{'-prefixed payload that
 // does not carry a recognised error code is treated as Unexpected.
 func parseProjectReply(subject, projectUID string, reply []byte) (string, error) {
-	switch code := projectServiceErrorCode(reply); code {
+	code, codeErr := projectServiceErrorCode(reply)
+	if codeErr != nil {
+		return "", codeErr
+	}
+	switch code {
 	case "not_found":
-		return "", pkgerrors.NewNotFound(fmt.Sprintf("project %s not found", projectUID))
+		return "", pkgerrors.NewNotFound(fmt.Sprintf("project %s not found on %s", projectUID, subject))
 	case "":
 		// No recognised error key — either a plain success payload, an empty body,
 		// or a JSON object with no 'error' key (e.g. a future response shape).
@@ -115,6 +117,6 @@ func parseProjectReply(subject, projectUID string, reply []byte) (string, error)
 		}
 		return string(reply), nil
 	default:
-		return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service error for %s (code=%s)", projectUID, code))
+		return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service error for %s on %s (code=%s)", projectUID, subject, code))
 	}
 }

@@ -14,12 +14,17 @@ const (
 
 	// ProjectGetNameSubject resolves a project's display name.
 	// Request payload: project UID as raw bytes.
-	// Response: project name as raw bytes.
+	// Response (success): project name as raw bytes (never starts with '{').
+	// Response (error): JSON envelope {"error":"not_found"|"internal"[,"message":"..."]}.
+	// Empty reply: transport/dispatch failure (project-service never sends an
+	// empty body for a confirmed absence; it always sends {"error":"not_found"}).
 	ProjectGetNameSubject = "lfx.projects-api.get_name"
 
 	// ProjectGetSlugSubject resolves a project's slug.
 	// Request payload: project UID as raw bytes.
-	// Response: project slug as raw bytes.
+	// Response (success): project slug as raw bytes (never starts with '{').
+	// Response (error): JSON envelope {"error":"not_found"|"internal"[,"message":"..."]}.
+	// Empty reply: transport/dispatch failure (see ProjectGetNameSubject).
 	ProjectGetSlugSubject = "lfx.projects-api.get_slug"
 
 	// Email-service NATS subjects. Imported as constants so the call sites
