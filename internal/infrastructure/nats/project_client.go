@@ -56,20 +56,32 @@ func (p *ProjectClient) get(ctx context.Context, subject, projectUID string) (st
 	if err != nil {
 		return "", err
 	}
-	// Project-service returns {"error":"<code>",...} on errors; any other response
-	// (plain string) is a success value.
-	if code := projectServiceErrorCode(reply); code != "" {
-		if code == "not_found" {
-			return "", pkgerrors.NewNotFound(fmt.Sprintf("project %s not found", projectUID))
+	return parseProjectReply(subject, projectUID, reply)
+}
+
+// parseProjectReply interprets a raw project-service RPC reply body.
+//
+// Classification:
+//   - JSON error envelope ({"error":"not_found",...})   → pkgerrors.NotFound
+//   - JSON error envelope ({"error":"<other code>",...}) → pkgerrors.Unexpected
+//   - Empty body                                         → pkgerrors.Unexpected
+//     (transport/dispatch failure; confirmed absences arrive as {"error":"not_found"})
+//   - Plain non-empty string                             → success
+func parseProjectReply(subject, projectUID string, reply []byte) (string, error) {
+	switch code := projectServiceErrorCode(reply); code {
+	case "not_found":
+		return "", pkgerrors.NewNotFound(fmt.Sprintf("project %s not found", projectUID))
+	case "":
+		// No error key — either a plain success payload or an empty body.
+		value := string(reply)
+		if value == "" {
+			// An empty body is a transport/dispatch failure — project-service always
+			// returns {"error":"not_found"} for missing projects under the coordinated
+			// RPC contract. An empty body cannot be treated as a confirmed absence.
+			return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service returned empty reply for %s on %s", projectUID, subject))
 		}
+		return value, nil
+	default:
 		return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service error for %s (code=%s)", projectUID, code))
 	}
-	// An empty body is a transport/dispatch failure — project-service always
-	// returns {"error":"not_found"} for missing projects under the coordinated
-	// RPC contract. An empty body cannot be treated as a confirmed absence.
-	value := string(reply)
-	if value == "" {
-		return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service returned empty reply for %s on %s", projectUID, subject))
-	}
-	return value, nil
 }

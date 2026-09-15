@@ -10,8 +10,7 @@ import (
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
-// TestProjectServiceErrorCode pins the envelope parser used by
-// ProjectClient.get.
+// TestProjectServiceErrorCode pins the envelope parser used by parseProjectReply.
 func TestProjectServiceErrorCode(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -36,99 +35,77 @@ func TestProjectServiceErrorCode(t *testing.T) {
 	}
 }
 
-// TestProjectClientGet_NotFoundEnvelope pins that {"error":"not_found"} maps
-// to pkgerrors.NotFound — the caller can distinguish a permanent absence from a
-// transient failure.
-func TestProjectClientGet_NotFoundEnvelope(t *testing.T) {
-	data := []byte(`{"error":"not_found","message":"project not found"}`)
-	code := projectServiceErrorCode(data)
+// TestParseProjectReply exercises the production parseProjectReply helper that
+// get() delegates to, covering all classification branches.
+func TestParseProjectReply(t *testing.T) {
+	const subject = "lfx.projects-api.get_name"
+	const uid = "00000000-0000-0000-0000-000000000001"
 
-	if code != "not_found" {
-		t.Fatalf("projectServiceErrorCode = %q, want %q", code, "not_found")
+	tests := []struct {
+		name        string
+		reply       []byte
+		wantValue   string
+		wantNotFound bool
+		wantErr     bool
+	}{
+		{
+			name:      "success plain string",
+			reply:     []byte("Test Project"),
+			wantValue: "Test Project",
+		},
+		{
+			name:         "not_found envelope → pkgerrors.NotFound",
+			reply:        []byte(`{"error":"not_found","message":"project not found"}`),
+			wantNotFound: true,
+			wantErr:      true,
+		},
+		{
+			name:    "internal envelope → pkgerrors.Unexpected (not NotFound)",
+			reply:   []byte(`{"error":"internal","message":"service error"}`),
+			wantErr: true,
+		},
+		{
+			name:    "unknown future code → pkgerrors.Unexpected (not NotFound)",
+			reply:   []byte(`{"error":"unknown_code"}`),
+			wantErr: true,
+		},
+		{
+			name:    "empty body → pkgerrors.Unexpected (transport failure, not NotFound)",
+			reply:   []byte(""),
+			wantErr: true,
+		},
+		{
+			name:    "nil body → pkgerrors.Unexpected (transport failure, not NotFound)",
+			reply:   nil,
+			wantErr: true,
+		},
 	}
 
-	// Reproduce the exact branch logic from get().
-	var gotErr error
-	if code == "not_found" {
-		gotErr = pkgerrors.NewNotFound("project uid-1 not found")
-	} else if code != "" {
-		gotErr = pkgerrors.NewUnexpected("project-service error (code=" + code + ")")
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseProjectReply(subject, uid, tt.reply)
 
-	if gotErr == nil {
-		t.Fatal("not_found must return an error")
-	}
-	var nf pkgerrors.NotFound
-	if !errors.As(gotErr, &nf) {
-		t.Errorf("not_found envelope must return pkgerrors.NotFound, got %T: %v", gotErr, gotErr)
-	}
-}
-
-// TestProjectClientGet_InternalEnvelopeIsNotNotFound pins that {"error":"internal"}
-// and unknown codes map to pkgerrors.Unexpected — infrastructure failures must
-// not be misread as confirmed absences.
-func TestProjectClientGet_InternalEnvelopeIsNotNotFound(t *testing.T) {
-	for _, code := range []string{"internal", "unknown_future_code"} {
-		code := code
-		t.Run(code, func(t *testing.T) {
-			data := []byte(`{"error":"` + code + `","message":"service error"}`)
-			got := projectServiceErrorCode(data)
-
-			if got != code {
-				t.Fatalf("projectServiceErrorCode = %q, want %q", got, code)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parseProjectReply() = %q, want an error", got)
+				}
+				var nf pkgerrors.NotFound
+				isNotFound := errors.As(err, &nf)
+				if tt.wantNotFound && !isNotFound {
+					t.Errorf("parseProjectReply() error = %T (%v), want pkgerrors.NotFound", err, err)
+				}
+				if !tt.wantNotFound && isNotFound {
+					t.Errorf("parseProjectReply() error = pkgerrors.NotFound, must NOT be NotFound for this case")
+				}
+				return
 			}
 
-			// Reproduce the exact branch logic from get().
-			var gotErr error
-			if got == "not_found" {
-				gotErr = pkgerrors.NewNotFound("project not found")
-			} else if got != "" {
-				gotErr = pkgerrors.NewUnexpected("project-service error (code=" + got + ")")
+			if err != nil {
+				t.Fatalf("parseProjectReply() unexpected error: %v", err)
 			}
-
-			if gotErr == nil {
-				t.Fatal("error code must return an error")
-			}
-			var nf pkgerrors.NotFound
-			if errors.As(gotErr, &nf) {
-				t.Errorf("%q code must not be pkgerrors.NotFound — got %T: %v", code, gotErr, gotErr)
+			if got != tt.wantValue {
+				t.Errorf("parseProjectReply() = %q, want %q", got, tt.wantValue)
 			}
 		})
-	}
-}
-
-// TestProjectClientGet_EmptyBodyIsTransportFailure pins that an empty reply is
-// an unresolvable transport/dispatch failure — not a confirmed absence.
-// project-service now returns {"error":"not_found"} for missing projects under
-// the coordinated RPC contract; empty bodies can no longer mean "not found".
-func TestProjectClientGet_EmptyBodyIsTransportFailure(t *testing.T) {
-	data := []byte("")
-	code := projectServiceErrorCode(data)
-
-	// Empty body does not parse as an error envelope.
-	if code != "" {
-		t.Fatalf("projectServiceErrorCode on empty body = %q, want %q", code, "")
-	}
-
-	// Reproduce the exact branch logic from get().
-	value := string(data)
-	var gotErr error
-	var gotValue string
-	if code == "not_found" {
-		// should not reach
-	} else if code != "" {
-		gotErr = pkgerrors.NewUnexpected("project-service error (code=" + code + ")")
-	} else if value == "" {
-		gotErr = pkgerrors.NewUnexpected("project-service returned empty reply (transport failure)")
-	} else {
-		gotValue = value
-	}
-
-	if gotErr == nil {
-		t.Fatalf("empty body must return an error, got value=%q", gotValue)
-	}
-	var nf pkgerrors.NotFound
-	if errors.As(gotErr, &nf) {
-		t.Errorf("empty body must not be pkgerrors.NotFound — got %T: %v", gotErr, gotErr)
 	}
 }
