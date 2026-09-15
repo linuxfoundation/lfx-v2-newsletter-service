@@ -55,6 +55,15 @@ func TestParseProjectReply(t *testing.T) {
 			wantValue: "Test Project",
 		},
 		{
+			// Structural disjointness: a JSON object without an "error" key is NOT
+			// treated as an error envelope — it is returned as a success string.
+			// The '{' prefix guard is necessary but not sufficient for error detection;
+			// both the '{' prefix AND a non-empty "error" key are required.
+			name:      "JSON object without error key → success value, not an error",
+			reply:     []byte(`{"name":"Kubernetes"}`),
+			wantValue: `{"name":"Kubernetes"}`,
+		},
+		{
 			name:         "not_found envelope → pkgerrors.NotFound",
 			reply:        []byte(`{"error":"not_found","message":"project not found"}`),
 			wantNotFound: true,

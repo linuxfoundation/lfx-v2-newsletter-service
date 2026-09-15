@@ -13,8 +13,19 @@ import (
 
 // projectServiceErrorCode returns the error code from a project-service error
 // envelope ({"error":"not_found",...} or {"error":"internal",...}), or "" if
-// data is a normal success payload.
+// data is a success payload.
+//
+// Structural guarantee: only byte slices that start with '{' are tested as
+// JSON objects. Project-service success payloads for all string-valued RPC
+// subjects are raw UTF-8 text (display names, URL-safe slugs, HTTPS logo URLs,
+// UUID strings); none of those formats begins with '{'. An error envelope is
+// always a JSON object and therefore always starts with '{'. The '{' prefix
+// check makes success and failure structurally disjoint at the byte level for
+// every subject this client calls.
 func projectServiceErrorCode(data []byte) string {
+	if len(data) == 0 || data[0] != '{' {
+		return ""
+	}
 	var env struct {
 		Error string `json:"error"`
 	}
