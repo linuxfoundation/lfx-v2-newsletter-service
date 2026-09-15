@@ -382,4 +382,3 @@ func normalizeCommitteeUIDs(in []string) []string {
 	}
 	return out
 }
-
