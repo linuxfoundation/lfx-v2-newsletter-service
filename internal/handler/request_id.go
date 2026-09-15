@@ -21,15 +21,6 @@ type requestIDContextKey struct{}
 
 var requestIDContextKeyValue = requestIDContextKey{}
 
-// RequestIDFromContext returns the request ID attached by withRequestID, or
-// the empty string if none is present.
-func RequestIDFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(requestIDContextKeyValue).(string); ok {
-		return v
-	}
-	return ""
-}
-
 // withRequestID honors an inbound X-Request-ID header or generates a new
 // UUID, echoes it on the response, stores it on the request context, and
 // threads it into every slog.*Context call for the lifetime of the request.
