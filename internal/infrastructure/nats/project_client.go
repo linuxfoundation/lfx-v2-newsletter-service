@@ -57,16 +57,19 @@ func (p *ProjectClient) get(ctx context.Context, subject, projectUID string) (st
 		return "", err
 	}
 	// Project-service returns {"error":"<code>",...} on errors; any other response
-	// (plain string or empty body) is a success value.
+	// (plain string) is a success value.
 	if code := projectServiceErrorCode(reply); code != "" {
 		if code == "not_found" {
 			return "", pkgerrors.NewNotFound(fmt.Sprintf("project %s not found", projectUID))
 		}
 		return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service error for %s (code=%s)", projectUID, code))
 	}
+	// An empty body is a transport/dispatch failure — project-service always
+	// returns {"error":"not_found"} for missing projects under the coordinated
+	// RPC contract. An empty body cannot be treated as a confirmed absence.
 	value := string(reply)
 	if value == "" {
-		return "", pkgerrors.NewNotFound(fmt.Sprintf("project attribute %s not found for uid: %s", subject, projectUID))
+		return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service returned empty reply for %s on %s", projectUID, subject))
 	}
 	return value, nil
 }
