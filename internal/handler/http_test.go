@@ -10,6 +10,47 @@ import (
 	"testing"
 )
 
+// TestHandlerRoutes_Unsubscribe asserts the one-click unsubscribe route
+// auth-boundary from Routes(): GET /newsletters/unsubscribe must reach its
+// handler without a JWT token even when RequireUserAuth is on, and POST must
+// not be registered (the two-stage variant was reverted and must stay absent).
+func TestHandlerRoutes_Unsubscribe(t *testing.T) {
+	const unsub = "/newsletters/unsubscribe"
+
+	// RequireUserAuth on with no Unsubscribe service: the handler still runs
+	// (returning 500 because unsub is nil) rather than being rejected by
+	// withAuth (which would return 401). The status code difference is what
+	// proves the route is anonymous.
+	srv := New(Config{RequireUserAuth: true}).Routes()
+
+	t.Run("GET is anonymous", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, unsub+"?t=dummy", nil))
+		if rec.Code == http.StatusUnauthorized {
+			t.Error("GET /newsletters/unsubscribe returned 401: route must be anonymous (no withAuth)")
+		}
+	})
+
+	t.Run("POST is not registered", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, unsub, strings.NewReader("")))
+		if rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusNotFound {
+			t.Errorf("POST /newsletters/unsubscribe: status = %d, want 404 or 405 (route must not be registered)", rec.Code)
+		}
+	})
+
+	t.Run("normal route is protected", func(t *testing.T) {
+		// Contrast: an authenticated route without a bearer is still 401,
+		// proving the auth layer is actually on — the unsubscribe exemption
+		// above is not from a disabled auth layer.
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/projects/p/newsletters", strings.NewReader("{}")))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("authenticated route without bearer: status = %d, want 401", rec.Code)
+		}
+	})
+}
+
 // TestHandlerRoutes_SendGridWebhook covers the conditional, anonymous SendGrid
 // event-webhook route: it must be absent when the webhook handler is not
 // configured, and when configured it must reach that handler without JWT auth
