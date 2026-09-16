@@ -8,9 +8,6 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/mail"
@@ -190,23 +187,6 @@ func (s *NewsletterService) ListCommitteeNewsletters(ctx context.Context, in Lis
 	return s.repo.ListSentByCommittee(ctx, in.CommitteeUID, in.PageToken)
 }
 
-// Analytics returns aggregated engagement metrics for the given newsletter.
-// Returns ErrNotFound if the newsletter doesn't exist or belongs to a different
-// project than the one supplied.
-func (s *NewsletterService) Analytics(ctx context.Context, projectUID string, id uuid.UUID) (*model.Analytics, error) {
-	if err := validateProjectUID(projectUID); err != nil {
-		return nil, err
-	}
-	n, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if n.ProjectUID != projectUID {
-		return nil, domain.ErrNotFound
-	}
-	return s.repo.Analytics(ctx, id)
-}
-
 // RecordOpenWithHash records a single open event using an already-hashed
 // recipient token (e.g. the hash carried in a tracking-pixel URL).
 //
@@ -229,18 +209,6 @@ func (s *NewsletterService) RecordOpenWithHash(ctx context.Context, newsletterID
 		return nil
 	}
 	return s.repo.RecordOpen(ctx, newsletterID, hash)
-}
-
-// HashRecipient lowercases and SHA-256-hashes an email address. Exposed so
-// other layers (e.g. handler) can emit the same token-shape when constructing
-// tracking pixel URLs.
-func HashRecipient(email string) string {
-	clean := strings.ToLower(strings.TrimSpace(email))
-	if clean == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(clean))
-	return hex.EncodeToString(sum[:])
 }
 
 // UpdateDraft mutates an existing draft, gated by optimistic locking and
@@ -413,9 +381,4 @@ func normalizeCommitteeUIDs(in []string) []string {
 		out = append(out, trimmed)
 	}
 	return out
-}
-
-// IsValidationError reports whether err is a validation/domain ErrInvalidRequest.
-func IsValidationError(err error) bool {
-	return errors.Is(err, domain.ErrInvalidRequest)
 }
