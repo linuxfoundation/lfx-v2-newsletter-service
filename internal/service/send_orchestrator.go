@@ -920,7 +920,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		)
 		return nil
 	}
-	sendInput := port.SendEmailInput{
+	if _, dispatchErr := o.email.SendEmail(ctx, port.SendEmailInput{
 		To:              toEmail,
 		Subject:         in.Subject,
 		HTML:            htmlBody,
@@ -928,12 +928,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		From:            o.resolveFromAddress(ctx, in.ProjectUID),
 		FromDisplayName: fromDisplayName,
 		ReplyTo:         replyTo,
-	}
-	if o.unsub.Enabled() {
-		sendInput.ListUnsubscribeURL = chrome.UnsubscribeURL
-		sendInput.ListUnsubscribePost = true
-	}
-	if _, dispatchErr := o.email.SendEmail(ctx, sendInput); dispatchErr != nil {
+	}); dispatchErr != nil {
 		return fmt.Errorf("dispatch test-send: %w", dispatchErr)
 	}
 	slog.InfoContext(ctx, "test-send dispatched",
@@ -1100,7 +1095,6 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 			defer wg.Done()
 			defer func() { <-sem }()
 			recipientHTML, recipientText := env.HTML, env.Text
-			var listUnsubscribeURL string
 			if o.unsub.Enabled() {
 				url := o.unsub.BuildURL(projectUID, recipient.Email)
 				// Substitution runs over the full rendered body, including the
@@ -1110,7 +1104,6 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				// ever expose %%-delimited placeholders to authors.
 				recipientHTML = strings.ReplaceAll(env.HTML, UnsubscribeURLPlaceholder, url)
 				recipientText = strings.ReplaceAll(env.Text, UnsubscribeURLPlaceholder, url)
-				listUnsubscribeURL = url
 			}
 			// Honour the nil-dispatcher contract documented above. Production
 			// wiring always provides one, but tests and misconfigured local
@@ -1121,7 +1114,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				mu.Unlock()
 				return
 			}
-			sendInput := port.SendEmailInput{
+			_, err := o.email.SendEmail(ctx, port.SendEmailInput{
 				To:              recipient.Email,
 				Subject:         env.Subject,
 				HTML:            recipientHTML,
@@ -1132,12 +1125,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				GroupID:         env.GroupID,
 				SendAt:          env.SendAt,
 				BatchID:         env.BatchID,
-			}
-			if listUnsubscribeURL != "" {
-				sendInput.ListUnsubscribeURL = listUnsubscribeURL
-				sendInput.ListUnsubscribePost = true
-			}
-			_, err := o.email.SendEmail(ctx, sendInput)
+			})
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
