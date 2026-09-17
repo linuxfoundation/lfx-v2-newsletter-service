@@ -5,10 +5,31 @@ package nats
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
+
+// projectServiceErrorCode returns the error code from a project-service error
+// envelope ({"error":"not_found",...} or {"error":"internal",...}), or "" when
+// no error code could be extracted (caller must classify the reply as success
+// or a different failure). "" is returned for: empty body, non-JSON content,
+// JSON that does not contain an "error" key, or an "error" key with an empty
+// value. A non-nil error is returned only when data starts with '{' but is not
+// valid JSON — the caller should surface it as an Unexpected error.
+func projectServiceErrorCode(data []byte) (string, error) {
+	if len(data) == 0 || data[0] != '{' {
+		return "", nil
+	}
+	var env struct {
+		Error string `json:"error"`
+	}
+	if jsonErr := json.Unmarshal(data, &env); jsonErr != nil {
+		return "", pkgerrors.NewUnexpected("malformed project-service reply envelope", jsonErr)
+	}
+	return env.Error, nil
+}
 
 // ProjectClient implements port.ProjectMetadataClient over the
 // `lfx.projects-api.get_name` / `lfx.projects-api.get_slug` NATS subjects
@@ -42,9 +63,60 @@ func (p *ProjectClient) get(ctx context.Context, subject, projectUID string) (st
 	if err != nil {
 		return "", err
 	}
-	value := string(reply)
-	if value == "" {
-		return "", pkgerrors.NewNotFound(fmt.Sprintf("project attribute %s not found for uid: %s", subject, projectUID))
+	return parseProjectReply(subject, projectUID, reply)
+}
+
+// parseProjectReply interprets a raw project-service RPC reply body.
+//
+// Classification:
+//   - JSON error envelope ({"error":"not_found",...})   → pkgerrors.NotFound
+//   - JSON error envelope ({"error":"<other code>",...}) → pkgerrors.Unexpected
+//   - Any payload starting with '{'                     → pkgerrors.Unexpected
+//     (see structural guarantee below)
+//   - Empty body                                        → pkgerrors.Unexpected
+//     (transport/dispatch failure; confirmed absences arrive as {"error":"not_found"})
+//   - Plain non-empty string not starting with '{'      → success
+//
+// Structural guarantee: success values returned by this function never start
+// with '{'. This is provable by two complementary constraints in the peer
+// contract (lfx-v2-project-service PR #121):
+//
+//  1. Handler-layer: handleProjectGetAttribute rejects any stored value whose
+//     TrimSpace'd form starts with '{' at runtime, returning RPCErrorInternal
+//     rather than forwarding the ambiguous payload.
+//  2. Write-layer: validateProjectName rejects new names that start with '{'
+//     (after TrimSpace) in CreateProject / UpdateProjectBase, preventing new
+//     ambiguous values from being stored.
+//
+// Combined with the '{' prefix guard in projectServiceErrorCode, these make
+// success and failure payloads disjoint at the byte level — no reply starting
+// with '{' is ever returned as a success string. A '{'-prefixed payload that
+// does not carry a recognised error code is treated as Unexpected.
+func parseProjectReply(subject, projectUID string, reply []byte) (string, error) {
+	code, codeErr := projectServiceErrorCode(reply)
+	if codeErr != nil {
+		return "", codeErr
 	}
-	return value, nil
+	switch code {
+	case "not_found":
+		return "", pkgerrors.NewNotFound(fmt.Sprintf("project %s not found on %s", projectUID, subject))
+	case "":
+		// No recognised error key — either a plain success payload, an empty body,
+		// or a JSON object with no 'error' key (e.g. a future response shape).
+		if len(reply) == 0 {
+			// An empty body is a transport/dispatch failure — project-service always
+			// returns {"error":"not_found"} for missing projects.
+			return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service returned empty reply for %s on %s", projectUID, subject))
+		}
+		if reply[0] == '{' {
+			// A '{'-prefixed payload that was not classified as an error envelope is
+			// ambiguous: it could be a future error shape or a project name that
+			// happens to be a JSON object. We reject it as Unexpected to uphold the
+			// structural guarantee that success values never start with '{'.
+			return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service returned ambiguous JSON-shaped reply for %s on %s", projectUID, subject))
+		}
+		return string(reply), nil
+	default:
+		return "", pkgerrors.NewUnexpected(fmt.Sprintf("project-service error for %s on %s (code=%s)", projectUID, subject, code))
+	}
 }

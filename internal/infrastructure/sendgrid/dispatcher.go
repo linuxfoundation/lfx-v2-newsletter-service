@@ -272,6 +272,13 @@ func (d *Dispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (str
 
 	// SendGrid orders content text/plain before text/html. Include only the
 	// non-empty parts; at least one is guaranteed by the guard above.
+	//
+	// Click tracking is configured at the SendGrid dashboard (this service sets no
+	// tracking_settings). Plain Text click tracking must stay OFF so SendGrid does
+	// not rewrite the compliance links in the text/plain part and mis-count them as
+	// user interactions. This is an analytics/consent setting, not a clipping fix:
+	// Gmail's ~102KB "[Message clipped]" threshold is measured on the HTML part, not
+	// the text/plain alternative. See docs/sendgrid-go-live.md.
 	var contents []content
 	if strings.TrimSpace(in.Text) != "" {
 		contents = append(contents, content{Type: "text/plain", Value: in.Text})
