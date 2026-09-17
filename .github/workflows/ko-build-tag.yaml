@@ -34,14 +34,18 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Prepare versions and chart name
         id: prepare
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          APP_VERSION=$(echo ${{ github.ref_name }} | sed 's/v//g')
+          APP_VERSION="${REF_NAME//v/}"
           CHART_NAME="$(yq '.name' charts/*/Chart.yaml)"
-          CHART_VERSION=$(echo ${{ github.ref_name }} | sed 's/v//g')
+          CHART_VERSION="${REF_NAME//v/}"
           {
             echo "app_version=$APP_VERSION"
             echo "chart_name=$CHART_NAME"
@@ -52,6 +56,7 @@ jobs:
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Setup Ko
         uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d  # v0.9
@@ -61,6 +66,7 @@ jobs:
       - name: Build and publish newsletter-api image
         env:
           VERSION: ${{ steps.prepare.outputs.app_version }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
           GIT_COMMIT="${{ github.sha }}"
@@ -70,8 +76,8 @@ jobs:
           ko build github.com/linuxfoundation/lfx-v2-newsletter-service/cmd/newsletter-api \
             -B \
             --platform linux/amd64,linux/arm64 \
-            -t ${{ github.ref_name }} \
-            -t ${{ steps.prepare.outputs.app_version }} \
+            -t "${REF_NAME}" \
+            -t "${VERSION}" \
             -t latest \
             --sbom spdx
 
@@ -93,11 +99,13 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Publish Chart to GHCR
         id: publish-ghcr
         # yamllint disable-line rule:line-length
-        uses: linuxfoundation/lfx-public-workflows/.github/actions/helm-chart-oci-publisher@17e4144d7ba68f7c3e8c16eece5aed15fd7c2dc8  # main
+        uses: linuxfoundation/lfx-public-workflows/.github/actions/helm-chart-oci-publisher@a93335d2abc2a2e2bb1b7a4cdefbbf15351681ce  # v0.1.0
         with:
           name: ${{ needs.publish.outputs.chart_name }}
           repository: ${{ github.repository }}/chart
@@ -122,9 +130,11 @@ jobs:
       - name: Sign the Helm chart in GHCR
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_NAME: ${{ steps.publish-ghcr.outputs.image_name }}
+          IMAGE_DIGEST: ${{ steps.publish-ghcr.outputs.digest }}
         run: |
           set -euo pipefail
-          cosign sign --yes '${{ steps.publish-ghcr.outputs.image_name }}@${{ steps.publish-ghcr.outputs.digest }}'
+          cosign sign --yes "${IMAGE_NAME}@${IMAGE_DIGEST}"
 
   create-ghcr-helm-provenance:
     needs:
@@ -133,7 +143,9 @@ jobs:
       actions: read
       id-token: write
       packages: write
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a  # v2.1.0
+    # Note, this action *cannot* be pinned to a SHA: see the project's
+    # explanation at "Referencing SLSA builders and generators" in their README.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0  # zizmor: ignore[unpinned-uses]
     with:
       image: ${{ needs.release-helm-chart.outputs.image_name }}
       digest: ${{ needs.release-helm-chart.outputs.digest }}

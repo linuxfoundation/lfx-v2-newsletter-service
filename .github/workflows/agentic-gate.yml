@@ -65,7 +65,7 @@ name: Agentic Gate
 # copy of this file with those privileges. Safe here because the job never
 # checks out or executes PR code. (status events always run the default-branch
 # definition already.)
-"on":
+"on":  # zizmor: ignore[dangerous-triggers] -- safe: see rationale in the comment above; the fetched PAT authenticates writes, not the workflow token.
   status: {}
   pull_request_target:
     types: [labeled, unlabeled]
@@ -99,14 +99,13 @@ concurrency:
 # Least privilege for GITHUB_TOKEN: the gate job only READS with it (PR, labels,
 # commit status). The approve/dismiss steps authenticate with the lfx-reviewer PAT
 # fetched from AWS Secrets Manager via OIDC (id-token), whose power comes from the
-# PAT, not from these permissions. The sweep job overrides this block with its own
-# narrower set (reads + actions:write for the self-dispatch, no id-token).
+# PAT, not from these permissions. id-token: write is scoped to the gate job
+# below (not set at the workflow level) since the sweep job never needs it.
 permissions:
   contents: read
   pull-requests: read
   issues: read      # escalation verdict comments + needs-human label timeline
   statuses: read
-  id-token: write
 
 jobs:
   gate:
@@ -124,6 +123,12 @@ jobs:
         github.event.comment.user.login == 'lfx-reviewer' &&
         contains(github.event.comment.body, 'agentic:needs-human')))
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read      # escalation verdict comments + needs-human label timeline
+      statuses: read
+      id-token: write
     env:
       # Humans whose needs-human unlabel this gate honors — the single source
       # for both the Evaluate step and the pre-approval recheck. Space-
@@ -383,7 +388,7 @@ jobs:
       - name: Configure AWS credentials
         if: steps.pr.outputs.found == 'true'
         continue-on-error: true
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: arn:aws:iam::788942260905:role/github-actions-deploy
           aws-region: us-east-2
@@ -391,7 +396,7 @@ jobs:
       - name: Get lfx-reviewer token from AWS Secrets Manager
         if: steps.pr.outputs.found == 'true'
         continue-on-error: true
-        uses: aws-actions/aws-secretsmanager-get-secrets@3a411b6ec5cace3d626412dd917e7bfeac242cfa # v3
+        uses: aws-actions/aws-secretsmanager-get-secrets@3a411b6ec5cace3d626412dd917e7bfeac242cfa # v3.0.0
         with:
           secret-ids: |
             GH, /cloudops/managed-secrets/cloud/github/linuxfoundation/lfx-reviewer-pat
