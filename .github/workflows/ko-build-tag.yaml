@@ -138,6 +138,7 @@ jobs:
       image: ${{ needs.release-helm-chart.outputs.image_name }}
       digest: ${{ needs.release-helm-chart.outputs.digest }}
       registry-username: ${{ github.actor }}
+      private-repository: true
     secrets:
       registry-password: ${{ secrets.GITHUB_TOKEN }}
 

@@ -8,40 +8,47 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 )
 
-// TestHandlerRoutes_Unsubscribe covers the two-stage, intentionally
-// unauthenticated unsubscribe routes: both GET (read-only confirmation) and the
-// state-mutating POST must reach their handler WITHOUT a bearer — authorization
-// is the HMAC-signed token, not a session — even while RequireUserAuth is on for
-// the rest of the API. A normal API route without a bearer stays 401, proving
-// the non-401s below are these routes bypassing withAuth, not a disabled layer.
+// TestHandlerRoutes_Unsubscribe asserts the one-click unsubscribe route
+// auth-boundary from Routes(): GET /newsletters/unsubscribe must reach its
+// handler without a JWT token even when RequireUserAuth is on, and POST must
+// not be registered (the two-stage variant was reverted and must stay absent).
 func TestHandlerRoutes_Unsubscribe(t *testing.T) {
-	// A minimal unsubscribe service is enough: an invalid token fails HMAC
-	// verification before any repository call, so a bad-token request yields 400
-	// (reached the handler) rather than panicking on the nil repo.
-	unsub := service.NewUnsubscribeService(nil, []byte("test-secret"), "https://host")
-	srv := New(Config{RequireUserAuth: true, Unsubscribe: unsub}).Routes()
+	const unsub = "/newsletters/unsubscribe"
 
-	for _, method := range []string{http.MethodGet, http.MethodPost} {
+	// RequireUserAuth on with no Unsubscribe service: the handler still runs
+	// (returning 500 because unsub is nil) rather than being rejected by
+	// withAuth (which would return 401). The status code difference is what
+	// proves the route is anonymous.
+	srv := New(Config{RequireUserAuth: true}).Routes()
+
+	t.Run("GET is anonymous", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, httptest.NewRequest(method, "/newsletters/unsubscribe?t=bad", nil))
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, unsub+"?t=dummy", nil))
 		if rec.Code == http.StatusUnauthorized {
-			t.Errorf("%s /newsletters/unsubscribe returned 401 — the route must bypass JWT auth", method)
+			t.Error("GET /newsletters/unsubscribe returned 401: route must be anonymous (no withAuth)")
 		}
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("%s /newsletters/unsubscribe: status = %d, want 400 (reached the token-verifying handler)", method, rec.Code)
-		}
-	}
+	})
 
-	// Contrast: a normal authenticated route without a bearer is rejected by withAuth.
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/projects/p/newsletters", strings.NewReader("{}")))
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("authenticated route without a bearer: status = %d, want 401", rec.Code)
-	}
+	t.Run("POST is not registered", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, unsub, strings.NewReader("")))
+		if rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusNotFound {
+			t.Errorf("POST /newsletters/unsubscribe: status = %d, want 404 or 405 (route must not be registered)", rec.Code)
+		}
+	})
+
+	t.Run("normal route is protected", func(t *testing.T) {
+		// Contrast: an authenticated route without a bearer is still 401,
+		// proving the auth layer is actually on — the unsubscribe exemption
+		// above is not from a disabled auth layer.
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/projects/p/newsletters", strings.NewReader("{}")))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("authenticated route without bearer: status = %d, want 401", rec.Code)
+		}
+	})
 }
 
 // TestHandlerRoutes_SendGridWebhook covers the conditional, anonymous SendGrid
