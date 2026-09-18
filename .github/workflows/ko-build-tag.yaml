@@ -133,7 +133,15 @@ jobs:
       actions: read
       id-token: write
       packages: write
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a  # v2.1.0
+    # The SLSA generator requires a tag ref, not a SHA pin. Its builder-fetch.sh
+    # reads BUILDER_REF from the OIDC token's job_workflow_ref and requires it to
+    # start with "refs/tags/". A SHA pin produces a plain SHA in the OIDC token,
+    # causing builder-fetch.sh to exit 2. The generator's own OIDC token + binary
+    # verification chain provides the tamper-evidence that SHA pinning would give.
+    # Referencing SLSA builders and generators:
+    # https://github.com/slsa-framework/slsa-github-generator#referencing-slsa-builders-and-generators
+    # yamllint disable-line rule:line-length
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0 # zizmor: ignore[unpinned-uses]
     with:
       image: ${{ needs.release-helm-chart.outputs.image_name }}
       digest: ${{ needs.release-helm-chart.outputs.digest }}
