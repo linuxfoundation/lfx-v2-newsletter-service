@@ -6,9 +6,9 @@ description: >
   iteration: Copilot or conductor findings, review threads, why
   `agentic-review/clean` is failing or the gate has not approved, the
   `needs-human` label, or pushing fixes to the PR. This is the PR driver's
-  operating manual and the `post-PR extension` declared in CLAUDE.md for
-  `/lfx-skills:lfx-local-review`: it refines the central Post-PR steps 1–6
-  for this repo's PR surface, and the central skill wins where they differ.
+  operating manual and the post-PR counterpart of the pre-PR review block in
+  CLAUDE.md: it covers this repo's PR surface once the PR exists, and the
+  block's hard rules win where they differ.
   Verify every finding, fix it or rebut it with evidence, create the signed
   DCO round commit before fix replies cite it, reply on and resolve every
   thread, push once per round, loop until the check is green, then report
@@ -24,35 +24,27 @@ description: >
 > driver**: a worktree-isolated background agent that owns the loop end to
 > end. The main session reads only "Launching the PR driver" below.
 
-## Relationship to the central lifecycle
+## Relationship to the pre-PR review block
 
-`/lfx-skills:lfx-local-review` owns the review lifecycle; this skill is the
-`post-PR extension` its declaration in `CLAUDE.md` names. The central skill
-loads it on entry to Post-PR review, and it exists only to refine the
-canonical **Post-PR review** steps 1–6 for this repo's PR surface — which bots
-review here, and how its threads, labels, check comment and gate behave. It
-never replaces or restates the lifecycle, and where the two disagree the
-central skill wins. Every boundary is inherited unchanged:
+The **Pre-PR review** block in `CLAUDE.md` states the steps from
+"implementation committed" to "PR open"; `/lfx-skills:lfx-pre-pr-review` owns
+the review round within it. This skill is the block's post-PR counterpart,
+named at the end of that section. It exists only to describe this repo's PR
+surface — which bots review here, and how its threads, labels, check comment
+and gate behave. It never replaces or restates the block or that skill, and
+where they disagree the block's hard rules win. Two boundaries hold
+throughout — the first inherited from the block unchanged, the second this
+skill's own:
 
-- **No local reviewer once the PR exists.** Nothing in the loop below runs
-  the repo's code or learnings reviewer, the general reviewer, or a
-  full-branch review, whatever a round demands; there is no return to Pre-PR
-  review.
-- **Step 7 stands unrelaxed.** Nothing here merges; a merge happens only
-  after a separate, explicit human instruction.
-
-Where each canonical step is refined (section names only — the step text
-lives in the central skill and is not repeated here):
-
-- Canonical step 1 — "The round loop" steps 1 and 2, "Reading the check
-  comment", "Waiting for the verdict", "Threads".
-- Canonical step 2 — "Launching the PR driver", "Driver operations"
-  (worktree discipline).
-- Canonical step 3 — "The round loop" step 3.
-- Canonical step 4 — "The round loop" step 4, "Threads", "Authority
-  bounds".
-- Canonical step 5 — "The round loop" step 5, "Threads".
-- Canonical step 6 — "The round loop" steps 5 and 6, "Hard rules".
+- **No local reviewer once the PR exists** (the block's rule). Nothing in
+  the loop below runs the repo's learnings reviewer, the general or security
+  reviewers, or a full-branch review, whatever a round demands; there is no
+  return to pre-PR review.
+  Iterate only on the PR's bot and human review feedback, still running tests
+  and checks, and batch each round of fixes into as few commits as possible.
+- **Merging is never this skill's job** (this skill's own boundary — the
+  block says nothing about merging). Nothing here merges; a merge happens
+  only after a separate, explicit human instruction.
 
 Every push to an open PR on this repo starts a review round with no human in
 the loop: Copilot reviews the diff, an escalation judge decides whether a
@@ -465,10 +457,9 @@ This section — and only this section — is addressed to the main session.
 The loop is mostly waiting, so the moment a PR enters the flow (right after
 `gh pr create`, or on finding an open PR that needs iteration), **launch the
 PR driver without waiting to be asked**: spawn a general-purpose agent in
-the background with worktree isolation and hand it this skill. This is how
-this repo carries out canonical Post-PR step 2 — the isolated background
-task that never shares a worktree with, or races commits and pushes against,
-another writer. Tell the user
+the background with worktree isolation and hand it this skill. The driver is
+an isolated background task that never shares a worktree with, or races
+commits and pushes against, another writer. Tell the user
 the driver is on it; the main session stays free for the next piece of work.
 Only skip the launch if the user asked to work the loop in this session, and
 even then point out the next feature can start in a separate worktree
@@ -482,11 +473,9 @@ manual; do not restate its rules. The prompt needs only:
   `agentic-review/clean` check on the current head with every thread
   fixed-and-explained or rebutted-and-explained, then report which ending
   applies. If that skill is unavailable in the driver's session, the driver
-  **stops and tells the developer the extension is unavailable** — it does
+  **stops and tells the developer the PR driver skill is unavailable** — it does
   not read this file from any checkout, search for a similarly named skill,
-  use an alias, or improvise a replacement. That is the central lifecycle's
-  Post-PR entry rule: only the two repo reviewers have a file fallback, the
-  extension has none.
+  use an alias, or improvise a replacement. The driver has no file fallback.
 - The PR number and current head SHA.
 - The newest `pr=#<PR>:`-bound `agentic-review/clean` status id as the
   pending anchor if one exists (it also seeds the monitor's round
@@ -495,7 +484,7 @@ manual; do not restate its rules. The prompt needs only:
 
 Example prompt: "You are the PR driver for PR #57 on this repo. Load
 `/newsletter-service-agentic-pr` with the Skill tool — if it is unavailable,
-stop and report that the extension is unavailable — and drive the PR by it
+stop and report that the PR driver skill is unavailable — and drive the PR by it
 to a green check on the current head with every thread fixed-and-explained
 or rebutted-and-explained, then report which ending applies. Head: `<sha>`.
 Pending anchor: status id `<id>`. Do not merge."
@@ -733,5 +722,7 @@ were and whether each was fixed or rebutted.
 - Never mention the bots; never touch the `needs-human` label.
 - Never edit or imitate `lfx-reviewer` comments — the pipeline trusts that
   account's authorship, and the apply step validates everything anyway.
-- Never run a local reviewer once the PR exists, and never merge — both are
-  the central lifecycle's boundaries, and this skill cannot relax them.
+- Never run a local reviewer once the PR exists — the pre-PR review block's
+  hard rule, which this skill cannot relax — and never merge, this skill's
+  own boundary: a merge happens only after a separate, explicit human
+  instruction.

@@ -39,7 +39,7 @@ It does not render AI content, publish indexer messages, or emit FGA tuples.
 - `docs/service-helm-chart.md`: service-local chart values, Postgres database modes, Gateway/Heimdall wiring, and deployment handoffs.
 - `charts/lfx-v2-newsletter-service/`: service-local Helm templates and defaults.
 
-Read the relevant contract before changing `pkg/api`, handlers, database schema, recipient resolution, analytics, open tracking, or chart values. Update docs in the same PR as behavior changes.
+Read the relevant contract before changing `pkg/api`, handlers, database schema, recipient resolution, analytics, open tracking, or chart values. Update docs in the same PR as behavior changes. These contract docs are authoritative: where prose in this file or in a `.claude/skills/**` skill disagrees with a contract doc in `docs/`, the contract doc wins and the prose is the bug.
 
 ## Consumed Cross-Repo Contracts
 
@@ -137,17 +137,29 @@ make check       # fmt + lint + license-check + go vet
 make lint        # golangci-lint
 ```
 
-## Review lifecycle configuration
+## Pre-PR review
 
-Load and follow `/lfx-skills:lfx-local-review` as the sole owner of the review
-lifecycle. The values below configure that skill and do not replace or override
-its instructions.
+> **IMPORTANT — follow this exactly.** When the implementation is complete
+> and committed and you are about to open a PR:
+>
+> 1. **Review once.** Load `/lfx-skills:lfx-pre-pr-review` with the Skill
+>    tool and follow it: it tells you how to launch the reviewers. You run
+>    **one** review round of the whole branch and land **all accepted
+>    findings in exactly one fix commit** (none if there is nothing to fix).
+>    Do not work from memory: **load the skill before launching the
+>    reviewers**.
+> 2. **Preflight.** Run the `Preflight` value below and make it pass. It is
+>    deterministic checks, not a review: fix what it reports in its own
+>    commit(s), as many as it takes, and rerun it — never the reviewers.
+> 3. **Open the PR.** From then on there are **no local reviews of any
+>    kind** — iterate only on the PR's bot and human feedback, still running
+>    tests and checks.
 
-- repo code reviewer: `/newsletter-service-code-reviewer`
-- repo learnings reviewer: `/newsletter-service-learnings-reviewer`
-- readiness action: `/newsletter-service-pr-readiness origin/main`
-- preflight action: `/newsletter-service-preflight origin/main --report-only`
-- post-PR extension: `/newsletter-service-agentic-pr`
+- KB review skill: `/newsletter-service-learnings-reviewer`
+- Preflight: `/newsletter-service-pr-readiness origin/main`, then `/newsletter-service-preflight origin/main --report-only`
+
+Once the PR is open, `/newsletter-service-agentic-pr` is this repo's PR driver
+for the agentic review flow; it never runs a local reviewer and never merges.
 
 ## Conventions
 

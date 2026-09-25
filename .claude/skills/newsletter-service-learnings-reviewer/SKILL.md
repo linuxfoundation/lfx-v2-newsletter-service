@@ -1,6 +1,6 @@
 ---
 name: newsletter-service-learnings-reviewer
-description: Repo-owned learnings reviewer skill `/newsletter-service-learnings-reviewer` for lfx-v2-newsletter-service, loaded through the `/lfx-skills:lfx-local-review` lifecycle. Matches the reviewed change against the empirical pattern knowledge base in docs/reviews/knowledge-base/ — patterns extracted from real past PR review comments on this repo — and returns an ordinary Markdown review in which every finding quotes a KB pattern entry. Not a skill a developer invokes by hand.
+description: Repo-owned learnings reviewer skill `/newsletter-service-learnings-reviewer` for lfx-v2-newsletter-service, the `KB review skill` named by the pre-PR review block in CLAUDE.md and launched by `/lfx-skills:lfx-pre-pr-review`. Matches the reviewed change against the empirical pattern knowledge base in docs/reviews/knowledge-base/ — patterns extracted from real past PR review comments on this repo — and returns an ordinary Markdown review in which every finding quotes a KB pattern entry. Not a skill a developer invokes by hand.
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
@@ -21,21 +21,28 @@ already learned, and nothing else.
 
 The sibling roles own everything else, and you must not drift into them:
 
-- **general** (central) — correctness, security, tests, performance,
-  maintainability, code truthfulness from first principles, with no repo
-  rulebook. Generic Go and security intuition is **its** job, never yours.
-- **repo code** (this repo) — the *written* rule surface: `CLAUDE.md`, the
-  repo-local skills, the `docs/` contracts. Do not cite those; they are its
+- **general** (central, `/lfx-skills:lfx-general-code-review`) — correctness,
+  tests, performance, maintainability, code truthfulness from first
+  principles, **plus** this repo's *written* rule surface: `CLAUDE.md`, the
+  repo-local skills, the `docs/` contracts. Generic Go intuition is **its**
+  job, never yours, and do not cite the written rules either; they are its
   sources.
+- **security** (central, `/lfx-skills:lfx-security-engineer`) — OWASP-class
+  findings, auth/authz, secrets, input handling, infrastructure configuration.
+  Generic security intuition is **its** job, never yours; you raise a security
+  finding only when a KB pattern in `security.md` matches.
 
 ## What you review
 
 The host names the pinned revisions and passes the same values to every role:
 
-- **`target_sha`** — the commit under review.
-- **`base_sha`** — the pre-change commit, **supplied by the host**. Normally the
-  target's first parent; a caller may instead supply a direct base range. You
-  never fetch, compute or derive it, and there is no repository-wide or
+- **`target_sha`** — the commit under review: the branch `HEAD`.
+- **`base_sha`** — the pre-change commit, **supplied by the host**:
+  `/lfx-skills:lfx-pre-pr-review` computes it as the merge-base of the branch
+  with the PR's base branch (`git merge-base origin/main HEAD`, or the branch
+  the PR will target). The range is the whole branch, once — never commit by
+  commit, never a merge commit against its first parent. You never fetch,
+  compute or derive either value, and there is no repository-wide or
   cumulative comparison to make.
 
 The reviewed range is exactly `git diff <base_sha> <target_sha>`. Read file
@@ -297,15 +304,17 @@ What this yields:
   wording did in between.
 
 **Accepted consequence, stated plainly:** a newly added waiver suppresses
-nothing until it is in *both* floors of the review being run. Which review that
-is depends only on the base you were supplied:
+nothing until it is in *both* floors of the review being run. Because
+`base_sha` is the merge-base with the PR's base branch, that means:
 
-- **The range that adds the waiver** — the base lacks it, the target has it, so
-  it cannot suppress anything here. This is the self-approval case the rule
-  exists for.
-- **A later range whose supplied base already carries the waiver** — both floors
-  have it, so it suppresses a covered candidate normally. Nothing waits on a
-  merge; the waiver is live for the next range whose base includes it.
+- **The branch that adds the waiver** — the base (merge-base with the PR's
+  base branch) lacks it, the target (`HEAD`) has it, so it cannot suppress
+  anything on that branch, however many commits follow on it. This is the
+  self-approval case the rule exists for.
+- **A later branch cut after the waiver merged** — the waiver is in the PR's
+  base branch and therefore in the merge-base, so both floors have it and it
+  suppresses a covered candidate normally. A waiver goes live only once it is
+  merged into the branch that PRs target.
 
 Ordinary pattern files are unaffected by all of this: they are read at
 `target_sha` only, as Step 1 says. The two-revision rule is the false-positive
@@ -320,7 +329,7 @@ for it. The rule is about what you suppress, not about reporting.
 - A finding on code the patch does not change.
 - Generic Go, security or style intuition — that is the `general` role's.
 - A rule from `CLAUDE.md`, a repo skill or a `docs/` contract — that is
-  the repo code reviewer's, even when you can read the file at the target.
+  the `general` role's too, even when you can read the file at the target.
 - Anything `newsletter-service-pr-readiness` (branch shape, JIRA, commits,
   DCO/GPG, diff size, protected files) or `newsletter-service-preflight`
   (license, format, lint, vet, build, test execution) owns.
@@ -370,7 +379,7 @@ Every finding carries, in whatever prose reads naturally:
 - a **fix**: what to do, concretely.
 
 Never cite `CLAUDE.md`, a repo-local skill or a `docs/` contract as your source.
-Those belong to the repo code reviewer, and citing one here duplicates its
+Those belong to the general reviewer, and citing one here duplicates its
 finding.
 
 ### Finding nothing
