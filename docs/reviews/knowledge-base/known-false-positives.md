@@ -5,7 +5,7 @@
 
 Findings that match any pattern below MUST be dropped. This list is the floor — even a quotable KB pattern doesn't survive if it matches a known false positive.
 
-**Who actually applies this file:** the repo-owned `newsletter-service-learnings-reviewer` brain, as its Step 4 floor, and nothing else. The general reviewer (`/lfx-skills:lfx-general-code-review`) does **not** load it: `docs/reviews/**` is deliberately outside that role's source surface, so it never reads these entries and cannot apply them. Do not read the floor as a repo-wide suppression guarantee — a general-reviewer finding matching an entry below is not automatically dropped, because that reviewer never sees it. Human reviewers and bots are likewise out of scope: this file binds one brain.
+**Who actually applies this file:** the repo-owned `newsletter-service-learnings-reviewer` brain, as its Step 4 floor, and nothing else. The general reviewer (`/lfx-skills:lfx-general-code-review`) does **not** load it: `docs/reviews/knowledge-base/**` is deliberately outside that role's source surface (the general skill's method leaves this knowledge base to this brain), so it never reads these entries and cannot apply them. Do not read the floor as a repo-wide suppression guarantee — a general-reviewer finding matching an entry below is not automatically dropped, because that reviewer never sees it. Human reviewers and bots are likewise out of scope: this file binds one brain.
 
 ---
 
