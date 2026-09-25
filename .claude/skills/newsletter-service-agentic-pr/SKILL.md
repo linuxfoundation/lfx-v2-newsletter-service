@@ -26,17 +26,18 @@ description: >
 
 ## Relationship to the pre-PR review block
 
-The **Pre-PR review** block in `CLAUDE.md` owns the local review lifecycle up
-to PR-open: one full-branch review, at most one fix commit, the deterministic
-checks, then the PR. This skill is its post-PR counterpart, named at the end of
-that section. It exists only to describe this repo's PR surface — which bots
+The **Pre-PR review** block in `CLAUDE.md` points at
+`/lfx-skills:lfx-pre-pr-review`, which owns the local review lifecycle up to
+PR-open. This skill is its post-PR counterpart, named at the end of that
+section. It exists only to describe this repo's PR surface — which bots
 review here, and how its threads, labels, check comment and gate behave. It
-never replaces or restates the block, and where the two disagree the block's
-hard rules win. Every boundary is inherited unchanged:
+never replaces or restates the block or that skill, and where they disagree
+the block's hard rules win. Every boundary is inherited unchanged:
 
 - **No local reviewer once the PR exists.** Nothing in the loop below runs
-  the repo's learnings reviewer, the general reviewer, or a full-branch
-  review, whatever a round demands; there is no return to pre-PR review.
+  the repo's learnings reviewer, the general or security reviewers, or a
+  full-branch review, whatever a round demands; there is no return to pre-PR
+  review.
   Iterate only on the PR's bot and human review feedback, still running tests
   and checks, and batch each round of fixes into as few commits as possible.
 - **Merging is never this skill's job.** Nothing here merges; a merge happens

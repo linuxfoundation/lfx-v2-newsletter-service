@@ -5,7 +5,7 @@
 
 Findings that match any pattern below MUST be dropped. This list is the floor — even a quotable KB pattern doesn't survive if it matches a known false positive.
 
-**Who actually applies this file:** the repo-owned `newsletter-service-learnings-reviewer` brain, as its Step 4 floor, and nothing else. The general reviewer (`/lfx-skills:lfx-general-code-review`) does **not** load it: `docs/reviews/knowledge-base/**` is deliberately outside that role's source surface (the general skill's method leaves this knowledge base to this brain), so it never reads these entries and cannot apply them. Do not read the floor as a repo-wide suppression guarantee — a general-reviewer finding matching an entry below is not automatically dropped, because that reviewer never sees it. Human reviewers and bots are likewise out of scope: this file binds one brain.
+**Who actually applies this file:** the repo-owned `newsletter-service-learnings-reviewer` brain, as its Step 4 floor, and nothing else. The general reviewer (`/lfx-skills:lfx-general-code-review`) and the security reviewer (`/lfx-skills:lfx-security-engineer`) do **not** load it: `docs/reviews/knowledge-base/**` is deliberately outside those roles' source surface (the general skill's method leaves this knowledge base to this brain), so they never read these entries and cannot apply them. Do not read the floor as a repo-wide suppression guarantee — a general- or security-reviewer finding matching an entry below is not automatically dropped, because those reviewers never see it. Human reviewers and bots are likewise out of scope: this file binds one brain.
 
 ---
 
@@ -79,6 +79,14 @@ deleted silently so the disposition stays auditable.
 **Why false:** the maintainer-reviewed design landed with the validation + dedup mechanism (regex + per-hour unique index + `ON CONFLICT DO NOTHING`) as the agreed hardening; the extra `Get` is intentional and the suggested micro-optimization was not adopted. Demote unless it recurs with maintainer endorsement.
 
 **Source:** PR #3 `internal/service/newsletter.go:177` — Copilot — "performs a `repo.Get` existence check before inserting … doubles DB round-trips." Not acted on; superseded by the dedup-index design.
+
+### Retired send and recipient-lookup designs still described in older prose
+
+**Pattern matched:** a finding that asserts the send path should accept a caller-supplied `groupId`, transition `draft → sent` directly with no `sending` state, fan out synchronously inside the `POST …/send` request or without a concurrency bound, or that recipient lookup should go over HTTP to query-service (`internal/infrastructure/upstream/`, `COMMITTEE_SERVICE_URL`, `/query/resources`).
+
+**Why false:** those describe retired behavior. Current truth is in `docs/newsletter-service-contract.md` (`draft → sending → sent`, `group_id` minted by this service, detached fan-out bounded by `SEND_JOB_TIMEOUT` / `SEND_CONCURRENCY`, `409 send_in_progress`) and `docs/recipient-resolution.md` (members over NATS `lfx.committee-api.list_members`; the HTTP path is history and `upstream/` is an empty placeholder). Older prose still says otherwise — `CLAUDE.md` ("draft → sent"), `README.md` (query-service / `COMMITTEE_SERVICE_URL`), `.claude/skills/newsletter-service-dev/SKILL.md` ("`draft -> sent`") — and a finding whose only support is such a sentence is a docs bug, not the developer's. Where `CLAUDE.md` or a `.claude/skills/**` file disagrees with a service-owned contract doc in `docs/`, the contract doc wins: it is updated in the same PR as behavior by rule (`CLAUDE.md` — "Update docs in the same PR as behavior changes.").
+
+**Source:** salvaged 2026-09-25 from the retired `.claude/skills/newsletter-service-code-reviewer/SKILL.md` (Step 2 "hold the current send truth", Step 4, and its precedence rule); `docs/recipient-resolution.md` — "History: an earlier revision called query-service over HTTP (`GET /query/resources`) … That path was retired".
 
 ---
 

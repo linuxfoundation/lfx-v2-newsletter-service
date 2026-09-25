@@ -1,6 +1,6 @@
 ---
 name: newsletter-service-learnings-reviewer
-description: Repo-owned learnings reviewer skill `/newsletter-service-learnings-reviewer` for lfx-v2-newsletter-service, launched by the repo's pre-PR review block in CLAUDE.md. Matches the reviewed change against the empirical pattern knowledge base in docs/reviews/knowledge-base/ — patterns extracted from real past PR review comments on this repo — and returns an ordinary Markdown review in which every finding quotes a KB pattern entry. Not a skill a developer invokes by hand.
+description: Repo-owned learnings reviewer skill `/newsletter-service-learnings-reviewer` for lfx-v2-newsletter-service, the `KB review skill` named by the pre-PR review block in CLAUDE.md and launched by `/lfx-skills:lfx-pre-pr-review`. Matches the reviewed change against the empirical pattern knowledge base in docs/reviews/knowledge-base/ — patterns extracted from real past PR review comments on this repo — and returns an ordinary Markdown review in which every finding quotes a KB pattern entry. Not a skill a developer invokes by hand.
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
@@ -19,14 +19,18 @@ entry. No matching pattern means **no finding** — not a smaller finding, not a
 generic one. That is the whole point of this role: it reports what this repo has
 already learned, and nothing else.
 
-The sibling role owns everything else, and you must not drift into it:
+The sibling roles own everything else, and you must not drift into them:
 
 - **general** (central, `/lfx-skills:lfx-general-code-review`) — correctness,
-  security, tests, performance, maintainability, code truthfulness from first
+  tests, performance, maintainability, code truthfulness from first
   principles, **plus** this repo's *written* rule surface: `CLAUDE.md`, the
-  repo-local skills, the `docs/` contracts. Generic Go and security intuition
-  is **its** job, never yours, and do not cite the written rules either; they
-  are its sources.
+  repo-local skills, the `docs/` contracts. Generic Go intuition is **its**
+  job, never yours, and do not cite the written rules either; they are its
+  sources.
+- **security** (central, `/lfx-skills:lfx-security-engineer`) — OWASP-class
+  findings, auth/authz, secrets, input handling, infrastructure configuration.
+  Generic security intuition is **its** job, never yours; you raise a security
+  finding only when a KB pattern in `security.md` matches.
 
 ## What you review
 
