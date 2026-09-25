@@ -33,7 +33,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -156,7 +156,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -183,7 +183,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -210,7 +210,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -243,7 +243,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -270,7 +270,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -355,7 +355,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -386,7 +386,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: auditor
+              relation: auditor_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         - finalizer: create_jwt
           config:
@@ -409,7 +409,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         - finalizer: create_jwt
           config:
@@ -467,7 +467,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: auditor
+              relation: auditor_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         - finalizer: create_jwt
           config:
