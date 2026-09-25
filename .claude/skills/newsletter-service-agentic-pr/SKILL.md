@@ -26,14 +26,15 @@ description: >
 
 ## Relationship to the pre-PR review block
 
-The **Pre-PR review** block in `CLAUDE.md` points at
-`/lfx-skills:lfx-pre-pr-review`, which owns the local review lifecycle up to
-PR-open. This skill is its post-PR counterpart, named at the end of that
-section. It exists only to describe this repo's PR surface — which bots
-review here, and how its threads, labels, check comment and gate behave. It
-never replaces or restates the block or that skill, and where they disagree
-the block's hard rules win. Two boundaries hold throughout — the first
-inherited from the block unchanged, the second this skill's own:
+The **Pre-PR review** block in `CLAUDE.md` states the steps from
+"implementation committed" to "PR open"; `/lfx-skills:lfx-pre-pr-review` owns
+the review round within it. This skill is the block's post-PR counterpart,
+named at the end of that section. It exists only to describe this repo's PR
+surface — which bots review here, and how its threads, labels, check comment
+and gate behave. It never replaces or restates the block or that skill, and
+where they disagree the block's hard rules win. Two boundaries hold
+throughout — the first inherited from the block unchanged, the second this
+skill's own:
 
 - **No local reviewer once the PR exists** (the block's rule). Nothing in
   the loop below runs the repo's learnings reviewer, the general or security
