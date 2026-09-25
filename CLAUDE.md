@@ -39,7 +39,7 @@ It does not render AI content, publish indexer messages, or emit FGA tuples.
 - `docs/service-helm-chart.md`: service-local chart values, Postgres database modes, Gateway/Heimdall wiring, and deployment handoffs.
 - `charts/lfx-v2-newsletter-service/`: service-local Helm templates and defaults.
 
-Read the relevant contract before changing `pkg/api`, handlers, database schema, recipient resolution, analytics, open tracking, or chart values. Update docs in the same PR as behavior changes.
+Read the relevant contract before changing `pkg/api`, handlers, database schema, recipient resolution, analytics, open tracking, or chart values. Update docs in the same PR as behavior changes. These contract docs are authoritative: where prose in this file or in a `.claude/skills/**` skill disagrees with a contract doc in `docs/`, the contract doc wins and the prose is the bug.
 
 ## Consumed Cross-Repo Contracts
 

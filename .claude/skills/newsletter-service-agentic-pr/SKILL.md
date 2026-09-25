@@ -32,15 +32,17 @@ PR-open. This skill is its post-PR counterpart, named at the end of that
 section. It exists only to describe this repo's PR surface — which bots
 review here, and how its threads, labels, check comment and gate behave. It
 never replaces or restates the block or that skill, and where they disagree
-the block's hard rules win. Every boundary is inherited unchanged:
+the block's hard rules win. Two boundaries hold throughout — the first
+inherited from the block unchanged, the second this skill's own:
 
-- **No local reviewer once the PR exists.** Nothing in the loop below runs
-  the repo's learnings reviewer, the general or security reviewers, or a
-  full-branch review, whatever a round demands; there is no return to pre-PR
-  review.
+- **No local reviewer once the PR exists** (the block's rule). Nothing in
+  the loop below runs the repo's learnings reviewer, the general or security
+  reviewers, or a full-branch review, whatever a round demands; there is no
+  return to pre-PR review.
   Iterate only on the PR's bot and human review feedback, still running tests
   and checks, and batch each round of fixes into as few commits as possible.
-- **Merging is never this skill's job.** Nothing here merges; a merge happens
+- **Merging is never this skill's job** (this skill's own boundary — the
+  block says nothing about merging). Nothing here merges; a merge happens
   only after a separate, explicit human instruction.
 
 Every push to an open PR on this repo starts a review round with no human in
@@ -719,5 +721,7 @@ were and whether each was fixed or rebutted.
 - Never mention the bots; never touch the `needs-human` label.
 - Never edit or imitate `lfx-reviewer` comments — the pipeline trusts that
   account's authorship, and the apply step validates everything anyway.
-- Never run a local reviewer once the PR exists, and never merge — both are
-  the pre-PR review block's hard rules, and this skill cannot relax them.
+- Never run a local reviewer once the PR exists — the pre-PR review block's
+  hard rule, which this skill cannot relax — and never merge, this skill's
+  own boundary: a merge happens only after a separate, explicit human
+  instruction.

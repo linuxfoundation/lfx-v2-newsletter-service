@@ -3,7 +3,12 @@
 
 # Newsletter Service Review Knowledge Base
 
-This is a **GROWING KB** — an empirical, repo-owned record of the patterns that human reviewers and review bots have actually flagged on `lfx-v2-newsletter-service` PRs, distilled into mechanically-detectable rules. It is read by the repo-owned `/newsletter-service-learnings-reviewer` brain (`.claude/skills/newsletter-service-learnings-reviewer/SKILL.md`, the `KB review skill` named by the pre-PR review block in `CLAUDE.md` and launched by `/lfx-skills:lfx-pre-pr-review`), which matches a patch against these patterns and emits only findings that quote a pattern entry.
+This is a **GROWING KB** — an empirical, repo-owned record of the patterns that human reviewers and
+review bots have actually flagged on `lfx-v2-newsletter-service` PRs, distilled into
+mechanically-detectable rules. It is read by the repo-owned `/newsletter-service-learnings-reviewer`
+brain (`.claude/skills/newsletter-service-learnings-reviewer/SKILL.md`, the `KB review skill` named
+by the pre-PR review block in `CLAUDE.md` and launched by `/lfx-skills:lfx-pre-pr-review`), which
+matches a patch against these patterns and emits only findings that quote a pattern entry.
 
 This KB is the *empirical* surface. It deliberately does NOT duplicate:
 
@@ -13,6 +18,13 @@ This KB is the *empirical* surface. It deliberately does NOT duplicate:
 ## Methodology
 
 Built per `lfx-architecture-scratch/2026-05-DevX-Time-to-Merge/service-kb-research-playbook.md` (thin-corpus mode). Corpus: merged PRs only. For each PR we pulled inline review threads, review bodies, PR conversation, the diff, and GraphQL `reviewThreads` resolution state, then clustered raw comments into candidate patterns and applied the promotion gate (repo-specific + mechanically detectable + currently relevant + not tooling-enforced; with at least one of recurrence / cost-of-miss / acted-on-by-maintainer). In a ~7-PR corpus, recurrence is rarely reachable, so most entries clear the B gate on **cost-of-miss** or **acted-on-by-maintainer** (resolved by a code change, often endorsed by the maintainer reviewer dealako or merged by andrest50 / niravpatel27).
+
+One exception to the PR-thread source, for `known-false-positives.md` only: when the repo's
+conventions reviewer (`newsletter-service-code-reviewer`) was retired on 2026-09-25 under the pre-PR
+review block, its repo-specific known false positives were carried over as dated entries marked as
+such on their **Source** line, since that expertise had no PR thread behind it. The three reviewers
+the block launches — general, security and knowledge-base — split the surface as described above;
+only the knowledge-base brain reads this KB.
 
 ## Refresh — 2026-07-30 (LFXV2-2894, verified at `f13d015`)
 

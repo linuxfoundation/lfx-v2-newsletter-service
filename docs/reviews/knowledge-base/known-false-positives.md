@@ -5,7 +5,15 @@
 
 Findings that match any pattern below MUST be dropped. This list is the floor — even a quotable KB pattern doesn't survive if it matches a known false positive.
 
-**Who actually applies this file:** the repo-owned `newsletter-service-learnings-reviewer` brain, as its Step 4 floor, and nothing else. The general reviewer (`/lfx-skills:lfx-general-code-review`) and the security reviewer (`/lfx-skills:lfx-security-engineer`) do **not** load it: `docs/reviews/knowledge-base/**` is deliberately outside those roles' source surface (the general skill's method leaves this knowledge base to this brain), so they never read these entries and cannot apply them. Do not read the floor as a repo-wide suppression guarantee — a general- or security-reviewer finding matching an entry below is not automatically dropped, because those reviewers never see it. Human reviewers and bots are likewise out of scope: this file binds one brain.
+**Who actually applies this file:** the repo-owned `newsletter-service-learnings-reviewer` brain, as
+its Step 4 floor, and nothing else. The general reviewer (`/lfx-skills:lfx-general-code-review`) and
+the security reviewer (`/lfx-skills:lfx-security-engineer`) do **not** load it:
+`docs/reviews/knowledge-base/**` is deliberately outside those roles' source surface (the general
+skill's method leaves this knowledge base to this brain), so they never read these entries and
+cannot apply them. Do not read the floor as a repo-wide suppression guarantee — a general- or
+security-reviewer finding matching an entry below is not automatically dropped, because those
+reviewers never see it. Human reviewers and bots are likewise out of scope: this file binds one
+brain.
 
 ---
 
@@ -84,9 +92,23 @@ deleted silently so the disposition stays auditable.
 
 **Pattern matched:** a finding that asserts the send path should accept a caller-supplied `groupId`, transition `draft → sent` directly with no `sending` state, fan out synchronously inside the `POST …/send` request or without a concurrency bound, or that recipient lookup should go over HTTP to query-service (`internal/infrastructure/upstream/`, `COMMITTEE_SERVICE_URL`, `/query/resources`).
 
-**Why false:** those describe retired behavior. Current truth is in `docs/newsletter-service-contract.md` (`draft → sending → sent`, `group_id` minted by this service, detached fan-out bounded by `SEND_JOB_TIMEOUT` / `SEND_CONCURRENCY`, `409 send_in_progress`) and `docs/recipient-resolution.md` (members over NATS `lfx.committee-api.list_members`; the HTTP path is history and `upstream/` is an empty placeholder). Older prose still says otherwise — `CLAUDE.md` ("draft → sent"), `README.md` (query-service / `COMMITTEE_SERVICE_URL`), `.claude/skills/newsletter-service-dev/SKILL.md` ("`draft -> sent`") — and a finding whose only support is such a sentence is a docs bug, not the developer's. Where `CLAUDE.md` or a `.claude/skills/**` file disagrees with a service-owned contract doc in `docs/`, the contract doc wins: it is updated in the same PR as behavior by rule (`CLAUDE.md` — "Update docs in the same PR as behavior changes.").
+**Why false:** those describe retired behavior. Current truth is in
+`docs/newsletter-service-contract.md` (`status` is `draft`, `sending`, `scheduled` or `sent` — line
+65; `draft → sending` inside the request and the `sent` transition in a detached job bounded by
+`SEND_JOB_TIMEOUT` — lines 90–91; `group_id` minted by this service — line 69;
+`409 send_in_progress` — line 98) and `docs/recipient-resolution.md` (members over NATS
+`lfx.committee-api.list_members` — line 15; fan-out bounded by `SEND_CONCURRENCY` — line 55; the
+HTTP path is history and `upstream/` is an empty placeholder — line 18). Older prose still says
+otherwise at HEAD — `CLAUDE.md:22` ("draft → sent"), `README.md:4,36,56,294` ("draft → sent",
+`lfx-v2-query-service` / `COMMITTEE_SERVICE_URL` / `/query/resources`),
+`.claude/skills/newsletter-service-dev/SKILL.md:64` ("`draft -> sent`") — so a KB finding whose only
+support is such a sentence is a docs bug, not the developer's. The precedence itself is a repo rule
+and lives where the general reviewer reads it, not here: `CLAUDE.md` § Authoritative Repo Docs —
+"where prose in this file or in a `.claude/skills/**` skill disagrees with a contract doc in
+`docs/`, the contract doc wins". This entry only keeps the learnings brain from re-raising the
+retired designs.
 
-**Source:** salvaged 2026-09-25 from the retired `.claude/skills/newsletter-service-code-reviewer/SKILL.md` (Step 2 "hold the current send truth", Step 4, and its precedence rule); `docs/recipient-resolution.md` — "History: an earlier revision called query-service over HTTP (`GET /query/resources`) … That path was retired".
+**Source:** carried over 2026-09-25 from the retired conventions reviewer `.claude/skills/newsletter-service-code-reviewer/SKILL.md` (Step 2 "hold the current send truth", Step 4, and its precedence rule) — not from a PR thread; `docs/recipient-resolution.md:18` — "History: an earlier revision called query-service over HTTP (`GET /query/resources`) … That path was retired".
 
 ---
 
@@ -94,6 +116,6 @@ deleted silently so the disposition stays auditable.
 
 When you find a bot or KB finding the team has explicitly decided is not relevant for this repo:
 
-1. Add an entry here with **Pattern matched**, **Why false**, and **Source** (PR # + quote where possible).
+1. Add an entry here with **Pattern matched**, **Why false**, and **Source** (PR # + quote where possible). One exception to the PR-thread source: a dated entry carried over from the retired conventions reviewer (`newsletter-service-code-reviewer`, retired 2026-09-25), marked as such on its **Source** line.
 2. If the pattern was previously in a category file, remove it there — don't keep it in both.
 3. Keep this list small. If it grows past ~25 entries, re-audit; that signals the KB is too permissive.

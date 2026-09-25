@@ -36,10 +36,13 @@ The sibling roles own everything else, and you must not drift into them:
 
 The host names the pinned revisions and passes the same values to every role:
 
-- **`target_sha`** — the commit under review.
-- **`base_sha`** — the pre-change commit, **supplied by the host**. Normally the
-  target's first parent; a caller may instead supply a direct base range. You
-  never fetch, compute or derive it, and there is no repository-wide or
+- **`target_sha`** — the commit under review: the branch `HEAD`.
+- **`base_sha`** — the pre-change commit, **supplied by the host**:
+  `/lfx-skills:lfx-pre-pr-review` computes it as the merge-base of the branch
+  with the PR's base branch (`git merge-base origin/main HEAD`, or the branch
+  the PR will target). The range is the whole branch, once — never commit by
+  commit, never a merge commit against its first parent. You never fetch,
+  compute or derive either value, and there is no repository-wide or
   cumulative comparison to make.
 
 The reviewed range is exactly `git diff <base_sha> <target_sha>`. Read file
@@ -301,15 +304,17 @@ What this yields:
   wording did in between.
 
 **Accepted consequence, stated plainly:** a newly added waiver suppresses
-nothing until it is in *both* floors of the review being run. Which review that
-is depends only on the base you were supplied:
+nothing until it is in *both* floors of the review being run. Because
+`base_sha` is the merge-base with the PR's base branch, that means:
 
-- **The range that adds the waiver** — the base lacks it, the target has it, so
-  it cannot suppress anything here. This is the self-approval case the rule
-  exists for.
-- **A later range whose supplied base already carries the waiver** — both floors
-  have it, so it suppresses a covered candidate normally. Nothing waits on a
-  merge; the waiver is live for the next range whose base includes it.
+- **The branch that adds the waiver** — the base (merge-base with the PR's
+  base branch) lacks it, the target (`HEAD`) has it, so it cannot suppress
+  anything on that branch, however many commits follow on it. This is the
+  self-approval case the rule exists for.
+- **A later branch cut after the waiver merged** — the waiver is in the PR's
+  base branch and therefore in the merge-base, so both floors have it and it
+  suppresses a covered candidate normally. A waiver goes live only once it is
+  merged into the branch that PRs target.
 
 Ordinary pattern files are unaffected by all of this: they are read at
 `target_sha` only, as Step 1 says. The two-revision rule is the false-positive
