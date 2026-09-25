@@ -1,0 +1,26 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+---
+GITHUB_COMMENT_REPORTER: false
+DISABLE_LINTERS:
+  - KUBERNETES_KUBECONFORM
+  - KUBERNETES_KUBESCAPE
+  - SPELL_LYCHEE
+  - SPELL_CSPELL
+  - YAML_PRETTIER
+DISABLE_ERRORS_LINTERS:
+  - COPYPASTE_JSCPD
+  - REPOSITORY_TRIVY
+  - REPOSITORY_CHECKOV
+  - REPOSITORY_DEVSKIM
+YAML_YAMLLINT_CONFIG_FILE: .yamllint
+REPOSITORY_KICS_ARGUMENTS: scan --no-progress --exclude-severities="medium,low,info,trace"
+SPELL_CSPELL_ANALYZE_FILE_NAMES: false
+SPELL_VALE_PRE_COMMANDS:
+  - command: mkdir -p styles
+    cwd: "workspace"
+  - command: vale sync
+    cwd: "workspace"
+FILTER_REGEX_EXCLUDE: '(templates/.*\.yml|templates/.*\.yaml)'
+KUBERNETES_DIRECTORY: charts/lfx-v2-newsletter-service/templates
+KUBERNETES_HELM_ARGUMENTS: charts/lfx-v2-newsletter-service

@@ -1,0 +1,55 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lfx-v2-newsletter-service.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "lfx-v2-newsletter-service.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow HTTP traffic to the service port from anywhere in the cluster
+    # (API gateway / lfx-v2-ui proxy). Restrict further via namespace
+    # selectors once the gateway topology stabilizes.
+    - ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+  egress:
+    # DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # OpenTelemetry collector (gRPC and HTTP)
+    - ports:
+        - port: {{ .Values.networkPolicy.otelGRPCPort }}
+          protocol: TCP
+        - port: {{ .Values.networkPolicy.otelHTTPPort }}
+          protocol: TCP
+    # PostgreSQL (CloudNativePG cluster or external)
+    - ports:
+        - port: {{ .Values.networkPolicy.postgresPort }}
+          protocol: TCP
+    # NATS request/reply — upstream calls to committee-service, project-service,
+    # and email-service. This is the primary service-to-service transport.
+    - ports:
+        - port: {{ .Values.networkPolicy.natsPort }}
+          protocol: TCP
+    # External HTTPS — JWKS endpoint for OIDC verification and any third-party
+    # HTTPS upstream. Service-to-service calls go via NATS, not HTTPS.
+    - ports:
+        - port: 80
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+{{- end }}

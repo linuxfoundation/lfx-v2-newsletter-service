@@ -1,0 +1,386 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+
+# image is the configuration for the container image.
+image:
+  # repository is the container image repository.
+  repository: ghcr.io/linuxfoundation/lfx-v2-newsletter-service/newsletter-api
+  # tag overrides appVersion from Chart.yaml when set.
+  tag: ""
+  # pullPolicy is the image pull policy.
+  pullPolicy: IfNotPresent
+
+# replicaCount is the number of deployment replicas.
+replicaCount: 1
+
+# podAnnotations are additional annotations applied to the pod template.
+podAnnotations: {}
+
+# podLabels are additional labels applied to the pod template.
+podLabels: {}
+
+# podDisruptionBudget configures a PDB for the deployment.
+# Only one of minAvailable or maxUnavailable may be set.
+podDisruptionBudget:
+  enabled: false
+  # minAvailable: 1
+
+# topologySpreadConstraints controls how pods are spread across nodes/zones.
+topologySpreadConstraints: []
+
+# terminationGracePeriodSeconds must cover the sequential (LIFO-deferred)
+# shutdown budget: HTTP drain (25s) + background send-job drain (20s) + OTel
+# flush (25s ceiling, normally sub-second). Send state is protected first —
+# only trailing telemetry is at risk near the limit, and undrained send jobs
+# are recovered by the stuck-sending sweep on the next pod.
+terminationGracePeriodSeconds: 75
+
+# resources is the container resource request and limit configuration.
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# service is the Kubernetes Service configuration.
+service:
+  enabled: true
+  # port is the service port.
+  port: 8080
+
+# app is runtime configuration passed as environment variables.
+app:
+  # logLevel is the log level: debug, info, warn, or error.
+  logLevel: info
+
+  # nats is the NATS connection used by the email dispatcher, committee
+  # member client, and project metadata client. Newsletter-service makes no
+  # HTTP upstream calls — recipient resolution, project metadata lookup, and
+  # email send are all NATS request/reply.
+  nats:
+    url: "nats://lfx-platform-nats.lfx.svc.cluster.local:4222"
+    # timeout / maxReconnect / reconnectWait fall back to the app defaults
+    # (10s / unlimited / 2s) when empty.
+    timeout: ""
+    maxReconnect: ""
+    reconnectWait: ""
+
+  # send tunes the per-recipient send loop.
+  send:
+    # fanoutEnabled toggles real email dispatch. When false the orchestrator
+    # validates inputs and resolves recipients but does NOT call the
+    # email-service NATS subject — useful for dev/staging shake-out of the
+    # recipient-resolution path without sending real mail.
+    fanoutEnabled: true
+    # concurrency caps in-flight email-service requests during fan-out.
+    # Empty string falls back to the app default (5).
+    concurrency: ""
+    # jobTimeout bounds the detached background fan-out that runs after a send
+    # is accepted (Go duration string, e.g. "30m"). Empty string falls back to
+    # the app default (30m).
+    jobTimeout: ""
+    # stuckSendTTL is the age after which a newsletter stranded in 'sending'
+    # (pod crash mid-fan-out) is recovered to 'sent' by the periodic sweep
+    # (Go duration string). Empty string falls back to the app default (45m);
+    # the app enforces a minimum of jobTimeout + 5m.
+    stuckSendTTL: ""
+    # fromAddress is the SMTP envelope From applied to every outbound
+    # newsletter. Domain must be in the email-service allowlist. Empty falls
+    # back to the app default (newsletter@lfx.linuxfoundation.org).
+    fromAddress: ""
+    # fromAddressOverrides selects a per-project From address by project slug,
+    # overriding fromAddress for those projects. Format is a comma-separated
+    # list of `slug=address` pairs, e.g.
+    # "agentic-ai-foundation=newsletter@lfx.aaif.io". Each override domain must
+    # ALSO be in the email-service allowlist (SMTP_ALLOWED_FROM_DOMAINS) or
+    # send_email rejects the message. Empty disables per-project overrides.
+    fromAddressOverrides: "agentic-ai-foundation=newsletter@lfx.aaif.io"
+    # replyToAllowedDomains lists the domains a resolved sender email may use
+    # as Reply-To (comma-separated, subdomain suffix matching applies). A
+    # resolved address outside this list falls back to the draft's stored
+    # ed_reply_email instead of being sent to email-service, which enforces
+    # its own SMTP_ALLOWED_REPLY_TO_DOMAINS allowlist (default
+    # "linuxfoundation.org") and would otherwise reject the entire send. Keep
+    # in sync with email-service's allowlist — e.g. if a project's sender
+    # uses an address outside linuxfoundation.org (such as an aaif.io-domain
+    # AAIF account), add that domain here AND to email-service's
+    # SMTP_ALLOWED_REPLY_TO_DOMAINS, or the resolved address is silently
+    # dropped in favor of the fallback. Empty falls back to the app default
+    # ("linuxfoundation.org"). Left empty here deliberately — any project-
+    # specific widening is set per-environment in deployment values,
+    # alongside the matching email-service allowlist change, rather than as
+    # a chart default every environment inherits.
+    replyToAllowedDomains: ""
+
+    # schedule tunes scheduled-send (LFXV2-2685) arm/cancel windows. Scheduling
+    # itself is SendGrid-only (send.provider="sendgrid"); these values are
+    # inert on the email-service provider, where the schedule endpoint returns
+    # 503.
+    schedule:
+      # maxHorizon caps how far in the future a schedule can be armed (Go
+      # duration string). Empty falls back to the app default (72h) — the hard
+      # ceiling enforced by SendGrid's Mail Send send_at. A value above 72h
+      # fails Helm-adjacent app startup validation.
+      maxHorizon: ""
+      # minLead is the minimum lead time required before scheduled_at to arm a
+      # new schedule (Go duration string). Minimum 30m enforced to ensure all
+      # per-recipient provider arming calls complete before scheduled release.
+      # Empty falls back to the app default (30m). Any value below 30m is
+      # automatically capped to 30m at startup.
+      minLead: ""
+      # cancelBuffer rejects a cancel-schedule request inside this window
+      # before the armed scheduled_at, since SendGrid cancel is best-effort
+      # near release (Go duration string). Minimum 10m enforced by SendGrid API.
+      # Empty falls back to the app default (10m).
+      cancelBuffer: ""
+
+    # provider selects the OUTBOUND send provider: "email-service" (default;
+    # fan-out to lfx-v2-email-service over NATS -> SES, kept for transactional)
+    # or "sendgrid" (newsletter-service brokers SendGrid directly for
+    # newsletter/marketing sends). This gates only outbound send env
+    # (EMAIL_PROVIDER, SENDGRID_API_KEY, authenticated domains). Webhook
+    # ingestion (the key env + the event-webhook HTTPRoute + RuleSet) is gated
+    # separately on sendgrid.webhookPublicKeySecretRef.name, so historical or
+    # scheduled SendGrid events keep updating analytics even after a flip back
+    # to email-service. Only "email-service" or "sendgrid" are valid; any other
+    # value fails the Helm render.
+    provider: "email-service"
+
+    # sendgrid configures the direct SendGrid provider. Only used when
+    # send.provider="sendgrid".
+    sendgrid:
+      # authenticatedDomains is the comma-separated allowlist of
+      # SendGrid-authenticated sending domains. A From outside it is rejected
+      # before hitting SendGrid; required outside local/dev.
+      authenticatedDomains: ""
+      # apiKeySecretRef sources SENDGRID_API_KEY from a Kubernetes Secret
+      # (typically the chart's ExternalSecret target). Required for real sends.
+      apiKeySecretRef:
+        name: ""
+        key: "sendgrid-api-key"
+      # webhookPublicKeySecretRef sources SENDGRID_WEBHOOK_PUBLIC_KEY (the ECDSA
+      # signed-event-webhook key). Setting name here gates the webhook env, the
+      # event-webhook HTTPRoute path, and its RuleSet rule — independent of
+      # provider, so ingestion survives a flip back to email-service. Set it only
+      # once the secret key exists: the env is a required secretKeyRef, so the pod
+      # waits for the key rather than starting with the webhook silently
+      # unregistered. Empty (default) renders no webhook wiring.
+      webhookPublicKeySecretRef:
+        name: ""
+        key: "sendgrid-webhook-public-key"
+
+  # selfServeBaseURL is the base URL of the LFX Self-Serve web app, used to
+  # build the "My Newsletters" deep link in the email compliance footer
+  # (<selfServeBaseURL>/newsletters/my). Empty falls back to the app default
+  # (https://app.lfx.dev). Set per environment in deployment values (e.g.
+  # https://app.staging.lfx.dev).
+  selfServeBaseURL: ""
+
+  # unsubscribe configures the per-recipient one-click opt-out link
+  # embedded in the email footer. publicBaseURL is the externally-reachable
+  # origin of this service; the HMAC secret signs the token so links can't
+  # be forged. The HMAC secret is REQUIRED when send.fanoutEnabled=true.
+  unsubscribe:
+    # publicBaseURL is the externally-reachable origin used to build the
+    # unsubscribe URL embedded in outgoing emails. Defaults to
+    # `https://lfx-api.<lfx.domain>` so it auto-tracks the same hostname
+    # served by the HTTPRoute. Override only when fronting the service with
+    # a different public origin.
+    publicBaseURL: ""
+    # secret sets the HMAC key directly (local/dev only). Prefer secretRef.
+    secret: ""
+    # secretRef sources the HMAC key from a Kubernetes Secret.
+    secretRef:
+      name: ""
+      key: "unsubscribe-secret"
+
+  # jwksURL is the URL of the JWKS endpoint used to verify inbound JWTs.
+  # REQUIRED when requireUserAuth=true (default).
+  jwksURL: ""
+
+  # audience is the required `aud` claim for inbound JWTs. Must match the
+  # value Heimdall sets via the create_jwt finalizer (templates/ruleset.yaml).
+  audience: ""
+
+  # use_oidc_contextualizer toggles Heimdall's OIDC contextualizer in the
+  # rendered RuleSet.
+  use_oidc_contextualizer: true
+
+  # requireUserAuth toggles JWT validation. Disable only for local development.
+  requireUserAuth: true
+
+  # extraEnv allows injecting additional environment variables into the container.
+  extraEnv: []
+
+  # otel is the configuration for OpenTelemetry observability.
+  # Exporters and propagators are read by autoexport/autoprop from the standard
+  # OTEL_TRACES_EXPORTER, OTEL_METRICS_EXPORTER, OTEL_LOGS_EXPORTER, and
+  # OTEL_PROPAGATORS environment variables. The tracesSamplerArg value maps to
+  # OTEL_TRACES_SAMPLER_ARG (read natively by the OTel SDK).
+  otel:
+    # serviceName is the service name for OpenTelemetry resource identification
+    # (default: "lfx-v2-newsletter-service")
+    serviceName: "lfx-v2-newsletter-service"
+    # serviceVersion is the service version for OpenTelemetry resource identification
+    # (default: build-time Version variable)
+    serviceVersion: ""
+    # protocol specifies the OTLP protocol: "grpc" or "http"
+    # (default: "grpc")
+    protocol: "grpc"
+    # endpoint is the OTLP collector endpoint
+    # For gRPC: typically "host:4317", for HTTP: typically "host:4318"
+    endpoint: ""
+    # insecure disables TLS for the OTLP connection
+    # Set to "true" for in-cluster communication without TLS
+    insecure: "false"
+    # tracesExporter specifies the traces exporter: "otlp" or "none"
+    # (default: "none")
+    tracesExporter: "none"
+    # tracesSampler specifies the OTEL_TRACES_SAMPLER type. Supported values:
+    # "always_on", "always_off", "traceidratio", "parentbased_always_on",
+    # "parentbased_always_off", "parentbased_traceidratio".
+    # When empty, the application defaults to parentbased_traceidratio.
+    tracesSampler: ""
+    # tracesSamplerArg specifies the OTEL_TRACES_SAMPLER_ARG (sampler ratio or parent_sampler_arg).
+    # Used by "traceidratio" and "parentbased_traceidratio" samplers (defaults to 1.0 if empty).
+    # (default: "1.0")
+    tracesSamplerArg: "1.0"
+    # metricsExporter specifies the metrics exporter: "otlp" or "none"
+    # (default: "none")
+    metricsExporter: "none"
+    # logsExporter specifies the logs exporter: "otlp" or "none"
+    # (default: "none")
+    logsExporter: "none"
+    # propagators specifies the trace context propagators to use
+    # Comma-separated list of: "tracecontext", "baggage", "jaeger"
+    # (default: "tracecontext,baggage,jaeger")
+    propagators: "tracecontext,baggage,jaeger"
+
+# database configures the PostgreSQL backend.
+database:
+  # mode selects the database provider:
+  #   "external"         — connect to an existing PostgreSQL instance via a
+  #                        Kubernetes Secret containing a DATABASE_URL.
+  #   "database"         — create a CloudNativePG Database CR pointing at an
+  #                        existing Cluster (e.g. provisioned by the umbrella
+  #                        chart). Use this mode when deploying via the umbrella.
+  #   "cluster+database" — create both a CloudNativePG Cluster CR and a Database
+  #                        CR. Use this mode when deploying the chart standalone
+  #                        without an umbrella.
+  mode: external
+
+  # cloudNativePG configures access to a CloudNativePG Cluster (modes:
+  # "database" and "cluster+database").
+  cloudNativePG:
+    # clusterName is the name of the CloudNativePG Cluster resource. The
+    # CloudNativePG operator creates secrets named <clusterName>-app and
+    # <clusterName>-superuser. In "cluster+database" mode the cluster is
+    # provisioned by this chart under this name; in "database" mode the cluster
+    # must already exist (e.g. created by the umbrella chart).
+    clusterName: ""
+    # databaseName is the PostgreSQL database within the cluster to connect to.
+    databaseName: newsletters
+    # cluster is used only in "cluster+database" mode to configure the
+    # CloudNativePG Cluster resource provisioned by this chart.
+    cluster:
+      instances: 1
+      storage:
+        size: 1Gi
+
+  # external configures an existing PostgreSQL connection (mode: external only).
+  external:
+    # secretName is the name of the Kubernetes Secret to read the DSN from.
+    secretName: ""
+    # shape selects how the DSN is read from the secret:
+    #   "url"    — read a single DATABASE_URL env var from `secretKey` (default).
+    #              Use when the secret has a single key holding a libpq URL.
+    #   "fields" — read host/port/username/password/dbname as separate
+    #              PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE env vars from the
+    #              keys mapping below. Use with the LFX RDS-via-ESO pattern
+    #              where AWS Secrets Manager provides one key per JSON field.
+    shape: "url"
+    # secretKey is the secret key holding the libpq URL (shape: url only).
+    secretKey: "url"
+    # keys maps each DSN field to a secret key (shape: fields only). Defaults
+    # match the AWS RDS standard JSON layout produced by the
+    # SecretsManagerRDSPostgreSQLRotationSingleUser rotation Lambda.
+    keys:
+      host: host
+      port: port
+      username: username
+      password: password
+      dbname: dbname
+
+# serviceAccount is the configuration for the Kubernetes ServiceAccount.
+serviceAccount:
+  create: true
+  name: "lfx-v2-newsletter-service"
+  annotations: {}
+
+# networkPolicy controls the Kubernetes NetworkPolicy for this workload.
+# Allows egress to DNS, NATS (service-to-service request/reply), OTel,
+# Postgres, and external HTTPS (e.g. JWKS).
+networkPolicy:
+  enabled: true
+  natsPort: 4222
+  otelGRPCPort: 4317
+  otelHTTPPort: 4318
+  postgresPort: 5432
+
+# httpRoute toggles the Gateway API HTTPRoute (templates/httproute.yaml).
+# Disable when deploying behind a different ingress (e.g. plain Service +
+# NodePort for local dev).
+httpRoute:
+  enabled: true
+
+# lfx is the configuration for the LFX platform context.
+lfx:
+  # domain is the base domain used to build the hostname (lfx-api.<domain>).
+  domain: k8s.orb.local
+  # namespace is the target namespace for routing resources (HTTPRoute).
+  namespace: lfx
+
+# traefik configures the Gateway API parent reference for the HTTPRoute.
+traefik:
+  gateway:
+    name: lfx-platform-gateway
+    namespace: lfx
+
+# heimdall configures the Heimdall authorization sidecar / ruleset.
+heimdall:
+  # enabled toggles both the HTTPRoute ExtensionRef filter and the RuleSet
+  # template (templates/ruleset.yaml). Disable for local-only deployments
+  # that don't have Heimdall installed.
+  enabled: true
+  # url is the Heimdall forwardAuth endpoint (consumed by the Traefik
+  # middleware when add_middleware=true).
+  url: http://lfx-platform-heimdall.lfx.svc.cluster.local:4456
+  # jwksUrl is the JWKS endpoint Heimdall serves the JWTs it signs.
+  jwksUrl: http://lfx-platform-heimdall.lfx.svc.cluster.local:4457/.well-known/jwks
+  # add_middleware renders the Traefik Middleware CRDs (heimdall-forward-body
+  # / heimdall). Leave false when another chart owns the middleware.
+  add_middleware: false
+
+# openfga configures OpenFGA fine-grained authorization. Most newsletter
+# RuleSet routes fall back to allow_all when disabled; the opt-outs PII route
+# uses direct openfga_check (fail-closed, no fallback) and requires this to be
+# enabled.
+openfga:
+  enabled: false
+
+# externalSecretsOperator gates the ExternalSecret + SecretStore templates.
+# Defaults to disabled; enable when wiring NATS or other AWS-Secrets-Manager
+# backed credentials.
+externalSecretsOperator:
+  enabled: false
+  externalSecret:
+    refreshInterval: "1h"
+    # data is a list of { secretKey, remoteRef: { key, property? } } entries.
+    data: []
+
+# global is the umbrella-chart scope. awsRegion gates ExternalSecret /
+# SecretStore rendering and is normally set by the parent chart.
+global:
+  awsRegion: ""

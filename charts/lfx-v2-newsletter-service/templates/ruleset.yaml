@@ -1,0 +1,532 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+{{- if .Values.heimdall.enabled }}
+---
+apiVersion: heimdall.dadrus.github.com/v1alpha4
+kind: RuleSet
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lfx-v2-newsletter-service.labels" . | nindent 4 }}
+spec:
+  rules:
+    # ---------------------------------------------------------------------
+    # Newsletter CRUD (project-scoped). FGA gates by `project:{project_uid}`
+    # extracted from the URL path. Writes require `writer`; reads require
+    # `viewer`. Pattern mirrors lfx-v2-committee-service.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:create"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:list"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /projects/:project_uid/newsletters
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: viewer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:get"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: viewer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # Committee-scoped newsletter list (member-facing). Unlike the
+    # project-scoped rules above, FGA gates on `committee:{committee_uid}`
+    # with `member` OR `auditor` (openfga_or_check): committee members may
+    # list the sent newsletters addressed to their committee, and the
+    # committee auditor relation folds in the oversight roles (committee
+    # writers, project auditors/writers, meeting coordinators) so holding a
+    # stronger role never grants less than membership — consistent with the
+    # rest of the platform. Member tuples are maintained by committee-service
+    # via fga-sync (member_put / member_remove), so revocation after a
+    # membership delete is eventual — normally near-immediate, but tuple
+    # removal is asynchronous and best-effort per committee-service's
+    # docs/fga-contract.md. The per-request check here guarantees no caching
+    # on top of tuple state: access ends as soon as the tuple is gone.
+    # `viewer` is unsuitable — the committee viewer relation includes the
+    # public wildcard [user:*]. Does NOT fall back to allow_all — this FGA
+    # check IS the route's entire authorization boundary, so it fails closed
+    # like the opt-out rules: unreachable when `openfga.enabled=false`.
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:committee_list"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /committees/:committee_uid/newsletters
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: openfga_or_check
+          config:
+            values:
+              relation: member
+              object: "committee:{{ "{{- .Request.URL.Captures.committee_uid -}}" }}"
+              or_relation: auditor
+              or_object: "committee:{{ "{{- .Request.URL.Captures.committee_uid -}}" }}"
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:update"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - PUT
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:delete"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - DELETE
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:send"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/send
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # ---------------------------------------------------------------------
+    # Scheduled sends (LFXV2-2685): arming and cancelling a schedule carry
+    # exactly the authority `send` already carries — same actor, same blast
+    # radius, no new data exposure — so both rules are copied verbatim from
+    # `newsletters:send` above, changing only id and path.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:schedule"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/schedule
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:cancel_schedule"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/cancel-schedule
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # ---------------------------------------------------------------------
+    # Recipient resolution + test send. Recipient queries are reads (viewer);
+    # test-send is a write (writer).
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:recipient_count"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/recipient-count
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: viewer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:recipients"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/recipients
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: viewer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:test_send"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/test-send
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # ---------------------------------------------------------------------
+    # Newsletter opt-outs list (project-scoped). Returns PII (email addresses).
+    # Requires `auditor` role. Does NOT fall back to allow_all — OpenFGA must be
+    # enabled and properly configured to expose this endpoint. Fail-closed for security.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:opt_outs_list"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /projects/:project_uid/newsletter-opt-outs
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: auditor
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:opt_outs_delete"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - DELETE
+        routes:
+          - path: /projects/:project_uid/newsletter-opt-outs/:opt_out_id
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # Per-newsletter analytics.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:analytics"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/analytics
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: viewer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # Per-newsletter per-recipient engagement. Returns PII beyond recipient lists:
+    # engagement history (opened, failed, per-recipient open timestamps). While
+    # recipients-preview already exposes email addresses, this endpoint is a NEW
+    # exposure surface for engagement data. Requires the restrictive `auditor`
+    # relation. Does NOT fall back to allow_all — fails closed like the opt-out
+    # rules: unreachable when `openfga.enabled=false`.
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:analytics_recipients"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/analytics/recipients
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: auditor
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # ---------------------------------------------------------------------
+    # Open-tracking pixel: intentionally unauthenticated. Recipients open
+    # newsletters in email clients with no session. Identity is established
+    # via the SHA-256 recipient_hash query parameter, validated server-side.
+    # The project_uid in the path is also validated by the handler against
+    # the persisted newsletter's project_uid; a tampered URL is silently
+    # dropped (pixel still returns 200).
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletter_opens:pixel"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+          - HEAD
+        routes:
+          - path: /projects/:project_uid/newsletter-opens/:newsletter_uid
+      execute:
+        - authorizer: allow_all
+
+    # ---------------------------------------------------------------------
+    # One-click unsubscribe: intentionally unauthenticated. Recipients click
+    # the footer link from their mail client with no session. Authorization
+    # comes from the HMAC-signed `t` query parameter, verified server-side.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:unsubscribe"
+      allow_encoded_slashes: 'off'
+      match:
+        # GET only — HEAD probes from link checkers and mail-client preview
+        # engines must not reach the handler (the handler also no-ops HEAD
+        # defensively, but blocking at the gateway keeps the audit trail clean).
+        methods:
+          - GET
+        routes:
+          - path: /newsletters/unsubscribe
+      execute:
+        - authorizer: allow_all
+
+    {{- if .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+    # ---------------------------------------------------------------------
+    # SendGrid event webhook: intentionally unauthenticated. SendGrid POSTs
+    # engagement events with no session; authenticity is the ECDSA signature
+    # over (timestamp + body) plus a freshness window, verified in-app. Allowed
+    # whenever the webhook key is configured, independent of the active outbound
+    # provider, so historical/scheduled events keep ingesting after a flip.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:sendgrid:events"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /newsletters/sendgrid/events
+      execute:
+        - authorizer: allow_all
+    {{- end }}
+{{- end }}

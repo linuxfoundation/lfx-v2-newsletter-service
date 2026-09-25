@@ -1,0 +1,358 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lfx-v2-newsletter-service.labels" . | nindent 4 }}
+  {{- with .Values.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "lfx-v2-newsletter-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "lfx-v2-newsletter-service.labels" . | nindent 8 }}
+        {{- include "lfx-v2-newsletter-service.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name | default .Chart.Name }}
+      automountServiceAccountToken: false
+      # Must cover the sequential shutdown budget: HTTP drain (25s), then the
+      # background send-job drain (20s), then the deferred OTel flush (25s
+      # ceiling). The k8s default of 30s would SIGKILL mid-drain when a slow
+      # request eats into the first window.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 75 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.service.port | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.app.logLevel | quote }}
+            # NATS — used by the email dispatcher, committee member client,
+            # and project metadata client. Newsletter-service makes no HTTP
+            # upstream calls (the previous COMMITTEE_SERVICE_URL was retired
+            # along with the HTTP committee_client because Heimdall-minted
+            # JWTs failed OIDC validation at query-service).
+            - name: NATS_URL
+              value: {{ .Values.app.nats.url | quote }}
+            {{- with .Values.app.nats.timeout }}
+            - name: NATS_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.nats.maxReconnect }}
+            - name: NATS_MAX_RECONNECT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.nats.reconnectWait }}
+            - name: NATS_RECONNECT_WAIT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SEND_FANOUT_ENABLED
+              value: {{ .Values.app.send.fanoutEnabled | quote }}
+            {{- with .Values.app.send.concurrency }}
+            - name: SEND_CONCURRENCY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.jobTimeout }}
+            - name: SEND_JOB_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.stuckSendTTL }}
+            - name: STUCK_SEND_TTL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.fromAddress }}
+            - name: EMAIL_FROM_ADDRESS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.fromAddressOverrides }}
+            - name: EMAIL_FROM_ADDRESS_OVERRIDES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.replyToAllowedDomains }}
+            - name: EMAIL_REPLY_TO_ALLOWED_DOMAINS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.schedule.maxHorizon }}
+            - name: NEWSLETTER_SCHEDULE_MAX_HORIZON
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.schedule.minLead }}
+            - name: NEWSLETTER_SCHEDULE_MIN_LEAD
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.schedule.cancelBuffer }}
+            - name: NEWSLETTER_SCHEDULE_CANCEL_BUFFER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if and (ne .Values.app.send.provider "email-service") (ne .Values.app.send.provider "sendgrid") }}
+            {{- fail (printf "app.send.provider must be \"email-service\" or \"sendgrid\", got %q" .Values.app.send.provider) }}
+            {{- end }}
+            {{- if eq .Values.app.send.provider "sendgrid" }}
+            # Outbound SendGrid send settings, gated on the active provider.
+            - name: EMAIL_PROVIDER
+              value: "sendgrid"
+            {{- if .Values.app.send.sendgrid.authenticatedDomains }}
+            - name: SENDGRID_AUTHENTICATED_DOMAINS
+              value: {{ .Values.app.send.sendgrid.authenticatedDomains | quote }}
+            {{- else }}
+            {{/* Fail the install rather than let every pod CrashLoop in AppConfigFromEnv:
+                 a deployed SendGrid provider requires the authenticated-domain allowlist
+                 (an unset LFX_ENVIRONMENT is treated as production and fails closed), so an
+                 empty list would disable the From-domain guard. Mirrors the API-key guard. */}}
+            {{- required "app.send.sendgrid.authenticatedDomains is required when app.send.provider=sendgrid" "" }}
+            {{- end }}
+            {{- if not .Values.app.send.sendgrid.apiKeySecretRef.name }}
+            {{/* A SendGrid provider needs the API key to arm scheduled sends and
+                 to support cancellation of outstanding batches even after a
+                 provider switch back to email-service (LFXV2-2685). Require the ref
+                 for provider=sendgrid. */}}
+            {{- required "app.send.sendgrid.apiKeySecretRef.name is required when app.send.provider=sendgrid" "" }}
+            {{- end }}
+            {{- if not .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+            {{/* A SendGrid provider needs its event webhook to populate engagement
+                 analytics; without the public key the webhook route is never registered
+                 and no delivery/open/bounce events arrive. Require the ref for
+                 provider=sendgrid, matching the app's startup guard. The env itself is
+                 still rendered independently below, so events keep flowing after a flip
+                 back to email-service. */}}
+            {{- required "app.send.sendgrid.webhookPublicKeySecretRef.name is required when app.send.provider=sendgrid" "" }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.app.send.sendgrid.apiKeySecretRef.name }}
+            # SendGrid API key is wired independently of the active outbound provider
+            # to support the independently-wired scheduler that handles cancellations
+            # of scheduled sends even after a provider rollback to email-service
+            # (LFXV2-2685). Credentials are NOT required when provider=email-service
+            # but MUST be configured when scheduled sends need to be cancelable.
+            - name: SENDGRID_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.send.sendgrid.apiKeySecretRef.name }}
+                  key: {{ .Values.app.send.sendgrid.apiKeySecretRef.key }}
+            {{- end }}
+            {{- if .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+            # Webhook ingestion is independent of the active outbound provider: the
+            # handler registers whenever this key exists, so historical/scheduled
+            # SendGrid events keep updating analytics even after a flip back to
+            # email-service. The event-webhook HTTPRoute + RuleSet are gated on the
+            # same key ref. Required (not optional): configure this ref only once
+            # the secret key exists, so the pod waits for it rather than starting
+            # with an empty value that would leave the webhook unregistered until a
+            # manual rollout (a Secret-backed env var is not refreshed in place).
+            - name: SENDGRID_WEBHOOK_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+                  key: {{ .Values.app.send.sendgrid.webhookPublicKeySecretRef.key }}
+            {{- end }}
+            {{- with .Values.app.selfServeBaseURL }}
+            - name: LFX_SELF_SERVE_BASE_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: NEWSLETTER_PUBLIC_BASE_URL
+              value: {{ default (printf "https://lfx-api.%s" .Values.lfx.domain) .Values.app.unsubscribe.publicBaseURL | quote }}
+            {{- if .Values.app.unsubscribe.secretRef.name }}
+            - name: NEWSLETTER_UNSUBSCRIBE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.unsubscribe.secretRef.name }}
+                  key: {{ .Values.app.unsubscribe.secretRef.key }}
+            {{- else if .Values.app.unsubscribe.secret }}
+            - name: NEWSLETTER_UNSUBSCRIBE_SECRET
+              value: {{ .Values.app.unsubscribe.secret | quote }}
+            {{- else if .Values.app.send.fanoutEnabled }}
+            {{/* Fail the install instead of letting the pod CrashLoop with a missing HMAC secret. */}}
+            {{- required "app.unsubscribe.secretRef.name or app.unsubscribe.secret is required when app.send.fanoutEnabled is true" "" }}
+            {{- end }}
+            - name: REQUIRE_USER_AUTH
+              value: {{ .Values.app.requireUserAuth | quote }}
+            {{- if .Values.app.jwksURL }}
+            - name: JWKS_URL
+              value: {{ .Values.app.jwksURL | quote }}
+            {{- end }}
+            {{- if .Values.app.audience }}
+            - name: JWT_AUDIENCE
+              value: {{ .Values.app.audience | quote }}
+            {{- end }}
+            {{- if or (eq .Values.database.mode "database") (eq .Values.database.mode "cluster+database") }}
+            # Forward the CloudNativePG app-secret fields and the per-service
+            # database name; the app composes DATABASE_URL in-process. This
+            # avoids embedding the cluster-app password as a literal substring
+            # of an env-var value in the pod spec — env-var interpolation
+            # would resolve $(PGPASSWORD) and make the password visible via
+            # `kubectl describe pod` even though the source is a Secret.
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lfx-v2-newsletter-service.cloudNativePGAppSecret" . }}
+                  key: host
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lfx-v2-newsletter-service.cloudNativePGAppSecret" . }}
+                  key: port
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lfx-v2-newsletter-service.cloudNativePGAppSecret" . }}
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lfx-v2-newsletter-service.cloudNativePGAppSecret" . }}
+                  key: password
+            - name: PGDATABASE
+              value: {{ .Values.database.cloudNativePG.databaseName | quote }}
+            {{- else if eq (default "url" .Values.database.external.shape) "fields" }}
+            # External Postgres referenced by a multi-key Secret (e.g. an
+            # ExternalSecret that pulls /cloudops/rds-managed/lfx-v2/<service>
+            # from AWS Secrets Manager and exposes each JSON field as its own
+            # Secret key). Same env-var-leak avoidance as the CNPG path:
+            # the app composes DATABASE_URL in-process.
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.external.secretName }}
+                  key: {{ default "host" .Values.database.external.keys.host }}
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.external.secretName }}
+                  key: {{ default "port" .Values.database.external.keys.port }}
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.external.secretName }}
+                  key: {{ default "username" .Values.database.external.keys.username }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.external.secretName }}
+                  key: {{ default "password" .Values.database.external.keys.password }}
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.external.secretName }}
+                  key: {{ default "dbname" .Values.database.external.keys.dbname }}
+            {{- else }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.external.secretName }}
+                  key: {{ .Values.database.external.secretKey }}
+            {{- end }}
+            {{- with .Values.app.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- $otelServiceName := .Values.app.otel.serviceName | toString | trim }}
+            {{- if ne $otelServiceName "" }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ $otelServiceName | quote }}
+            {{- end }}
+            {{- $otelServiceVersion := .Values.app.otel.serviceVersion | toString | trim }}
+            {{- if ne $otelServiceVersion "" }}
+            - name: OTEL_SERVICE_VERSION
+              value: {{ $otelServiceVersion | quote }}
+            {{- end }}
+            {{- $otelEndpoint := .Values.app.otel.endpoint | toString | trim }}
+            {{- if ne $otelEndpoint "" }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $otelEndpoint | quote }}
+            {{- end }}
+            {{- $otelProtocol := .Values.app.otel.protocol | toString | trim }}
+            {{- if ne $otelProtocol "" }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ $otelProtocol | quote }}
+            {{- end }}
+            {{- $otelInsecure := .Values.app.otel.insecure | toString | trim }}
+            {{- if ne $otelInsecure "" }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ $otelInsecure | quote }}
+            {{- end }}
+            {{- $otelTracesExporter := .Values.app.otel.tracesExporter | toString | trim }}
+            {{- if ne $otelTracesExporter "" }}
+            - name: OTEL_TRACES_EXPORTER
+              value: {{ $otelTracesExporter | quote }}
+            {{- end }}
+            {{- $otelTracesSampler := .Values.app.otel.tracesSampler | toString | trim }}
+            {{- if ne $otelTracesSampler "" }}
+            - name: OTEL_TRACES_SAMPLER
+              value: {{ $otelTracesSampler | quote }}
+            {{- end }}
+            {{- $otelTracesSamplerArg := .Values.app.otel.tracesSamplerArg | toString | trim }}
+            {{- if ne $otelTracesSamplerArg "" }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ $otelTracesSamplerArg | quote }}
+            {{- end }}
+            {{- $otelMetricsExporter := .Values.app.otel.metricsExporter | toString | trim }}
+            {{- if ne $otelMetricsExporter "" }}
+            - name: OTEL_METRICS_EXPORTER
+              value: {{ $otelMetricsExporter | quote }}
+            {{- end }}
+            {{- $otelLogsExporter := .Values.app.otel.logsExporter | toString | trim }}
+            {{- if ne $otelLogsExporter "" }}
+            - name: OTEL_LOGS_EXPORTER
+              value: {{ $otelLogsExporter | quote }}
+            {{- end }}
+            {{- $otelPropagators := .Values.app.otel.propagators | toString | trim }}
+            {{- if ne $otelPropagators "" }}
+            - name: OTEL_PROPAGATORS
+              value: {{ $otelPropagators | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            failureThreshold: 3
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            failureThreshold: 1
+            periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            failureThreshold: 30
+            periodSeconds: 2
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

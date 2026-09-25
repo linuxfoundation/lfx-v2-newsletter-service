@@ -1,0 +1,58 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+---
+name: Publish Container Branch
+
+"on":
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish Container
+    if: ${{ github.event.pull_request.head.repo.fork == false }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: go.mod
+      - uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d  # v0.9
+        with:
+          version: v0.18.0
+      - name: Prepare container tag
+        id: container_tag
+        env:
+          HEAD_REF: "${{ github.head_ref }}"
+          PR_NUMBER: "${{ github.event.pull_request.number }}"
+        run: |
+          sanitized_ref=$(echo "$HEAD_REF" | sed 's/[^_0-9a-zA-Z]/-/g' | cut -c -120)
+          container_tag="pr-${PR_NUMBER}-${sanitized_ref}"
+          echo tag="$container_tag" >> "$GITHUB_OUTPUT"
+      - name: Build newsletter-api for PR
+        env:
+          VERSION: ${{ steps.container_tag.outputs.tag }}
+        run: |
+          BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
+          GIT_COMMIT="${{ github.sha }}"
+          GIT_COMMIT="${GIT_COMMIT:0:7}"
+          export BUILD_TIME
+          export GIT_COMMIT
+          ko build github.com/linuxfoundation/lfx-v2-newsletter-service/cmd/newsletter-api \
+            -B \
+            --platform linux/amd64,linux/arm64 \
+            -t ${{ github.sha }} \
+            -t ${{ steps.container_tag.outputs.tag }} \
+            --sbom spdx

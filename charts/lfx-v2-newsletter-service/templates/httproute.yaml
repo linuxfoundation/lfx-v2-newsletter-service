@@ -1,0 +1,76 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+{{- if .Values.httpRoute.enabled }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Values.lfx.namespace }}
+  labels:
+    {{- include "lfx-v2-newsletter-service.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .Values.traefik.gateway.name }}
+      namespace: {{ .Values.traefik.gateway.namespace }}
+  hostnames:
+    - "lfx-api.{{ .Values.lfx.domain }}"
+  rules:
+    # Newsletter endpoints are project-scoped:
+    #   /projects/{project_uid}/newsletters[/<rest>]
+    #   /projects/{project_uid}/newsletter-opens/{newsletter_uid}
+    # Gateway API's `RegularExpression` path-match type lets us pluck the
+    # newsletter-owned subset out of the `/projects/...` URL space without
+    # routing every project sub-path here (project-service owns the rest).
+    # Requires a Gateway implementation with RegularExpression support
+    # (Traefik >= 2.10).
+    - matches:
+        - path:
+            type: RegularExpression
+            value: "^/projects/[^/]+/newsletters(/.*)?$"
+        - path:
+            type: RegularExpression
+            value: "^/projects/[^/]+/newsletter-opt-outs(/.*)?$"
+        - path:
+            type: RegularExpression
+            value: "^/projects/[^/]+/newsletter-opens/[^/]+$"
+        # Member-facing committee-scoped list of sent newsletters. Heimdall
+        # gates it on committee:{committee_uid}#member (fail-closed) — see
+        # the committee_list rule in ruleset.yaml.
+        - path:
+            type: RegularExpression
+            value: "^/committees/[^/]+/newsletters$"
+        # One-click unsubscribe link clicked from a recipient's email client.
+        # Not project-scoped in the URL: the project_uid is carried inside the
+        # signed token so links stay short and opaque.
+        - path:
+            type: Exact
+            value: /newsletters/unsubscribe
+        {{- if .Values.app.send.sendgrid.webhookPublicKeySecretRef.name }}
+        # SendGrid signed event webhook (POST). Public; authenticity is the
+        # ECDSA signature verified in-app. Routed whenever the webhook key is
+        # configured, independent of the active outbound provider, so
+        # historical/scheduled SendGrid events keep reaching the handler after a
+        # flip back to email-service.
+        - path:
+            type: Exact
+            value: /newsletters/sendgrid/events
+        {{- end }}
+      {{- if .Values.heimdall.enabled }}
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: traefik.io
+            kind: Middleware
+            name: heimdall-forward-body
+      {{- end }}
+      backendRefs:
+        - group: ''
+          kind: Service
+          name: {{ .Chart.Name }}
+          namespace: {{ .Release.Namespace }}
+          port: {{ .Values.service.port }}
+          weight: 1
+{{- end }}
