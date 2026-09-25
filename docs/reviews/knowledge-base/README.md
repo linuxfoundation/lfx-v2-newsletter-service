@@ -3,12 +3,11 @@
 
 # Newsletter Service Review Knowledge Base
 
-This is a **GROWING KB** — an empirical, repo-owned record of the patterns that human reviewers and review bots have actually flagged on `lfx-v2-newsletter-service` PRs, distilled into mechanically-detectable rules. It is read by the repo-owned `/newsletter-service-learnings-reviewer` brain (`.claude/skills/newsletter-service-learnings-reviewer/SKILL.md`, loaded through the `/lfx-skills:lfx-local-review` lifecycle), which matches a patch against these patterns and emits only findings that quote a pattern entry.
+This is a **GROWING KB** — an empirical, repo-owned record of the patterns that human reviewers and review bots have actually flagged on `lfx-v2-newsletter-service` PRs, distilled into mechanically-detectable rules. It is read by the repo-owned `/newsletter-service-learnings-reviewer` brain (`.claude/skills/newsletter-service-learnings-reviewer/SKILL.md`, launched by the pre-PR review block in `CLAUDE.md`), which matches a patch against these patterns and emits only findings that quote a pattern entry.
 
 This KB is the *empirical* surface. It deliberately does NOT duplicate:
 
-- the central `general` review brain — generic correctness / security / test intuition, including generic Go gotchas.
-- the repo-owned `newsletter-service-code-reviewer` brain — the documented rule surface (`CLAUDE.md`, `.claude/skills/newsletter-service-dev`, contract docs, chart docs, Makefile).
+- the central `general` review brain (`/lfx-skills:lfx-general-code-review`) — generic correctness / security / test intuition, including generic Go gotchas, plus the documented rule surface (`CLAUDE.md`, `.claude/skills/newsletter-service-dev`, contract docs, chart docs, Makefile).
 
 ## Methodology
 

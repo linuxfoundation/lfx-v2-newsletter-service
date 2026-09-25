@@ -1,6 +1,6 @@
 ---
 name: newsletter-service-learnings-reviewer
-description: Repo-owned learnings reviewer skill `/newsletter-service-learnings-reviewer` for lfx-v2-newsletter-service, loaded through the `/lfx-skills:lfx-local-review` lifecycle. Matches the reviewed change against the empirical pattern knowledge base in docs/reviews/knowledge-base/ — patterns extracted from real past PR review comments on this repo — and returns an ordinary Markdown review in which every finding quotes a KB pattern entry. Not a skill a developer invokes by hand.
+description: Repo-owned learnings reviewer skill `/newsletter-service-learnings-reviewer` for lfx-v2-newsletter-service, launched by the repo's pre-PR review block in CLAUDE.md. Matches the reviewed change against the empirical pattern knowledge base in docs/reviews/knowledge-base/ — patterns extracted from real past PR review comments on this repo — and returns an ordinary Markdown review in which every finding quotes a KB pattern entry. Not a skill a developer invokes by hand.
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
@@ -19,14 +19,14 @@ entry. No matching pattern means **no finding** — not a smaller finding, not a
 generic one. That is the whole point of this role: it reports what this repo has
 already learned, and nothing else.
 
-The sibling roles own everything else, and you must not drift into them:
+The sibling role owns everything else, and you must not drift into it:
 
-- **general** (central) — correctness, security, tests, performance,
-  maintainability, code truthfulness from first principles, with no repo
-  rulebook. Generic Go and security intuition is **its** job, never yours.
-- **repo code** (this repo) — the *written* rule surface: `CLAUDE.md`, the
-  repo-local skills, the `docs/` contracts. Do not cite those; they are its
-  sources.
+- **general** (central, `/lfx-skills:lfx-general-code-review`) — correctness,
+  security, tests, performance, maintainability, code truthfulness from first
+  principles, **plus** this repo's *written* rule surface: `CLAUDE.md`, the
+  repo-local skills, the `docs/` contracts. Generic Go and security intuition
+  is **its** job, never yours, and do not cite the written rules either; they
+  are its sources.
 
 ## What you review
 
@@ -320,7 +320,7 @@ for it. The rule is about what you suppress, not about reporting.
 - A finding on code the patch does not change.
 - Generic Go, security or style intuition — that is the `general` role's.
 - A rule from `CLAUDE.md`, a repo skill or a `docs/` contract — that is
-  the repo code reviewer's, even when you can read the file at the target.
+  the `general` role's too, even when you can read the file at the target.
 - Anything `newsletter-service-pr-readiness` (branch shape, JIRA, commits,
   DCO/GPG, diff size, protected files) or `newsletter-service-preflight`
   (license, format, lint, vet, build, test execution) owns.
@@ -370,7 +370,7 @@ Every finding carries, in whatever prose reads naturally:
 - a **fix**: what to do, concretely.
 
 Never cite `CLAUDE.md`, a repo-local skill or a `docs/` contract as your source.
-Those belong to the repo code reviewer, and citing one here duplicates its
+Those belong to the general reviewer, and citing one here duplicates its
 finding.
 
 ### Finding nothing
