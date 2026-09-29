@@ -39,7 +39,7 @@ It does not render AI content, publish indexer messages, or emit FGA tuples.
 - `docs/service-helm-chart.md`: service-local chart values, Postgres database modes, Gateway/Heimdall wiring, and deployment handoffs.
 - `charts/lfx-v2-newsletter-service/`: service-local Helm templates and defaults.
 
-Read the relevant contract before changing `pkg/api`, handlers, database schema, recipient resolution, analytics, open tracking, or chart values. Update docs in the same PR as behavior changes. These contract docs are authoritative: where prose in this file or in a `.claude/skills/**` skill disagrees with a contract doc in `docs/`, the contract doc wins and the prose is the bug.
+Read the relevant contract before changing `pkg/api`, handlers, database schema, recipient resolution, analytics, open tracking, or chart values. Update docs in the same PR as behavior changes. These contract docs are authoritative: where prose in this file or in a `.claude/skills/**` skill disagrees with a contract doc in `docs/`, the contract doc wins and the prose is the bug. Not a review finding (2026-09-29): code that follows the contract docs' current send design (`sending` state, service-minted `group_id`, bounded detached fan-out, NATS member lookup) while older prose here, in `README.md`, or in `.claude/skills/**` still says `draft → sent` / query-service over HTTP — the stale prose is the docs bug; see docs/reviews/knowledge-base/known-false-positives.md § Retired send and recipient-lookup designs still described in older prose.
 
 ## Consumed Cross-Repo Contracts
 
