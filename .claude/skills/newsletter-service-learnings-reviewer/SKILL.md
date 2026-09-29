@@ -48,11 +48,6 @@ The host names the pinned revisions and passes the same values to every role:
 The reviewed range is exactly `git diff <base_sha> <target_sha>`. Read file
 contents at the target with `git show target_sha:<path>`.
 
-**Root commit.** The host writes `base_sha: none` when the target has no parent.
-`none` is not a revision — never pass it to git. Review the target on its own
-with `git diff-tree --root -p target_sha`, and read content at the target as
-usual.
-
 - Review **only the changes in that range**.
 - Read the full file for every changed file a routed pattern applies to. A
   `**Detect:**` clause is an operational check against the file's content, not
@@ -243,11 +238,6 @@ keep the two results distinct. One `git show` is **not** enough: it fails
 identically whether the file was absent at that revision or the object cannot be
 read, and those are opposite outcomes.
 
-**If `base_sha` is `none`** (root commit), the base floor is **empty** — there is
-no pre-change floor at all. Do **not** run `git ls-tree` against `none`; it is not
-a revision, and the failure would look like an unreadable base. Still classify
-the target floor normally.
-
 Otherwise, for a revision `<rev>`:
 
 1. **Check the entry in that tree:**
@@ -262,7 +252,7 @@ Otherwise, for a revision `<rev>`:
      revision.
    - **Exit 0 with empty output** → there is no floor at that revision. That is a
      **legitimately empty floor**: it waives nothing. This is the ordinary case
-     for a root commit and for the change that first introduces the file. It is
+     for the branch that first introduces the file. It is
      **not** `INCOMPLETE` — an empty floor is a known floor, not an unreadable
      one.
    - **Exit 0 with an entry that is not mode `100644` / type `blob`** →
@@ -327,7 +317,8 @@ for it. The rule is about what you suppress, not about reporting.
 
 - A finding with no quotable KB entry.
 - A finding on code the patch does not change.
-- Generic Go, security or style intuition — that is the `general` role's.
+- Generic Go or style intuition — that is the `general` role's; generic
+  security intuition is the `security` role's.
 - A rule from `CLAUDE.md`, a repo skill or a `docs/` contract — that is
   the `general` role's too, even when you can read the file at the target.
 - Anything `newsletter-service-pr-readiness` (branch shape, JIRA, commits,

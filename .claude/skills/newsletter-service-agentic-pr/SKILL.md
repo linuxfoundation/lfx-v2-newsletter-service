@@ -40,8 +40,8 @@ skill's own:
   the loop below runs the repo's learnings reviewer, the general or security
   reviewers, or a full-branch review, whatever a round demands; there is no
   return to pre-PR review.
-  Iterate only on the PR's bot and human review feedback, still running tests
-  and checks, and batch each round of fixes into as few commits as possible.
+  Iterate only on the PR's bot and human feedback, still running tests and
+  checks.
 - **Merging is never this skill's job** (this skill's own boundary — the
   block says nothing about merging). Nothing here merges; a merge happens
   only after a separate, explicit human instruction.
