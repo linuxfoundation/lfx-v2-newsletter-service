@@ -13,10 +13,10 @@ import (
 // TestProjectServiceErrorCode pins the envelope parser used by parseProjectReply.
 func TestProjectServiceErrorCode(t *testing.T) {
 	tests := []struct {
-		name      string
-		data      []byte
-		wantCode  string
-		wantErr   bool
+		name     string
+		data     []byte
+		wantCode string
+		wantErr  bool
 	}{
 		{name: "not_found code", data: []byte(`{"error":"not_found"}`), wantCode: "not_found"},
 		{name: "internal code", data: []byte(`{"error":"internal"}`), wantCode: "internal"},
