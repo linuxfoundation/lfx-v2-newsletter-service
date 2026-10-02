@@ -13,7 +13,7 @@ spec:
   rules:
     # ---------------------------------------------------------------------
     # Newsletter CRUD (project-scoped). FGA gates by `project:{project_uid}`
-    # extracted from the URL path. Writes require `writer`; reads require
+    # extracted from the URL path. Writes require `writer_guard`; reads require
     # `viewer`. Pattern mirrors lfx-v2-committee-service.
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:create"
@@ -33,7 +33,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -156,7 +156,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -183,7 +183,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -210,7 +210,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -243,7 +243,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -270,7 +270,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -282,7 +282,7 @@ spec:
 
     # ---------------------------------------------------------------------
     # Recipient resolution + test send. Recipient queries are reads (viewer);
-    # test-send is a write (writer).
+    # test-send is a write (writer_guard).
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:recipient_count"
       allow_encoded_slashes: 'off'
@@ -355,7 +355,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
@@ -367,7 +367,7 @@ spec:
 
     # ---------------------------------------------------------------------
     # Newsletter opt-outs list (project-scoped). Returns PII (email addresses).
-    # Requires `auditor` role. Does NOT fall back to allow_all — OpenFGA must be
+    # Requires `auditor_guard` role. Does NOT fall back to allow_all — OpenFGA must be
     # enabled and properly configured to expose this endpoint. Fail-closed for security.
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:opt_outs_list"
@@ -386,7 +386,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: auditor
+              relation: auditor_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         - finalizer: create_jwt
           config:
@@ -409,7 +409,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: writer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         - finalizer: create_jwt
           config:
@@ -448,7 +448,7 @@ spec:
     # Per-newsletter per-recipient engagement. Returns PII beyond recipient lists:
     # engagement history (opened, failed, per-recipient open timestamps). While
     # recipients-preview already exposes email addresses, this endpoint is a NEW
-    # exposure surface for engagement data. Requires the restrictive `auditor`
+    # exposure surface for engagement data. Requires the restrictive `auditor_guard`
     # relation. Does NOT fall back to allow_all — fails closed like the opt-out
     # rules: unreachable when `openfga.enabled=false`.
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:analytics_recipients"
@@ -467,7 +467,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: auditor
+              relation: auditor_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         - finalizer: create_jwt
           config:
