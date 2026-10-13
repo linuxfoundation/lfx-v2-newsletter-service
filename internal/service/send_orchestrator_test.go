@@ -1882,3 +1882,108 @@ func TestSendNewsletter_StampsSendProvider(t *testing.T) {
 		t.Errorf("send_provider = %q, want %q", got.SendProvider, model.SendProviderSendGrid)
 	}
 }
+
+func TestFormatNewsletterDateUsesLosAngeles(t *testing.T) {
+	// 03:00 UTC on Oct 14 is still Oct 13 in America/Los_Angeles.
+	got := formatNewsletterDate(time.Date(2026, 10, 14, 3, 0, 0, 0, time.UTC))
+	if got != "October 13, 2026" {
+		t.Errorf("formatNewsletterDate = %q, want %q", got, "October 13, 2026")
+	}
+}
+
+func newReadOnlineTestOrchestrator(repo *fakeNewsletterRepo, project *fakeProjectClient, email port.EmailDispatcher) *SendOrchestrator {
+	return NewSendOrchestrator(SendOrchestratorConfig{
+		Repo: repo,
+		Committee: &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+			"c1": {{Email: "alice@example.com"}},
+		}},
+		Project:          project,
+		Email:            email,
+		Concurrency:      2,
+		FanoutEnabled:    true,
+		SelfServeBaseURL: "https://app.lfx.dev/",
+	})
+}
+
+// TestSendRendersDateAndReadOnlineLink asserts a real send's chrome carries
+// the send date and the Self-Serve reader permalink for this newsletter.
+func TestSendRendersDateAndReadOnlineLink(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	orch := newReadOnlineTestOrchestrator(repo, &fakeProjectClient{slug: "agentic-ai-foundation"}, email)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	before := formatNewsletterDate(time.Now())
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	after := formatNewsletterDate(time.Now())
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+
+	wantURL := "https://app.lfx.dev/newsletters/agentic-ai-foundation/" + draft.ID.String()
+	if !strings.Contains(s.HTML, `clicktracking="off" href="`+wantURL+`"`) {
+		t.Errorf("HTML missing read-online link %q:\n%s", wantURL, s.HTML)
+	}
+	if !strings.Contains(s.Text, "Read online: "+wantURL) {
+		t.Errorf("text missing read-online link %q:\n%s", wantURL, s.Text)
+	}
+	if !strings.Contains(s.HTML, before) && !strings.Contains(s.HTML, after) {
+		t.Errorf("HTML missing send date %q:\n%s", before, s.HTML)
+	}
+}
+
+// TestSendOmitsReadOnlineWhenSlugLookupFails asserts a slug-lookup failure
+// drops only the "Read online" link; the date still renders and the send
+// proceeds.
+func TestSendOmitsReadOnlineWhenSlugLookupFails(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	orch := newReadOnlineTestOrchestrator(repo, &fakeProjectClient{slugErr: errors.New("nats down")}, email)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if strings.Contains(email.sends[0].HTML, "Read online") || strings.Contains(email.sends[0].Text, "Read online") {
+		t.Errorf("read-online link rendered despite slug lookup failure")
+	}
+}
+
+// TestTestSendRendersDateWithoutReadOnline asserts a test-send shows the date
+// but no "Read online" link, since it is not tied to a newsletter ID.
+func TestTestSendRendersDateWithoutReadOnline(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	orch := newReadOnlineTestOrchestrator(repo, &fakeProjectClient{}, email)
+
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "alice@example.com",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	today := formatNewsletterDate(time.Now())
+	if !strings.Contains(s.HTML, today) || !strings.HasPrefix(s.Text, today+"\n") {
+		t.Errorf("test-send missing date %q", today)
+	}
+	if strings.Contains(s.HTML, "Read online") || strings.Contains(s.Text, "Read online") {
+		t.Errorf("test-send rendered a read-online link")
+	}
+}

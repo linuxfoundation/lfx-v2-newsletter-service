@@ -179,3 +179,80 @@ func TestEmailHTMLForcesUTF8Charset(t *testing.T) {
 		t.Errorf("rendered HTML is single-byte throughout (would be sent as iso-8859-1); expected a multibyte rune")
 	}
 }
+
+func TestEmailHTMLDateBar(t *testing.T) {
+	const readOnline = "https://app.lfx.dev/newsletters/tlf/c76eac6b-52db-47d3-b92c-dc7e1ac6ee05"
+	tests := []struct {
+		name          string
+		sentDate      string
+		readOnlineURL string
+		wantDate      bool
+		wantLink      bool
+		wantSeparator bool
+	}{
+		{name: "date and link", sentDate: "October 13, 2026", readOnlineURL: readOnline, wantDate: true, wantLink: true, wantSeparator: true},
+		{name: "date only", sentDate: "October 13, 2026", wantDate: true},
+		{name: "neither"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			html := EmailHTML(Chrome{
+				Subject:       "Hello",
+				BodyHTML:      "<p>Body</p>",
+				DisplayName:   "Test",
+				SentDate:      tc.sentDate,
+				ReadOnlineURL: tc.readOnlineURL,
+			})
+			if got := strings.Contains(html, "October 13, 2026"); got != tc.wantDate {
+				t.Errorf("date present = %v, want %v", got, tc.wantDate)
+			}
+			if got := strings.Contains(html, `clicktracking="off" href="`+readOnline+`"`); got != tc.wantLink {
+				t.Errorf("read-online link present = %v, want %v", got, tc.wantLink)
+			}
+			if got := strings.Contains(html, ">Read online</a>"); got != tc.wantLink {
+				t.Errorf("read-online label present = %v, want %v", got, tc.wantLink)
+			}
+			if got := strings.Contains(html, "&nbsp;&nbsp;|&nbsp;&nbsp;"); got != tc.wantSeparator {
+				t.Errorf("separator present = %v, want %v", got, tc.wantSeparator)
+			}
+			if tc.wantDate {
+				// The bar sits above the card, so it must precede the header.
+				if strings.Index(html, "October 13, 2026") > strings.Index(html, "Test &middot; Newsletter") {
+					t.Errorf("date bar renders after the card header")
+				}
+			}
+		})
+	}
+}
+
+func TestEmailHTMLReadOnlineURLEscaped(t *testing.T) {
+	html := EmailHTML(Chrome{
+		SentDate:      "October 13, 2026",
+		ReadOnlineURL: `https://app.lfx.dev/newsletters/x?a=1&b="y"`,
+	})
+	if !strings.Contains(html, `href="https://app.lfx.dev/newsletters/x?a=1&amp;b=&quot;y&quot;"`) {
+		t.Errorf("read-online URL not HTML-escaped:\n%s", html)
+	}
+}
+
+func TestEmailTextDateLine(t *testing.T) {
+	const readOnline = "https://app.lfx.dev/newsletters/tlf/abc"
+	base := Chrome{Subject: "Hello", BodyHTML: "<p>Body</p>", DisplayName: "Test"}
+
+	both := base
+	both.SentDate = "October 13, 2026"
+	both.ReadOnlineURL = readOnline
+	if got := EmailText(both); !strings.HasPrefix(got, "October 13, 2026 | Read online: "+readOnline+"\n\nTest · Newsletter") {
+		t.Errorf("text with date+link has wrong header:\n%s", got)
+	}
+
+	dateOnly := base
+	dateOnly.SentDate = "October 13, 2026"
+	if got := EmailText(dateOnly); !strings.HasPrefix(got, "October 13, 2026\n\nTest · Newsletter") || strings.Contains(got, "Read online") {
+		t.Errorf("text with date only has wrong header:\n%s", got)
+	}
+
+	if got := EmailText(base); !strings.HasPrefix(got, "Test · Newsletter") {
+		t.Errorf("text without date bar has wrong header:\n%s", got)
+	}
+}

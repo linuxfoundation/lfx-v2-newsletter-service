@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -433,5 +434,45 @@ func TestCancelScheduledProviderFailureLeavesRowScheduled(t *testing.T) {
 	still := repo.get(draft.ID)
 	if still.Status != model.StatusScheduled {
 		t.Fatalf("expected row to remain 'scheduled' after a failed provider cancel, got %q", still.Status)
+	}
+}
+
+// TestScheduledSendDatedByScheduledAt asserts a scheduled send's chrome shows
+// the release date (in America/Los_Angeles), not the date it was armed.
+func TestScheduledSendDatedByScheduledAt(t *testing.T) {
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "a@example.com"}},
+	}}
+	email := &fakeScheduledEmailDispatcher{}
+	orch := newTestScheduleOrchestrator(repo, committee, email, 0, 0, 0)
+	draft := repo.addDraft("p1", []string{"c1"})
+
+	// Two days out at 03:00 UTC: the LA calendar date is the day before the
+	// UTC date, so a UTC-formatted or arm-time date would not match.
+	d := time.Now().UTC().AddDate(0, 0, 2)
+	scheduledAt := time.Date(d.Year(), d.Month(), d.Day(), 3, 0, 0, 0, time.UTC)
+	want := formatNewsletterDate(scheduledAt)
+	if want == scheduledAt.Format(newsletterDateLayout) {
+		t.Fatalf("test setup: LA date %q should differ from UTC date", want)
+	}
+
+	if _, err := orch.SendNewsletter(context.Background(), SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+		Schedule:     true,
+		ScheduledAt:  &scheduledAt,
+	}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	waitForStatus(t, repo, draft.ID, model.StatusScheduled)
+
+	email.fakeEmailDispatcher.mu.Lock()
+	defer email.fakeEmailDispatcher.mu.Unlock()
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if !strings.Contains(email.sends[0].HTML, want) {
+		t.Errorf("scheduled HTML missing scheduled date %q", want)
 	}
 }

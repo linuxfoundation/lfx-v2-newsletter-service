@@ -9,9 +9,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/mail"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
+	// Embed the IANA tz database so newsletterDateLocation resolves in the
+	// distroless runtime image, which ships no system zoneinfo.
+	_ "time/tzdata"
 
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
@@ -74,6 +78,29 @@ const fromDisplayNameSuffix = " Newsletter"
 // newsletters sent to them. Appended to SelfServeBaseURL to build the footer's
 // "My Newsletters" deep link.
 const myNewslettersPath = "/newsletters/my"
+
+// readOnlinePathPrefix is the Self-Serve newsletter reader permalink prefix
+// (`newsletters/:projectSlug/:id`). The email chrome's "Read online" link is
+// SelfServeBaseURL + readOnlinePathPrefix + <project slug> + "/" + <newsletter ID>.
+const readOnlinePathPrefix = "/newsletters/"
+
+// newsletterDateLayout formats the send date shown above the email card.
+const newsletterDateLayout = "January 2, 2006"
+
+// newsletterDateLocation is the fixed timezone the send date is rendered in,
+// so every recipient sees the same date regardless of their own locale.
+var newsletterDateLocation = func() *time.Location {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}()
+
+// formatNewsletterDate renders t as the date shown in the email chrome.
+func formatNewsletterDate(t time.Time) string {
+	return t.In(newsletterDateLocation).Format(newsletterDateLayout)
+}
 
 // SendOrchestrator coordinates recipient resolution, email-chrome rendering,
 // per-recipient fan-out to lfx-v2-email-service, and the draft → sent state
@@ -413,6 +440,12 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// only a fallback for dev mode or a resolution failure.
 	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), draft.EDReplyEmail)
 
+	// A scheduled send is dated by when it is released, not when it was armed.
+	sentAt := time.Now()
+	if scheduledAt != nil {
+		sentAt = *scheduledAt
+	}
+
 	chrome := render.Chrome{
 		Subject:                 draft.Subject,
 		BodyHTML:                draft.BodyHTML,
@@ -420,6 +453,8 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		IncludeComplianceFooter: true,
 		EDName:                  fallbackString(senderName, "Executive Director"),
 		EDReplyEmail:            replyTo,
+		SentDate:                formatNewsletterDate(sentAt),
+		ReadOnlineURL:           o.readOnlineURL(ctx, draft.ProjectUID, draft.ID),
 	}
 	if o.unsub.Enabled() {
 		chrome.UnsubscribeURL = UnsubscribeURLPlaceholder
@@ -892,6 +927,8 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// EDReplyEmail unconditionally.
 	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), strings.TrimSpace(in.EDReplyEmail))
 
+	// No ReadOnlineURL: a test-send is not tied to a newsletter ID, so there
+	// is no reader permalink to link to.
 	chrome := render.Chrome{
 		Subject:                 in.Subject,
 		BodyHTML:                in.BodyHTML,
@@ -899,6 +936,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		IncludeComplianceFooter: true,
 		EDName:                  fallbackString(senderName, "Executive Director"),
 		EDReplyEmail:            replyTo,
+		SentDate:                formatNewsletterDate(time.Now()),
 	}
 	if o.unsub.Enabled() {
 		// Single recipient: mint the real link directly instead of the
@@ -1297,6 +1335,29 @@ func (o *SendOrchestrator) resolveFromAddress(ctx context.Context, projectUID st
 		return override
 	}
 	return o.fromAddress
+}
+
+// readOnlineURL builds the Self-Serve reader permalink for a newsletter. It
+// returns "" — omitting the "Read online" link — when no Self-Serve base URL
+// is configured or the project slug can't be resolved; a slug-lookup failure
+// is non-fatal and never blocks the send.
+func (o *SendOrchestrator) readOnlineURL(ctx context.Context, projectUID string, newsletterID uuid.UUID) string {
+	if o.selfServeBaseURL == "" {
+		return ""
+	}
+	slug, err := o.project.Slug(ctx, projectUID)
+	if err != nil {
+		slog.WarnContext(ctx, "read-online link: project slug lookup failed, omitting link",
+			"project_uid", projectUID,
+			"error", err,
+		)
+		return ""
+	}
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return ""
+	}
+	return o.selfServeBaseURL + readOnlinePathPrefix + url.PathEscape(slug) + "/" + newsletterID.String()
 }
 
 func fallbackString(value, fallback string) string {
