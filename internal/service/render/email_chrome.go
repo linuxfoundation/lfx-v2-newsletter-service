@@ -46,6 +46,13 @@ type Chrome struct {
 	// IncludeComplianceFooter is true) the footer renders a dedicated line
 	// above the unsubscribe small print. Empty omits the line.
 	MyNewslettersURL string
+	// SentDate is the pre-formatted send date (e.g. "October 13, 2026")
+	// rendered right-aligned above the card. Empty omits the date.
+	SentDate string
+	// ReadOnlineURL is the Self-Serve reader permalink for this newsletter,
+	// rendered as a "Read online" link beside SentDate. Empty omits the link
+	// (test sends have no newsletter ID to link to).
+	ReadOnlineURL string
 }
 
 // LFX brand colors used by the email chrome. Mirrored from
@@ -300,6 +307,28 @@ func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
 </tr>`
 }
 
+// renderDateBarHTML emits the right-aligned "<date> | Read online" row that
+// sits above the card. Empty when neither SentDate nor ReadOnlineURL is set.
+func renderDateBarHTML(input Chrome) string {
+	if input.SentDate == "" && input.ReadOnlineURL == "" {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if input.SentDate != "" {
+		parts = append(parts, escapeHTML(input.SentDate))
+	}
+	if input.ReadOnlineURL != "" {
+		// clicktracking="off" for the same reason as the footer chrome links:
+		// SendGrid honors it only when the attribute appears BEFORE href.
+		parts = append(parts, `<a clicktracking="off" href="`+escapeHTML(input.ReadOnlineURL)+`" style="color:`+colorGray700+`;text-decoration:underline;">Read online</a>`)
+	}
+	separator := `<span style="color:` + colorGray400 + `;">&nbsp;&nbsp;|&nbsp;&nbsp;</span>`
+	return `<tr>
+<td align="right" class="lfx-pad" style="padding:8px 4px 16px;font-size:14px;color:` + colorGray700 + `;text-align:right;font-family:` + fontStack + `;">` + strings.Join(parts, separator) + `</td>
+</tr>
+`
+}
+
 // EmailHTML builds the outer HTML envelope wrapping the authored body.
 // See the package trust boundary comment.
 func EmailHTML(input Chrome) string {
@@ -315,6 +344,7 @@ func EmailHTML(input Chrome) string {
 	displayNameSafe := escapeHTML(display)
 	styledBody := convertStandaloneCtas(inlineBodyStyles(input.BodyHTML))
 	complianceFooter := renderComplianceFooterHTML(input, displayNameSafe)
+	dateBar := renderDateBarHTML(input)
 
 	logoCell := ""
 	if input.LogoURL != "" {
@@ -343,6 +373,9 @@ func EmailHTML(input Chrome) string {
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:` + colorGray50 + `;padding:16px 8px;">
 <tr>
 <td align="center">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;max-width:680px;">
+` + dateBar + `<tr>
+<td>
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;max-width:680px;background-color:` + colorWhite + `;border:1px solid ` + colorGray200 + `;border-radius:8px;overflow:hidden;">
 <tr>
 <td class="lfx-pad" style="` + headerBG + `color:` + colorWhite + `;padding:28px 24px;font-family:` + fontStack + `;">
@@ -365,6 +398,9 @@ func EmailHTML(input Chrome) string {
 </td>
 </tr>
 </table>
+</td>
+</tr>
+</table>
 </body>
 </html>`
 }
@@ -381,7 +417,16 @@ func EmailText(input Chrome) string {
 	}
 	body := stripHTML(preserveLinkDestinations(input.BodyHTML))
 
-	lines := []string{display + " · Newsletter", subject, "", body}
+	var lines []string
+	switch {
+	case input.SentDate != "" && input.ReadOnlineURL != "":
+		lines = append(lines, input.SentDate+" | Read online: "+input.ReadOnlineURL, "")
+	case input.SentDate != "":
+		lines = append(lines, input.SentDate, "")
+	case input.ReadOnlineURL != "":
+		lines = append(lines, "Read online: "+input.ReadOnlineURL, "")
+	}
+	lines = append(lines, display+" · Newsletter", subject, "", body)
 
 	if input.IncludeComplianceFooter {
 		edName := input.EDName

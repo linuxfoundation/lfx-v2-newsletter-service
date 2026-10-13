@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,14 +34,16 @@ func (f *fakeCommitteeClient) ListMembers(_ context.Context, committeeUID string
 // exercising the per-project From override set slug/slugErr to drive
 // resolveFromAddress deterministically.
 type fakeProjectClient struct {
-	slug    string
-	slugErr error
+	slug      string
+	slugErr   error
+	slugCalls atomic.Int32
 }
 
 func (f *fakeProjectClient) Name(_ context.Context, _ string) (string, error) {
 	return "Test Project", nil
 }
 func (f *fakeProjectClient) Slug(_ context.Context, _ string) (string, error) {
+	f.slugCalls.Add(1)
 	if f.slugErr != nil {
 		return "", f.slugErr
 	}
@@ -1880,5 +1883,151 @@ func TestSendNewsletter_StampsSendProvider(t *testing.T) {
 	}
 	if got.SendProvider != model.SendProviderSendGrid {
 		t.Errorf("send_provider = %q, want %q", got.SendProvider, model.SendProviderSendGrid)
+	}
+}
+
+func TestFormatNewsletterDateUsesLosAngeles(t *testing.T) {
+	// 03:00 UTC on Oct 14 is still Oct 13 in America/Los_Angeles.
+	got := formatNewsletterDate(time.Date(2026, 10, 14, 3, 0, 0, 0, time.UTC))
+	if got != "October 13, 2026" {
+		t.Errorf("formatNewsletterDate = %q, want %q", got, "October 13, 2026")
+	}
+}
+
+func newReadOnlineTestOrchestrator(repo *fakeNewsletterRepo, project *fakeProjectClient, email port.EmailDispatcher) *SendOrchestrator {
+	return NewSendOrchestrator(SendOrchestratorConfig{
+		Repo: repo,
+		Committee: &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+			"c1": {{Email: "alice@example.com"}},
+		}},
+		Project:          project,
+		Email:            email,
+		Concurrency:      2,
+		FanoutEnabled:    true,
+		SelfServeBaseURL: "https://app.lfx.dev/",
+	})
+}
+
+// TestSendRendersDateAndReadOnlineLink asserts a real send's chrome carries
+// the send date and the Self-Serve reader permalink for this newsletter.
+func TestSendRendersDateAndReadOnlineLink(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	orch := newReadOnlineTestOrchestrator(repo, &fakeProjectClient{slug: "agentic-ai-foundation"}, email)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	before := formatNewsletterDate(time.Now())
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	after := formatNewsletterDate(time.Now())
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+
+	wantURL := "https://app.lfx.dev/newsletters/agentic-ai-foundation/" + draft.ID.String()
+	if !strings.Contains(s.HTML, `clicktracking="off" href="`+wantURL+`"`) {
+		t.Errorf("HTML missing read-online link %q:\n%s", wantURL, s.HTML)
+	}
+	if !strings.Contains(s.Text, "Read online: "+wantURL) {
+		t.Errorf("text missing read-online link %q:\n%s", wantURL, s.Text)
+	}
+	if !strings.Contains(s.HTML, before) && !strings.Contains(s.HTML, after) {
+		t.Errorf("HTML missing send date %q:\n%s", before, s.HTML)
+	}
+}
+
+// TestSendOmitsReadOnlineWhenSlugLookupFails asserts a slug-lookup failure
+// drops only the "Read online" link; the date still renders and the send
+// proceeds.
+func TestSendOmitsReadOnlineWhenSlugLookupFails(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	orch := newReadOnlineTestOrchestrator(repo, &fakeProjectClient{slugErr: errors.New("nats down")}, email)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if strings.Contains(email.sends[0].HTML, "Read online") || strings.Contains(email.sends[0].Text, "Read online") {
+		t.Errorf("read-online link rendered despite slug lookup failure")
+	}
+}
+
+// TestTestSendRendersDateWithoutReadOnline asserts a test-send shows the date
+// but no "Read online" link, since it is not tied to a newsletter ID.
+func TestTestSendRendersDateWithoutReadOnline(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	orch := newReadOnlineTestOrchestrator(repo, &fakeProjectClient{}, email)
+
+	before := formatNewsletterDate(time.Now())
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "alice@example.com",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	after := formatNewsletterDate(time.Now())
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	hasDate := func(d string) bool { return strings.Contains(s.HTML, d) && strings.HasPrefix(s.Text, d+"\n") }
+	if !hasDate(before) && !hasDate(after) {
+		t.Errorf("test-send missing date %q", before)
+	}
+	if strings.Contains(s.HTML, "Read online") || strings.Contains(s.Text, "Read online") {
+		t.Errorf("test-send rendered a read-online link")
+	}
+}
+
+// TestSendLooksUpSlugOnce asserts a send with both a From override and a
+// Self-Serve base URL configured resolves the project slug exactly once.
+func TestSendLooksUpSlugOnce(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	project := &fakeProjectClient{slug: "agentic-ai-foundation"}
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo: repo,
+		Committee: &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+			"c1": {{Email: "alice@example.com"}},
+		}},
+		Project:              project,
+		Email:                email,
+		Concurrency:          2,
+		FanoutEnabled:        true,
+		SelfServeBaseURL:     "https://app.lfx.dev",
+		FromAddressOverrides: map[string]string{"agentic-ai-foundation": "newsletter@lfx.aaif.io"},
+	})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if got := project.slugCalls.Load(); got != 1 {
+		t.Errorf("Slug called %d times, want 1", got)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if email.sends[0].From != "newsletter@lfx.aaif.io" {
+		t.Errorf("From = %q, want override", email.sends[0].From)
+	}
+	if !strings.Contains(email.sends[0].HTML, "https://app.lfx.dev/newsletters/agentic-ai-foundation/"+draft.ID.String()) {
+		t.Errorf("HTML missing read-online link")
 	}
 }
