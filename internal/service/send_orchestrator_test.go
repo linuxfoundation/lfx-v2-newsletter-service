@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,14 +34,16 @@ func (f *fakeCommitteeClient) ListMembers(_ context.Context, committeeUID string
 // exercising the per-project From override set slug/slugErr to drive
 // resolveFromAddress deterministically.
 type fakeProjectClient struct {
-	slug    string
-	slugErr error
+	slug      string
+	slugErr   error
+	slugCalls atomic.Int32
 }
 
 func (f *fakeProjectClient) Name(_ context.Context, _ string) (string, error) {
 	return "Test Project", nil
 }
 func (f *fakeProjectClient) Slug(_ context.Context, _ string) (string, error) {
+	f.slugCalls.Add(1)
 	if f.slugErr != nil {
 		return "", f.slugErr
 	}
@@ -1967,6 +1970,7 @@ func TestTestSendRendersDateWithoutReadOnline(t *testing.T) {
 	email := &fakeEmailDispatcher{}
 	orch := newReadOnlineTestOrchestrator(repo, &fakeProjectClient{}, email)
 
+	before := formatNewsletterDate(time.Now())
 	if err := orch.TestSend(ctx, TestSendInput{
 		ProjectUID: "p1",
 		Subject:    "Hello",
@@ -1975,15 +1979,55 @@ func TestTestSendRendersDateWithoutReadOnline(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("TestSend: %v", err)
 	}
+	after := formatNewsletterDate(time.Now())
 	if len(email.sends) != 1 {
 		t.Fatalf("got %d sends, want 1", len(email.sends))
 	}
 	s := email.sends[0]
-	today := formatNewsletterDate(time.Now())
-	if !strings.Contains(s.HTML, today) || !strings.HasPrefix(s.Text, today+"\n") {
-		t.Errorf("test-send missing date %q", today)
+	hasDate := func(d string) bool { return strings.Contains(s.HTML, d) && strings.HasPrefix(s.Text, d+"\n") }
+	if !hasDate(before) && !hasDate(after) {
+		t.Errorf("test-send missing date %q", before)
 	}
 	if strings.Contains(s.HTML, "Read online") || strings.Contains(s.Text, "Read online") {
 		t.Errorf("test-send rendered a read-online link")
+	}
+}
+
+// TestSendLooksUpSlugOnce asserts a send with both a From override and a
+// Self-Serve base URL configured resolves the project slug exactly once.
+func TestSendLooksUpSlugOnce(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	project := &fakeProjectClient{slug: "agentic-ai-foundation"}
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo: repo,
+		Committee: &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+			"c1": {{Email: "alice@example.com"}},
+		}},
+		Project:              project,
+		Email:                email,
+		Concurrency:          2,
+		FanoutEnabled:        true,
+		SelfServeBaseURL:     "https://app.lfx.dev",
+		FromAddressOverrides: map[string]string{"agentic-ai-foundation": "newsletter@lfx.aaif.io"},
+	})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if got := project.slugCalls.Load(); got != 1 {
+		t.Errorf("Slug called %d times, want 1", got)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if email.sends[0].From != "newsletter@lfx.aaif.io" {
+		t.Errorf("From = %q, want override", email.sends[0].From)
+	}
+	if !strings.Contains(email.sends[0].HTML, "https://app.lfx.dev/newsletters/agentic-ai-foundation/"+draft.ID.String()) {
+		t.Errorf("HTML missing read-online link")
 	}
 }

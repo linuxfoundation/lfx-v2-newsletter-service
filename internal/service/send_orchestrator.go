@@ -440,6 +440,15 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// only a fallback for dev mode or a resolution failure.
 	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), draft.EDReplyEmail)
 
+	// One slug lookup feeds both the From override and the "Read online"
+	// permalink, so the two can't disagree and a slow project-service costs a
+	// single round-trip.
+	var slug string
+	var slugErr error
+	if len(o.fromOverrides) > 0 || o.selfServeBaseURL != "" {
+		slug, slugErr = o.project.Slug(ctx, draft.ProjectUID)
+	}
+
 	// A scheduled send is dated by when it is released, not when it was armed.
 	sentAt := time.Now()
 	if scheduledAt != nil {
@@ -454,7 +463,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		EDName:                  fallbackString(senderName, "Executive Director"),
 		EDReplyEmail:            replyTo,
 		SentDate:                formatNewsletterDate(sentAt),
-		ReadOnlineURL:           o.readOnlineURL(ctx, draft.ProjectUID, draft.ID),
+		ReadOnlineURL:           o.readOnlineURL(ctx, draft.ProjectUID, slug, slugErr, draft.ID),
 	}
 	if o.unsub.Enabled() {
 		chrome.UnsubscribeURL = UnsubscribeURLPlaceholder
@@ -471,7 +480,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		Subject:         draft.Subject,
 		HTML:            htmlBody,
 		Text:            textBody,
-		From:            o.resolveFromAddress(ctx, draft.ProjectUID),
+		From:            o.fromAddressForSlug(ctx, draft.ProjectUID, slug, slugErr),
 		FromDisplayName: fromDisplayName,
 		ReplyTo:         replyTo,
 		GroupID:         groupID,
@@ -1324,6 +1333,15 @@ func (o *SendOrchestrator) resolveFromAddress(ctx context.Context, projectUID st
 		return o.fromAddress
 	}
 	slug, err := o.project.Slug(ctx, projectUID)
+	return o.fromAddressForSlug(ctx, projectUID, slug, err)
+}
+
+// fromAddressForSlug is resolveFromAddress for a caller that already looked
+// up the project slug (and its error).
+func (o *SendOrchestrator) fromAddressForSlug(ctx context.Context, projectUID, slug string, err error) string {
+	if len(o.fromOverrides) == 0 {
+		return o.fromAddress
+	}
 	if err != nil {
 		slog.WarnContext(ctx, "from-address override: project slug lookup failed, using default From",
 			"project_uid", projectUID,
@@ -1337,15 +1355,15 @@ func (o *SendOrchestrator) resolveFromAddress(ctx context.Context, projectUID st
 	return o.fromAddress
 }
 
-// readOnlineURL builds the Self-Serve reader permalink for a newsletter. It
-// returns "" — omitting the "Read online" link — when no Self-Serve base URL
-// is configured or the project slug can't be resolved; a slug-lookup failure
-// is non-fatal and never blocks the send.
-func (o *SendOrchestrator) readOnlineURL(ctx context.Context, projectUID string, newsletterID uuid.UUID) string {
+// readOnlineURL builds the Self-Serve reader permalink for a newsletter from
+// an already-resolved project slug. It returns "" — omitting the "Read online"
+// link — when no Self-Serve base URL is configured or the slug lookup failed
+// or came back empty; a slug-lookup failure is non-fatal and never blocks the
+// send.
+func (o *SendOrchestrator) readOnlineURL(ctx context.Context, projectUID, slug string, err error, newsletterID uuid.UUID) string {
 	if o.selfServeBaseURL == "" {
 		return ""
 	}
-	slug, err := o.project.Slug(ctx, projectUID)
 	if err != nil {
 		slog.WarnContext(ctx, "read-online link: project slug lookup failed, omitting link",
 			"project_uid", projectUID,
