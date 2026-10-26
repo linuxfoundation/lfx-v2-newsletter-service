@@ -20,7 +20,6 @@ Important templates:
 | `httproute.yaml` | Gateway API routing for the project-scoped newsletter paths, the open pixel, `/newsletters/unsubscribe`, and (when the webhook key is configured) the SendGrid event webhook. |
 | `ruleset.yaml` | Heimdall rules for authenticated API routes plus the unauthenticated open pixel, unsubscribe, and (when the webhook key is configured) SendGrid-webhook endpoints. |
 | `heimdall-middleware.yaml` | Optional Traefik middleware resources when this chart owns them locally. |
-| `externalsecret.yaml` | Optional ExternalSecret resources. |
 | `networkpolicy.yaml` | Optional egress controls for DNS, NATS, OTel, Postgres, and external HTTPS (e.g. JWKS). |
 | `service.yaml` | ClusterIP service. |
 | `serviceaccount.yaml` | ServiceAccount. |
@@ -45,7 +44,7 @@ Important templates:
 | `app.send.schedule.cancelBuffer` | `NEWSLETTER_SCHEDULE_CANCEL_BUFFER` | Rejects a cancel-schedule request inside this window before the armed `scheduled_at` (minimum `10m`, default `10m`) — SendGrid's API does not permit cancellation within 10 minutes of `send_at`. |
 | `app.send.provider` | `EMAIL_PROVIDER` | `email-service` (default; fan-out to email-service/SES over NATS) or `sendgrid` (direct SendGrid). Gates only outbound send env; enable SendGrid here, not via `extraEnv`. The webhook route/rule are gated separately on `app.send.sendgrid.webhookPublicKeySecretRef`. An unknown value fails the Helm render. |
 | `app.send.sendgrid.authenticatedDomains` | `SENDGRID_AUTHENTICATED_DOMAINS` | Comma-separated authenticated sending domains; a From outside it is rejected before SendGrid. Required for `provider=sendgrid` outside local/dev. |
-| `app.send.sendgrid.apiKeySecretRef` | `SENDGRID_API_KEY` | Sources the SendGrid API key from a Kubernetes Secret (typically the chart's ExternalSecret target). Required for real sends. |
+| `app.send.sendgrid.apiKeySecretRef` | `SENDGRID_API_KEY` | Sources the SendGrid API key from a Kubernetes Secret (typically an ExternalSecret target declared in `lfx-v2-argocd`). Required for real sends. |
 | `app.send.sendgrid.webhookPublicKeySecretRef` | `SENDGRID_WEBHOOK_PUBLIC_KEY` | Sources the ECDSA signed-event-webhook key from a Secret. Setting this ref (independent of `provider`) wires the webhook env, HTTPRoute path, and RuleSet rule, so ingestion survives a flip back to email-service. Required when set — configure it only once the key exists; empty renders no webhook wiring. |
 | `app.selfServeBaseURL` | `LFX_SELF_SERVE_BASE_URL` | Base URL of the LFX Self-Serve app used to build the compliance footer's "My Newsletters" deep link (`<base>/newsletters/my`) and the "Read online" reader permalink above the card (`<base>/newsletters/<project slug>/<newsletter_uid>`). Empty falls back to the app default (`https://app.lfx.dev`); set per environment in deployment values (e.g. `https://app.staging.lfx.dev`). |
 | `app.unsubscribe.publicBaseURL` | `NEWSLETTER_PUBLIC_BASE_URL` | Externally-reachable origin used to build unsubscribe links. Defaults to `https://lfx-api.<lfx.domain>`. Required when fan-out is enabled. |
