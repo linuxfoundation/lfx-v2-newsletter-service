@@ -369,18 +369,3 @@ heimdall:
 # enabled.
 openfga:
   enabled: false
-
-# externalSecretsOperator gates the ExternalSecret + SecretStore templates.
-# Defaults to disabled; enable when wiring NATS or other AWS-Secrets-Manager
-# backed credentials.
-externalSecretsOperator:
-  enabled: false
-  externalSecret:
-    refreshInterval: "1h"
-    # data is a list of { secretKey, remoteRef: { key, property? } } entries.
-    data: []
-
-# global is the umbrella-chart scope. awsRegion gates ExternalSecret /
-# SecretStore rendering and is normally set by the parent chart.
-global:
-  awsRegion: ""
