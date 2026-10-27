@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/repository"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/schema"
@@ -43,7 +42,9 @@ func TestSendGridEngagementStore_Integration(t *testing.T) {
 	if err := schema.Apply(ctx, pool); err != nil {
 		t.Fatalf("schema apply: %v", err)
 	}
-	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
+	// Same constructor as production wiring (repository.NewBunDB), so the
+	// harness exercises the configuration the binary ships with.
+	db := repository.NewBunDB(stdlib.OpenDBFromPool(pool))
 	t.Cleanup(func() { _ = db.Close() })
 
 	store := repository.NewSendGridEngagementStore(db)
@@ -378,7 +379,9 @@ func TestSchemaMigration_SendProviderUpgradePath(t *testing.T) {
 	}
 	t.Cleanup(pool.Close) // runs before the database drop, after the row work
 	must(t, schema.Apply(ctx, pool))
-	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
+	// Same constructor as production wiring (repository.NewBunDB), so the
+	// harness exercises the configuration the binary ships with.
+	db := repository.NewBunDB(stdlib.OpenDBFromPool(pool))
 	t.Cleanup(func() { _ = db.Close() })
 
 	id := "mig-row"
@@ -472,7 +475,9 @@ func TestSendGridRevertConcurrency_Integration(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	must(t, schema.Apply(ctx, pool))
-	db := bun.NewDB(stdlib.OpenDBFromPool(pool), pgdialect.New())
+	// Same constructor as production wiring (repository.NewBunDB), so the
+	// harness exercises the configuration the binary ships with.
+	db := repository.NewBunDB(stdlib.OpenDBFromPool(pool))
 	t.Cleanup(func() { _ = db.Close() })
 	store := repository.NewSendGridEngagementStore(db)
 

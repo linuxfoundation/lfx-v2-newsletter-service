@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
@@ -69,7 +68,10 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	pgPool = pool
 
 	sqlDB = stdlib.OpenDBFromPool(pool)
-	bunDB = bun.NewDB(sqlDB, pgdialect.New())
+	// repository.NewBunDB carries the rolling-deploy option (discard unknown
+	// columns) and is shared with the integration-test harnesses, so the tests
+	// exercise the same configuration this binary ships with.
+	bunDB = repository.NewBunDB(sqlDB)
 
 	// Step 2: bootstrap database schema (idempotent, advisory-locked).
 	if err := schema.Apply(ctx, pgPool); err != nil {
