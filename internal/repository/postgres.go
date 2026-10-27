@@ -104,7 +104,7 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 		Limit(limit + 1)
 
 	if len(filters.Statuses) > 0 {
-		q = q.Where("status IN (?)", bun.In(filters.Statuses))
+		q = q.Where("status IN (?)", bun.List(filters.Statuses))
 	}
 
 	if filters.PageToken != "" {
