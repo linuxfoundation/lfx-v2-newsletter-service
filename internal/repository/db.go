@@ -21,6 +21,11 @@ import (
 // scanning the extra column into its model, a 500 after an autocommitted
 // write, risking duplicate or stranded state. Discarding unknown columns keeps
 // every pod forward-compatible with an added column across the deploy window.
+//
+// Trade-off: the option applies to every scan on this DB, not only to
+// RETURNING "*" writes. A raw query that selects a misnamed or renamed column
+// no longer fails at scan time; the model field is left at its zero value.
+// Cover new raw queries with an integration test that asserts the field.
 func NewBunDB(sqlDB *sql.DB) *bun.DB {
 	return bun.NewDB(sqlDB, pgdialect.New(), bun.WithDiscardUnknownColumns())
 }
