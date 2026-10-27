@@ -92,12 +92,13 @@ Match the existing package boundaries before adding a new abstraction.
 
 ## Errors
 
-- Domain sentinels: `ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`.
+- Domain sentinels: `ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrUnprocessable`.
 - Transport mapping:
   - not found -> 404
   - version mismatch -> 412
   - already sent -> 409
   - invalid request -> 400
+  - unprocessable layout (well-formed but unrenderable, or over the size cap) -> 422
   - upstream dependency failure -> 503
   - unexpected -> 500 with a generic client message
 - Wrap upstream and database errors with `%w`. Do not return raw database errors or upstream NATS reply bodies directly to clients. NATS upstream clients return typed `pkgerrors.*` wrappers matched with `errors.As` in `classifyError`.

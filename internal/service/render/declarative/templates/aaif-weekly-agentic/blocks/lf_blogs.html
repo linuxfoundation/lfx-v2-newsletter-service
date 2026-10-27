@@ -1,0 +1,96 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: {
+  "eyebrow": {
+    "type": "text",
+    "label": "Section label",
+    "default": "ACROSS THE FOUNDATIONS"
+  },
+  "standfirst": {
+    "type": "text",
+    "label": "One-line intro (optional)",
+    "default": "New posts from Linux Foundation projects and foundations since the last issue."
+  },
+  "groups": {
+    "type": "array",
+    "label": "Foundations (filled by research; edit, pin or remove items in the Research panel)",
+    "fields": {
+      "group": {
+        "type": "text",
+        "label": "Foundation"
+      },
+      "items": {
+        "type": "array",
+        "label": "Posts",
+        "fields": {
+          "headline": {
+            "type": "text",
+            "label": "Title"
+          },
+          "url": {
+            "type": "text",
+            "label": "Link"
+          },
+          "date_label": {
+            "type": "text",
+            "label": "Date"
+          },
+          "summary": {
+            "type": "text",
+            "label": "One-line note (optional)"
+          },
+          "source": {
+            "type": "text",
+            "label": "Project"
+          }
+        }
+      }
+    }
+  }
+} -->
+<!-- DATA_SOURCE: {
+  "kind": "research",
+  "input": {
+    "kind": "discovery_posts",
+    "window": "since_previous_edition",
+    "foundations": "all",
+    "publish_states": ["published", "pending_review"],
+    "require_date": true
+  },
+  "transform": {
+    "kind": "template",
+    "group_by": "foundation",
+    "max_items": 60,
+    "max_per_group": 8,
+    "blurb": "first_sentence",
+    "suppress_release_titles": true
+  },
+  "output": { "field": "groups", "format": "array" },
+  "schedule": "edition"
+} -->
+<!--
+  Across the Foundations — the week's new posts from LF foundations and
+  projects, as the LF ED newsletter's compact blog digest: a foundation
+  heading, then one line per post with the linked title, the date and a
+  one-sentence note where it adds something. The list is RESEARCHED, not
+  typed: the research run fills `groups` from the discovery sources
+  (Content → Sources) in the window since the previous issue; the author
+  pins, removes or rewords items in the Research panel and those edits
+  survive a re-run. Delete the block from the edition when the week doesn't
+  warrant it.
+-->
+<Section style="width:100%;max-width:640px;margin:0 auto 8px">
+  <div style="padding:0 20px">
+    <Hr class="dm-rule-strong" style="border:0;border-top:2px solid #111111;margin:0 0 10px" />
+    <Text class="dm-h" style="margin:0 0 6px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:bold;letter-spacing:2.5px;text-transform:uppercase;color:#111111;line-height:1.4">{{eyebrow}}</Text>
+    <Text if="standfirst" class="dm-m" style="margin:0 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#6b6b70">{{standfirst}}</Text>
+    <div each="groups" style="margin:0 0 14px">
+      <Text class="dm-h" style="margin:10px 0 4px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;font-weight:bold;color:#111111;line-height:1.4">{{group}}</Text>
+      <ul if="items" style="margin:0 0 6px;padding:0 0 0 18px">
+        <li each="items" class="dm-t" style="margin:0 0 6px;padding-left:2px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5;color:#333338">
+          <Link href="{{url}}" class="dm-h" style="color:#111111;text-decoration:underline">{{headline}}</Link><span if="date_label" class="dm-m" style="color:#6b6b70;font-size:13px">&nbsp;&mdash;&nbsp;{{date_label}}</span><span if="summary" class="dm-m" style="color:#444449;font-size:14px">&nbsp;{{summary}}</span>
+        </li>
+      </ul>
+    </div>
+  </div>
+</Section>

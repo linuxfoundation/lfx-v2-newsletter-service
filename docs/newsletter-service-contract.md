@@ -37,6 +37,9 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `POST` | `/projects/{project_uid}/newsletters/recipient-count` | yes | Resolve committees and return unique recipient count. |
 | `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Resolve committees and return unique recipient preview. |
 | `POST` | `/projects/{project_uid}/newsletters/test-send` | yes | Dispatch a single test email (no persistence, no analytics). |
+| `POST` | `/projects/{project_uid}/newsletters/render-preview` | yes | Render a `NewsletterLayout` to email-safe HTML for the editor's live preview. Stateless — nothing is persisted. Returns `422 unprocessable_entity` when the layout cannot be rendered. |
+| `GET` | `/projects/{project_uid}/newsletters/templates` | yes | List the embedded editor template sets (`{"templates": [{"key", "label"}]}`). The catalog is compiled into the binary and identical for every project. |
+| `GET` | `/projects/{project_uid}/newsletters/templates/{template_key}/manifest` | yes | Return the editor manifest for one template set: the palette of block types (`block_type`, `label`, `category`, `schema`, optional `is_container`, comment-stripped `template`) plus the page-chrome `wrapper` and `wrapper_key`, and the `starter_blocks` a new edition starts with. Unknown keys return `404 not_found`. Mirrors `NewsletterTemplateManifest` in `@lfx-one/shared`. |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics` | yes | Return analytics for one newsletter. |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients` | yes | Per-recipient engagement: who the newsletter went to, delivery outcome, and every recorded open timestamp, with a best-effort display name from the newsletter's committees. |
 | `GET` | `/committees/{committee_uid}/newsletters` | yes | Member-facing: sent newsletters whose audience includes the committee, ordered `sent_at` descending. Supports `page_token`. The gateway gates on `committee:{committee_uid}` `member` OR `auditor` (openfga_or_check), checked per request against OpenFGA — auditor folds in committee writers and project oversight roles so stronger roles never see less than members. Member tuples are maintained by committee-service via fga-sync, so revocation after a membership removal is eventual — normally near-immediate, but tuple removal is asynchronous/best-effort (see committee-service's `docs/fga-contract.md`); this endpoint adds no caching on top of tuple state. Returns `CommitteeNewsletterListResponse` — a reduced DTO without `body_html`, `ed_reply_email`, `group_id`, `created_by`, or `committee_uids` (the full audience list would let a single-committee member enumerate the newsletter's other committees). Clients fetch the rendered body via the project-scoped get, which is reachable for members because the platform model's project `viewer` relation includes all authenticated users (`[user:*]`). |
@@ -59,7 +62,8 @@ Core state:
 | `id` | Newsletter UUID. |
 | `project_uid` | Owning project UID (also in the URL path). |
 | `subject` | Subject line. |
-| `body_html` | Newsletter HTML body. |
+| `body_html` | Newsletter HTML body. For layout-based newsletters this is derived from `body_layout` on write (see below); for legacy newsletters it is the authored HTML. |
+| `body_layout` | Optional `NewsletterLayout` — the editor's structured layout. Returned **only by the editable single-resource reads** (get / create / update) and **only** for layout-based newsletters (`omitempty` for legacy / html-only rows). The **list** and **send** responses always omit it (`NewsletterListItem` and the send response DTO clear `body_layout` on the returned copy regardless of type — the persisted newsletter's stored layout is untouched, since it is still needed for later reads and send-time re-rendering), so those consumers must never rely on receiving it — fetch the single resource when the structured layout is needed. |
 | `ed_reply_email` | Reply-to address stored on the draft. Fallback only — at send time the orchestrator resolves the sender's own primary email via `lfx.auth-service.user_emails.read` and uses it as Reply-To instead, so replies reach whoever sends rather than whoever last drafted. This field is used only when that resolution fails or the sender's domain isn't in the Reply-To allowlist. |
 | `committee_uids` | Committees used for recipient resolution. |
 | `status` | `draft`, `sending`, `scheduled`, or `sent`. |
@@ -71,6 +75,59 @@ Core state:
 | `version` | Optimistic-locking version. |
 
 `POST …/send` returns `SendNewsletterResponse`: the newsletter plus `group_id`, `total_recipients`, `sent`, `failed`, and per-recipient `failures`. The send is asynchronous: acceptance returns `202` with the newsletter in `status=sending` and `sent=0`; clients observe the outcome by re-fetching the newsletter (branch on `newsletter.status`, not the HTTP status code). The zero-recipient edge case settles synchronously and returns `200` with `status=sent`.
+
+### Declarative Layout
+
+`CreateNewsletterRequest` and `UpdateNewsletterRequest` accept an optional `body_layout` (`NewsletterLayout`) alongside `subject`, `body_html`, `ed_reply_email`, and `committee_uids`. When `body_layout` is supplied the service renders it to `body_html` via the declarative emitter and persists both; any `body_html` in the request is ignored.
+
+On update, `body_layout` is tri-state: **absent** preserves a layout newsletter's stored layout and derived `body_html` (the request's `body_html` is ignored for layout rows; html-only rows take `body_html` from the request as before); an **explicit `"body_layout": null`** clears the stored layout and converts the newsletter to html-only, taking `body_html` from the request; an **object** replaces the layout and re-derives `body_html`. On create, absent and `null` are equivalent (html-only).
+
+`NewsletterLayout` is the structured newsletter body:
+
+| Field | Description |
+| --- | --- |
+| `wrapper_key` | Selects the wrapper template the top-level blocks render inside. |
+| `template_key` | Optional (`omitempty`). Selects the embedded block library the layout is rendered with. The layout renders with that library's blocks, bricks and wrapper and nothing else, so a `block_type` the library does not have is a `422`. The binary embeds three libraries: `aaif-user-community`, `aaif-weekly-agentic` and `aaif-member`. Empty falls back to `aaif-user-community`, for drafts saved before layouts named a library. Naming a library the binary does not embed is a `422`. |
+| `blocks` | Ordered top-level `LayoutBlock`s rendered in the wrapper's body slot. |
+
+`LayoutBlock` is a recursive content node:
+
+| Field | Description |
+| --- | --- |
+| `block_type` | Selects the declarative block template. |
+| `content` | Optional map of field bindings the template consumes (`omitempty`). |
+| `blocks` | Optional nested child `LayoutBlock`s (`omitempty`). |
+
+`POST …/render-preview` takes a `RenderPreviewRequest` and returns a `RenderPreviewResponse`:
+
+| DTO | Field | Description |
+| --- | --- | --- |
+| `RenderPreviewRequest` | `body_layout` | The `NewsletterLayout` to render. |
+| `RenderPreviewRequest` | `wrapper_content` | Optional map of runtime values the wrapper template binds against: `edition.date`, `edition.view_online_link`, and the display values `edition.sender_name` and `edition.project_name` for the footer's sender line, always sent together (both omitted, the wrapper drops the line or shows its library's fallback; one without the other renders an empty name). The unsubscribe and manage-subscriptions sentinels cannot be overridden. May be omitted (`omitempty`). |
+| `RenderPreviewResponse` | `body_html` | The rendered, email-safe HTML produced by the declarative emitter. |
+
+`GET …/newsletters/templates` returns `{"templates": [{"key", "label"}]}`, sorted by key. The labels are `AAIF Member`, `AAIF User Community` and `AAIF Weekly Agentic`. `GET …/templates/{template_key}/manifest` returns the editor manifest for one embedded template set: `wrapper_key`, `blocks` (each with `block_type`, `label`, `category`, `schema`, optional `is_container`, and a comment-stripped `template` body), the page-chrome `wrapper`, and `starter_blocks`. `starter_blocks` is the ordered list of `{"block_type"}` entries from the set's `edition.json`, which the composer uses to seed a new draft. It is an additive field. Every starter block names a block in the same set, and the catalog fails to build (a `500`) if one does not. The shape is produced by `internal/service/render/declarative.Manifest` and mirrors `NewsletterTemplateManifest` in `@lfx-one/shared`, which the block composer consumes; the embedded per-key template sets are the single source of truth for both the editor palette and rendering.
+
+`TestSendRequest` (the `…/test-send` body) carries an optional `body_layout` (`NewsletterLayout`, `omitempty`) — the **sole layout trigger** for a test send. When present the service recompiles the layout server-side (declarative emitter) and dispatches that HTML, with only the unsubscribe opt-out row **suppressed** — the wrapper's `if=`-guarded opt-out row is dropped, avoiding a dangling unsubscribe link in a test that mints no real signed token, while the rest of the wrapper's compliance footer still renders. The test email shows today's date and no "View Online" link, because a test send has no newsletter to link to. When `body_layout` is omitted, `body_html` is treated as simple editor HTML and wrapped in email chrome (the legacy path).
+
+The `is_layout` boolean is **deprecated and ignored**. It is still accepted (the decoder rejects unknown fields, so removing it would break clients that still send it), but it has no effect: a precompiled `is_layout` + `body_html` request is no longer dispatched verbatim, because binding its per-recipient unsubscribe sentinel to empty left a dangling `<a href="">Unsubscribe</a>`. Send `body_layout` for a layout test send.
+
+Each template set is a copy of a git repository that the AAIF team maintains. `internal/service/render/declarative/templates/templates.lock` lists each set with its repository and the commit it was copied from. `make sync-templates` copies the `blocks/`, `bricks/`, `wrappers/` and `edition.json` files at those commits into `templates/<key>/` and adds two licence header lines to each `.html` file. Apart from that header the files are the repository files. Running the command twice gives no change. To update a set, change its ref in `templates.lock`, run the command, and commit the result. The command needs git access to the private repositories. The build and the running service do not use git.
+
+Block fields have a `type` and an optional `default`. The service does not apply a `default` when it renders. A client that creates a block uses it to fill the field. The `boolean` field type works the same way, and the renderer reads the value as a boolean or as the text `true` or `false`.
+
+The renderer supports these directives on a template element:
+
+| Directive | Behavior |
+| --- | --- |
+| `if="field"` | Render the element when the field is set. A string is set when it is not blank. An array is set when it has items. A boolean is set when it is true and a number is set when it is not zero. |
+| `unless="field"` | Render the element when `if="field"` would not. |
+| `if="field == text"`, `if="field != text"` | Compare the field, written as text, with the literal text on the right. A missing field is empty text. `unless` accepts the same forms. |
+| `each="field"` | Repeat the element for each item of an array field. A nested array inside an item is bound against that item. |
+
+A lowercase `<a href>` renders as a link, the same as `<Link>`. A `<style>` element in a wrapper is dropped, so a wrapper's dark mode stylesheet has no effect and the email renders in light mode. A link that is bound to the unsubscribe or "My Newsletters" sentinel always carries `clicktracking="off"`, whatever the template says.
+
+The wrappers read six runtime values from the `edition` object: `date`, `view_online_link`, `unsubscribe_url`, `manage_subscriptions_url`, `sender_name` and `project_name`. The footer's sender line ("Sent by X on behalf of Y") is bound to `sender_name` and `project_name`, which the send path resolves from the sending user's profile and the project (the same values the legacy chrome uses) and substitutes once per send. It renders when `sender_name` is set; with it unset, `aaif-user-community` shows a sender-neutral fallback line and the other two libraries drop the line. The opt-out row renders only when `unsubscribe_url` is set and also carries the manage-subscriptions link, labelled "My Newsletters" in `aaif-user-community` and "Manage email preferences" in the other two. Every wrapper writes the postal address into its footer text. The reply email of a send is bound but not rendered by any embedded wrapper; Reply-To reaches the reader through the envelope.
 
 `POST …/schedule` returns `ScheduleNewsletterResponse`: the same shape as `SendNewsletterResponse` plus `scheduled_at` (the value actually armed — the request's override, or the draft's own saved value). `POST …/cancel-schedule` returns `CancelScheduleResponse`: just the reverted newsletter.
 
@@ -86,6 +143,9 @@ Core state:
 
 - New newsletters are created with `status=draft`.
 - Drafts can be updated and deleted.
+- On create and update, layout-based newsletters (request includes `body_layout`) derive the persisted `body_html` from `body_layout` via the declarative emitter; legacy newsletters persist the authored `body_html` as-is.
+- A send of a layout-based newsletter renders `body_layout` again at send time, using the unsubscribe setting in effect then, and dispatches that email without the email chrome. The wrapper's `edition.date` is the send date (`America/Los_Angeles`, or the `scheduled_at` date for a scheduled send), formatted as the legacy chrome formats it. The wrapper's `edition.view_online_link` is the same "Read online" URL the legacy chrome uses, from the same per-send project slug lookup. A send is refused with `400 invalid_request`, before the `draft → sending` transition, when a layout has no blocks or a legacy `body_html` is empty. A real send of a layout newsletter is refused with `503 service_unavailable` when the unsubscribe service is not configured, because the wrappers have no opt-out text without an unsubscribe link. A send or schedule is refused with `422 unprocessable_entity`, before the `draft → sending` transition, when the stored layout no longer renders (for example a block type removed by a template re-sync) or its re-rendered output exceeds the size cap; a stored layout that cannot be parsed is a `500`. A newsletter with only `body_html` sends exactly as it did before layouts.
+- A database trigger on `newsletters` refuses a `draft → sending` change of a layout row, and a `body_html` change of a layout row, unless the writer sets a transaction setting that only layout-aware versions of this service set. During a rolling deploy or after a rollback, an older pod fails with a database error instead of sending a layout row without its chrome or discarding an edit.
 - `POST …/newsletters/{newsletter_uid}/send` accepts the send synchronously and completes it asynchronously:
   - **Synchronous (inside the request):** validates the draft, resolves recipients (excluding project-scoped unsubscribes), renders the email envelope, mints a `group_id`, and atomically transitions `draft → sending` — persisting `group_id` and `total_recipients` and incrementing `version`. This single optimistically-locked transition is the duplicate-send guard across replicas: a concurrent or repeated send observes the row is no longer a draft and gets `409 send_in_progress`. The endpoint then returns `202`.
   - **Asynchronous (detached background job):** fans out per-recipient sends through the active provider, then — when at least one recipient was delivered to OR any result is ambiguous (provider may have accepted it) — sets `status=sent`, `sent_at`, and increments `version`. A settled status=sent does NOT guarantee all recipients were accepted — only that the send was initiated. A fully-failed fan-out (zero definitive rejections) reverts the row to `draft` (clearing `group_id` and `total_recipients`) so the operator can retry. The job is detached from the HTTP request context, so client disconnects and proxy timeouts cannot cancel a partially-dispatched send or orphan the status; its runtime is bounded by `SEND_JOB_TIMEOUT` (default 30m). Consult the Failures list and provider engagement metrics for per-recipient delivery outcomes.
@@ -173,11 +233,14 @@ Semantics and caveats:
 | Newsletter is scheduled (edit/delete/send/schedule attempted) | 409 | `scheduled` |
 | Cancel-schedule requested inside the cancel buffer | 409 | `cancel_window_closed` |
 | Invalid request | 400 | `invalid_request` |
+| A layout cannot be rendered — unknown `block_type`, an unknown/unembedded `template_key`, malformed markup, MJML compile failure, or a layout exceeding the block-count / nesting-depth limits (on `render-preview`, on render-on-write during create/update, or on the send-time re-render during `send` / `schedule`) | 422 | `unprocessable_entity` |
 | Upstream conflict (typed `pkgerrors.Conflict`) | 409 | `conflict` |
-| Upstream dependency unavailable | 503 | `service_unavailable` |
+| Upstream dependency unavailable, or a real send of a layout newsletter while the unsubscribe service is not configured | 503 | `service_unavailable` |
 | Unexpected server error | 500 | `internal_error` |
 
 Domain sentinels match first; typed `pkgerrors.*` wrappers from the NATS upstream clients (committee, project, email-dispatcher) match by `errors.As`. 5xx responses intentionally use a generic client message. Details are logged server-side.
+
+`422 unprocessable_entity` is a client/markup error — the request was well-formed but its layout could not be rendered. This includes a `template_key` that names a block library the binary does not embed, and a layout that exceeds the block-count or container-nesting-depth ceilings — bounded so the pre-compile render pipeline (parse, recursive bind, spacing expansion), which runs before the compile timeout, cannot be driven into pathological CPU/memory work. The same status applies whether the layout fails on `render-preview`, on render-on-write during create/update, or on the send-time re-render during `send` / `schedule`, so an editor that previews then saves the same bad layout sees a consistent code, and a layout that stops rendering after a template re-sync is reported the same way at send. It is distinct from a failure to load the *default* render library, which is a deployment defect (the templates ship with the binary) and surfaces as `500 internal_error`.
 
 ## Change Checklist
 

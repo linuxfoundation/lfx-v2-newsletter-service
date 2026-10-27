@@ -1,0 +1,20 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: {
+  "title": {"type":"text","label":"Title"},
+  "description": {"type":"richtext","label":"Description"},
+  "video_link": {"type":"text","label":"Video link"},
+  "spotify_link": {"type":"text","label":"Spotify link"},
+  "apple_link": {"type":"text","label":"Apple link"}
+} -->
+<Section class="brick" style="padding:0">
+  <Heading if="title" class="dm-h" style="margin:0 0 8px;font-size:22px;font-weight:bold;color:#131313;line-height:1.2;letter-spacing:-0.2px">{{title}}</Heading>
+  <richtext field="description" class="dm-t" style="font-size:16px;color:#3c3c3f;line-height:1.5" />
+  <Text class="dm-t" style="font-size:16px;color:#3c3c3f;line-height:1.5;margin-top:8px">
+    <strong>
+      <Link if="video_link" href="{{video_link}}" class="dm-h" style="color:#131313;text-decoration:underline">Video</Link>
+      <span if="spotify_link"> &middot; <Link href="{{spotify_link}}" class="dm-h" style="color:#131313;text-decoration:underline">Spotify</Link></span>
+      <span if="apple_link"> &middot; <Link href="{{apple_link}}" class="dm-h" style="color:#131313;text-decoration:underline">Apple</Link></span>
+    </strong>
+  </Text>
+</Section>

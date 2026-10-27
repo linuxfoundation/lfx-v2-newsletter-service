@@ -78,7 +78,7 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 	if err := validateProjectUID(projectUID); err != nil {
 		return nil, err
 	}
-	n, err := a.repo.Get(ctx, newsletterID)
+	n, err := a.repo.GetMeta(ctx, newsletterID)
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +246,7 @@ func (a *AnalyticsService) Recipients(ctx context.Context, projectUID string, ne
 	if err := validateProjectUID(projectUID); err != nil {
 		return nil, err
 	}
-	n, err := a.repo.Get(ctx, newsletterID)
+	n, err := a.repo.GetMeta(ctx, newsletterID)
 	if err != nil {
 		return nil, err
 	}
