@@ -72,7 +72,7 @@ func TestGetNewsletterTotalOpens(t *testing.T) {
 			repo := &getOneRepo{newsletter: n, localOpens: 2, analyticsErr: tc.analyticsErr}
 			readers := map[string]port.EngagementReader{model.SendProviderEmailService: &getOneReader{opened: 7}}
 			h := New(Config{
-				Newsletter: service.NewNewsletterService(repo),
+				Newsletter: service.NewNewsletterService(repo, true),
 				Analytics:  service.NewAnalyticsService(repo, readers, nil, model.SendProviderEmailService),
 			})
 

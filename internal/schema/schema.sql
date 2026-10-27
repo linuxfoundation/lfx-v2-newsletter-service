@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS newsletters (
     project_uid       TEXT         NOT NULL,
     subject           TEXT         NOT NULL,
     body_html         TEXT         NOT NULL,
+    body_layout       JSONB,
     ed_reply_email    TEXT         NOT NULL,
     committee_uids    TEXT[]       NOT NULL DEFAULT '{}',
     status            TEXT         NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sending','sent')),
@@ -49,6 +50,14 @@ END$$;
 -- layer in case a caller misbehaves.
 ALTER TABLE newsletters
     ADD COLUMN IF NOT EXISTS group_id TEXT;
+
+-- body_layout is the editor's structured layout (wrapper key + ordered blocks),
+-- stored verbatim as JSONB. When present it is the source of truth: body_html is
+-- DERIVED from it by the declarative emitter on every write. Nullable so legacy
+-- rows (and the body_html-only API path) keep working unchanged. Added as an
+-- idempotent ALTER so deployments that ran the prior schema migrate in place.
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS body_layout JSONB;
 
 -- PG has no native IF NOT EXISTS on ADD CONSTRAINT; check pg_constraint first
 -- so re-running schema.sql is a no-op.
@@ -219,6 +228,55 @@ DROP TRIGGER IF EXISTS trg_reject_armed_scheduled_mutation ON newsletters;
 CREATE TRIGGER trg_reject_armed_scheduled_mutation
     BEFORE UPDATE OR DELETE ON newsletters
     FOR EACH ROW EXECUTE FUNCTION reject_armed_scheduled_mutation();
+
+-- Prevent legacy pods (running old code before the block-layout feature) from
+-- dispatching OR editing a layout newsletter during a rolling deploy or after a
+-- rollback. A layout row (body_layout IS NOT NULL) stores a fully-rendered email
+-- in body_html DERIVED from body_layout; the new binary re-renders that body from
+-- body_layout at send time, but a legacy pod ignores body_layout entirely. Two
+-- distinct hazards follow, so this guard covers two edges:
+--
+--   1. Dispatch (draft -> sending): a legacy pod would wrap the already-complete
+--      body_html in the legacy email_chrome a second time. Blocked unless the
+--      caller is layout-aware: the new binary sets 'app.allow_layout_send' before
+--      the transition in MarkSending, so it passes; a legacy pod never sets it and
+--      its claim fails loudly — the row waits in draft until a layout-aware pod
+--      picks it up.
+--   2. Edit (body_html mutation): a legacy pod's update rewrites body_html but
+--      leaves body_layout untouched, so the two fall out of sync; the next
+--      layout-aware send re-renders the stale body_layout and silently discards
+--      the edit. Blocked unless the caller sets 'app.allow_layout_update'. The
+--      layout-aware Update path rewrites body_html and body_layout together
+--      (including explicit layout removal, body_layout -> NULL) and sets that GUC,
+--      so it passes. OLD.body_layout drives the check so removing the layout in the
+--      same UPDATE still requires the opt-in; NEW.body_html IS DISTINCT FROM
+--      OLD.body_html scopes it to content edits, leaving pure status/metadata
+--      updates (e.g. MarkSending, which never touches body_html) unaffected.
+--
+-- Mirrors reject_armed_scheduled_mutation. CREATE OR REPLACE + DROP/CREATE keep
+-- re-running schema.sql a no-op.
+CREATE OR REPLACE FUNCTION reject_legacy_layout_send() RETURNS trigger AS $$
+BEGIN
+    -- Guard 1 (dispatch): draft -> sending claim of a layout row.
+    IF NEW.body_layout IS NOT NULL
+       AND OLD.status = 'draft' AND NEW.status = 'sending'
+       AND current_setting('app.allow_layout_send', true) IS DISTINCT FROM 'true' THEN
+        RAISE EXCEPTION 'cannot send layout newsletter (body_layout is set) — service version mismatch during rolling deploy';
+    END IF;
+    -- Guard 2 (edit): body_html mutation of a layout row without re-rendering it.
+    IF OLD.body_layout IS NOT NULL
+       AND NEW.body_html IS DISTINCT FROM OLD.body_html
+       AND current_setting('app.allow_layout_update', true) IS DISTINCT FROM 'true' THEN
+        RAISE EXCEPTION 'cannot edit layout newsletter body_html without re-rendering body_layout (body_layout is set) — service version mismatch during rolling deploy';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_reject_legacy_layout_send ON newsletters;
+CREATE TRIGGER trg_reject_legacy_layout_send
+    BEFORE UPDATE ON newsletters
+    FOR EACH ROW EXECUTE FUNCTION reject_legacy_layout_send();
 
 -- Supports the due-schedule sweep (status = 'scheduled' AND scheduled_at <= now()).
 CREATE INDEX IF NOT EXISTS idx_newsletters_scheduled_due

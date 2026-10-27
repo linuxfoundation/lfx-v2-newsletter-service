@@ -9,6 +9,88 @@ import (
 	"unicode/utf8"
 )
 
+// TestStripHTMLForTextDropsHeadStyleScript asserts the layout text/plain
+// derivation drops <head>/<style>/<script> inner text. The layout send path
+// feeds a full compiled MJML document, whose <head><style>…</style></head>
+// carries CSS/media-query text that must never leak into the plain-text part.
+func TestStripHTMLForTextDropsHeadStyleScript(t *testing.T) {
+	doc := `<!DOCTYPE html><html><head>` +
+		`<title>Weekly</title>` +
+		`<style>@media only screen and (max-width:600px){.col{width:100%!important;}}` +
+		`.btn{background-color:#4086c6;}</style>` +
+		`</head><body>` +
+		`<p>Hello subscribers</p>` +
+		`<script>trackOpen();</script>` +
+		`<a href="https://example.com/read">Read more</a>` +
+		`</body></html>`
+
+	got := StripHTMLForText(doc)
+
+	// The CSS / media-query / script text must be gone.
+	for _, leaked := range []string{"@media", "max-width", "background-color", "#4086c6", "trackOpen", "<title>", "Weekly"} {
+		if strings.Contains(got, leaked) {
+			t.Errorf("text body leaked non-rendered content %q: %q", leaked, got)
+		}
+	}
+	// The real body content survives, with link destinations preserved.
+	if !strings.Contains(got, "Hello subscribers") {
+		t.Errorf("text body dropped visible content: %q", got)
+	}
+	if !strings.Contains(got, "https://example.com/read") {
+		t.Errorf("text body dropped link destination: %q", got)
+	}
+}
+
+// TestStripHTMLForTextTokenizerEdgeCases guards the two failure modes that a
+// regex-based strip could not handle and that the html-tokenizer pass fixes.
+func TestStripHTMLForTextTokenizerEdgeCases(t *testing.T) {
+	// (1) A '>' inside an attribute value must not corrupt extraction. A naive
+	// `<[^>]+>` tag pass stops at the first '>' (here inside title="1 > 0") and
+	// leaks the attribute tail into the visible text.
+	got := StripHTMLForText(`<p><a href="https://example.com/a" title="1 > 0">Read</a> now</p>`)
+	if strings.Contains(got, "title=") || strings.Contains(got, `0">`) {
+		t.Errorf("attribute tail leaked into text: %q", got)
+	}
+	for _, want := range []string{"Read", "https://example.com/a", "now"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("visible content/link lost %q: %q", want, got)
+		}
+	}
+
+	// (2) A self-closing <style/> is a raw-text element (HTML ignores the slash),
+	// so its CSS must never leak into the text. The old regex skip-scanner keyed
+	// on a </style> that a self-closing tag never opens, spilling the CSS.
+	// Content BEFORE the style survives; the style's own content does not.
+	got = StripHTMLForText(`<p>Before</p><style/>.leaked{color:red}`)
+	if !strings.Contains(got, "Before") {
+		t.Errorf("content before self-closing <style/> was dropped: %q", got)
+	}
+	for _, leaked := range []string{".leaked", "color:red", "leaked"} {
+		if strings.Contains(got, leaked) {
+			t.Errorf("self-closing <style/> css leaked %q: %q", leaked, got)
+		}
+	}
+}
+
+// TestStripHTMLForTextBreakEmitsNewline pins that a <br> becomes a newline in the
+// text/plain part, so lines separated by a line break do not collapse into one
+// run. The regression case is the footer postal address
+// ("The Linux Foundation<br />2810 N Church St...") rendering as
+// "The Linux Foundation2810..." when <br> was dropped without whitespace.
+func TestStripHTMLForTextBreakEmitsNewline(t *testing.T) {
+	// Self-closing <br /> as authored in the layout wrapper's postal-address row.
+	got := StripHTMLForText(`<p>The Linux Foundation<br />2810 N Church St., PMB 57274</p>`)
+	if !strings.Contains(got, "The Linux Foundation\n2810 N Church St., PMB 57274") {
+		t.Errorf("self-closing <br /> did not separate the address lines: %q", got)
+	}
+
+	// Start-tag <br> (author-supplied body content) must also separate its lines.
+	got = StripHTMLForText(`<p>Line one<br>Line two</p>`)
+	if !strings.Contains(got, "Line one\nLine two") {
+		t.Errorf("start-tag <br> did not separate authored lines: %q", got)
+	}
+}
+
 const testMyNewslettersURL = "https://app.lfx.dev/newsletters/my"
 
 func TestEmailHTMLMyNewslettersLine(t *testing.T) {

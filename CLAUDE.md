@@ -77,7 +77,7 @@ cmd/newsletter-api/
 internal/domain/
 ├── model/                    # Pure data: Newsletter, Status, CommitteeMember, Unsubscribe
 ├── port/                     # Interfaces: NewsletterRepository, CommitteeClient, ProjectMetadataClient, EmailDispatcher, UserMetadataReader
-└── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent, ErrSendInProgress
+└── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent, ErrSendInProgress, ErrUnprocessable
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
@@ -85,7 +85,9 @@ internal/service/
 ├── analytics.go              # Local opens overlaid with email-service engagement totals
 ├── unsubscribe.go            # HMAC token mint/verify + project-scoped opt-out persistence
 └── render/
-    └── email_chrome.go       # HTML/text email chrome around the draft body
+    ├── email_chrome.go       # HTML/text email chrome around the draft body
+    └── declarative/          # Renders a body_layout to email HTML (templates, MJML compile, manifests)
+        └── templates/        # Embedded template sets copied from git (templates.lock, make sync-templates)
 
 internal/repository/
 └── postgres.go               # bun-backed NewsletterRepository with optimistic locking
@@ -98,6 +100,8 @@ internal/handler/
 ├── http.go                   # Routes() + JSON helpers + error mapper
 ├── drafts.go                 # /projects/{project_uid}/newsletters CRUD + ETag helpers
 ├── send.go                   # …/send, …/test-send, …/recipients, …/recipient-count
+├── render.go                 # POST …/newsletters/render-preview (stateless layout render)
+├── templates.go              # GET …/newsletters/templates, …/templates/{template_key}/manifest
 ├── list.go                   # GET /projects/{project_uid}/newsletters unified list
 ├── analytics.go              # GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics
 ├── open.go                   # GET /projects/{project_uid}/newsletter-opens/{newsletter_uid} tracking pixel
@@ -180,7 +184,7 @@ All `os.Getenv` calls belong in `cmd/newsletter-api/service/config.go` →
 4. Register the route in `internal/handler/http.go`.
 
 ### Error handling
-- Domain errors live in `internal/domain/errors.go` (`ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrSendInProgress`).
+- Domain errors live in `internal/domain/errors.go` (`ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrSendInProgress`, `ErrUnprocessable` for a well-formed layout the renderer cannot render, 422).
 - Map domain errors to HTTP status codes in `internal/handler/http.go`.
 - Always pass `ctx` for OTel trace correlation.
 

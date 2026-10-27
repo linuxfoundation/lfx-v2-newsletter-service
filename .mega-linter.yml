@@ -21,6 +21,8 @@ SPELL_VALE_PRE_COMMANDS:
     cwd: "workspace"
   - command: vale sync
     cwd: "workspace"
-FILTER_REGEX_EXCLUDE: '(templates/.*\.yml|templates/.*\.yaml)'
+# Exclude Helm chart templates (Go-templated yaml) and the declarative
+# newsletter templates (a custom JSX-like DSL, not real HTML) from linting.
+FILTER_REGEX_EXCLUDE: '(templates/.*\.yml|templates/.*\.yaml|internal/service/render/declarative/templates/.*\.html)'
 KUBERNETES_DIRECTORY: charts/lfx-v2-newsletter-service/templates
 KUBERNETES_HELM_ARGUMENTS: charts/lfx-v2-newsletter-service

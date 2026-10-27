@@ -1,0 +1,17 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: {
+  "text":   {"type":"richtext","label":"Text"},
+  "italic": {"type":"boolean","label":"Italic","default":true}
+} -->
+<!-- Style C INTRO — one-line editorial quote, centred Georgia. "Italic" toggle
+     (default on). The italic variant uses `unless="italic == false"` so it stays
+     visible on a renderer that predates the == guard (there the odd path is just
+     an unknown key → falsy → not hidden), and toggles correctly once the guard
+     ships. Everything but font-style is identical between the two. -->
+<Section style="width:100%;max-width:650px;margin:0 auto 24px">
+  <div style="text-align:center;padding:0 30px">
+    <richtext unless="italic == false" field="text" class="dm-h" style="font-family:Georgia,'Times New Roman',serif;font-size:20px;font-style:italic;line-height:1.55;color:#131313;margin:0" />
+    <richtext if="italic == false" field="text" class="dm-h" style="font-family:Georgia,'Times New Roman',serif;font-size:20px;font-style:normal;line-height:1.55;color:#131313;margin:0" />
+  </div>
+</Section>

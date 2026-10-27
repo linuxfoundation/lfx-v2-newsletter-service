@@ -1,0 +1,139 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: {
+  "edition": {
+    "date":                     {"type": "text", "label": "Edition date"},
+    "title":                    {"type": "text", "label": "Edition title"},
+    "preheader":                {"type": "text", "label": "Preheader"},
+    "view_online_link":         {"type": "text", "label": "View Online URL"},
+    "unsubscribe_url":          {"type": "text", "label": "Unsubscribe URL"},
+    "manage_subscriptions_url": {"type": "text", "label": "Manage subscriptions URL"},
+    "sender_name":              {"type": "text", "label": "Sender name"},
+    "project_name":             {"type": "text", "label": "Project name"}
+  }
+} -->
+
+<!--
+  AAIF User Community newsletter wrapper — "Style C".
+
+  Header / footer chrome for every edition, authored in the declarative format
+  the platform parses into a templates_wrappers row. EditionEmail renders the
+  edition body inside <slot name="body" /> below.
+
+  STYLING MODEL (important): this template owns 100% of its look. Every block
+  and this wrapper style themselves with INLINE styles only — none of the
+  platform's shared style classes (card/eyebrow/title/body/link) are used, so a
+  different newsletter can look completely different from its own repo. The
+  `dm-*` class names carry NO light-mode styling; they exist purely as hooks for
+  the dark-mode <style> block below. This relies on the renderer forwarding
+  `class` / `data-*` onto the output and emitting <style> verbatim.
+
+  Light rendering comes entirely from the inline styles, so clients that strip
+  <style> (Gmail) still get the full light design. The <style> block only adds
+  progressive dark-mode enhancement (prefers-color-scheme + Outlook.com
+  [data-ogsc]).
+
+  Page background: EditionEmail sets the outer <Body> background to #fff via an
+  INLINE (non-important) style, so the dark-mode `body { … !important }` rule in
+  the <style> below overrides it — the page gutter goes dark in clients that
+  honour <style> (Apple Mail, Outlook.com), and falls back to the light #fff in
+  clients that strip it (Gmail). The one thing still platform-owned is the
+  <Head> color-scheme meta. The preheader is a runtime field rendered by
+  EditionEmail from edition.preheader.
+
+  Per-brand URLs (Subscribe, socials, unsubscribe copy) are baked into the
+  markup directly. Only runtime fields use {{mustache}}:
+    {{edition.date}} · {{edition.view_online_link}} ·
+    {{edition.unsubscribe_url}} · {{edition.manage_subscriptions_url}} ·
+    {{edition.sender_name}} · {{edition.project_name}}
+  The sender line renders when the renderer supplies edition.sender_name and
+  falls back to a sender-neutral line when it does not.
+-->
+
+<style>
+@media (prefers-color-scheme: dark) {
+  body { background-color:#0f0f10 !important; }
+  .dm-card { background-color:#171718 !important; border-color:#2e2e30 !important; box-shadow:6px 6px 0 #3a3a3d !important; }
+  .dm-card-dashed { background-color:#0f0f10 !important; border-color:#4a4a4e !important; }
+  .dm-inv { background-color:#f0f0f0 !important; }
+  .dm-inv-txt { color:#131313 !important; }
+  .dm-inv-sub { color:#666666 !important; }
+  .dm-inv-rule { border-right-color:#d5d5d5 !important; }
+  .dm-h { color:#f0f0f0 !important; }
+  .dm-t { color:#c9c9cb !important; }
+  .dm-m { color:#8a8a8e !important; }
+  .dm-dot { background-color:#f0f0f0 !important; }
+  .dm-btn { background-color:#f0f0f0 !important; }
+  .dm-btn-a { color:#131313 !important; }
+  .dm-outline { background-color:#0f0f10 !important; border-color:#3a3a3d !important; color:#f0f0f0 !important; }
+  .dm-chip { background-color:#f0f0f0 !important; color:#131313 !important; }
+  .dm-note { color:#8a8a8e !important; border-color:#333333 !important; }
+  .dm-rule { border-top-color:#2e2e30 !important; }
+  .logo-light { display:none !important; }
+  .logo-dark { display:block !important; max-height:none !important; overflow:visible !important; }
+}
+[data-ogsc] body { background-color:#0f0f10 !important; }
+[data-ogsc] .dm-card { background-color:#171718 !important; border-color:#2e2e30 !important; box-shadow:6px 6px 0 #3a3a3d !important; }
+[data-ogsc] .dm-card-dashed { background-color:#0f0f10 !important; border-color:#4a4a4e !important; }
+[data-ogsc] .dm-inv { background-color:#f0f0f0 !important; }
+[data-ogsc] .dm-inv-txt { color:#131313 !important; }
+[data-ogsc] .dm-inv-sub { color:#666666 !important; }
+[data-ogsc] .dm-h { color:#f0f0f0 !important; }
+[data-ogsc] .dm-t { color:#c9c9cb !important; }
+[data-ogsc] .dm-m { color:#8a8a8e !important; }
+[data-ogsc] .dm-dot { background-color:#f0f0f0 !important; }
+[data-ogsc] .dm-btn { background-color:#f0f0f0 !important; }
+[data-ogsc] .dm-btn-a { color:#131313 !important; }
+[data-ogsc] .dm-outline { background-color:#0f0f10 !important; border-color:#3a3a3d !important; color:#f0f0f0 !important; }
+[data-ogsc] .dm-chip { background-color:#f0f0f0 !important; color:#131313 !important; }
+[data-ogsc] .dm-rule { border-top-color:#2e2e30 !important; }
+[data-ogsc] .logo-light { display:none !important; }
+[data-ogsc] .logo-dark { display:block !important; max-height:none !important; overflow:visible !important; }
+</style>
+
+<Section>
+  <div style="text-align:center;padding:6px 0 0">
+    <div class="logo-light">
+      <a href="https://aaif.live" target="_blank" style="text-decoration:none;border:0;outline:none">
+        <img alt="Agentic AI Foundation" width="230" src="https://data.aaif.live/storage/v1/object/public/media/branding/logo_dark.png" style="display:block;margin:0 auto;outline:none;border:0;width:230px;max-width:100%;height:auto" />
+      </a>
+    </div>
+    <div class="logo-dark" style="display:none;max-height:0;overflow:hidden">
+      <a href="https://aaif.live" target="_blank" style="text-decoration:none;border:0;outline:none">
+        <img alt="Agentic AI Foundation" width="230" src="https://data.aaif.live/storage/v1/object/public/media/branding/logo_light.png" style="display:block;margin:0 auto;outline:none;border:0;width:230px;max-width:100%;height:auto" />
+      </a>
+    </div>
+    <Text class="dm-m" style="color:#77777c;font-size:11px;letter-spacing:3px;text-transform:uppercase;margin:14px 0 0;line-height:1.5">USER COMMUNITY</Text>
+    <Text class="dm-m" style="color:#77777c;font-size:13px;line-height:24px;margin:8px 0 0">
+      <span if="edition.date">{{edition.date}} &nbsp;&middot;&nbsp; </span>
+      <span if="edition.view_online_link"><Link href="{{edition.view_online_link}}" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">View Online</Link> &nbsp;&middot;&nbsp; </span>
+      <Link href="https://aaif.live/newsletters/usercommunity/" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">Subscribe</Link>
+    </Text>
+  </div>
+</Section>
+
+<slot name="body" />
+
+<Section>
+  <div style="text-align:center;padding:6px 20px 0">
+    <Text class="dm-t" style="font-size:14px;line-height:1.6;margin:0;color:#3c3c3f">Thanks for reading. See you on
+      <Link href="https://discord.com/invite/9zTwngHAMy" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">Discord</Link>,
+      <Link href="https://www.youtube.com/@AgenticAI-Foundation" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">YouTube</Link>,
+      <Link href="https://github.com/aaif" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">GitHub</Link>,
+      <Link href="https://x.com/AgenticAIFdn" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">X</Link>, and
+      <Link href="https://www.linkedin.com/company/agentic-ai-foundation" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">LinkedIn</Link>.
+    </Text>
+  </div>
+</Section>
+
+<Section>
+  <div class="dm-rule" style="text-align:center;padding:20px 20px 0;border-top:1px solid #d8d8db;margin:24px 0 0">
+    <Text if="edition.sender_name" class="dm-m" style="font-size:12px;line-height:1.7;margin:0;color:#77777c">Sent by <strong>{{edition.sender_name}}</strong> on behalf of <strong>{{edition.project_name}}</strong>.</Text>
+    <Text unless="edition.sender_name" class="dm-m" style="font-size:12px;line-height:1.7;margin:0;color:#77777c">Sent on behalf of <strong>Agentic AI Foundation (AAIF)</strong>.</Text>
+    <Text if="edition.unsubscribe_url" class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">
+      Missed an issue? View past newsletters any time in <Link href="{{edition.manage_subscriptions_url}}" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">My Newsletters</Link>.<br />
+      <Link href="{{edition.unsubscribe_url}}" class="dm-h" style="color:#131313;text-decoration:underline">Unsubscribe</Link> from Agentic AI Foundation (AAIF) newsletters. Delivered by <Link href="https://lfx.linuxfoundation.org" class="dm-h" style="color:#131313;text-decoration:underline;font-weight:bold">LFX</Link>.
+    </Text>
+    <Text class="dm-m" style="font-size:12px;line-height:1.7;margin:10px 0 0;color:#77777c">The Linux Foundation, 2810 N Church St., PMB 57274, Wilmington, Delaware 19802-4447, United States</Text>
+  </div>
+</Section>
