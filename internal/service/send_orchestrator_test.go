@@ -5,7 +5,9 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +19,8 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render/declarative"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
@@ -36,10 +40,14 @@ func (f *fakeCommitteeClient) ListMembers(_ context.Context, committeeUID string
 type fakeProjectClient struct {
 	slug      string
 	slugErr   error
+	name      string
 	slugCalls atomic.Int32
 }
 
 func (f *fakeProjectClient) Name(_ context.Context, _ string) (string, error) {
+	if f.name != "" {
+		return f.name, nil
+	}
 	return "Test Project", nil
 }
 func (f *fakeProjectClient) Slug(_ context.Context, _ string) (string, error) {
@@ -166,6 +174,21 @@ func (r *fakeNewsletterRepo) Get(_ context.Context, id uuid.UUID) (*model.Newsle
 		return nil, domain.ErrNotFound
 	}
 	cp := *n
+	return &cp, nil
+}
+
+// GetMeta mirrors the production read: the returned copy never carries
+// body_layout, so a caller that wrongly depends on the layout on this path fails
+// in tests too.
+func (r *fakeNewsletterRepo) GetMeta(_ context.Context, id uuid.UUID) (*model.Newsletter, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.drafts[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	cp := *n
+	cp.BodyLayout = nil
 	return &cp, nil
 }
 func (r *fakeNewsletterRepo) List(_ context.Context, _ string) ([]*model.Newsletter, error) {
@@ -572,6 +595,92 @@ func TestSendIncludesMyNewslettersLink(t *testing.T) {
 	}
 	if !strings.Contains(email.sends[1].Text, wantURL) {
 		t.Errorf("test-send text missing My Newsletters link:\n%s", email.sends[1].Text)
+	}
+}
+
+// TestSendNewsletterRefusesEmptyLegacyBody pins that a legacy (non-layout) draft
+// cleared to an empty body_html via the editor escape hatch saves but cannot
+// send — dispatching it would ship a header/footer-only email. The send path
+// must refuse before any recipient dispatch or the draft → sending transition.
+func TestSendNewsletterRefusesEmptyLegacyBody(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	repo.drafts[draft.ID].BodyHTML = "" // escape-hatch cleared the body, no layout
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if err == nil {
+		t.Fatalf("expected SendNewsletter to refuse an empty legacy body")
+	}
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("want ErrInvalidRequest, got %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 0 {
+		t.Fatalf("empty-body refusal must dispatch nothing, got %d sends", len(email.sends))
+	}
+	if repo.drafts[draft.ID].Status != model.StatusDraft {
+		t.Fatalf("draft must stay in draft after refusal, got %v", repo.drafts[draft.ID].Status)
+	}
+}
+
+// TestSendNewsletterRefusesEmptyBlocksLayout pins that a layout draft with no
+// blocks — which re-renders to wrapper/header/footer chrome only — is refused at
+// send time rather than shipping an empty newsletter, even though save-time
+// allows an empty editor draft.
+func TestSendNewsletterRefusesEmptyBlocksLayout(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	repo.drafts[draft.ID].BodyLayout = json.RawMessage(`{"wrapper_key":"default","blocks":[]}`)
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if err == nil {
+		t.Fatalf("expected SendNewsletter to refuse an empty-blocks layout")
+	}
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("want ErrInvalidRequest, got %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 0 {
+		t.Fatalf("empty-blocks layout refusal must dispatch nothing, got %d sends", len(email.sends))
+	}
+	if repo.drafts[draft.ID].Status != model.StatusDraft {
+		t.Fatalf("draft must stay in draft after refusal, got %v", repo.drafts[draft.ID].Status)
+	}
+}
+
+// TestSubstituteTestPlaceholdersZeroesRuntimeSentinels pins that a test send
+// resolves the per-recipient runtime sentinels — including
+// %%MANAGE_SUBSCRIPTIONS_URL%% — to empty. A test mints no per-recipient
+// context, so the layout wrapper drops those rows and no live manage/opt-out
+// link is minted for an arbitrary test address.
+func TestSubstituteTestPlaceholdersZeroesRuntimeSentinels(t *testing.T) {
+	repo := newFakeRepo()
+	orch := newTestOrchestrator(repo, &fakeCommitteeClient{}, &fakeEmailDispatcher{}, NewUnsubscribeService(repo, []byte("k"), ""))
+	body := UnsubscribeURLPlaceholder + "|" + ManageSubscriptionsURLPlaceholder + "|" + ViewOnlineURLPlaceholder
+	got := orch.substituteTestPlaceholders(body)
+	for _, ph := range []string{UnsubscribeURLPlaceholder, ManageSubscriptionsURLPlaceholder, ViewOnlineURLPlaceholder} {
+		if strings.Contains(got, ph) {
+			t.Errorf("sentinel %q should resolve empty in a test send, got: %q", ph, got)
+		}
+	}
+	if got != "||" {
+		t.Errorf("all runtime sentinels should resolve empty in a test send, got: %q", got)
 	}
 }
 
@@ -1824,7 +1933,7 @@ func TestSendNewsletterZeroRecipientsSettlesSynchronously(t *testing.T) {
 func TestDraftGuardsWhileSending(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
-	svc := NewNewsletterService(repo)
+	svc := NewNewsletterService(repo, true)
 
 	draft := repo.addDraft("p1", []string{"c1"})
 	if _, err := repo.MarkSending(ctx, draft.ID, uuid.NewString(), model.SendProviderEmailService, 1, draft.Version, nil, ""); err != nil {
@@ -2029,5 +2138,972 @@ func TestSendLooksUpSlugOnce(t *testing.T) {
 	}
 	if !strings.Contains(email.sends[0].HTML, "https://app.lfx.dev/newsletters/agentic-ai-foundation/"+draft.ID.String()) {
 		t.Errorf("HTML missing read-online link")
+	}
+}
+
+// addLayoutDraft stores a layout-based draft: BodyLayout is a real, renderable
+// structured layout (so the orchestrator's send-time re-render recompiles it
+// against the send-time config, exactly as production does). BodyHTML is the
+// write-time snapshot the send path now RE-RENDERS over — it is retained only as
+// a stale fallback and is NOT what a successful send dispatches, so it is
+// deliberately marked with an unmistakable sentinel that must never reach a
+// recipient when re-render succeeds.
+func (r *fakeNewsletterRepo) addLayoutDraft(projectUID string, committeeUIDs []string) *model.Newsletter {
+	n := &model.Newsletter{
+		ID:         uuid.New(),
+		ProjectUID: projectUID,
+		Subject:    "Layout Hello",
+		// Stale write-time snapshot. A successful send-time re-render replaces
+		// this entirely; the marker proves the dispatched body came from the
+		// re-render, not from this persisted string.
+		BodyHTML: `<!DOCTYPE html><html><body>STALE_PERSISTED_BODY</body></html>`,
+		BodyLayout: json.RawMessage(
+			`{"blocks":[{"block_type":"intro_paragraph","content":{"text":"<p>Emitter body</p>"}}]}`,
+		),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: committeeUIDs,
+		Status:        model.StatusDraft,
+		Version:       1,
+	}
+	r.drafts[n.ID] = n
+	return n
+}
+
+// chromeEnvelopeMarkers are strings the email_chrome renderer always emits but
+// that a raw emitter (layout) email never contains. Their absence proves the
+// layout path did NOT re-wrap the body in chrome.
+var chromeEnvelopeMarkers = []string{
+	"&middot; Newsletter", // chrome header eyebrow
+	`class="lfx-pad"`,     // chrome table cell class
+}
+
+// TestSendLayoutIncludesMyNewslettersLink asserts a LAYOUT newsletter's send
+// substitutes the manage sentinel to the Self-Serve "My Newsletters" archive
+// URL, matching the legacy chrome path. Render-on-write binds the sentinel and
+// the send-time re-render keeps it (base URL configured), so the recipient gets
+// a working archive link — never the destructive one-click unsubscribe URL.
+func TestSendLayoutIncludesMyNewslettersLink(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:             repo,
+		Committee:        committee,
+		Project:          &fakeProjectClient{},
+		Email:            email,
+		Unsubscribe:      unsub,
+		Concurrency:      2,
+		FanoutEnabled:    true,
+		SelfServeBaseURL: "https://app.lfx.dev",
+	})
+
+	draft := repo.addLayoutDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	const wantURL = "https://app.lfx.dev/newsletters/my"
+	if !strings.Contains(email.sends[0].HTML, `href="`+wantURL+`"`) {
+		t.Errorf("layout send HTML missing My Newsletters link:\n%s", email.sends[0].HTML)
+	}
+	if strings.Contains(email.sends[0].HTML, ManageSubscriptionsURLPlaceholder) {
+		t.Errorf("layout send left the manage sentinel unsubstituted:\n%s", email.sends[0].HTML)
+	}
+	// The archive link is read-only, never the destructive one-click unsubscribe URL.
+	if strings.Contains(email.sends[0].HTML, `<a href="`+unsub.BuildURL("p1", "alice@example.com")+`">My Newsletters`) {
+		t.Errorf("layout send: My Newsletters link aliases the unsubscribe URL")
+	}
+}
+
+// TestSendNewsletterLayoutNotDoubleWrapped asserts a layout-based newsletter is
+// dispatched with body_html used directly (emitter content present, no chrome
+// envelope) and with the three runtime placeholders substituted to real
+// per-recipient values.
+func TestSendNewsletterLayoutNotDoubleWrapped(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}, {Email: "bob@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addLayoutDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 2 {
+		t.Fatalf("got %d sends, want 2", len(email.sends))
+	}
+	for _, s := range email.sends {
+		// Emitter content must be present (body_html used directly).
+		if !strings.Contains(s.HTML, "Emitter body") {
+			t.Errorf("send to %s: emitter content missing: %s", s.To, s.HTML)
+		}
+		// No chrome envelope markers — the layout path must not double-wrap.
+		for _, marker := range chromeEnvelopeMarkers {
+			if strings.Contains(s.HTML, marker) {
+				t.Errorf("send to %s: chrome marker %q leaked into layout email (double-wrapped)", s.To, marker)
+			}
+		}
+		// All three placeholders substituted: none of the raw sentinels remain.
+		for _, ph := range []string{UnsubscribeURLPlaceholder, ManageSubscriptionsURLPlaceholder, ViewOnlineURLPlaceholder} {
+			if strings.Contains(s.HTML, ph) {
+				t.Errorf("send to %s: placeholder %q not substituted", s.To, ph)
+			}
+		}
+		// Only the unsubscribe link resolves to the recipient's signed URL;
+		// manage-preferences resolves empty (asserted below).
+		wantURL := unsub.BuildURL("p1", s.To)
+		if got := strings.Count(s.HTML, wantURL); got != 1 {
+			t.Errorf("send to %s: expected the unsubscribe link only to use %q (1 occurrence), got %d in %s", s.To, wantURL, got, s.HTML)
+		}
+		// Manage-preferences must NOT alias the destructive one-click
+		// unsubscribe URL: its sentinel resolves to empty.
+		if strings.Contains(s.HTML, `<a href="`+wantURL+`">Manage`) {
+			t.Errorf("send to %s: manage-preferences link aliases the unsubscribe URL", s.To)
+		}
+		// The dispatched body came from the send-time re-render, NOT the stale
+		// persisted body_html.
+		if strings.Contains(s.HTML, "STALE_PERSISTED_BODY") {
+			t.Errorf("send to %s: dispatched stale persisted body_html instead of re-rendering: %s", s.To, s.HTML)
+		}
+		// The embedded wrapper carries its own "Sent by ... on behalf of ..."
+		// line, so the footer is present and no send-scoped sentinel is left over.
+		if !strings.Contains(s.HTML, "Sent by") {
+			t.Errorf("send to %s: wrapper footer missing the Sent by line: %s", s.To, s.HTML)
+		}
+		for _, ph := range []string{SenderNamePlaceholder, ProjectNamePlaceholder} {
+			if strings.Contains(s.HTML, ph) {
+				t.Errorf("send to %s: send-scoped sentinel %q not substituted", s.To, ph)
+			}
+		}
+		// The wrapper's if=-guarded rows with empty runtime values (view-online,
+		// manage-subscriptions) are dropped at render time, so no dangling empty
+		// href reaches the recipient.
+		if strings.Contains(s.HTML, `href=""`) {
+			t.Errorf("send to %s: left a dangling empty href (if= guard should drop empty rows): %s", s.To, s.HTML)
+		}
+		// Text body derived from the final HTML via the strip pass.
+		if !strings.Contains(s.Text, "Emitter body") {
+			t.Errorf("send to %s: text body missing emitter content: %q", s.To, s.Text)
+		}
+		// The substituted unsubscribe URL survives into text (link preserved).
+		if !strings.Contains(s.Text, wantURL) {
+			t.Errorf("send to %s: text body missing unsubscribe URL: %q", s.To, s.Text)
+		}
+	}
+}
+
+// TestSendNewsletterLayoutReRendersFooterAtSendTime proves the CAN-SPAM
+// compliance fix: a layout draft whose body_html was rendered at WRITE time with
+// unsubscribe DISABLED (no opt-out row) must, when sent while unsubscribe is
+// ENABLED, carry the unsubscribe row. The body is RE-RENDERED from the persisted
+// BodyLayout at send time using the send-time config, not dispatched from the
+// stale persisted body_html.
+func TestSendNewsletterLayoutReRendersFooterAtSendTime(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	// The orchestrator's unsubscribe service is ENABLED at send time.
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	if !unsub.Enabled() {
+		t.Fatalf("precondition: unsubscribe service should be enabled at send time")
+	}
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	layout := &declarative.Layout{
+		Blocks: []declarative.Block{
+			{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Compliance body</p>"}},
+		},
+	}
+	// Persist body_html as it would have been rendered at WRITE time with
+	// unsubscribe DISABLED: no per-recipient opt-out LINK (the reply-based
+	// fallback stands in), so the stale persisted body carries no unsubscribe
+	// sentinel and no Unsubscribe link.
+	staleBody, rawLayout, err := renderLayout(ctx, layout, "Weekly Update", "ed@example.com", sendUnsubFooterMode(false) /* write-time, unsub disabled */, true)
+	if err != nil {
+		t.Fatalf("write-time render: %v", err)
+	}
+	if strings.Contains(staleBody, UnsubscribeURLPlaceholder) || strings.Contains(staleBody, ">Unsubscribe<") {
+		t.Fatalf("precondition: write-time body with unsub disabled must not carry an opt-out link")
+	}
+
+	draft := &model.Newsletter{
+		ID:            uuid.New(),
+		ProjectUID:    "p1",
+		Subject:       "Compliance",
+		BodyHTML:      staleBody,
+		BodyLayout:    rawLayout,
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		Status:        model.StatusDraft,
+		Version:       1,
+	}
+	repo.drafts[draft.ID] = draft
+
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+
+	// The sent email carries the recipient's unsubscribe link even though the
+	// persisted (write-time) body had none — proving the send-time re-render
+	// injected the opt-out row using the SEND-TIME config.
+	wantURL := unsub.BuildURL("p1", "alice@example.com")
+	if !strings.Contains(s.HTML, wantURL) {
+		t.Errorf("sent HTML missing the send-time unsubscribe link (stale body_html dispatched instead of re-rendering): %s", s.HTML)
+	}
+	if !strings.Contains(s.HTML, ">Unsubscribe<") {
+		t.Errorf("sent HTML missing the unsubscribe row: %s", s.HTML)
+	}
+	// The recompiled emitter content is present and no chrome re-wrap happened.
+	if !strings.Contains(s.HTML, "Compliance body") {
+		t.Errorf("sent HTML missing recompiled emitter content: %s", s.HTML)
+	}
+	for _, marker := range chromeEnvelopeMarkers {
+		if strings.Contains(s.HTML, marker) {
+			t.Errorf("layout send double-wrapped in chrome (marker %q): %s", marker, s.HTML)
+		}
+	}
+	// Text/plain, derived from the SAME re-rendered HTML, carries the opt-out link.
+	if !strings.Contains(s.Text, wantURL) {
+		t.Errorf("sent text missing the send-time unsubscribe link: %q", s.Text)
+	}
+}
+
+// TestSendNewsletterRefusesCorruptLayoutWhenUnsubscribeEnabled is the
+// compliance guard's negative case: when a layout newsletter's stored
+// BodyLayout can no longer be re-rendered (here: corrupt JSON) AND unsubscribe
+// is ENABLED, the send must REFUSE rather than fall back to the persisted
+// body_html. That persisted body may predate the unsubscribe requirement and
+// carry no opt-out row — the exact CAN-SPAM gap the send-time re-render exists
+// to close. The row must stay a draft and NO email may be dispatched.
+func TestSendNewsletterRefusesCorruptLayoutWhenUnsubscribeEnabled(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	if !unsub.Enabled() {
+		t.Fatalf("precondition: unsubscribe service should be enabled")
+	}
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := &model.Newsletter{
+		ID:         uuid.New(),
+		ProjectUID: "p1",
+		Subject:    "Compliance",
+		// A persisted body_html that would send WITHOUT an opt-out row if the
+		// send ever fell back to it — the compliance gap we must not ship.
+		BodyHTML: `<!DOCTYPE html><html><body>STALE_NO_OPTOUT</body></html>`,
+		// Corrupt stored layout: json.Unmarshal fails inside reRenderLayoutBody,
+		// so the re-render returns an untyped error and the caller must refuse.
+		BodyLayout:    json.RawMessage(`{"blocks": [ this is not valid json`),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		Status:        model.StatusDraft,
+		Version:       1,
+	}
+	repo.drafts[draft.ID] = draft
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if err == nil {
+		t.Fatalf("expected SendNewsletter to refuse a corrupt layout while unsubscribe is enabled, got nil error")
+	}
+	// Stored data that fails to parse was valid when written, so it is a server
+	// defect (500), not the client's layout (422).
+	if errors.Is(err, domain.ErrUnprocessable) {
+		t.Fatalf("corrupt stored layout classified as ErrUnprocessable (422); want an untyped 500: %v", err)
+	}
+	orch.Drain(ctx)
+
+	if len(email.sends) != 0 {
+		t.Fatalf("refused send dispatched %d emails, want 0", len(email.sends))
+	}
+	// The row stays a draft for retry — never advanced to sending/sent.
+	if got := repo.get(draft.ID); got.Status != model.StatusDraft {
+		t.Fatalf("refused send left status %q, want %q (must stay a draft for retry)", got.Status, model.StatusDraft)
+	}
+}
+
+// TestSendNewsletterRefusesCorruptLayoutRegardlessOfUnsubscribe verifies that
+// layout sends are refused when re-render fails, regardless of unsubscribe
+// setting. Fallback to persisted HTML risks sending non-compliant emails with
+// stale compliance footers (unsubscribe enabled/disabled since write time) or
+// stale sentinels (%%UNSUBSCRIBE_URL%%) that would be emptied during fan-out.
+func TestSendNewsletterRefusesCorruptLayoutRegardlessOfUnsubscribe(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	// Unsubscribe DISABLED: empty secret and baseURL → Enabled() == false.
+	unsub := NewUnsubscribeService(repo, nil, "")
+	if unsub.Enabled() {
+		t.Fatalf("precondition: unsubscribe service should be disabled")
+	}
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := &model.Newsletter{
+		ID:            uuid.New(),
+		ProjectUID:    "p1",
+		Subject:       "Fallback",
+		BodyHTML:      `<!DOCTYPE html><html><body>PERSISTED_FALLBACK_BODY</body></html>`,
+		BodyLayout:    json.RawMessage(`{"blocks": [ still not valid json`),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		Status:        model.StatusDraft,
+		Version:       1,
+	}
+	repo.drafts[draft.ID] = draft
+
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err == nil {
+		t.Fatalf("SendNewsletter should refuse layout re-render failure even with unsubscribe disabled")
+	}
+	orch.Drain(ctx)
+
+	if len(email.sends) != 0 {
+		t.Fatalf("got %d sends, want 0 (refusing to dispatch non-compliant body)", len(email.sends))
+	}
+}
+
+// TestSendNewsletterUnrenderableLayoutIs422 pins the send-time classification:
+// a stored layout the renderer rejects (here a block type the embedded template
+// set does not have, as after a template re-sync) refuses the send with
+// domain.ErrUnprocessable, so the handler answers 422 exactly as update and
+// render-preview do for the same layout. Nothing is dispatched and the row stays
+// a draft for retry.
+func TestSendNewsletterUnrenderableLayoutIs422(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("test-secret-32-bytes-long-enough!!"), "https://lfx.example.test")
+	if !unsub.Enabled() {
+		t.Fatalf("precondition: unsubscribe service should be enabled")
+	}
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := &model.Newsletter{
+		ID:            uuid.New(),
+		ProjectUID:    "p1",
+		Subject:       "Re-sync",
+		BodyHTML:      `<!DOCTYPE html><html><body>STALE</body></html>`,
+		BodyLayout:    json.RawMessage(`{"blocks":[{"block_type":"block_removed_by_resync","content":{"text":"<p>x</p>"}}]}`),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		Status:        model.StatusDraft,
+		Version:       1,
+	}
+	repo.drafts[draft.ID] = draft
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if !errors.Is(err, domain.ErrUnprocessable) {
+		t.Fatalf("SendNewsletter error = %v, want domain.ErrUnprocessable (422)", err)
+	}
+	orch.Drain(ctx)
+
+	if len(email.sends) != 0 {
+		t.Fatalf("refused send dispatched %d emails, want 0", len(email.sends))
+	}
+	if got := repo.get(draft.ID); got.Status != model.StatusDraft {
+		t.Fatalf("refused send left status %q, want %q", got.Status, model.StatusDraft)
+	}
+}
+
+// TestSendNewsletterFooterBindsSenderForEveryLibrary proves every embedded
+// template library renders the compliance footer's sender line from the values
+// the send resolves (the sending user's name and the project name), not from
+// text baked into a wrapper. It renders a real send through each library and
+// looks for the exact bound line, so a wrapper that drops the binding, or a
+// renderer that stops emitting it, fails here rather than passing on a literal
+// "Sent by" the wrapper happens to contain.
+func TestSendNewsletterFooterBindsSenderForEveryLibrary(t *testing.T) {
+	keys, err := declarative.EmbeddedTemplateKeys()
+	if err != nil {
+		t.Fatalf("EmbeddedTemplateKeys: %v", err)
+	}
+	if len(keys) < 3 {
+		t.Fatalf("expected at least three embedded libraries, got %v", keys)
+	}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			ctx := context.Background()
+			repo := newFakeRepo()
+			committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+				"c1": {{Email: "alice@example.com"}},
+			}}
+			email := &fakeEmailDispatcher{}
+			unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+			users := &fakeUserMetadataReader{name: "Priya Example"}
+			orch := newTestOrchestratorWithUser(repo, committee, email, unsub, users)
+
+			// Each library ships its own block set, so pick one block it defines
+			// (first by name) rather than assuming a shared block type.
+			tpl, err := declarative.LoadEmbeddedTemplate(key)
+			if err != nil {
+				t.Fatalf("LoadEmbeddedTemplate(%s): %v", key, err)
+			}
+			blockTypes := make([]string, 0, len(tpl.Blocks))
+			for bt := range tpl.Blocks {
+				blockTypes = append(blockTypes, bt)
+			}
+			sort.Strings(blockTypes)
+			if len(blockTypes) == 0 {
+				t.Fatalf("%s: library has no blocks", key)
+			}
+			draft := repo.addLayoutDraft("p1", []string{"c1"})
+			draft.BodyLayout = json.RawMessage(`{"template_key":"` + key + `","blocks":[{"block_type":"` + blockTypes[0] + `","content":{"text":"<p>Emitter body</p>"}}]}`)
+
+			if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID, Principal: "auth0|priya"}); err != nil {
+				t.Fatalf("SendNewsletter(%s): %v", key, err)
+			}
+			orch.Drain(ctx)
+			if len(email.sends) != 1 {
+				t.Fatalf("got %d sends, want 1", len(email.sends))
+			}
+			s := email.sends[0]
+			// fakeProjectClient resolves the project name to "Test Project".
+			want := "Sent by <strong>Priya Example</strong> on behalf of <strong>Test Project</strong>."
+			if !strings.Contains(s.HTML, want) {
+				t.Errorf("%s: footer missing the bound sender line %q:\n%s", key, want, s.HTML)
+			}
+			if strings.Count(s.HTML, "Sent by") != 1 || strings.Count(s.HTML, "on behalf of") != 1 {
+				t.Errorf("%s: want exactly one sender line, got Sent by=%d on behalf of=%d", key, strings.Count(s.HTML, "Sent by"), strings.Count(s.HTML, "on behalf of"))
+			}
+			// The user-community library's sender-neutral fallback must not render
+			// alongside the bound line (it is guarded by unless="edition.sender_name").
+			if strings.Contains(s.HTML, "Sent on behalf of") {
+				t.Errorf("%s: fallback sender line rendered on a real send", key)
+			}
+			for _, ph := range []string{SenderNamePlaceholder, ProjectNamePlaceholder} {
+				if strings.Contains(s.HTML, ph) {
+					t.Errorf("%s: sentinel %q left in the sent body", key, ph)
+				}
+			}
+			if !strings.Contains(s.Text, "Sent by Priya Example on behalf of Test Project") {
+				t.Errorf("%s: text part missing the sender line:\n%s", key, s.Text)
+			}
+		})
+	}
+}
+
+// TestTestSendIgnoresIsLayoutWithoutBodyLayout proves body_layout is the SOLE
+// layout trigger for a test send: a deprecated is_layout=true WITHOUT body_layout
+// is treated as simple editor HTML on the legacy chrome path — not dispatched as
+// a precompiled layout — so there is no verbatim body_html whose emptied opt-out
+// sentinel could leave a dangling <a href="">Unsubscribe</a>. is_layout has no
+// effect; the send succeeds and is chrome-wrapped.
+func TestTestSendIgnoresIsLayoutWithoutBodyLayout(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		ToEmail:    "tester@example.com",
+		IsLayout:   true, // deprecated, ignored
+		BodyHTML:   "<p>Simple editor body</p>",
+	}); err != nil {
+		t.Fatalf("TestSend should treat is_layout+body_html as simple HTML, got: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	// Chrome-wrapped (legacy path), not dispatched as a full layout email.
+	if !strings.Contains(s.HTML, "&middot; Newsletter") {
+		t.Errorf("expected chrome header (legacy path), got: %s", s.HTML)
+	}
+	if !strings.Contains(s.HTML, "Simple editor body") {
+		t.Errorf("missing authored body: %s", s.HTML)
+	}
+	// No dangling empty opt-out anchor.
+	if strings.Contains(s.HTML, `href=""`) {
+		t.Errorf("left a dangling empty href: %s", s.HTML)
+	}
+}
+
+// TestSendNewsletterLegacyStillUsesChrome asserts the legacy (no-layout) path is
+// unchanged: the body is wrapped in the email_chrome envelope, complete with
+// the header eyebrow and compliance footer.
+func TestSendNewsletterLegacyStillUsesChrome(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addDraft("p1", []string{"c1"}) // legacy: BodyLayout nil
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	// Every chrome envelope marker must be present on the legacy path.
+	for _, marker := range chromeEnvelopeMarkers {
+		if !strings.Contains(s.HTML, marker) {
+			t.Errorf("legacy send missing chrome marker %q: %s", marker, s.HTML)
+		}
+	}
+	// Authored body still rendered inside the envelope.
+	if !strings.Contains(s.HTML, "Body") {
+		t.Errorf("legacy send missing authored body: %s", s.HTML)
+	}
+	// Unsubscribe placeholder substituted to the recipient's link, and the
+	// layout-only sentinels never appear in a legacy body.
+	if strings.Contains(s.HTML, UnsubscribeURLPlaceholder) {
+		t.Errorf("legacy send left unsubscribe placeholder unsubstituted: %s", s.HTML)
+	}
+	if !strings.Contains(s.HTML, unsub.BuildURL("p1", s.To)) {
+		t.Errorf("legacy send missing per-recipient unsubscribe link: %s", s.HTML)
+	}
+}
+
+// TestSendNewsletterLayoutRefusedWhenUnsubscribeDisabled proves a real layout
+// send is refused when the unsubscribe service is not configured. The embedded
+// wrappers render the opt-out row only for a real unsubscribe link and have no
+// reply-based fallback copy, so sending would ship an email with no opt-out. The
+// draft is not claimed and nothing is dispatched.
+func TestSendNewsletterLayoutRefusedWhenUnsubscribeDisabled(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, nil, "") // DISABLED
+	if unsub.Enabled() {
+		t.Fatalf("precondition: unsubscribe service should be disabled")
+	}
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addLayoutDraft("p1", []string{"c1"})
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	if err == nil {
+		t.Fatal("expected the layout send to be refused when unsubscribe is disabled")
+	}
+	var unavailable pkgerrors.ServiceUnavailable
+	if !errors.As(err, &unavailable) {
+		t.Errorf("err = %v, want a ServiceUnavailable error", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 0 {
+		t.Errorf("got %d sends, want 0", len(email.sends))
+	}
+	if got := repo.drafts[draft.ID]; got.Status != model.StatusDraft {
+		t.Errorf("status = %q, want the draft left in %q", got.Status, model.StatusDraft)
+	}
+}
+
+// The precompiled is_layout + body_html test-send mode (no structured
+// body_layout) is no longer dispatched verbatim — is_layout is deprecated and
+// ignored, so such a request is treated as simple editor HTML on the legacy
+// chrome path (covered by TestTestSendIgnoresIsLayoutWithoutBodyLayout), which
+// never leaves the dangling <a href="">Unsubscribe</a> the old verbatim path
+// could. The not-double-wrapped guarantee for the supported (body_layout) path
+// is covered by TestTestSendLayoutSuppressesUnsubscribeFooter below.
+
+// TestTestSendLayoutSuppressesUnsubscribeFooter asserts that a layout test send
+// driven by a structured BodyLayout recompiles server-side with the unsubscribe
+// / compliance footer suppressed: no opt-out link (and so no dangling
+// <a href="">Unsubscribe</a>) and no unsubscribe sentinel survive, while the
+// rest of the footer still renders. This is the secure/clean test-send shape —
+// a non-recipient test mints no real opt-out token.
+func TestTestSendLayoutSuppressesUnsubscribeFooter(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		ToEmail:    "tester@example.com",
+		BodyLayout: &declarative.Layout{
+			Blocks: []declarative.Block{
+				{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Test body copy</p>"}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+
+	// The recompiled emitter body is present, no chrome re-wrap.
+	if !strings.Contains(s.HTML, "Test body copy") {
+		t.Errorf("test-send layout missing emitter content: %s", s.HTML)
+	}
+	for _, marker := range chromeEnvelopeMarkers {
+		if strings.Contains(s.HTML, marker) {
+			t.Errorf("test-send layout double-wrapped: chrome marker %q present: %s", marker, s.HTML)
+		}
+	}
+	// The unsubscribe row is suppressed entirely: no opt-out link text, no
+	// dangling empty href, no unsubscribe sentinel, and no real token.
+	if strings.Contains(s.HTML, ">Unsubscribe<") {
+		t.Errorf("test-send layout must not render an unsubscribe link: %s", s.HTML)
+	}
+	if strings.Contains(s.HTML, `href=""`) {
+		t.Errorf("test-send layout left a dangling empty href: %s", s.HTML)
+	}
+	if strings.Contains(s.HTML, UnsubscribeURLPlaceholder) {
+		t.Errorf("test-send layout left the unsubscribe sentinel: %s", s.HTML)
+	}
+	if strings.Contains(s.HTML, unsub.BuildURL("p1", "tester@example.com")) {
+		t.Errorf("test-send must not embed a real unsubscribe token: %s", s.HTML)
+	}
+	// The rest of the footer still renders (proves it was suppressed, not lost).
+	if !strings.Contains(s.HTML, "Sent by") || !strings.Contains(s.HTML, "on behalf of") {
+		t.Errorf("test-send layout dropped the compliance footer: %s", s.HTML)
+	}
+	// Send-scoped sentinels resolved.
+	for _, ph := range []string{SenderNamePlaceholder, ProjectNamePlaceholder} {
+		if strings.Contains(s.HTML, ph) {
+			t.Errorf("test-send layout left send-scoped sentinel %q: %s", ph, s.HTML)
+		}
+	}
+}
+
+// TestTestSendLegacyStillUsesChrome asserts the legacy test-send (IsLayout
+// false / unset) is chrome-wrapped and now previews the SAME compliance footer
+// a real send produces, including a working unsubscribe link minted for
+// to_email (main's newer test-send semantics — see
+// TestTestSendRendersComplianceFooterWithRealUnsubscribeLink).
+func TestTestSendLegacyStillUsesChrome(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		BodyHTML:   "<p>Body</p>",
+		ToEmail:    "tester@example.com",
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	// Chrome header eyebrow present.
+	if !strings.Contains(s.HTML, "&middot; Newsletter") {
+		t.Errorf("legacy test-send missing chrome header: %s", s.HTML)
+	}
+	// The compliance footer now renders on the test-send path (main's change).
+	if !strings.Contains(s.HTML, "Sent by") {
+		t.Errorf("legacy test-send missing the compliance footer: %s", s.HTML)
+	}
+	// A real, working unsubscribe link minted for to_email — not the blanked
+	// placeholder — so the footer previews exactly what a recipient would get.
+	wantURL := unsub.BuildURL("p1", "tester@example.com")
+	if !strings.Contains(s.HTML, wantURL) {
+		t.Errorf("legacy test-send missing the real unsubscribe link: %s", s.HTML)
+	}
+	if strings.Contains(s.HTML, UnsubscribeURLPlaceholder) {
+		t.Errorf("legacy test-send left the unsubscribe sentinel unresolved: %s", s.HTML)
+	}
+	if !strings.Contains(s.HTML, "Body") {
+		t.Errorf("legacy test-send missing authored body: %s", s.HTML)
+	}
+}
+
+// TestSubstitution_TextBodyNotHTMLEscaped pins the HTML-vs-text escaping
+// split: send-scoped and per-recipient substitutions escape values for the
+// HTML part but leave the plain-text part raw, so a name like "R&D" does not
+// become "R&amp;D" in text/plain.
+func TestSubstitution_TextBodyNotHTMLEscaped(t *testing.T) {
+	body := "Sent by " + SenderNamePlaceholder + " on behalf of " + ProjectNamePlaceholder
+	sentAt := time.Date(2027, time.March, 4, 9, 0, 0, 0, time.UTC)
+	date := formatNewsletterDate(sentAt)
+
+	gotHTML := substituteSendScope(body, "Pat <Admin>", "R&D <Team>", date, true)
+	if !strings.Contains(gotHTML, "R&amp;D &lt;Team&gt;") || !strings.Contains(gotHTML, "Pat &lt;Admin&gt;") {
+		t.Errorf("HTML body should HTML-escape the names; got %s", gotHTML)
+	}
+	gotText := substituteSendScope(body, "Pat <Admin>", "R&D <Team>", date, false)
+	if strings.Contains(gotText, "&amp;") || strings.Contains(gotText, "&lt;") {
+		t.Errorf("text body must not contain HTML entities; got %s", gotText)
+	}
+	if !strings.Contains(gotText, "R&D <Team>") || !strings.Contains(gotText, "Pat <Admin>") {
+		t.Errorf("text body should carry the raw names; got %s", gotText)
+	}
+}
+
+// TestSubstituteSendScope_SendDate pins the header edition date substitution:
+// the %%SEND_DATE%% sentinel resolves to the formatted send date.
+func TestSubstituteSendScope_SendDate(t *testing.T) {
+	body := "<span>" + SendDatePlaceholder + "</span>"
+	sentAt := time.Date(2027, time.March, 4, 9, 0, 0, 0, time.UTC)
+	got := substituteSendScope(body, "Alice", "AAIF", formatNewsletterDate(sentAt), true)
+	if !strings.Contains(got, "March 4, 2027") || strings.Contains(got, SendDatePlaceholder) {
+		t.Errorf("send date not substituted to %q: %s", "March 4, 2027", got)
+	}
+}
+
+// newLayoutDateTestOrchestrator wires the unsubscribe service (a layout send
+// needs it) together with a Self-Serve base URL, so the layout path can bind the
+// send date and the "Read online" link.
+func newLayoutDateTestOrchestrator(repo *fakeNewsletterRepo, project *fakeProjectClient, email port.EmailDispatcher) *SendOrchestrator {
+	return NewSendOrchestrator(SendOrchestratorConfig{
+		Repo: repo,
+		Committee: &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+			"c1": {{Email: "alice@example.com"}},
+		}},
+		Project:          project,
+		Email:            email,
+		Unsubscribe:      NewUnsubscribeService(repo, []byte("k"), "https://api.example"),
+		Concurrency:      2,
+		FanoutEnabled:    true,
+		SelfServeBaseURL: "https://app.lfx.dev/",
+	})
+}
+
+// TestSendLayoutBindsSendDateAndReadOnlineLink pins that a layout email carries
+// the same send date and "Read online" permalink the legacy chrome shows, bound
+// into the wrapper's own header. The email has one date, one View Online link,
+// one unsubscribe link and one footer, and none of the legacy chrome around it.
+func TestSendLayoutBindsSendDateAndReadOnlineLink(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	project := &fakeProjectClient{slug: "agentic-ai-foundation"}
+	orch := newLayoutDateTestOrchestrator(repo, project, email)
+
+	draft := repo.addLayoutDraft("p1", []string{"c1"})
+	before := formatNewsletterDate(time.Now())
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	after := formatNewsletterDate(time.Now())
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+
+	wantURL := "https://app.lfx.dev/newsletters/agentic-ai-foundation/" + draft.ID.String()
+	if !strings.Contains(s.HTML, `href="`+wantURL+`"`) {
+		t.Errorf("layout HTML missing the read-online link %q:\n%s", wantURL, s.HTML)
+	}
+	if got := strings.Count(s.HTML, "View Online"); got != 1 {
+		t.Errorf("View Online appears %d times, want 1", got)
+	}
+	if got := strings.Count(s.HTML, before) + strings.Count(s.HTML, after); got != 1 && before != after {
+		t.Errorf("send date appears %d times, want 1", got)
+	}
+	if !strings.Contains(s.HTML, before) && !strings.Contains(s.HTML, after) {
+		t.Errorf("layout HTML missing the send date %q:\n%s", before, s.HTML)
+	}
+	if strings.Contains(s.HTML, SendDatePlaceholder) {
+		t.Errorf("send date sentinel left in the layout HTML")
+	}
+	// None of the legacy chrome is added around the wrapper.
+	if strings.Contains(s.HTML, "Read online") {
+		t.Errorf("layout HTML carries the legacy Read online bar:\n%s", s.HTML)
+	}
+	for _, marker := range chromeEnvelopeMarkers {
+		if strings.Contains(s.HTML, marker) {
+			t.Errorf("chrome marker %q leaked into the layout email", marker)
+		}
+	}
+	unsubURL := NewUnsubscribeService(repo, []byte("k"), "https://api.example").BuildURL("p1", "alice@example.com")
+	if got := strings.Count(s.HTML, unsubURL); got != 1 {
+		t.Errorf("unsubscribe link appears %d times, want 1", got)
+	}
+	if got := strings.Count(s.HTML, "Sent by"); got != 1 {
+		t.Errorf("compliance footer appears %d times, want 1", got)
+	}
+	// Opt-out and archive links are excluded from click tracking.
+	if !strings.Contains(s.HTML, `clicktracking="off" href="`+unsubURL+`"`) {
+		t.Errorf("the unsubscribe link is missing clicktracking off:\n%s", s.HTML)
+	}
+	if !strings.Contains(s.HTML, `clicktracking="off" href="https://app.lfx.dev/newsletters/my"`) {
+		t.Errorf("the My Newsletters link is missing clicktracking off:\n%s", s.HTML)
+	}
+}
+
+// TestSendLayoutOmitsReadOnlineWhenSlugLookupFails pins that a slug failure drops
+// only the View Online link in a layout email. The date still renders and the
+// send goes ahead, as on the legacy path.
+func TestSendLayoutOmitsReadOnlineWhenSlugLookupFails(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	orch := newLayoutDateTestOrchestrator(repo, &fakeProjectClient{slugErr: errors.New("nats down")}, email)
+
+	draft := repo.addLayoutDraft("p1", []string{"c1"})
+	before := formatNewsletterDate(time.Now())
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	after := formatNewsletterDate(time.Now())
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	if strings.Contains(s.HTML, "View Online") {
+		t.Errorf("View Online link rendered without a slug:\n%s", s.HTML)
+	}
+	if !strings.Contains(s.HTML, before) && !strings.Contains(s.HTML, after) {
+		t.Errorf("layout HTML missing the send date %q:\n%s", before, s.HTML)
+	}
+}
+
+// TestSendLayoutSlugResolvedOncePerSend pins that the layout path reuses the
+// single per-send slug lookup for both the From override and the View Online
+// link.
+func TestSendLayoutSlugResolvedOncePerSend(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	project := &fakeProjectClient{slug: "agentic-ai-foundation"}
+	orch := newLayoutDateTestOrchestrator(repo, project, email)
+	orch.fromOverrides = map[string]string{"agentic-ai-foundation": "newsletter@lfx.aaif.io"}
+
+	draft := repo.addLayoutDraft("p1", []string{"c1"})
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if got := project.slugCalls.Load(); got != 1 {
+		t.Errorf("slug lookups = %d, want 1", got)
+	}
+	if len(email.sends) != 1 || email.sends[0].From != "newsletter@lfx.aaif.io" {
+		t.Errorf("sends = %+v, want one from the override address", email.sends)
+	}
+}
+
+// TestTestSendLayoutShowsDateWithoutReadOnline pins the layout test-send header:
+// today's date and no View Online link, because a test send has no newsletter
+// ID to link to. The legacy test-send shows only the date for the same reason.
+func TestTestSendLayoutShowsDateWithoutReadOnline(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	orch := newLayoutDateTestOrchestrator(repo, &fakeProjectClient{slug: "agentic-ai-foundation"}, email)
+
+	before := formatNewsletterDate(time.Now())
+	if err := orch.TestSend(ctx, TestSendInput{
+		ProjectUID: "p1",
+		Subject:    "Hello",
+		ToEmail:    "tester@example.com",
+		BodyLayout: &declarative.Layout{Blocks: []declarative.Block{
+			{BlockType: "intro_paragraph", Content: map[string]any{"text": "<p>Test body copy</p>"}},
+		}},
+	}); err != nil {
+		t.Fatalf("TestSend: %v", err)
+	}
+	after := formatNewsletterDate(time.Now())
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	s := email.sends[0]
+	if !strings.Contains(s.HTML, before) && !strings.Contains(s.HTML, after) {
+		t.Errorf("layout test-send missing the date %q:\n%s", before, s.HTML)
+	}
+	if strings.Contains(s.HTML, "View Online") {
+		t.Errorf("layout test-send must not carry a View Online link:\n%s", s.HTML)
+	}
+}
+
+// TestLegacySendMatchesChromeOutput pins that a legacy (body_html only) send
+// still produces the email main produces: the email chrome around the body with
+// the send date, the Read online link, the My Newsletters link and the
+// recipient's unsubscribe link, nothing else.
+func TestLegacySendMatchesChromeOutput(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo: repo,
+		Committee: &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+			"c1": {{Email: "alice@example.com"}},
+		}},
+		Project:          &fakeProjectClient{slug: "agentic-ai-foundation"},
+		Email:            email,
+		Unsubscribe:      unsub,
+		Concurrency:      2,
+		FanoutEnabled:    true,
+		SelfServeBaseURL: "https://app.lfx.dev",
+	})
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	sentDate := formatNewsletterDate(time.Now())
+	if _, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID}); err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	orch.Drain(ctx)
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+
+	// The chrome main builds for this input. main substitutes the recipient's
+	// unsubscribe link for the placeholder with a plain string replace.
+	chrome := render.Chrome{
+		Subject:                 "Hello",
+		BodyHTML:                "<p>Body</p>",
+		DisplayName:             "Test Project",
+		IncludeComplianceFooter: true,
+		EDName:                  "Executive Director",
+		EDReplyEmail:            "ed@example.com",
+		SentDate:                sentDate,
+		ReadOnlineURL:           "https://app.lfx.dev/newsletters/agentic-ai-foundation/" + draft.ID.String(),
+		MyNewslettersURL:        "https://app.lfx.dev/newsletters/my",
+		UnsubscribeURL:          UnsubscribeURLPlaceholder,
+	}
+	url := unsub.BuildURL("p1", "alice@example.com")
+	wantHTML := strings.ReplaceAll(render.EmailHTML(chrome), UnsubscribeURLPlaceholder, url)
+	wantText := strings.ReplaceAll(render.EmailText(chrome), UnsubscribeURLPlaceholder, url)
+
+	s := email.sends[0]
+	if s.HTML != wantHTML {
+		t.Errorf("legacy HTML differs from the chrome output:\n got: %s\nwant: %s", s.HTML, wantHTML)
+	}
+	if s.Text != wantText {
+		t.Errorf("legacy text differs from the chrome output:\n got: %s\nwant: %s", s.Text, wantText)
 	}
 }

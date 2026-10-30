@@ -1,0 +1,50 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: {
+  "eyebrow": {
+    "type": "text",
+    "label": "Section label",
+    "default": "Ambassadors In Action"
+  },
+  "standfirst": {
+    "type": "text",
+    "label": "One-line intro (optional)"
+  },
+  "items": {
+    "type": "array",
+    "label": "Items",
+    "fields": {
+      "headline": {
+        "type": "text",
+        "label": "Headline (optional; bold lead-in)"
+      },
+      "url": {
+        "type": "text",
+        "label": "Headline link (optional)"
+      },
+      "body": {
+        "type": "richtext",
+        "label": "Text (can carry its own links)"
+      }
+    }
+  }
+} -->
+<!--
+  Ambassadors In Action (sub-section). What AAIF ambassadors published or presented outside AAIF channels. Usually plain bullets naming the person, without a headline.
+  Shared layout: a bold sentence-case label, an optional
+  one-line intro, then a list. Each item is an optional bold lead-in
+  (linked when it has a URL) followed by its text, which keeps its own links.
+  Items with only text render as plain bullets.
+-->
+<Section style="width:100%;max-width:640px;margin:0 auto 4px">
+  <div style="padding:0 20px">
+    <Text class="dm-h" style="margin:4px 0 6px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:16px;font-weight:bold;color:#111111;line-height:1.4">{{eyebrow}}</Text>
+    <Text if="standfirst" class="dm-m" style="margin:0 0 10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#6b6b70">{{standfirst}}</Text>
+    <ul if="items" style="margin:4px 0 16px;padding:0 0 0 18px">
+      <li each="items" class="dm-t" style="margin:0 0 12px;padding-left:2px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:16px;line-height:1.55;color:#333338">
+        <strong if="headline"><Link if="url" href="{{url}}" class="dm-h" style="color:#111111;text-decoration:underline">{{headline}}</Link><span unless="url" class="dm-h" style="color:#111111">{{headline}}</span></strong>
+        <richtext field="body" class="dm-t" style="margin:2px 0 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:16px;line-height:1.55;color:#333338" />
+      </li>
+    </ul>
+  </div>
+</Section>
