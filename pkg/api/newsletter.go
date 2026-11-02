@@ -82,7 +82,12 @@ type UpdateNewsletterRequest struct {
 }
 
 // RecipientCountRequest is the body of POST /projects/{project_uid}/newsletters/recipient-count.
+//
+// NewsletterUID names the newsletter whose audience snapshot is read.
+// CommitteeUIDs is the committee list the caller expects the snapshot to have
+// been built from. A snapshot built from a different list is reported as stale.
 type RecipientCountRequest struct {
+	NewsletterUID string   `json:"newsletter_uid"`
 	CommitteeUIDs []string `json:"committee_uids"`
 }
 
@@ -98,7 +103,9 @@ type Recipient struct {
 }
 
 // RecipientsRequest is the body of POST /projects/{project_uid}/newsletters/recipients.
+// Its fields mean the same as in RecipientCountRequest.
 type RecipientsRequest struct {
+	NewsletterUID string   `json:"newsletter_uid"`
 	CommitteeUIDs []string `json:"committee_uids"`
 }
 
@@ -338,4 +345,26 @@ type OptOut struct {
 // OptOutListResponse is the body of GET /projects/{project_uid}/newsletter-opt-outs.
 type OptOutListResponse struct {
 	OptOuts []OptOut `json:"opt_outs"`
+}
+
+// ResolveAudienceRequest is the body of
+// POST /projects/{project_uid}/newsletters/{newsletter_uid}/audience.
+type ResolveAudienceRequest struct {
+	CommitteeUIDs []string `json:"committee_uids"`
+}
+
+// AudienceResponse is the body of POST and GET
+// /projects/{project_uid}/newsletters/{newsletter_uid}/audience.
+//
+// Status is "processing", "ready" or "failed". RecipientCount and
+// SkippedNoEmail are set once the audience is ready. Error is set when the
+// audience failed. The response does not list recipient emails.
+type AudienceResponse struct {
+	Status         string     `json:"status"`
+	RecipientCount int        `json:"recipient_count"`
+	SkippedNoEmail int        `json:"skipped_no_email"`
+	CommitteeUIDs  []string   `json:"committee_uids"`
+	RequestedAt    time.Time  `json:"requested_at"`
+	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
+	Error          string     `json:"error,omitempty"`
 }

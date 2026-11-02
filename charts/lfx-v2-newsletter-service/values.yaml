@@ -55,10 +55,9 @@ app:
   # logLevel is the log level: debug, info, warn, or error.
   logLevel: info
 
-  # nats is the NATS connection used by the email dispatcher, committee
-  # member client, and project metadata client. Newsletter-service makes no
-  # HTTP upstream calls — recipient resolution, project metadata lookup, and
-  # email send are all NATS request/reply.
+  # nats is the NATS connection used by the email dispatcher, the project
+  # metadata client and the user metadata client. Committee members are not read
+  # over NATS. They come from the query service (see queryService below).
   nats:
     url: "nats://lfx-platform-nats.lfx.svc.cluster.local:4222"
     # timeout / maxReconnect / reconnectWait fall back to the app defaults
@@ -66,6 +65,58 @@ app:
     timeout: ""
     maxReconnect: ""
     reconnectWait: ""
+
+  # queryService is the LFX V2 query service, which the service reads committee
+  # members from over HTTPS. The service calls it as itself, with the Auth0 M2M
+  # identity in m2mAuth below. It never forwards the inbound user token. The
+  # service does not start without it, because there is no other way to resolve
+  # an audience.
+  queryService:
+    # url is the base URL of the query service, e.g.
+    # https://lfx-api.dev.v2.cluster.linuxfound.info/ . REQUIRED.
+    url: ""
+    # pageSize is the page size for member reads, 1 to 1000 (1000 is the
+    # largest the query service accepts). Empty uses the app default (1000).
+    pageSize: ""
+    # maxPages caps the pages read for one committee. A committee that needs
+    # more fails its audience instead of being cut short. Empty uses the app
+    # default (100, which is 100,000 members at the default page size).
+    maxPages: ""
+    # timeout bounds one page request. Empty uses the app default (15s).
+    timeout: ""
+
+  # m2mAuth is the Auth0 client credentials identity the service uses to call
+  # the query service. The client authenticates with a private key JWT client
+  # assertion. All four values are REQUIRED. The identity needs read access to
+  # every committee member, i.e. an auditor tuple on the root project or
+  # membership of the global project auditors team.
+  m2mAuth:
+    # domain is the Auth0 tenant domain, e.g. linuxfoundation-dev.auth0.com .
+    domain: ""
+    # audience is the audience of the access token. On dev it is the same value
+    # as queryService.url.
+    audience: ""
+    # clientIDSecretRef sources M2M_AUTH_CLIENT_ID from a Kubernetes Secret.
+    clientIDSecretRef:
+      name: ""
+      key: "auth0_client_id"
+    # privateKeySecretRef sources M2M_AUTH_PRIVATE_KEY, the PEM private key of
+    # the client, from a Kubernetes Secret.
+    privateKeySecretRef:
+      name: ""
+      key: "auth0_client_private_key"
+
+  # audienceResolution configures the background job that resolves a
+  # newsletter's recipients into a stored snapshot. It is not named audience
+  # because app.audience is the audience claim of inbound JWTs.
+  audienceResolution:
+    # jobTimeout bounds one resolution job. Empty uses the app default (30m).
+    jobTimeout: ""
+    # staleTTL is the age after which an audience stuck in 'processing' (a pod
+    # died mid-job) is marked failed so it can be retried. It must be at least
+    # jobTimeout + 5m. A smaller value is raised to that minimum. Empty uses the
+    # app default (40m).
+    staleTTL: ""
 
   # send tunes the per-recipient send loop.
   send:

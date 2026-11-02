@@ -18,7 +18,6 @@ import (
 	_ "time/tzdata"
 
 	"github.com/google/uuid"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
@@ -108,7 +107,7 @@ func formatNewsletterDate(t time.Time) string {
 // to email-service directly.
 type SendOrchestrator struct {
 	repo          port.NewsletterRepository
-	committee     port.CommitteeClient
+	audience      port.AudienceReader
 	project       port.ProjectMetadataClient
 	email         port.EmailDispatcher
 	userMetadata  port.UserMetadataReader
@@ -154,8 +153,10 @@ type SendOrchestrator struct {
 
 // SendOrchestratorConfig configures a SendOrchestrator.
 type SendOrchestratorConfig struct {
-	Repo         port.NewsletterRepository
-	Committee    port.CommitteeClient
+	Repo port.NewsletterRepository
+	// Audience reads the recipient snapshot built by AudienceService. A send
+	// and the recipient count and preview read it instead of resolving live.
+	Audience     port.AudienceReader
 	Project      port.ProjectMetadataClient
 	Email        port.EmailDispatcher
 	UserMetadata port.UserMetadataReader
@@ -290,7 +291,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	}
 	return &SendOrchestrator{
 		repo:                  cfg.Repo,
-		committee:             cfg.Committee,
+		audience:              cfg.Audience,
 		project:               cfg.Project,
 		email:                 cfg.Email,
 		userMetadata:          cfg.UserMetadata,
@@ -416,9 +417,11 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		scheduledAt = effective
 	}
 
-	recipients, err := o.resolveRecipients(ctx, draft.ProjectUID, draft.CommitteeUIDs)
+	// Fan out from the audience snapshot the user was shown, never from a live
+	// read. A missing, processing, failed or stale snapshot stops the send.
+	recipients, err := o.snapshotRecipients(ctx, draft)
 	if err != nil {
-		return nil, fmt.Errorf("resolve recipients: %w", err)
+		return nil, fmt.Errorf("load audience: %w", err)
 	}
 
 	projectName, _ := o.project.Name(ctx, draft.ProjectUID)
@@ -985,92 +988,98 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	return nil
 }
 
-// RecipientCount resolves recipients and returns the unique count.
-func (o *SendOrchestrator) RecipientCount(ctx context.Context, projectUID string, committeeUIDs []string) (int, error) {
-	if err := validateProjectUID(projectUID); err != nil {
-		return 0, err
-	}
-	if err := validateCommitteeUIDs(committeeUIDs); err != nil {
-		return 0, err
-	}
-	recipients, err := o.resolveRecipients(ctx, projectUID, committeeUIDs)
+// RecipientCount returns the recipient count of the newsletter's audience
+// snapshot. It does not resolve anything. When the snapshot is missing, still
+// being built, failed, or built from a different committee list, it returns
+// *domain.AudienceNotReadyError and the caller resolves the audience first.
+func (o *SendOrchestrator) RecipientCount(ctx context.Context, projectUID string, newsletterID uuid.UUID, committeeUIDs []string) (int, error) {
+	audience, err := o.readyAudience(ctx, projectUID, newsletterID, committeeUIDs)
 	if err != nil {
 		return 0, err
 	}
-	return len(recipients), nil
+	return audience.RecipientCount, nil
 }
 
-// Recipients resolves recipients and returns the unique list.
-func (o *SendOrchestrator) Recipients(ctx context.Context, projectUID string, committeeUIDs []string) ([]model.CommitteeMember, error) {
+// Recipients returns the members of the newsletter's audience snapshot, with the
+// same readiness rules as RecipientCount.
+func (o *SendOrchestrator) Recipients(ctx context.Context, projectUID string, newsletterID uuid.UUID, committeeUIDs []string) ([]model.CommitteeMember, error) {
+	if _, err := o.readyAudience(ctx, projectUID, newsletterID, committeeUIDs); err != nil {
+		return nil, err
+	}
+	return o.audience.ListMembers(ctx, newsletterID)
+}
+
+// readyAudience returns the newsletter's audience when it is ready and was
+// built from committeeUIDs. Otherwise it returns *domain.AudienceNotReadyError
+// carrying the reason. The newsletter must belong to projectUID.
+func (o *SendOrchestrator) readyAudience(ctx context.Context, projectUID string, newsletterID uuid.UUID, committeeUIDs []string) (*model.Audience, error) {
 	if err := validateProjectUID(projectUID); err != nil {
 		return nil, err
 	}
 	if err := validateCommitteeUIDs(committeeUIDs); err != nil {
 		return nil, err
 	}
-	return o.resolveRecipients(ctx, projectUID, committeeUIDs)
-}
-
-// resolveRecipients fans out to the committee client across committees, dedupes
-// by lowercased email, filters obviously bad addresses, and drops any address
-// that has unsubscribed from this project. The errgroup cancels in-flight
-// goroutines as soon as one returns an error so a transient failure from one
-// committee doesn't keep the remaining lookups running.
-func (o *SendOrchestrator) resolveRecipients(ctx context.Context, projectUID string, committeeUIDs []string) ([]model.CommitteeMember, error) {
-	results := make([][]model.CommitteeMember, len(committeeUIDs))
-
-	g, gctx := errgroup.WithContext(ctx)
-	for i, uid := range committeeUIDs {
-		idx, committeeUID := i, uid
-		g.Go(func() error {
-			members, err := o.committee.ListMembers(gctx, committeeUID)
-			if err != nil {
-				return err
-			}
-			results[idx] = members
-			return nil
-		})
-	}
-	if err := g.Wait(); err != nil {
+	n, err := o.repo.Get(ctx, newsletterID)
+	if err != nil {
 		return nil, err
 	}
+	if n.ProjectUID != projectUID {
+		return nil, domain.ErrNotFound
+	}
+	return o.readyAudienceFor(ctx, n, committeeUIDs)
+}
 
-	excluded, err := o.listUnsubscribed(ctx, projectUID)
+// readyAudienceFor is readyAudience for a newsletter that is already loaded and
+// checked against its project.
+func (o *SendOrchestrator) readyAudienceFor(ctx context.Context, n *model.Newsletter, committeeUIDs []string) (*model.Audience, error) {
+	audience, err := o.audience.Get(ctx, n.ID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, &domain.AudienceNotReadyError{Status: domain.AudienceStateNone}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read audience: %w", err)
+	}
+	if audience.ProjectUID != n.ProjectUID {
+		return nil, &domain.AudienceNotReadyError{Status: domain.AudienceStateNone}
+	}
+	if audience.Status != model.AudienceReady {
+		return nil, &domain.AudienceNotReadyError{Status: string(audience.Status)}
+	}
+	if !sameCommitteeUIDs(audience.CommitteeUIDs, committeeUIDs) {
+		return nil, &domain.AudienceNotReadyError{Status: domain.AudienceStateStale}
+	}
+	return audience, nil
+}
+
+// snapshotRecipients reads the newsletter's ready audience and drops anyone who
+// unsubscribed after the snapshot was taken. Only the email and first name are
+// kept, which is all the fan-out needs.
+func (o *SendOrchestrator) snapshotRecipients(ctx context.Context, n *model.Newsletter) ([]model.CommitteeMember, error) {
+	if _, err := o.readyAudienceFor(ctx, n, n.CommitteeUIDs); err != nil {
+		return nil, err
+	}
+	members, err := o.audience.ListMembers(ctx, n.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read audience members: %w", err)
+	}
+	excluded, err := o.listUnsubscribed(ctx, n.ProjectUID)
 	if err != nil {
 		return nil, fmt.Errorf("list unsubscribes: %w", err)
 	}
-
-	seen := make(map[string]struct{})
-	out := make([]model.CommitteeMember, 0)
-	skipped := 0
-	for _, members := range results {
-		for _, m := range members {
-			email := strings.ToLower(strings.TrimSpace(m.Email))
-			if email == "" || !strings.Contains(email, "@") {
-				continue
-			}
-			if _, ok := seen[email]; ok {
-				continue
-			}
-			seen[email] = struct{}{}
-			if _, unsub := excluded[email]; unsub {
-				skipped++
-				continue
-			}
-			out = append(out, model.CommitteeMember{
-				Email:     email,
-				FirstName: strings.TrimSpace(m.FirstName),
-			})
-		}
-	}
-	if skipped > 0 {
-		slog.InfoContext(ctx, "resolve recipients: excluded unsubscribed addresses",
-			"project_uid", projectUID,
-			"excluded", skipped,
-			"remaining", len(out),
+	kept, dropped := dropUnsubscribed(members, excluded)
+	if dropped > 0 {
+		slog.InfoContext(ctx, "send: excluded addresses that unsubscribed after the audience snapshot",
+			"newsletter_id", n.ID,
+			"project_uid", n.ProjectUID,
+			"excluded", dropped,
+			"remaining", len(kept),
 		)
 	}
-	return out, nil
+	recipients := make([]model.CommitteeMember, 0, len(kept))
+	for _, m := range kept {
+		recipients = append(recipients, model.CommitteeMember{Email: m.Email, FirstName: m.FirstName})
+	}
+	return recipients, nil
 }
 
 // listUnsubscribed returns the set of unsubscribed emails for the project, or

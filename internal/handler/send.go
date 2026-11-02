@@ -14,7 +14,7 @@ import (
 
 // SendNewsletter handles POST /projects/{project_uid}/newsletters/{newsletter_uid}/send.
 //
-// The service validates the draft, resolves recipients, transitions the row to
+// The service validates the draft, reads the audience snapshot, transitions the row to
 // status=sending (the duplicate-send guard), and runs the per-recipient
 // fan-out in a background job detached from this request. The response is
 // therefore 202 Accepted with the sending-state newsletter (sent=0); clients
@@ -139,6 +139,8 @@ func (h *Handler) CancelScheduleNewsletter(w http.ResponseWriter, r *http.Reques
 }
 
 // RecipientCount handles POST /projects/{project_uid}/newsletters/recipient-count.
+// It reads the newsletter's audience snapshot and returns 409 with the audience
+// status until the snapshot is ready (see ResolveAudience).
 func (h *Handler) RecipientCount(w http.ResponseWriter, r *http.Request) {
 	projectUID := r.PathValue("project_uid")
 	var body publicapi.RecipientCountRequest
@@ -146,7 +148,12 @@ func (h *Handler) RecipientCount(w http.ResponseWriter, r *http.Request) {
 		writeError(r.Context(), w, err)
 		return
 	}
-	count, err := h.send.RecipientCount(r.Context(), projectUID, body.CommitteeUIDs)
+	newsletterID, err := parseUUID(body.NewsletterUID)
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+	count, err := h.send.RecipientCount(r.Context(), projectUID, newsletterID, body.CommitteeUIDs)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
@@ -154,7 +161,8 @@ func (h *Handler) RecipientCount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(r.Context(), w, http.StatusOK, publicapi.RecipientCountResponse{Count: count})
 }
 
-// Recipients handles POST /projects/{project_uid}/newsletters/recipients.
+// Recipients handles POST /projects/{project_uid}/newsletters/recipients. It has
+// the same readiness rules as RecipientCount.
 func (h *Handler) Recipients(w http.ResponseWriter, r *http.Request) {
 	projectUID := r.PathValue("project_uid")
 	var body publicapi.RecipientsRequest
@@ -162,7 +170,12 @@ func (h *Handler) Recipients(w http.ResponseWriter, r *http.Request) {
 		writeError(r.Context(), w, err)
 		return
 	}
-	recipients, err := h.send.Recipients(r.Context(), projectUID, body.CommitteeUIDs)
+	newsletterID, err := parseUUID(body.NewsletterUID)
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+	recipients, err := h.send.Recipients(r.Context(), projectUID, newsletterID, body.CommitteeUIDs)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return

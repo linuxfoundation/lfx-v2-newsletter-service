@@ -90,25 +90,23 @@ deleted silently so the disposition stays auditable.
 
 ### Retired send and recipient-lookup designs still described in older prose
 
-**Pattern matched:** a finding that asserts the send path should accept a caller-supplied `groupId`, transition `draft → sent` directly with no `sending` state, fan out synchronously inside the `POST …/send` request or without a concurrency bound, or that recipient lookup should go over HTTP to query-service (`internal/infrastructure/upstream/`, `COMMITTEE_SERVICE_URL`, `/query/resources`).
+**Pattern matched:** a finding that asserts the send path should accept a caller-supplied `groupId`, transition `draft → sent` directly with no `sending` state, fan out synchronously inside the `POST …/send` request or without a concurrency bound, or that recipient lookup should use the NATS subject `lfx.committee-api.list_members` or resolve recipients live inside the send, recipient-count or recipient-preview request.
 
 **Why false:** those describe retired behavior. Current truth is in
-`docs/newsletter-service-contract.md` (`status` is `draft`, `sending`, `scheduled` or `sent` — line
-65; `draft → sending` inside the request and the `sent` transition in a detached job bounded by
-`SEND_JOB_TIMEOUT` — lines 90–91; `group_id` minted by this service — line 69;
-`409 send_in_progress` — line 98) and `docs/recipient-resolution.md` (members over NATS
-`lfx.committee-api.list_members` — line 15; fan-out bounded by `SEND_CONCURRENCY` — line 55; the
-HTTP path is history and `upstream/` is an empty placeholder — line 18). Older prose still says
-otherwise at HEAD — `CLAUDE.md:22` ("draft → sent"), `README.md:4,36,56,294` ("draft → sent",
-`lfx-v2-query-service` / `COMMITTEE_SERVICE_URL` / `/query/resources`),
-`.claude/skills/newsletter-service-dev/SKILL.md:64` ("`draft -> sent`") — so a KB finding whose only
+`docs/newsletter-service-contract.md` (§ Routes and § State Transitions: `status` is `draft`, `sending`, `scheduled` or `sent`; `draft → sending` inside the request and the `sent` transition in a detached job bounded by `SEND_JOB_TIMEOUT`; `group_id` minted by this service; `409 send_in_progress`) and
+`docs/recipient-resolution.md` (committee members read from the query service over HTTPS with the service's own M2M token, in a background job that writes an audience snapshot; the send, the count and the preview read the snapshot and return `409 audience_not_ready` until it is ready; fan-out bounded by `SEND_CONCURRENCY`). The
+NATS `list_members` client was removed because one reply cannot hold a large committee.
+Older prose may still say otherwise, e.g. `CLAUDE.md` ("draft → sent") and
+`README.md` ("draft → sent"), so a KB finding whose only
 support is such a sentence is a docs bug, not the developer's. The precedence itself is a repo rule
 and lives where the general reviewer reads it, not here: `CLAUDE.md` § Authoritative Repo Docs —
 "where prose in this file or in a `.claude/skills/**` skill disagrees with a contract doc in
 `docs/`, the contract doc wins". This entry only keeps the learnings brain from re-raising the
 retired designs.
 
-**Source:** carried over 2026-09-25 from the retired conventions reviewer `.claude/skills/newsletter-service-code-reviewer/SKILL.md` (Step 2 "hold the current send truth", Step 4, and its precedence rule) — not from a PR thread; `docs/recipient-resolution.md:18` — "History: an earlier revision called query-service over HTTP (`GET /query/resources`) … That path was retired".
+HTTP calls from this service to the query service are not retired. They are the current design, and a finding that says this service must not call the query service over HTTP is wrong. The rule that still holds is that the inbound user's token is never forwarded. The outbound token is the service's own M2M token.
+
+**Source:** carried over 2026-09-25 from the retired conventions reviewer `.claude/skills/newsletter-service-code-reviewer/SKILL.md` (Step 2 "hold the current send truth", Step 4, and its precedence rule), not from a PR thread. Updated for the query service audience design agreed at architecture office hours on 2026-10-29, which replaced the NATS lookup.
 
 ---
 

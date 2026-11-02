@@ -66,7 +66,7 @@ func (f *fakeScheduledEmailDispatcher) CancelScheduledBatch(_ context.Context, b
 func newTestScheduleOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeScheduledEmailDispatcher, minLead, maxHorizon, cancelBuffer time.Duration) *SendOrchestrator {
 	return NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:                 repo,
-		Committee:            committee,
+		Audience:             newCommitteeSnapshot(repo, committee),
 		Project:              &fakeProjectClient{},
 		Email:                email,
 		Concurrency:          2,
@@ -103,7 +103,7 @@ func TestScheduleFanOutCarriesIdenticalSendAtAndBatchID(t *testing.T) {
 	email := &fakeScheduledEmailDispatcher{}
 	orch := NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:          repo,
-		Committee:     committee,
+		Audience:      newCommitteeSnapshot(repo, committee),
 		Project:       &fakeProjectClient{},
 		Email:         email,
 		Concurrency:   2,
@@ -226,7 +226,7 @@ func TestSendIgnoresDraftScheduledAt(t *testing.T) {
 	email := &fakeScheduledEmailDispatcher{}
 	orch := NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:          repo,
-		Committee:     committee,
+		Audience:      newCommitteeSnapshot(repo, committee),
 		Project:       &fakeProjectClient{},
 		Email:         email,
 		Concurrency:   2,

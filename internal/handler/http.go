@@ -27,6 +27,7 @@ import (
 type Handler struct {
 	newsletter      *service.NewsletterService
 	send            *service.SendOrchestrator
+	audience        *service.AudienceService
 	analytics       *service.AnalyticsService
 	unsub           *service.UnsubscribeService
 	project         port.ProjectMetadataClient
@@ -43,6 +44,7 @@ type Handler struct {
 type Config struct {
 	Newsletter      *service.NewsletterService
 	Send            *service.SendOrchestrator
+	Audience        *service.AudienceService
 	Analytics       *service.AnalyticsService
 	Unsubscribe     *service.UnsubscribeService
 	Project         port.ProjectMetadataClient
@@ -59,6 +61,7 @@ func New(cfg Config) *Handler {
 	return &Handler{
 		newsletter:      cfg.Newsletter,
 		send:            cfg.Send,
+		audience:        cfg.Audience,
 		analytics:       cfg.Analytics,
 		unsub:           cfg.Unsubscribe,
 		project:         cfg.Project,
@@ -121,6 +124,12 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("POST /projects/{project_uid}/newsletters/recipients", h.withAuth(http.HandlerFunc(h.Recipients)))
 	mux.Handle("POST /projects/{project_uid}/newsletters/test-send", h.withAuth(http.HandlerFunc(h.TestSend)))
 
+	// Audience snapshot — JWT auth. POST starts (or returns) the background
+	// resolution, GET reports its status. recipient-count and recipients read
+	// the snapshot and return 409 until it is ready.
+	mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/audience", h.withAuth(http.HandlerFunc(h.ResolveAudience)))
+	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/audience", h.withAuth(http.HandlerFunc(h.GetAudience)))
+
 	// Per-newsletter analytics — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics", h.withAuth(http.HandlerFunc(h.GetAnalytics)))
 	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients", h.withAuth(http.HandlerFunc(h.GetRecipientEngagement)))
@@ -178,6 +187,9 @@ func writeJSON(ctx context.Context, w http.ResponseWriter, status int, v any) {
 type errorPayload struct {
 	Error   string `json:"error"`
 	Message string `json:"message,omitempty"`
+	// AudienceStatus is set on audience_not_ready responses: "none",
+	// "processing", "failed" or "stale".
+	AudienceStatus string `json:"audience_status,omitempty"`
 }
 
 // writeError maps a domain error to an HTTP status code + JSON body.
@@ -196,10 +208,12 @@ func writeError(ctx context.Context, w http.ResponseWriter, err error) {
 	if status >= http.StatusInternalServerError {
 		message = "internal server error"
 	}
-	writeJSON(ctx, w, status, errorPayload{
-		Error:   code,
-		Message: message,
-	})
+	payload := errorPayload{Error: code, Message: message}
+	var notReady *domain.AudienceNotReadyError
+	if errors.As(err, &notReady) {
+		payload.AudienceStatus = notReady.Status
+	}
+	writeJSON(ctx, w, status, payload)
 }
 
 // classifyError maps an error to an HTTP status code and short error code.
@@ -241,6 +255,8 @@ func classifyError(err error) (int, string) {
 		return http.StatusConflict, "scheduled"
 	case errors.Is(err, domain.ErrCancelWindowClosed):
 		return http.StatusConflict, "cancel_window_closed"
+	case errors.Is(err, domain.ErrAudienceNotReady):
+		return http.StatusConflict, "audience_not_ready"
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest, "invalid_request"
 	case errors.As(err, &svcUnavailable):

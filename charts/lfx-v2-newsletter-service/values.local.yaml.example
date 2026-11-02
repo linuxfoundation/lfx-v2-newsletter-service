@@ -13,7 +13,19 @@ replicaCount: 1
 
 app:
   logLevel: debug
-  committeeServiceURL: "http://lfx-api.lfx.svc.cluster.local"
+  # Committee members are read from the query service as the service itself.
+  # The M2M client ID and private key come from a Kubernetes Secret you create
+  # for the cluster, e.g. kubectl create secret generic newsletter-m2m
+  # --from-literal=auth0_client_id=... --from-file=auth0_client_private_key=key.pem
+  queryService:
+    url: "http://lfx-api.lfx.svc.cluster.local"
+  m2mAuth:
+    domain: "example.auth0.com"
+    audience: "http://lfx-api.lfx.svc.cluster.local"
+    clientIDSecretRef:
+      name: newsletter-m2m
+    privateKeySecretRef:
+      name: newsletter-m2m
   requireUserAuth: false   # local dev only; production must validate JWTs
   jwksURL: ""
 

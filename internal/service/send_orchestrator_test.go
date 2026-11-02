@@ -22,12 +22,32 @@ import (
 
 // ---- fakes ----------------------------------------------------------------
 
+// fakeCommitteeClient serves members by committee UID and records every UID it
+// was asked for.
 type fakeCommitteeClient struct {
 	members map[string][]model.CommitteeMember
+	// skippedNoEmail is returned as the no-email count for every committee.
+	skippedNoEmail int
+	err            error
+
+	mu    sync.Mutex
+	calls []string
 }
 
-func (f *fakeCommitteeClient) ListMembers(_ context.Context, committeeUID string) ([]model.CommitteeMember, error) {
-	return f.members[committeeUID], nil
+func (f *fakeCommitteeClient) ListMembers(_ context.Context, committeeUID string) (model.CommitteeMembers, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, committeeUID)
+	f.mu.Unlock()
+	if f.err != nil {
+		return model.CommitteeMembers{}, f.err
+	}
+	return model.CommitteeMembers{Members: f.members[committeeUID], SkippedNoEmail: f.skippedNoEmail}, nil
+}
+
+func (f *fakeCommitteeClient) calledWith() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
 }
 
 // fakeProjectClient returns "Test Project" / "test-project" by default. Tests
@@ -395,7 +415,7 @@ func (f *fakeUserEmailReader) PrimaryEmail(_ context.Context, _ string) (string,
 func newTestOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService) *SendOrchestrator {
 	return NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:          repo,
-		Committee:     committee,
+		Audience:      newCommitteeSnapshot(repo, committee),
 		Project:       &fakeProjectClient{},
 		Email:         email,
 		Unsubscribe:   unsub,
@@ -409,7 +429,7 @@ func newTestOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClien
 func newTestOrchestratorWithUser(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService, user port.UserMetadataReader) *SendOrchestrator {
 	return NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:          repo,
-		Committee:     committee,
+		Audience:      newCommitteeSnapshot(repo, committee),
 		Project:       &fakeProjectClient{},
 		Email:         email,
 		UserMetadata:  user,
@@ -425,7 +445,7 @@ func newTestOrchestratorWithUser(repo *fakeNewsletterRepo, committee *fakeCommit
 func newTestOrchestratorWithUserEmail(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService, user port.UserMetadataReader, userEmail port.UserEmailReader) *SendOrchestrator {
 	return NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:          repo,
-		Committee:     committee,
+		Audience:      newCommitteeSnapshot(repo, committee),
 		Project:       &fakeProjectClient{},
 		Email:         email,
 		UserMetadata:  user,
@@ -438,7 +458,11 @@ func newTestOrchestratorWithUserEmail(repo *fakeNewsletterRepo, committee *fakeC
 
 // ---- tests ----------------------------------------------------------------
 
-func TestResolveRecipientsExcludesUnsubscribed(t *testing.T) {
+// TestSendAppliesUnsubscribeFilterToSnapshot checks that an address that
+// unsubscribed after the snapshot was taken is not sent to, and that the
+// exclusion is project-scoped.
+func TestSendAppliesUnsubscribeFilterToSnapshot(t *testing.T) {
+	ctx := context.Background()
 	repo := newFakeRepo()
 	repo.unsubs["p1"] = map[string]struct{}{"alice@example.com": {}}
 	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
@@ -448,23 +472,29 @@ func TestResolveRecipientsExcludesUnsubscribed(t *testing.T) {
 		},
 	}}
 	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
-	orch := newTestOrchestrator(repo, committee, &fakeEmailDispatcher{}, unsub)
+	email := &fakeEmailDispatcher{}
+	orch := newTestOrchestrator(repo, committee, email, unsub)
 
-	got, err := orch.Recipients(context.Background(), "p1", []string{"c1"})
+	p1 := repo.addDraft("p1", []string{"c1"})
+	res, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: p1.ID})
 	if err != nil {
-		t.Fatalf("Recipients: %v", err)
+		t.Fatalf("SendNewsletter p1: %v", err)
 	}
-	if len(got) != 1 || got[0].Email != "bob@example.com" {
-		t.Fatalf("got %v, want [bob@example.com]", got)
+	orch.Drain(ctx)
+	if got := email.recipients(); res.TotalRecipients != 1 || len(got) != 1 || got[0] != "bob@example.com" {
+		t.Fatalf("p1 sent to %v (total=%d), want [bob@example.com]", got, res.TotalRecipients)
 	}
 
 	// Same committee under a different project must NOT exclude alice.
-	got, err = orch.Recipients(context.Background(), "p2", []string{"c1"})
+	email.reset()
+	p2 := repo.addDraft("p2", []string{"c1"})
+	res, err = orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p2", NewsletterID: p2.ID})
 	if err != nil {
-		t.Fatalf("Recipients p2: %v", err)
+		t.Fatalf("SendNewsletter p2: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("p2 got %d recipients, want 2 (unsubscribe is project-scoped)", len(got))
+	orch.Drain(ctx)
+	if res.TotalRecipients != 2 {
+		t.Fatalf("p2 total recipients = %d, want 2 (unsubscribe is project-scoped)", res.TotalRecipients)
 	}
 }
 
@@ -525,7 +555,7 @@ func TestSendIncludesMyNewslettersLink(t *testing.T) {
 	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
 	orch := NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:          repo,
-		Committee:     committee,
+		Audience:      newCommitteeSnapshot(repo, committee),
 		Project:       &fakeProjectClient{},
 		Email:         email,
 		Unsubscribe:   unsub,
@@ -585,7 +615,7 @@ func TestTestSendRendersComplianceFooterWithRealUnsubscribeLink(t *testing.T) {
 	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
 	orch := NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:             repo,
-		Committee:        &fakeCommitteeClient{},
+		Audience:         newCommitteeSnapshot(repo, &fakeCommitteeClient{}),
 		Project:          &fakeProjectClient{},
 		Email:            email,
 		Unsubscribe:      unsub,
@@ -771,16 +801,7 @@ func TestSendUnsubscribeResendExcludes(t *testing.T) {
 		t.Fatalf("alice not recorded in unsubscribe store")
 	}
 
-	// --- 4. Recipient count for p1 now reflects the exclusion.
-	count, err := orch.RecipientCount(ctx, "p1", []string{"c1"})
-	if err != nil {
-		t.Fatalf("recipient count: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("recipient count after unsubscribe = %d, want 1", count)
-	}
-
-	// --- 5. Second send for p1: only bob receives it.
+	// --- 4. Second send for p1: only bob receives it.
 	email.reset()
 	second := repo.addDraft("p1", []string{"c1"})
 	res, err = orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: second.ID})
@@ -793,7 +814,7 @@ func TestSendUnsubscribeResendExcludes(t *testing.T) {
 		t.Fatalf("second send: got recipients %v (total=%d), want [bob@example.com]", got, res.TotalRecipients)
 	}
 
-	// --- 6. Project-scoped: a send for p2 still includes alice.
+	// --- 5. Project-scoped: a send for p2 still includes alice.
 	email.reset()
 	other := repo.addDraft("p2", []string{"c1"})
 	_, err = orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p2", NewsletterID: other.ID})
@@ -1394,7 +1415,7 @@ func TestSendNewsletterRespectsFromAddressOverride(t *testing.T) {
 	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
 	orch := NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:          repo,
-		Committee:     committee,
+		Audience:      newCommitteeSnapshot(repo, committee),
 		Project:       &fakeProjectClient{},
 		Email:         email,
 		Unsubscribe:   unsub,
@@ -1470,7 +1491,7 @@ func TestTestSendPopulatesEnvelope(t *testing.T) {
 func orchestratorWithOverrides(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email *fakeEmailDispatcher, unsub *UnsubscribeService, project port.ProjectMetadataClient, overrides map[string]string) *SendOrchestrator {
 	return NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:                 repo,
-		Committee:            committee,
+		Audience:             newCommitteeSnapshot(repo, committee),
 		Project:              project,
 		Email:                email,
 		Unsubscribe:          unsub,
@@ -1616,7 +1637,7 @@ func (f *ambiguousEmailDispatcher) SendEmail(_ context.Context, _ port.SendEmail
 func newGatedOrchestrator(repo *fakeNewsletterRepo, committee *fakeCommitteeClient, email port.EmailDispatcher) *SendOrchestrator {
 	return NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:          repo,
-		Committee:     committee,
+		Audience:      newCommitteeSnapshot(repo, committee),
 		Project:       &fakeProjectClient{},
 		Email:         email,
 		Unsubscribe:   NewUnsubscribeService(repo, []byte("k"), "https://api.example"),
@@ -1862,7 +1883,7 @@ func TestSendNewsletter_StampsSendProvider(t *testing.T) {
 	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example")
 	orch := NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:          repo,
-		Committee:     committee,
+		Audience:      newCommitteeSnapshot(repo, committee),
 		Project:       &fakeProjectClient{},
 		Email:         email,
 		Unsubscribe:   unsub,
@@ -1897,9 +1918,9 @@ func TestFormatNewsletterDateUsesLosAngeles(t *testing.T) {
 func newReadOnlineTestOrchestrator(repo *fakeNewsletterRepo, project *fakeProjectClient, email port.EmailDispatcher) *SendOrchestrator {
 	return NewSendOrchestrator(SendOrchestratorConfig{
 		Repo: repo,
-		Committee: &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		Audience: newCommitteeSnapshot(repo, &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
 			"c1": {{Email: "alice@example.com"}},
-		}},
+		}}),
 		Project:          project,
 		Email:            email,
 		Concurrency:      2,
@@ -2002,9 +2023,9 @@ func TestSendLooksUpSlugOnce(t *testing.T) {
 	project := &fakeProjectClient{slug: "agentic-ai-foundation"}
 	orch := NewSendOrchestrator(SendOrchestratorConfig{
 		Repo: repo,
-		Committee: &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		Audience: newCommitteeSnapshot(repo, &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
 			"c1": {{Email: "alice@example.com"}},
-		}},
+		}}),
 		Project:              project,
 		Email:                email,
 		Concurrency:          2,

@@ -1,3 +1,4 @@
+| `total_recipients` | Recipient count taken at send-acceptance time. It is the audience snapshot after the send-time unsubscribe filter. |
 <!-- Copyright The Linux Foundation and each contributor to LFX. -->
 <!-- SPDX-License-Identifier: MIT -->
 
@@ -14,7 +15,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 - Project-scoped newsletter draft persistence in Postgres.
 - Draft-to-sent state transition.
 - Email dispatch: the send orchestrator mints the `group_id`, renders email chrome, and fans out per-recipient sends through the active provider (selected by `EMAIL_PROVIDER`): `lfx-v2-email-service` over NATS by default, or SendGrid directly when selected.
-- Recipient count and recipient preview through committee-service member lookup over NATS.
+- The audience snapshot. A background job reads committee members from the LFX V2 query service, as this service, and stores them per newsletter. The recipient count, the recipient preview and the send read that snapshot.
 - Per-recipient HMAC-signed, project-scoped unsubscribe opt-outs.
 - Newsletter list and analytics reads (local opens overlaid with the sending provider's engagement totals, routed by `send_provider`).
 - Local open tracking through the tracking-pixel endpoint.
@@ -31,11 +32,13 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Get one newsletter and return its ETag. |
 | `PUT` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Update a draft. Requires `If-Match`. |
 | `DELETE` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Delete a draft. |
-| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/send` | yes | Accept the send: resolve recipients, transition the draft to `sending`, return `202`; the fan-out and the `sent` transition complete in a detached background job. Requires `If-Match`. Behaviorally unchanged by scheduling: a draft carrying a saved `scheduled_at` still sends immediately, ignoring it. |
+| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/send` | yes | Accept the send: read the audience snapshot (`409 audience_not_ready` if it is not ready), transition the draft to `sending`, return `202`; the fan-out and the `sent` transition complete in a detached background job. Requires `If-Match`. Behaviorally unchanged by scheduling: a draft carrying a saved `scheduled_at` still sends immediately, ignoring it. |
 | `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/schedule` | yes | Arm a scheduled send via the active provider's native scheduling (SendGrid only — LFXV2-2685). Optional body `{ "scheduled_at": "..." }` overrides the draft's saved value; when neither exists, `400`. Otherwise behaves like `send`: `202` with the draft in `sending`, settling in the background to `scheduled` once at least one recipient's message is accepted by the provider for release at `scheduled_at`, or if any scheduling outcome is ambiguous. Requires `If-Match`. `503` when the active provider doesn't support scheduling (`EMAIL_PROVIDER=email-service`). |
 | `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/cancel-schedule` | yes | Cancel an armed schedule and revert the newsletter to `draft`, retaining `scheduled_at` as the author's saved intent while clearing `group_id`/`batch_id`. Rejected within the configured cancel buffer of `scheduled_at` (`409 cancel_window_closed`) since provider cancellation is best-effort near release. Requires `If-Match`. |
-| `POST` | `/projects/{project_uid}/newsletters/recipient-count` | yes | Resolve committees and return unique recipient count. |
-| `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Resolve committees and return unique recipient preview. |
+| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/audience` | yes | Start the background resolution of the newsletter's audience. Body `{ "committee_uids": [...] }`. Returns `202` with the audience while it is `processing`, whether this call started the job or one was already running. Returns `200` when a `ready` audience already exists for the same committee list. Only a draft can be resolved. |
+| `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/audience` | yes | Return the audience status. `404` when it was never resolved. |
+| `POST` | `/projects/{project_uid}/newsletters/recipient-count` | yes | Return the recipient count of the newsletter's audience snapshot. `409 audience_not_ready` when it is not ready. |
+| `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Return the recipient preview from the audience snapshot. `409 audience_not_ready` when it is not ready. |
 | `POST` | `/projects/{project_uid}/newsletters/test-send` | yes | Dispatch a single test email (no persistence, no analytics). |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics` | yes | Return analytics for one newsletter. |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients` | yes | Per-recipient engagement: who the newsletter went to, delivery outcome, and every recorded open timestamp, with a best-effort display name from the newsletter's committees. |
@@ -87,9 +90,9 @@ Core state:
 - New newsletters are created with `status=draft`.
 - Drafts can be updated and deleted.
 - `POST …/newsletters/{newsletter_uid}/send` accepts the send synchronously and completes it asynchronously:
-  - **Synchronous (inside the request):** validates the draft, resolves recipients (excluding project-scoped unsubscribes), renders the email envelope, mints a `group_id`, and atomically transitions `draft → sending` — persisting `group_id` and `total_recipients` and incrementing `version`. This single optimistically-locked transition is the duplicate-send guard across replicas: a concurrent or repeated send observes the row is no longer a draft and gets `409 send_in_progress`. The endpoint then returns `202`.
+  - **Synchronous (inside the request):** validates the draft, reads the audience snapshot (and drops project-scoped unsubscribes that arrived after it was taken), renders the email envelope, mints a `group_id`, and atomically transitions `draft → sending` — persisting `group_id` and `total_recipients` and incrementing `version`. This single optimistically-locked transition is the duplicate-send guard across replicas: a concurrent or repeated send observes the row is no longer a draft and gets `409 send_in_progress`. The endpoint then returns `202`.
   - **Asynchronous (detached background job):** fans out per-recipient sends through the active provider, then — when at least one recipient was delivered to OR any result is ambiguous (provider may have accepted it) — sets `status=sent`, `sent_at`, and increments `version`. A settled status=sent does NOT guarantee all recipients were accepted — only that the send was initiated. A fully-failed fan-out (zero definitive rejections) reverts the row to `draft` (clearing `group_id` and `total_recipients`) so the operator can retry. The job is detached from the HTTP request context, so client disconnects and proxy timeouts cannot cancel a partially-dispatched send or orphan the status; its runtime is bounded by `SEND_JOB_TIMEOUT` (default 30m). Consult the Failures list and provider engagement metrics for per-recipient delivery outcomes.
-  - **Zero-recipient edge case:** if recipient resolution yields an empty set — for example every resolved committee member is filtered out by a project-scoped unsubscribe — the send settles synchronously: the draft is marked `status=sent` with `total_recipients=0` (and `sent=0`, `failed=0`), `group_id` is persisted, and the endpoint returns `200`. No email is dispatched, and the newsletter cannot be sent again. This applies identically to a scheduled request against a zero-recipient audience — it settles straight to `sent`, never `scheduled`.
+  - **Zero-recipient edge case:** if the ready snapshot is empty after the send-time unsubscribe filter, for example when every member has unsubscribed, the send settles synchronously: the draft is marked `status=sent` with `total_recipients=0` (and `sent=0`, `failed=0`), `group_id` is persisted, and the endpoint returns `200`. No email is dispatched, and the newsletter cannot be sent again. This applies identically to a scheduled request against a zero-recipient audience — it settles straight to `sent`, never `scheduled`.
 - `POST …/newsletters/{newsletter_uid}/schedule` reuses the same `send` machinery (`draft → sending`, same duplicate-send guard, same `202`), with two differences: it mints a provider `batch_id` and validates the arm-time window before transitioning, and it requires the active provider to support native scheduling (SendGrid) — `503 service_unavailable` otherwise. The background job settles a scheduled fan-out to `status=scheduled` instead of `sent` once at least one recipient's message has been accepted by the provider for release at `scheduled_at` (or reverts to `draft` if zero recipients could be scheduled). A settled status=scheduled does NOT guarantee all recipients were accepted — only that the schedule was armed. `POST …/send` on a draft carrying a saved `scheduled_at` is unaffected — it sends immediately and never consults the saved value. Consult the Failures list for per-recipient scheduling outcomes.
 - **`scheduled`** means at least one recipient's message has been accepted by the provider and is held for release at `scheduled_at`, or the scheduling outcome was ambiguous and the batch was armed at the provider. The provider — not this service — owns the actual delivery timing. A periodic sweep (the same one that recovers stuck `sending` rows) flips `scheduled` rows to `sent` once `scheduled_at` has passed — this is reconciliation of our own display state only.
   - `POST …/newsletters/{newsletter_uid}/cancel-schedule` cancels the provider batch (best-effort near release) and reverts `scheduled → draft`, clearing `group_id`/`batch_id`/`total_recipients` but **retaining** `scheduled_at` — the author's picked time survives the cancel so re-scheduling doesn't require re-entering it. Rejected inside the configured cancel buffer of `scheduled_at` with `409 cancel_window_closed`. A provider-side cancel failure leaves the row truthfully still `scheduled` rather than reporting a cancellation that didn't take effect upstream.
@@ -111,9 +114,41 @@ Recipient resolution and the provider fan-out are documented in `docs/recipient-
 
 | Endpoint | Behavior |
 | --- | --- |
-| `…/newsletters/recipient-count` | Returns unique recipient count after resolving committee members. |
-| `…/newsletters/recipients` | Returns unique recipient emails and first names. |
+| `…/newsletters/{newsletter_uid}/audience` (`POST`) | Starts the background resolution and returns the audience. See Audience API. |
+| `…/newsletters/{newsletter_uid}/audience` (`GET`) | Returns the audience status. |
+| `…/newsletters/recipient-count` | Returns the recipient count of the audience snapshot. Does not resolve anything. |
+| `…/newsletters/recipients` | Returns the unique recipient emails and first names of the audience snapshot. |
 | `…/newsletters/test-send` | Validates fields and dispatches a single test email to `to_email` — no persistence, no analytics. The body renders the same compliance footer as a real send: sender attribution, optional reply-to line, the "My Newsletters" link, and a working unsubscribe link minted for `to_email` (clicking it records a real project-scoped opt-out for that address). Returns `{ "ok": true }`. |
+
+### Audience API
+
+The audience is the stored list of recipients for one newsletter. It is built by a background job, so a request never waits for the committees to be read. The design is described in `docs/recipient-resolution.md`.
+
+`POST …/newsletters/{newsletter_uid}/audience` takes `ResolveAudienceRequest`, `{ "committee_uids": [...] }`. The list is trimmed, deduplicated and sorted before it is stored. The response is `AudienceResponse` and has this shape:
+
+| Field | Description |
+| --- | --- |
+| `status` | `processing`, `ready` or `failed`. |
+| `recipient_count` | Number of recipients in the snapshot. It is `0` until the audience is `ready`. Addresses that had unsubscribed when the snapshot was taken are not counted. |
+| `skipped_no_email` | Number of committee members skipped because they had no usable email. |
+| `committee_uids` | The sorted committee list the snapshot is built from. |
+| `requested_at` | When the resolution started. |
+| `resolved_at` | When the audience became `ready`. Omitted before that. |
+| `error` | A short reason, set only when `status` is `failed`. The full error is in the service log. |
+
+`AudienceResponse` does not list recipient emails. Emails are returned only by `…/recipients`.
+
+Status codes for `POST`: `202` when the audience is `processing`, `200` when it is already `ready` for the same committees, `400` for an invalid body or committee list, `404` when the newsletter does not exist in the project, and `409` when the newsletter is not a draft (`send_in_progress`, `scheduled` or `already_sent`). A `failed` audience is started again by a new `POST`. `GET` returns `200`, or `404` when no audience exists.
+
+`recipient-count` and `recipients` keep their success shapes. Their request bodies now also carry the newsletter, `{ "newsletter_uid": "...", "committee_uids": [...] }`, because the snapshot belongs to a newsletter. `newsletter_uid` is required and must be a UUID. The committee list is compared with the list the snapshot was built from.
+
+When the audience cannot be used, `recipient-count`, `recipients` and `…/send` return `409` with this body:
+
+```json
+{ "error": "audience_not_ready", "message": "...", "audience_status": "processing" }
+```
+
+`audience_status` is `none` (never resolved), `processing`, `failed`, or `stale` (a `ready` audience exists but the committee list has changed). The client starts a resolution with `POST …/audience` and waits for `ready`.
 
 The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sends validate and transition state without dispatching email.
 
@@ -145,7 +180,7 @@ Click tracking excludes the compliance-footer links: the "Unsubscribe" and "My N
 - `complete`: `false` when the provider returned fewer per-recipient records than `total_recipients`. Both providers' per-recipient stores are best-effort — email-service silently omits missing/malformed records and its group index briefly lags a fresh send; the SendGrid store records no row for ambiguous send outcomes — so clients must treat an incomplete list as partial data, not as proof the absent recipients were never sent to.
 - `recipients`: one row per recipient the sending provider recorded, with:
   - `email`: the recipient address the provider recorded for the send.
-  - `name`: the recipient's full name, resolved best-effort at read time by re-querying the newsletter's committees (`lfx.committee-api.list_members`) and matching on lowercased email. Omitted when the member no longer appears in the committees, has no name on file, or the committee lookup fails — clients display `name` when present and fall back to `email`.
+  - `name`: the recipient's full name, resolved best-effort at read time and matched on lowercased email. The name comes from the newsletter's audience snapshot when it has a `ready` one. Newsletters sent before snapshots existed are read live from the query service for each committee. Omitted when the member no longer appears in the committees, has no name on file, or the committee lookup fails — clients display `name` when present and fall back to `email`.
   - `delivered` / `delivered_at`, `failed` / `failed_at`: delivery outcome; timestamps omitted when unknown.
   - `opened`, `open_count`, `last_opened_at`, and `opened_at_list` — open timestamps, ascending. Per recipient, `opened_at_list` is capped at the 500 most recent recorded opens (enforced in the query) to bound response size. `open_count` is the provider's total recorded open count and may exceed the capped list length. `opened_at_list` is always present (empty array when the recipient never opened).
   - `clicked`, `click_count`, `last_clicked_at`, and `clicked_at_list` — click timestamps, ascending, same shape and 500-entry cap as the open fields above. **SendGrid-only**: on an email-service (SES) newsletter these are always `false` / `0` / omitted / `[]`.
