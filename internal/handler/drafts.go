@@ -65,8 +65,10 @@ func (h *Handler) GetNewsletter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	dto := toAPINewsletter(n)
+	dto.ShareCount = shareCountFor(h.shareCounts(r.Context(), []*model.Newsletter{n}), n.ID)
 	w.Header().Set("ETag", formatETag(n.Version))
-	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(n))
+	writeJSON(r.Context(), w, http.StatusOK, dto)
 }
 
 // UpdateNewsletter handles PUT /projects/{project_uid}/newsletters/{newsletter_uid} with required If-Match.

@@ -29,6 +29,7 @@ type Handler struct {
 	send            *service.SendOrchestrator
 	analytics       *service.AnalyticsService
 	unsub           *service.UnsubscribeService
+	shares          *service.ShareService
 	project         port.ProjectMetadataClient
 	db              *sql.DB
 	auth            *AuthValidator
@@ -45,6 +46,7 @@ type Config struct {
 	Send            *service.SendOrchestrator
 	Analytics       *service.AnalyticsService
 	Unsubscribe     *service.UnsubscribeService
+	Shares          *service.ShareService
 	Project         port.ProjectMetadataClient
 	DB              *sql.DB
 	Auth            *AuthValidator
@@ -61,6 +63,7 @@ func New(cfg Config) *Handler {
 		send:            cfg.Send,
 		analytics:       cfg.Analytics,
 		unsub:           cfg.Unsubscribe,
+		shares:          cfg.Shares,
 		project:         cfg.Project,
 		db:              cfg.DB,
 		auth:            cfg.Auth,
@@ -124,6 +127,13 @@ func (h *Handler) Routes() http.Handler {
 	// Per-newsletter analytics — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics", h.withAuth(http.HandlerFunc(h.GetAnalytics)))
 	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients", h.withAuth(http.HandlerFunc(h.GetRecipientEngagement)))
+
+	// In-app share intents — JWT auth. Heimdall gates on project viewer: any
+	// reader of the project can share a sent newsletter. Only registered when
+	// a ShareService is wired.
+	if h.shares != nil {
+		mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/shares", h.withAuth(http.HandlerFunc(h.ShareNewsletter)))
+	}
 
 	// Newsletter opt-outs — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletter-opt-outs", h.withAuth(http.HandlerFunc(h.ListOptOuts)))

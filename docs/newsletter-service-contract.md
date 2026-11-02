@@ -38,6 +38,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Resolve committees and return unique recipient preview. |
 | `POST` | `/projects/{project_uid}/newsletters/test-send` | yes | Dispatch a single test email (no persistence, no analytics). |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics` | yes | Return analytics for one newsletter. |
+| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/shares` | yes | Record an in-app share intent. Body `{ "channel": "x" \| "linkedin" \| "reddit" \| "email" \| "copy_link" }`. Gated on project `viewer`. Returns `204`; idempotent per (user, channel). `400` for an unknown channel, an unknown body field, or a caller without a principal; `404` for drafts, unsent newsletters, unknown ids, and project mismatches. See [Share Counts](#share-counts). |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients` | yes | Per-recipient engagement: who the newsletter went to, delivery outcome, and every recorded open timestamp, with a best-effort display name from the newsletter's committees. |
 | `GET` | `/committees/{committee_uid}/newsletters` | yes | Member-facing: sent newsletters whose audience includes the committee, ordered `sent_at` descending. Supports `page_token`. The gateway gates on `committee:{committee_uid}` `member` OR `auditor` (openfga_or_check), checked per request against OpenFGA — auditor folds in committee writers and project oversight roles so stronger roles never see less than members. Member tuples are maintained by committee-service via fga-sync, so revocation after a membership removal is eventual — normally near-immediate, but tuple removal is asynchronous/best-effort (see committee-service's `docs/fga-contract.md`); this endpoint adds no caching on top of tuple state. Returns `CommitteeNewsletterListResponse` — a reduced DTO without `body_html`, `ed_reply_email`, `group_id`, `created_by`, or `committee_uids` (the full audience list would let a single-committee member enumerate the newsletter's other committees). Clients fetch the rendered body via the project-scoped get, which is reachable for members because the platform model's project `viewer` relation includes all authenticated users (`[user:*]`). |
 | `GET` | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}` | no | Tracking pixel. Records open by recipient hash and returns a GIF. |
@@ -69,6 +70,7 @@ Core state:
 | `group_id` | `lfx-v2-email-service` correlation ID, minted by this service when a send is accepted. Null on drafts. |
 | `created_by` | Authenticated principal or local fallback. |
 | `version` | Optimistic-locking version. |
+| `share_count` | In-app share count (see [Share Counts](#share-counts)). Present only on sent newsletters in `GET` one, the project list, and the committee list; omitted when the count can't be read, so treat absent as unknown, not zero. |
 
 `POST …/send` returns `SendNewsletterResponse`: the newsletter plus `group_id`, `total_recipients`, `sent`, `failed`, and per-recipient `failures`. The send is asynchronous: acceptance returns `202` with the newsletter in `status=sending` and `sent=0`; clients observe the outcome by re-fetching the newsletter (branch on `newsletter.status`, not the HTTP status code). The zero-recipient edge case settles synchronously and returns `200` with `status=sent`.
 
@@ -136,6 +138,17 @@ Real sends and test-sends also render a right-aligned date bar above the email c
 The engagement source is routed per newsletter by `send_provider`, so the response shape is identical whether the newsletter was sent via email-service (SES, engagement read over NATS) or SendGrid (engagement read from the local store the SendGrid event webhook populates) — except that click fields above only ever carry real data on the SendGrid path. See `docs/recipient-resolution.md` § Provider-Routed Analytics.
 
 Click tracking excludes the compliance-footer links: the "Unsubscribe" and "My Newsletters" anchors are rendered with `clicktracking="off"`, so opting out or browsing past newsletters never counts toward `click_rate`, `daily_clicks`, or `top_links` — only clicks on the author's own content are tracked.
+
+### Share Counts
+
+`POST …/newsletters/{newsletter_uid}/shares` records that the caller clicked a share target (or "Copy link") in the LFX Self Serve share dialog. It measures share *intent*, not a confirmed post. Rows live in `newsletter_shares`, keyed by (newsletter, user hash, channel): the user is stored as a SHA-256 of the JWT principal, and a repeat share by the same user to the same channel is a no-op, so each user adds at most one share per channel.
+
+Counts are read back as:
+
+- `share_count` on sent newsletters in `GET` one, the project list, and the committee list (one grouped query per page).
+- `total_shares` and `shares_by_channel` (every channel present, `0` when unused) on `…/analytics`.
+
+Share counts are decorative, so a share-store read failure is logged and the share fields are omitted; it never fails the surrounding response. Share links inside the email body (`render/email_chrome.go`) point straight at the social sites and are not counted.
 
 ### Per-Recipient Engagement
 

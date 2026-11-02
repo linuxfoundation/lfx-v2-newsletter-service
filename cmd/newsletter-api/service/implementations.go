@@ -193,6 +193,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		Send:            sendSvc,
 		Analytics:       analyticsSvc,
 		Unsubscribe:     unsubSvc,
+		Shares:          service.NewShareService(repo, repo),
 		Project:         projectClient,
 		DB:              sqlDB,
 		Auth:            authImpl,
