@@ -706,6 +706,20 @@ func (r *PostgresNewsletterRepo) Analytics(ctx context.Context, newsletterID uui
 	}, nil
 }
 
+// OpenCount returns the raw local open total for one newsletter: a single
+// COUNT over newsletter_opens, with no newsletter-row fetch, distinct count or
+// daily breakdown. Zero (not an error) when nothing has been recorded.
+func (r *PostgresNewsletterRepo) OpenCount(ctx context.Context, newsletterID uuid.UUID) (int, error) {
+	count, err := r.db.NewSelect().
+		Table("newsletter_opens").
+		Where("newsletter_id = ?", newsletterID).
+		Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count opens: %w", err)
+	}
+	return count, nil
+}
+
 // RecordShare inserts a share intent. The (newsletter_id, user_hash, channel)
 // primary key makes a repeat by the same user to the same channel a no-op.
 func (r *PostgresNewsletterRepo) RecordShare(ctx context.Context, share *model.NewsletterShare) error {

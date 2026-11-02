@@ -147,6 +147,9 @@ type NewsletterRepository interface {
 	// Open tracking
 	RecordOpen(ctx context.Context, newsletterID uuid.UUID, recipientHash string) error
 	Analytics(ctx context.Context, newsletterID uuid.UUID) (*model.Analytics, error)
+	// OpenCount returns the raw local open total (one COUNT over
+	// newsletter_opens) without the rest of the analytics aggregate.
+	OpenCount(ctx context.Context, newsletterID uuid.UUID) (int, error)
 }
 
 // UnsubscribeRepository persists project-scoped opt-outs.

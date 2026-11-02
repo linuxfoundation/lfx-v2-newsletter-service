@@ -96,6 +96,12 @@ func (a *analyticsRepoFake) Analytics(_ context.Context, _ uuid.UUID) (*model.An
 	cp := *a.base
 	return &cp, nil
 }
+func (a *analyticsRepoFake) OpenCount(_ context.Context, _ uuid.UUID) (int, error) {
+	if a.base == nil {
+		return 0, nil
+	}
+	return a.base.TotalOpens, nil
+}
 
 // TestAnalyticsGet_DailyOpensFromGroupStatus verifies the analytics service
 // derives DailyOpens and UniqueOpens from the per-recipient email-service
@@ -1114,5 +1120,53 @@ func TestAnalyticsTotalOpens(t *testing.T) {
 				t.Errorf("TotalOpens = (%d, %v), want (%d, %v)", got, ok, tc.wantOpens, tc.wantOK)
 			}
 		})
+	}
+}
+
+// failingAnalyticsRepo fails the local open-count read.
+type failingAnalyticsRepo struct{ analyticsRepoFake }
+
+func (f *failingAnalyticsRepo) OpenCount(_ context.Context, _ uuid.UUID) (int, error) {
+	return 0, errors.New("db down")
+}
+
+// TestAnalyticsTotalOpens_LocalReadErrorPropagates: unlike a provider failure, a
+// failed local read has no fallback, so it is an error the caller omits on.
+func TestAnalyticsTotalOpens_LocalReadErrorPropagates(t *testing.T) {
+	groupID := "group-xyz"
+	n := &model.Newsletter{ID: uuid.New(), Status: model.StatusSent, GroupID: &groupID}
+	email := &statusByGroupFake{engagement: &port.EmailEngagement{Opened: 7}}
+	svc := NewAnalyticsService(&failingAnalyticsRepo{analyticsRepoFake{newsletter: n}}, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+
+	if _, ok, err := svc.TotalOpens(context.Background(), n); err == nil || ok {
+		t.Errorf("TotalOpens = (ok %v, err %v), want an error and no value", ok, err)
+	}
+}
+
+// blockingReader never answers until its context ends, like an absent email-service responder.
+type blockingReader struct{ statusByGroupFake }
+
+func (b *blockingReader) GetEngagement(ctx context.Context, _ string) (*port.EmailEngagement, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestAnalyticsTotalOpens_ProviderTimeoutFallsBackToLocal: GET one must not wait
+// out the full NATS timeout on a silent provider; it returns the local count.
+func TestAnalyticsTotalOpens_ProviderTimeoutFallsBackToLocal(t *testing.T) {
+	groupID := "group-xyz"
+	n := &model.Newsletter{ID: uuid.New(), Status: model.StatusSent, GroupID: &groupID}
+	repo := &analyticsRepoFake{newsletter: n, base: &model.Analytics{TotalOpens: 3}}
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: &blockingReader{}}, nil, model.SendProviderEmailService)
+
+	start := time.Now()
+	got, ok, err := svc.TotalOpens(context.Background(), n)
+	elapsed := time.Since(start)
+
+	if err != nil || !ok || got != 3 {
+		t.Errorf("TotalOpens = (%d, %v, %v), want (3, true, nil)", got, ok, err)
+	}
+	if elapsed > 3*totalOpensProviderTimeout {
+		t.Errorf("TotalOpens took %v, want it bounded near %v", elapsed, totalOpensProviderTimeout)
 	}
 }
