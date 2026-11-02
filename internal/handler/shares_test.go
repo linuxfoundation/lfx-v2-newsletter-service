@@ -177,3 +177,16 @@ func TestApplyShareStats(t *testing.T) {
 		t.Error("share stats set on read failure, want omitted")
 	}
 }
+
+func TestTotalOpensOmittedWithoutAnalytics(t *testing.T) {
+	h := New(Config{})
+	if got := h.totalOpens(context.Background(), &model.Newsletter{ID: uuid.New(), Status: model.StatusSent}); got != nil {
+		t.Errorf("total opens without an analytics service = %d, want nil (omitted)", *got)
+	}
+
+	// An unknown open total stays out of the JSON rather than reading as zero.
+	raw, _ := json.Marshal(publicapi.Newsletter{})
+	if strings.Contains(string(raw), "total_opens") {
+		t.Errorf("newsletter without opens marshals total_opens: %s", raw)
+	}
+}

@@ -1042,3 +1042,77 @@ func TestRecipients_CapsClicksPerRecipient(t *testing.T) {
 		t.Errorf("Recipients: last kept click is %v, want %v (last original click)", rec.ClickedAtList[499], clicks[500])
 	}
 }
+
+// TestAnalyticsTotalOpens covers the cheap open total behind the single-newsletter
+// read: provider Opened wins when larger, the local count survives a provider
+// failure, and anything but a sent newsletter reports no value.
+func TestAnalyticsTotalOpens(t *testing.T) {
+	groupID := "group-xyz"
+	sent := func() *model.Newsletter {
+		return &model.Newsletter{ID: uuid.New(), Status: model.StatusSent, GroupID: &groupID}
+	}
+
+	cases := []struct {
+		name       string
+		newsletter *model.Newsletter
+		localOpens int
+		email      *statusByGroupFake
+		wantOpens  int
+		wantOK     bool
+	}{
+		{
+			name:       "provider opened wins when larger",
+			newsletter: sent(),
+			localOpens: 2,
+			email:      &statusByGroupFake{engagement: &port.EmailEngagement{Opened: 7}},
+			wantOpens:  7,
+			wantOK:     true,
+		},
+		{
+			name:       "local count kept when larger",
+			newsletter: sent(),
+			localOpens: 9,
+			email:      &statusByGroupFake{engagement: &port.EmailEngagement{Opened: 7}},
+			wantOpens:  9,
+			wantOK:     true,
+		},
+		{
+			name:       "provider failure degrades to local",
+			newsletter: sent(),
+			localOpens: 3,
+			email:      &statusByGroupFake{engagementErr: errors.New("nats: timeout")},
+			wantOpens:  3,
+			wantOK:     true,
+		},
+		{
+			name:       "sent without group is local only",
+			newsletter: &model.Newsletter{ID: uuid.New(), Status: model.StatusSent},
+			localOpens: 4,
+			email:      &statusByGroupFake{engagement: &port.EmailEngagement{Opened: 99}},
+			wantOpens:  4,
+			wantOK:     true,
+		},
+		{
+			name:       "draft reports no value",
+			newsletter: &model.Newsletter{ID: uuid.New(), Status: model.StatusDraft, GroupID: &groupID},
+			localOpens: 5,
+			email:      &statusByGroupFake{engagement: &port.EmailEngagement{Opened: 5}},
+			wantOpens:  0,
+			wantOK:     false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &analyticsRepoFake{newsletter: tc.newsletter, base: &model.Analytics{TotalOpens: tc.localOpens}}
+			svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: tc.email}, nil, model.SendProviderEmailService)
+			got, ok, err := svc.TotalOpens(context.Background(), tc.newsletter)
+			if err != nil {
+				t.Fatalf("TotalOpens: unexpected error: %v", err)
+			}
+			if ok != tc.wantOK || got != tc.wantOpens {
+				t.Errorf("TotalOpens = (%d, %v), want (%d, %v)", got, ok, tc.wantOpens, tc.wantOK)
+			}
+		})
+	}
+}

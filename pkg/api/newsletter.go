@@ -60,6 +60,11 @@ type Newsletter struct {
 	// project list); omitted when the count can't be read, so clients must
 	// treat an absent value as unknown rather than zero.
 	ShareCount *int `json:"share_count,omitempty"`
+	// TotalOpens is the raw open total (every open, not unique recipients),
+	// matching the analytics endpoint's total_opens. Set only on a sent
+	// newsletter returned by GET one; omitted when it can't be read, so clients
+	// must treat an absent value as unknown rather than zero.
+	TotalOpens *int `json:"total_opens,omitempty"`
 }
 
 // CreateNewsletterRequest is the body of POST /projects/{project_uid}/newsletters.

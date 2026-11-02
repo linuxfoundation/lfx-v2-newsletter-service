@@ -218,6 +218,48 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 	return local, nil
 }
 
+// TotalOpens returns the raw open total for an already-loaded sent newsletter,
+// using the same rule as Get's TotalOpens: the larger of the local pixel count
+// and the sending provider's scalar Opened. It reads only the scalar rollup
+// (no per-recipient detail), so it is cheap enough to decorate a single-newsletter
+// read. The caller has already authorized and loaded n, so there is no project
+// check here.
+//
+// Returns ok=false for anything but a sent newsletter, so callers can omit the
+// field instead of reporting zero. A provider read failure degrades to the local
+// count, as in Get; only a local read failure is an error.
+func (a *AnalyticsService) TotalOpens(ctx context.Context, n *model.Newsletter) (int, bool, error) {
+	if n == nil || n.Status != model.StatusSent {
+		return 0, false, nil
+	}
+	local, err := a.repo.Analytics(ctx, n.ID)
+	if err != nil {
+		return 0, false, err
+	}
+	total := local.TotalOpens
+	if n.GroupID == nil || *n.GroupID == "" {
+		return total, true, nil
+	}
+	reader := a.readerFor(n.SendProvider)
+	if reader == nil {
+		return total, true, nil
+	}
+	engagement, engErr := reader.GetEngagement(ctx, *n.GroupID)
+	if engErr != nil {
+		slog.WarnContext(ctx, "total opens: engagement fetch failed, returning local-only",
+			"newsletter_id", n.ID,
+			"group_id", *n.GroupID,
+			"send_provider", n.SendProvider,
+			"error", engErr.Error(),
+		)
+		return total, true, nil
+	}
+	if engagement != nil && engagement.Opened > total {
+		total = engagement.Opened
+	}
+	return total, true, nil
+}
+
 // Recipients returns the per-recipient engagement records for a sent
 // newsletter — who was sent to, delivery outcome, and every recorded open
 // timestamp — gated on project ownership like Get. Records come from the

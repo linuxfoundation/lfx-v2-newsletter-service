@@ -62,6 +62,24 @@ func (h *Handler) shareCounts(ctx context.Context, newsletters []*model.Newslett
 	return counts
 }
 
+// totalOpens reads a sent newsletter's raw open total for the single-newsletter
+// read. Like share counts it is decorative: nil (omitted) for unsent
+// newsletters or when the local read fails, never an error response.
+func (h *Handler) totalOpens(ctx context.Context, n *model.Newsletter) *int {
+	if h.analytics == nil {
+		return nil
+	}
+	total, ok, err := h.analytics.TotalOpens(ctx, n)
+	if err != nil {
+		slog.WarnContext(ctx, "failed to read newsletter total opens; omitting total_opens", "newsletter_id", n.ID, "error", err)
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	return &total
+}
+
 // shareCountFor returns a pointer to the newsletter's share count, or nil
 // when no count was read for it (unsent, or the read failed).
 func shareCountFor(counts map[uuid.UUID]int, id uuid.UUID) *int {

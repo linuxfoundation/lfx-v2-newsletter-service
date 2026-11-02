@@ -67,6 +67,7 @@ func (h *Handler) GetNewsletter(w http.ResponseWriter, r *http.Request) {
 
 	dto := toAPINewsletter(n)
 	dto.ShareCount = shareCountFor(h.shareCounts(r.Context(), []*model.Newsletter{n}), n.ID)
+	dto.TotalOpens = h.totalOpens(r.Context(), n)
 	w.Header().Set("ETag", formatETag(n.Version))
 	writeJSON(r.Context(), w, http.StatusOK, dto)
 }

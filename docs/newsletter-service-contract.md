@@ -72,6 +72,7 @@ Core state:
 | `created_by` | Authenticated principal or local fallback. |
 | `version` | Optimistic-locking version. |
 | `share_count` | In-app share count (see [Share Counts](#share-counts)). Present only on sent newsletters in `GET` one, the project list, and the committee list; omitted when the count can't be read, so treat absent as unknown, not zero. |
+| `total_opens` | Raw open total (every open, not unique recipients), the same value as the analytics endpoint's `total_opens` minus the per-recipient detail fetch: the larger of the local pixel count and the provider's scalar opens. Present only on sent newsletters in `GET` one; a provider read failure falls back to the local count, and a local read failure omits the field, so treat absent as unknown, not zero. |
 
 `POST …/send` returns `SendNewsletterResponse`: the newsletter plus `group_id`, `total_recipients`, `sent`, `failed`, and per-recipient `failures`. The send is asynchronous: acceptance returns `202` with the newsletter in `status=sending` and `sent=0`; clients observe the outcome by re-fetching the newsletter (branch on `newsletter.status`, not the HTTP status code). The zero-recipient edge case settles synchronously and returns `200` with `status=sent`.
 
