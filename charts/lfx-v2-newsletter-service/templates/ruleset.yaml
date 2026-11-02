@@ -445,6 +445,39 @@ spec:
             values:
               aud: {{ .Values.app.audience }}
 
+    # In-app share intents. Any signed-in project viewer who can read a sent
+    # newsletter can record that they shared it; the service rejects drafts
+    # (404) and counts one share per (user, channel), so a viewer can't
+    # inflate the count. No anonymous_authenticator: project viewer includes
+    # [user:*], so the anonymous subject would pass the check and every
+    # signed-out visitor would share one identity. Unauthenticated calls 401.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:shares"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/shares
+      execute:
+        - authenticator: oidc
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: viewer
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
     # Per-newsletter per-recipient engagement. Returns PII beyond recipient lists:
     # engagement history (opened, failed, per-recipient open timestamps). While
     # recipients-preview already exposes email addresses, this endpoint is a NEW

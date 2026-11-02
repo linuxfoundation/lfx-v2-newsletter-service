@@ -51,6 +51,28 @@ type ListPage struct {
 	NextPageToken string
 }
 
+// NewsletterGetter is the read-one slice of NewsletterRepository, for
+// services that only need to look a newsletter up.
+type NewsletterGetter interface {
+	Get(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
+}
+
+// ShareRepository persists in-app newsletter share intents and reads back
+// share counts.
+type ShareRepository interface {
+	// RecordShare inserts a share. Idempotent per (newsletter, user, channel):
+	// a repeat is a silent no-op.
+	RecordShare(ctx context.Context, share *model.NewsletterShare) error
+	// ShareCounts returns the total share count for each of the given
+	// newsletters. Newsletters with no shares are absent from the map.
+	ShareCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error)
+	// ShareStats returns one newsletter's share count in total and per channel.
+	ShareStats(ctx context.Context, newsletterID uuid.UUID) (*model.ShareStats, error)
+	// DeleteSharesByUser erases every share recorded for one user hash,
+	// across all newsletters, and returns how many rows were removed.
+	DeleteSharesByUser(ctx context.Context, userHash string) (int64, error)
+}
+
 // NewsletterRepository persists Newsletter aggregates.
 //
 // Implementations must surface optimistic-locking conflicts as

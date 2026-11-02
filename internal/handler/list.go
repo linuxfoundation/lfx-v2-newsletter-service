@@ -35,8 +35,11 @@ func (h *Handler) ListNewsletters(w http.ResponseWriter, r *http.Request) {
 		Newsletters:   make([]publicapi.NewsletterListItem, 0, len(page.Newsletters)),
 		NextPageToken: page.NextPageToken,
 	}
+	counts := h.shareCounts(r.Context(), page.Newsletters)
 	for _, n := range page.Newsletters {
-		out.Newsletters = append(out.Newsletters, toAPIListItem(n))
+		item := toAPIListItem(n)
+		item.ShareCount = shareCountFor(counts, n.ID)
+		out.Newsletters = append(out.Newsletters, item)
 	}
 	writeJSON(r.Context(), w, http.StatusOK, out)
 }

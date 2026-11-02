@@ -413,3 +413,20 @@ CREATE TABLE IF NOT EXISTS sendgrid_click_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sg_click_events_email ON sendgrid_click_events (email_id);
+
+-- newsletter_shares records in-app share intents (a click on a share target
+-- or "Copy link" in LFX Self Serve). One row per (newsletter, user, channel):
+-- repeat shares by the same user to the same channel collapse to a no-op, so
+-- the share count can't be inflated by clicking the same button repeatedly.
+-- user_hash is a SHA-256 of the caller's principal claim: the table stores
+-- no raw username, but the digest is a pseudonym, not an anonymization —
+-- principals are guessable, so a digest can be matched to a known user.
+-- Data minimization: rows carry only the dedupe key, no timestamp, so the
+-- table records whether a user shared, never when. A user's rows are erased
+-- with ShareService.DeleteUserShares (see the contract's Share Counts).
+CREATE TABLE IF NOT EXISTS newsletter_shares (
+    newsletter_id  UUID         NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
+    user_hash      TEXT         NOT NULL CHECK (user_hash ~ '^[a-f0-9]{64}$'),
+    channel        TEXT         NOT NULL CHECK (channel IN ('x', 'linkedin', 'reddit', 'email', 'copy_link')),
+    PRIMARY KEY (newsletter_id, user_hash, channel)
+);

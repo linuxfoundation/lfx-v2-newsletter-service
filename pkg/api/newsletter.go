@@ -55,6 +55,11 @@ type Newsletter struct {
 	Version         int64      `json:"version"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+	// ShareCount is the number of in-app shares, one per (user, channel).
+	// Set only on sent newsletters returned by the read endpoints (GET one,
+	// project list); omitted when the count can't be read, so clients must
+	// treat an absent value as unknown rather than zero.
+	ShareCount *int `json:"share_count,omitempty"`
 }
 
 // CreateNewsletterRequest is the body of POST /projects/{project_uid}/newsletters.
@@ -219,6 +224,9 @@ type CommitteeNewsletter struct {
 	ProjectUID string     `json:"project_uid"`
 	Subject    string     `json:"subject"`
 	SentAt     *time.Time `json:"sent_at,omitempty"`
+	// ShareCount is the number of in-app shares, one per (user, channel).
+	// Omitted when the count can't be read (treat as unknown, not zero).
+	ShareCount *int `json:"share_count,omitempty"`
 }
 
 // CommitteeNewsletterListResponse is the body of
@@ -280,6 +288,19 @@ type NewsletterAnalytics struct {
 	DailyClicks     []NewsletterDailyClicks `json:"daily_clicks"`
 	TopLinks        []NewsletterLinkClicks  `json:"top_links"`
 	LastEventAt     *time.Time              `json:"last_event_at,omitempty"`
+	// TotalShares is the number of in-app shares, one per (user, channel),
+	// and SharesByChannel splits it by share target (x, linkedin, reddit,
+	// email, copy_link; channels with no shares are 0). Both are omitted when
+	// the share store can't be read.
+	TotalShares     *int           `json:"total_shares,omitempty"`
+	SharesByChannel map[string]int `json:"shares_by_channel,omitempty"`
+}
+
+// ShareNewsletterRequest is the body of
+// POST /projects/{project_uid}/newsletters/{newsletter_uid}/shares.
+type ShareNewsletterRequest struct {
+	// Channel is the share target: x, linkedin, reddit, email, or copy_link.
+	Channel string `json:"channel"`
 }
 
 // NewsletterRecipientEngagement is one recipient's row in the per-recipient

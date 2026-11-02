@@ -31,7 +31,9 @@ func (h *Handler) GetAnalytics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(r.Context(), w, http.StatusOK, toAPIAnalytics(a))
+	dto := toAPIAnalytics(a)
+	h.applyShareStats(r.Context(), a.NewsletterID, &dto)
+	writeJSON(r.Context(), w, http.StatusOK, dto)
 }
 
 // GetRecipientEngagement handles
