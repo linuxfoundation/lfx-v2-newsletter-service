@@ -223,6 +223,10 @@ func renderMJML(layout Layout, templates Templates, wrapperContent map[string]an
 	// Give the semantic authoring classes their canonical styles before
 	// translation (inline styles win per property).
 	applyClassStyles(assembled)
+	// Drop statically hidden subtrees (the wrappers' unused header logo variant)
+	// now that styles are final, and before collectCardShadows, so the shadow
+	// index stays aligned with what translate emits. See pruneHiddenNodes.
+	assembled = pruneHiddenNodes(assembled)
 	// Carry container text-align onto descendant text nodes so centered chrome
 	// (header/socials/footer) doesn't render left-aligned once MJML dissolves the
 	// wrapping div.

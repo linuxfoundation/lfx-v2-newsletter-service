@@ -638,6 +638,90 @@ func TestCheckLayoutBounds_ContentItems(t *testing.T) {
 	}
 }
 
+// TestRenderMJML_EmitsOneHeaderLogoPerLibrary pins that each embedded library
+// emits exactly ONE header logo image. Every wrapper ships both a light-mode and
+// a dark-mode logo and hides one with `display:none`, swapping them from the
+// document <style> block. The translator drops <style>, dissolves the inert div
+// that wraps the hidden image, and forwards only container-mappable properties to
+// section/row children, so that `display:none` used to reach nothing in the
+// output and BOTH logos rendered, stacked, one of them light-on-dark artwork on a
+// light background. pruneHiddenNodes removes the hidden subtree before
+// translation.
+//
+// This walks every embedded library rather than a fixture, because the wrappers
+// are synced in from git and a resync could reintroduce the pattern.
+func TestRenderMJML_EmitsOneHeaderLogoPerLibrary(t *testing.T) {
+	keys, err := EmbeddedTemplateKeys()
+	if err != nil {
+		t.Fatalf("EmbeddedTemplateKeys: %v", err)
+	}
+	if len(keys) == 0 {
+		t.Fatal("no embedded template libraries found")
+	}
+
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			templates, err := LoadEmbeddedTemplate(key)
+			if err != nil {
+				t.Fatalf("LoadEmbeddedTemplate(%q): %v", key, err)
+			}
+			mjmlDoc, err := RenderMJML(Layout{TemplateKey: key}, templates, map[string]any{
+				"edition": map[string]any{"title": "Edition", "date": "1 January 2027"},
+			})
+			if err != nil {
+				t.Fatalf("RenderMJML(%q): %v", key, err)
+			}
+
+			// Exactly one branding logo image survives translation.
+			if got := strings.Count(mjmlDoc, "branding/logo"); got != 1 {
+				t.Errorf("%s emitted %d header logo images, want exactly 1", key, got)
+			}
+			// The hidden variant is gone rather than merely hidden: nothing in the
+			// compiled output can reveal it, since the renderer is light-mode only.
+			if strings.Contains(mjmlDoc, "logo_light.png") {
+				t.Errorf("%s still emits the dark-mode logo variant", key)
+			}
+			// No statically hidden element should survive at all.
+			if strings.Contains(mjmlDoc, "display:none") {
+				t.Errorf("%s emitted a display:none element, which the renderer cannot honor", key)
+			}
+		})
+	}
+}
+
+// TestPruneHiddenNodes covers the hidden-subtree prune directly, including the
+// `!important` form and the fact that a hidden container takes its whole subtree
+// with it while its visible siblings are untouched.
+func TestPruneHiddenNodes(t *testing.T) {
+	tree := []*node{
+		{Tag: "div", Attrs: map[string]string{"style": "display:none"}, Children: []*node{
+			{Tag: "img", Attrs: map[string]string{"src": "hidden.png"}},
+		}},
+		{Tag: "div", Attrs: map[string]string{"style": "color:#111;display: NONE !important"}, Children: []*node{
+			{Tag: "img", Attrs: map[string]string{"src": "also-hidden.png"}},
+		}},
+		{Tag: "div", Attrs: map[string]string{"style": "display:block"}, Children: []*node{
+			{Tag: "img", Attrs: map[string]string{"src": "kept.png"}},
+			{Tag: "span", Attrs: map[string]string{"style": "display:none"}},
+		}},
+		{Tag: "div", Children: []*node{{Tag: "img", Attrs: map[string]string{"src": "no-style.png"}}}},
+	}
+
+	got := pruneHiddenNodes(tree)
+	if len(got) != 2 {
+		t.Fatalf("pruneHiddenNodes kept %d roots, want 2", len(got))
+	}
+	if got[0].Attrs["style"] != "display:block" {
+		t.Errorf("wrong first survivor: %q", got[0].Attrs["style"])
+	}
+	if len(got[0].Children) != 1 || got[0].Children[0].Attrs["src"] != "kept.png" {
+		t.Errorf("hidden child was not pruned from a visible container: %+v", got[0].Children)
+	}
+	if len(got[1].Children) != 1 || got[1].Children[0].Attrs["src"] != "no-style.png" {
+		t.Errorf("a node with no style attribute must be kept: %+v", got[1].Children)
+	}
+}
+
 // TestRenderMJML_RejectsOversizedLayout confirms the bound is wired into
 // renderMJML (the choke point every render path funnels through), so an
 // oversized layout surfaces as ErrUnrenderableLayout (→ 422) and a small

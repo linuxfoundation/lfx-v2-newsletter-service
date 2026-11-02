@@ -937,6 +937,50 @@ func applyClassStyles(nodes []*node) {
 	}
 }
 
+// hiddenByInlineStyle reports whether a node is statically hidden by its own
+// style, i.e. carries `display:none`. It runs after applyClassStyles, so the
+// style it reads is the node's final one and inline declarations have already
+// won per property.
+func hiddenByInlineStyle(n *node) bool {
+	val := cssProp(styleOf(n), "display")
+	if val == "" {
+		return false
+	}
+	val = strings.ToLower(strings.TrimSpace(val))
+	val = strings.TrimSpace(strings.TrimSuffix(val, "!important"))
+	return val == "none"
+}
+
+// pruneHiddenNodes drops every subtree a template statically hid with
+// `display:none`, returning the surviving siblings.
+//
+// The wrappers ship both header logo variants and hide one of them, swapping
+// them from the document's <style> block under a dark-mode attribute selector.
+// The translator drops <style> (MJML owns the head) and dissolves an inert
+// container that wraps block-level content, and pushContainerStyleToBlockChildren
+// forwards only container-mappable properties to section/row children, so
+// `display:none` reached neither the emitted mj-image nor any surviving element.
+// Both variants therefore rendered, stacked, one of them the light-on-dark
+// artwork on a light background.
+//
+// Removing the subtree before translation is the fix rather than teaching
+// writeChildren to skip it, because the renderer is light-mode only: a statically
+// hidden element has no representation in the output at all, and there is no
+// media query or attribute selector left in the compiled email that could reveal
+// it. Pruning here, before collectCardShadows runs, also keeps the card-shadow
+// index aligned with the elements translate actually emits.
+func pruneHiddenNodes(nodes []*node) []*node {
+	out := make([]*node, 0, len(nodes))
+	for _, n := range nodes {
+		if n == nil || hiddenByInlineStyle(n) {
+			continue
+		}
+		n.Children = pruneHiddenNodes(n.Children)
+		out = append(out, n)
+	}
+	return out
+}
+
 // propagateTextAlign pushes a container's text-align down onto descendant text
 // nodes that don't set their own. Chrome like the wrapper's header/socials/footer
 // is authored as text-align:center on a wrapping <div>, but MJML dissolves that
