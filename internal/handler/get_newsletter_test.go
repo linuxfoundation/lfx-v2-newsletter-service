@@ -24,7 +24,7 @@ type getOneRepo struct {
 	port.NewsletterRepository
 	newsletter   *model.Newsletter
 	localOpens   int
-	analyticsErr error
+	openCountErr error
 }
 
 func (r *getOneRepo) Get(_ context.Context, _ uuid.UUID) (*model.Newsletter, error) {
@@ -32,8 +32,8 @@ func (r *getOneRepo) Get(_ context.Context, _ uuid.UUID) (*model.Newsletter, err
 }
 
 func (r *getOneRepo) OpenCount(_ context.Context, _ uuid.UUID) (int, error) {
-	if r.analyticsErr != nil {
-		return 0, r.analyticsErr
+	if r.openCountErr != nil {
+		return 0, r.openCountErr
 	}
 	return r.localOpens, nil
 }
@@ -58,18 +58,18 @@ func TestGetNewsletterTotalOpens(t *testing.T) {
 	cases := []struct {
 		name         string
 		status       model.Status
-		analyticsErr error
+		openCountErr error
 		wantOpens    *int
 	}{
 		{name: "sent", status: model.StatusSent, wantOpens: intPtr(7)},
 		{name: "draft", status: model.StatusDraft},
-		{name: "local read failure", status: model.StatusSent, analyticsErr: errors.New("db down")},
+		{name: "local read failure", status: model.StatusSent, openCountErr: errors.New("db down")},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			n := &model.Newsletter{ID: uuid.New(), ProjectUID: projectUID, Status: tc.status, GroupID: &groupID, Version: 3}
-			repo := &getOneRepo{newsletter: n, localOpens: 2, analyticsErr: tc.analyticsErr}
+			repo := &getOneRepo{newsletter: n, localOpens: 2, openCountErr: tc.openCountErr}
 			readers := map[string]port.EngagementReader{model.SendProviderEmailService: &getOneReader{opened: 7}}
 			h := New(Config{
 				Newsletter: service.NewNewsletterService(repo),

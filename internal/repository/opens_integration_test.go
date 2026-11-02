@@ -5,23 +5,34 @@ package repository
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 )
 
 // TestOpenCount_MatchesAnalyticsTotal checks the narrow open count used by GET
 // one agrees with the full analytics aggregate, and is zero for an unopened issue.
+//
+// Opens are inserted directly rather than through RecordOpen: they need valid
+// 64-char lowercase hex hashes (newsletter_opens_recipient_hash_format) and
+// distinct hour buckets so each row lands (uq_opens_newsletter_recipient_hour).
 func TestOpenCount_MatchesAnalyticsTotal(t *testing.T) {
 	repo := newIntegrationRepo(t)
 	ctx := context.Background()
 	id := seed(t, repo, model.StatusSent, []string{"committee-a"}, ts(10))
 	unopened := seed(t, repo, model.StatusSent, []string{"committee-a"}, ts(20))
 
-	for _, hash := range []string{"recipient-a", "recipient-b", "recipient-a"} {
-		if err := repo.RecordOpen(ctx, id, hash); err != nil {
-			t.Fatalf("RecordOpen: %v", err)
-		}
+	hashA, hashB := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	base := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
+	opens := []*model.NewsletterOpen{
+		{NewsletterID: id, RecipientHash: hashA, OpenedAt: base},
+		{NewsletterID: id, RecipientHash: hashB, OpenedAt: base},
+		{NewsletterID: id, RecipientHash: hashA, OpenedAt: base.Add(2 * time.Hour)}, // a repeat open, a later hour
+	}
+	if _, err := repo.db.NewInsert().Model(&opens).Exec(ctx); err != nil {
+		t.Fatalf("insert opens: %v", err)
 	}
 
 	got, err := repo.OpenCount(ctx, id)
@@ -32,8 +43,8 @@ func TestOpenCount_MatchesAnalyticsTotal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Analytics: %v", err)
 	}
-	if got != full.TotalOpens || got == 0 {
-		t.Errorf("OpenCount = %d, want the analytics total %d (non-zero)", got, full.TotalOpens)
+	if got != 3 || got != full.TotalOpens {
+		t.Errorf("OpenCount = %d, want 3 and equal to the analytics total %d", got, full.TotalOpens)
 	}
 
 	if none, err := repo.OpenCount(ctx, unopened); err != nil || none != 0 {
