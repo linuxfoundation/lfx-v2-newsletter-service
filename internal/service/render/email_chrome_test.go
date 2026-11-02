@@ -212,6 +212,9 @@ func TestEmailHTMLDateBar(t *testing.T) {
 			if got := strings.Contains(html, ">Read online</a>"); got != tc.wantLink {
 				t.Errorf("read-online label present = %v, want %v", got, tc.wantLink)
 			}
+			if got := strings.Contains(html, `>LinkedIn</a>`); got != tc.wantLink {
+				t.Errorf("share links present = %v, want %v", got, tc.wantLink)
+			}
 			if got := strings.Contains(html, "&nbsp;&nbsp;|&nbsp;&nbsp;"); got != tc.wantSeparator {
 				t.Errorf("separator present = %v, want %v", got, tc.wantSeparator)
 			}
@@ -232,6 +235,48 @@ func TestEmailHTMLReadOnlineURLEscaped(t *testing.T) {
 	})
 	if !strings.Contains(html, `href="https://app.lfx.dev/newsletters/x?a=1&amp;b=&quot;y&quot;"`) {
 		t.Errorf("read-online URL not HTML-escaped:\n%s", html)
+	}
+}
+
+func TestEmailHTMLShareLinks(t *testing.T) {
+	const readOnline = "https://app.lfx.dev/newsletters/tlf/abc"
+	const encoded = "https%3A%2F%2Fapp.lfx.dev%2Fnewsletters%2Ftlf%2Fabc"
+	html := EmailHTML(Chrome{
+		Subject:       `Kids + Agents & "PHP"`,
+		SentDate:      "October 13, 2026",
+		ReadOnlineURL: readOnline,
+	})
+	// Subject is query-escaped (spaces as %20, matching encodeURIComponent), then the whole
+	// href is HTML-escaped, so the query's & separators become &amp;.
+	const title = "Kids%20%2B%20Agents%20%26%20%22PHP%22"
+	want := []string{
+		`clicktracking="off" href="https://x.com/intent/tweet?url=` + encoded + `&amp;text=` + title + `"`,
+		`clicktracking="off" href="https://www.linkedin.com/sharing/share-offsite/?url=` + encoded + `"`,
+		`clicktracking="off" href="https://www.reddit.com/submit?url=` + encoded + `&amp;title=` + title + `"`,
+		`clicktracking="off" href="mailto:?subject=` + title + `&amp;body=` + title + `%0A%0A` + encoded + `"`,
+	}
+	for _, w := range want {
+		if !strings.Contains(html, w) {
+			t.Errorf("missing share link %s", w)
+		}
+	}
+	// Share follows Read online in the bar.
+	if strings.Index(html, ">Read online</a>") > strings.Index(html, "Share:") {
+		t.Errorf("share links render before Read online")
+	}
+}
+
+func TestEmailHTMLShareLinksUntitledFallback(t *testing.T) {
+	html := EmailHTML(Chrome{SentDate: "October 13, 2026", ReadOnlineURL: "https://app.lfx.dev/newsletters/tlf/abc"})
+	if !strings.Contains(html, "&amp;title=Untitled") || !strings.Contains(html, "mailto:?subject=Untitled&amp;") {
+		t.Errorf("share links do not fall back to Untitled for an empty subject:\n%s", html)
+	}
+}
+
+func TestEmailHTMLNoShareLinksWithoutReadOnline(t *testing.T) {
+	html := EmailHTML(Chrome{Subject: "Hello", SentDate: "October 13, 2026"})
+	if strings.Contains(html, "Share:") || strings.Contains(html, "x.com/intent") {
+		t.Errorf("share links rendered without a read-online URL:\n%s", html)
 	}
 }
 
