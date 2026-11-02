@@ -12,6 +12,7 @@
 package render
 
 import (
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -307,13 +308,53 @@ func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
 </tr>`
 }
 
-// renderDateBarHTML emits the right-aligned "<date> | Read online" row that
-// sits above the card. Empty when neither SentDate nor ReadOnlineURL is set.
+// shareLink is one inline share destination in the date bar.
+type shareLink struct {
+	label string
+	href  string
+}
+
+// queryEscape matches JavaScript's encodeURIComponent for spaces ("%20", not
+// "+"), so these URLs line up with the self-serve share dialog's.
+func queryEscape(value string) string {
+	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
+}
+
+// socialShareLinks builds the share-intent URLs for the read-online permalink.
+// Keep in step with buildSocialShareHref in lfx-self-serve
+// (packages/shared/src/utils/social-share.utils.ts).
+func socialShareLinks(readOnlineURL, subject string) []shareLink {
+	u := queryEscape(readOnlineURL)
+	t := queryEscape(subject)
+	return []shareLink{
+		{label: "X", href: "https://x.com/intent/tweet?url=" + u + "&text=" + t},
+		{label: "LinkedIn", href: "https://www.linkedin.com/sharing/share-offsite/?url=" + u},
+		{label: "Reddit", href: "https://www.reddit.com/submit?url=" + u + "&title=" + t},
+		{label: "Email", href: "mailto:?subject=" + t + "&body=" + queryEscape(subject+"\n\n"+readOnlineURL)},
+	}
+}
+
+// renderShareLinksHTML emits "Share: X · LinkedIn · Reddit · Email" as text
+// links — icon images are routinely blocked by mail clients.
+func renderShareLinksHTML(readOnlineURL, subject string) string {
+	links := socialShareLinks(readOnlineURL, subject)
+	anchors := make([]string, 0, len(links))
+	for _, link := range links {
+		// clicktracking="off" must precede href for SendGrid to honor it.
+		anchors = append(anchors, `<a clicktracking="off" href="`+escapeHTML(link.href)+`" style="color:`+colorGray700+`;text-decoration:underline;">`+link.label+`</a>`)
+	}
+	return `Share:&nbsp; ` + strings.Join(anchors, `<span style="color:`+colorGray400+`;">&nbsp;&middot;&nbsp;</span>`)
+}
+
+// renderDateBarHTML emits the right-aligned "<date> | Read online | Share: …"
+// row that sits above the card. The share links ride on the read-online
+// permalink, so they appear only with it. Empty when neither SentDate nor
+// ReadOnlineURL is set.
 func renderDateBarHTML(input Chrome) string {
 	if input.SentDate == "" && input.ReadOnlineURL == "" {
 		return ""
 	}
-	parts := make([]string, 0, 2)
+	parts := make([]string, 0, 3)
 	if input.SentDate != "" {
 		parts = append(parts, escapeHTML(input.SentDate))
 	}
@@ -321,6 +362,7 @@ func renderDateBarHTML(input Chrome) string {
 		// clicktracking="off" for the same reason as the footer chrome links:
 		// SendGrid honors it only when the attribute appears BEFORE href.
 		parts = append(parts, `<a clicktracking="off" href="`+escapeHTML(input.ReadOnlineURL)+`" style="color:`+colorGray700+`;text-decoration:underline;">Read online</a>`)
+		parts = append(parts, renderShareLinksHTML(input.ReadOnlineURL, input.Subject))
 	}
 	separator := `<span style="color:` + colorGray400 + `;">&nbsp;&nbsp;|&nbsp;&nbsp;</span>`
 	return `<tr>
