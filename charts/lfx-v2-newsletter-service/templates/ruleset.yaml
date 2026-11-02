@@ -445,10 +445,12 @@ spec:
             values:
               aud: {{ .Values.app.audience }}
 
-    # In-app share intents. Any project viewer who can read a sent newsletter
-    # can record that they shared it; the service rejects drafts (404) and
-    # callers without a principal (400), and counts one share per
-    # (user, channel), so a viewer can't inflate the count.
+    # In-app share intents. Any signed-in project viewer who can read a sent
+    # newsletter can record that they shared it; the service rejects drafts
+    # (404) and counts one share per (user, channel), so a viewer can't
+    # inflate the count. No anonymous_authenticator: project viewer includes
+    # [user:*], so the anonymous subject would pass the check and every
+    # signed-out visitor would share one identity. Unauthenticated calls 401.
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:shares"
       allow_encoded_slashes: 'off'
@@ -459,7 +461,6 @@ spec:
           - path: /projects/:project_uid/newsletters/:newsletter_uid/shares
       execute:
         - authenticator: oidc
-        - authenticator: anonymous_authenticator
         {{- if .Values.app.use_oidc_contextualizer }}
         - contextualizer: oidc_contextualizer
         {{- end }}

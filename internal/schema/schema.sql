@@ -418,8 +418,9 @@ CREATE INDEX IF NOT EXISTS idx_sg_click_events_email ON sendgrid_click_events (e
 -- or "Copy link" in LFX Self Serve). One row per (newsletter, user, channel):
 -- repeat shares by the same user to the same channel collapse to a no-op, so
 -- the share count can't be inflated by clicking the same button repeatedly.
--- user_hash is a SHA-256 of the caller's principal claim, so the table
--- carries no raw user identifier.
+-- user_hash is a SHA-256 of the caller's principal claim: the table stores
+-- no raw username, but the digest is a pseudonym, not an anonymization —
+-- principals are guessable, so a digest can be matched to a known user.
 CREATE TABLE IF NOT EXISTS newsletter_shares (
     newsletter_id  UUID         NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
     user_hash      TEXT         NOT NULL CHECK (user_hash ~ '^[a-f0-9]{64}$'),

@@ -18,6 +18,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 - Per-recipient HMAC-signed, project-scoped unsubscribe opt-outs.
 - Newsletter list and analytics reads (local opens overlaid with the sending provider's engagement totals, routed by `send_provider`).
 - Local open tracking through the tracking-pixel endpoint.
+- In-app share-intent recording (`newsletter_shares`) and the share counts exposed on read endpoints.
 - The public Go DTOs in `pkg/api/newsletter.go`.
 
 ## Routes
@@ -38,7 +39,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Resolve committees and return unique recipient preview. |
 | `POST` | `/projects/{project_uid}/newsletters/test-send` | yes | Dispatch a single test email (no persistence, no analytics). |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics` | yes | Return analytics for one newsletter. |
-| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/shares` | yes | Record an in-app share intent. Body `{ "channel": "x" \| "linkedin" \| "reddit" \| "email" \| "copy_link" }`. Gated on project `viewer`. Returns `204`; idempotent per (user, channel). `400` for an unknown channel, an unknown body field, or a caller without a principal; `404` for drafts, unsent newsletters, unknown ids, and project mismatches. See [Share Counts](#share-counts). |
+| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/shares` | yes | Record an in-app share intent. Body `{ "channel": "x" \| "linkedin" \| "reddit" \| "email" \| "copy_link" }`. Gated on project `viewer`. Returns `204`; idempotent per (user, channel). `401` for unauthenticated callers (OIDC only at the gateway); `400` for an unknown channel, an unknown body field, or a missing or anonymous (`_anonymous`) principal; `404` for drafts, unsent newsletters, unknown ids, and project mismatches. See [Share Counts](#share-counts). |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients` | yes | Per-recipient engagement: who the newsletter went to, delivery outcome, and every recorded open timestamp, with a best-effort display name from the newsletter's committees. |
 | `GET` | `/committees/{committee_uid}/newsletters` | yes | Member-facing: sent newsletters whose audience includes the committee, ordered `sent_at` descending. Supports `page_token`. The gateway gates on `committee:{committee_uid}` `member` OR `auditor` (openfga_or_check), checked per request against OpenFGA — auditor folds in committee writers and project oversight roles so stronger roles never see less than members. Member tuples are maintained by committee-service via fga-sync, so revocation after a membership removal is eventual — normally near-immediate, but tuple removal is asynchronous/best-effort (see committee-service's `docs/fga-contract.md`); this endpoint adds no caching on top of tuple state. Returns `CommitteeNewsletterListResponse` — a reduced DTO without `body_html`, `ed_reply_email`, `group_id`, `created_by`, or `committee_uids` (the full audience list would let a single-committee member enumerate the newsletter's other committees). Clients fetch the rendered body via the project-scoped get, which is reachable for members because the platform model's project `viewer` relation includes all authenticated users (`[user:*]`). |
 | `GET` | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}` | no | Tracking pixel. Records open by recipient hash and returns a GIF. |
@@ -141,7 +142,7 @@ Click tracking excludes the compliance-footer links: the "Unsubscribe" and "My N
 
 ### Share Counts
 
-`POST …/newsletters/{newsletter_uid}/shares` records that the caller clicked a share target (or "Copy link") in the LFX Self Serve share dialog. It measures share *intent*, not a confirmed post. Rows live in `newsletter_shares`, keyed by (newsletter, user hash, channel): the user is stored as a SHA-256 of the JWT principal, and a repeat share by the same user to the same channel is a no-op, so each user adds at most one share per channel.
+`POST …/newsletters/{newsletter_uid}/shares` records that the caller clicked a share target (or "Copy link") in the LFX Self Serve share dialog. It measures share *intent*, not a confirmed post. Rows live in `newsletter_shares`, keyed by (newsletter, user hash, channel): the user is stored as a SHA-256 of the JWT principal (a pseudonym, not an anonymization — principals are guessable, so a digest can be matched to a known user), and a repeat share by the same user to the same channel is a no-op, so each user adds at most one share per channel.
 
 Counts are read back as:
 

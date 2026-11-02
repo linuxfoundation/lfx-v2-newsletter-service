@@ -17,21 +17,20 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 )
 
-// newsletterGetter is the slice of the newsletter repository ShareService
-// needs to check that a newsletter exists, is in the project, and was sent.
-type newsletterGetter interface {
-	Get(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
-}
+// AnonymousPrincipal is the principal Heimdall mints for an unauthenticated
+// caller (the platform's anonymous_authenticator subject). It is one identity
+// shared by every anonymous visitor, so it can never record a share.
+const AnonymousPrincipal = "_anonymous"
 
 // ShareService records in-app newsletter share intents and reads back share
 // counts. A share is counted once per (newsletter, user, channel).
 type ShareService struct {
-	newsletters newsletterGetter
+	newsletters port.NewsletterGetter
 	shares      port.ShareRepository
 }
 
 // NewShareService wires a ShareService.
-func NewShareService(newsletters newsletterGetter, shares port.ShareRepository) *ShareService {
+func NewShareService(newsletters port.NewsletterGetter, shares port.ShareRepository) *ShareService {
 	return &ShareService{newsletters: newsletters, shares: shares}
 }
 
@@ -39,15 +38,18 @@ func NewShareService(newsletters newsletterGetter, shares port.ShareRepository) 
 type RecordShareInput struct {
 	ProjectUID   string
 	NewsletterID uuid.UUID
-	// User is the authenticated caller's principal. It is hashed before it is
-	// stored and is only used to collapse repeat shares.
+	// User is the authenticated caller's principal. It is stored only as a
+	// SHA-256 digest, used to collapse repeat shares. That digest is a
+	// pseudonym, not an anonymization: principals are guessable, so a digest
+	// can be matched back to a known username.
 	User    string
 	Channel model.ShareChannel
 }
 
 // RecordShare records that the caller shared a sent newsletter to a channel.
 // Repeats by the same user to the same channel are silent no-ops. Returns
-// ErrInvalidRequest for an unknown channel or a missing user, and ErrNotFound
+// ErrInvalidRequest for an unknown channel or a missing or anonymous user,
+// and ErrNotFound
 // when the newsletter doesn't exist, belongs to another project, or hasn't
 // been sent (drafts aren't shareable).
 func (s *ShareService) RecordShare(ctx context.Context, in RecordShareInput) error {
@@ -55,7 +57,7 @@ func (s *ShareService) RecordShare(ctx context.Context, in RecordShareInput) err
 		return fmt.Errorf("%w: unknown share channel %q", domain.ErrInvalidRequest, in.Channel)
 	}
 	user := strings.TrimSpace(in.User)
-	if user == "" {
+	if user == "" || user == AnonymousPrincipal {
 		return fmt.Errorf("%w: an authenticated user is required to record a share", domain.ErrInvalidRequest)
 	}
 	if err := validateProjectUID(in.ProjectUID); err != nil {

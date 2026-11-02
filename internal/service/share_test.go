@@ -73,6 +73,7 @@ func TestShareService_RecordShare(t *testing.T) {
 		{"copy link records", RecordShareInput{ProjectUID: "p1", NewsletterID: sentID, User: "alice", Channel: model.ShareChannelCopyLink}, nil},
 		{"unknown channel", RecordShareInput{ProjectUID: "p1", NewsletterID: sentID, User: "alice", Channel: "myspace"}, domain.ErrInvalidRequest},
 		{"no user", RecordShareInput{ProjectUID: "p1", NewsletterID: sentID, User: "  ", Channel: model.ShareChannelX}, domain.ErrInvalidRequest},
+		{"anonymous principal", RecordShareInput{ProjectUID: "p1", NewsletterID: sentID, User: AnonymousPrincipal, Channel: model.ShareChannelX}, domain.ErrInvalidRequest},
 		{"draft is not shareable", RecordShareInput{ProjectUID: "p1", NewsletterID: draftID, User: "alice", Channel: model.ShareChannelX}, domain.ErrNotFound},
 		{"other project", RecordShareInput{ProjectUID: "p1", NewsletterID: otherID, User: "alice", Channel: model.ShareChannelX}, domain.ErrNotFound},
 		{"unknown newsletter", RecordShareInput{ProjectUID: "p1", NewsletterID: uuid.New(), User: "alice", Channel: model.ShareChannelX}, domain.ErrNotFound},

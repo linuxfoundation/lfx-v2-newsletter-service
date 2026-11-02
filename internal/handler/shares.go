@@ -19,7 +19,8 @@ import (
 //
 // Records that the authenticated caller shared a sent newsletter to a
 // channel. Idempotent per (user, channel), so it always answers 204 on
-// success. Unknown channels and unauthenticated callers are 400; drafts,
+// success. Unknown channels and missing or anonymous principals are 400
+// (the gateway already rejects unauthenticated callers with 401); drafts,
 // unknown ids, and other projects' newsletters are 404.
 func (h *Handler) ShareNewsletter(w http.ResponseWriter, r *http.Request) {
 	projectUID := r.PathValue("project_uid")
