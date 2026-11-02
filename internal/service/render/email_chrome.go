@@ -362,7 +362,12 @@ func renderDateBarHTML(input Chrome) string {
 		// clicktracking="off" for the same reason as the footer chrome links:
 		// SendGrid honors it only when the attribute appears BEFORE href.
 		parts = append(parts, `<a clicktracking="off" href="`+escapeHTML(input.ReadOnlineURL)+`" style="color:`+colorGray700+`;text-decoration:underline;">Read online</a>`)
-		parts = append(parts, renderShareLinksHTML(input.ReadOnlineURL, input.Subject))
+		// Same "Untitled" fallback as the card header, so a share never goes out blank.
+		subject := input.Subject
+		if subject == "" {
+			subject = "Untitled"
+		}
+		parts = append(parts, renderShareLinksHTML(input.ReadOnlineURL, subject))
 	}
 	separator := `<span style="color:` + colorGray400 + `;">&nbsp;&nbsp;|&nbsp;&nbsp;</span>`
 	return `<tr>

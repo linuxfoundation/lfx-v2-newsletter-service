@@ -266,6 +266,13 @@ func TestEmailHTMLShareLinks(t *testing.T) {
 	}
 }
 
+func TestEmailHTMLShareLinksUntitledFallback(t *testing.T) {
+	html := EmailHTML(Chrome{SentDate: "October 13, 2026", ReadOnlineURL: "https://app.lfx.dev/newsletters/tlf/abc"})
+	if !strings.Contains(html, "&amp;title=Untitled") || !strings.Contains(html, "mailto:?subject=Untitled&amp;") {
+		t.Errorf("share links do not fall back to Untitled for an empty subject:\n%s", html)
+	}
+}
+
 func TestEmailHTMLNoShareLinksWithoutReadOnline(t *testing.T) {
 	html := EmailHTML(Chrome{Subject: "Hello", SentDate: "October 13, 2026"})
 	if strings.Contains(html, "Share:") || strings.Contains(html, "x.com/intent") {
