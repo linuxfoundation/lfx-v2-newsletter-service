@@ -68,6 +68,9 @@ type ShareRepository interface {
 	ShareCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error)
 	// ShareStats returns one newsletter's share count in total and per channel.
 	ShareStats(ctx context.Context, newsletterID uuid.UUID) (*model.ShareStats, error)
+	// DeleteSharesByUser erases every share recorded for one user hash,
+	// across all newsletters, and returns how many rows were removed.
+	DeleteSharesByUser(ctx context.Context, userHash string) (int64, error)
 }
 
 // NewsletterRepository persists Newsletter aggregates.

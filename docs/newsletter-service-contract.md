@@ -149,6 +149,8 @@ Counts are read back as:
 - `share_count` on sent newsletters in `GET` one, the project list, and the committee list (one grouped query per page).
 - `total_shares` and `shares_by_channel` (every channel present, `0` when unused) on `…/analytics`.
 
+**Data minimization and erasure.** Rows hold only the dedupe key — no timestamp — so the table records whether a user shared a newsletter to a channel, never when. A user's share rows are erased across all newsletters by `ShareService.DeleteUserShares(principal)` (repository `DeleteSharesByUser`), which hashes the principal exactly as `RecordShare` does; counts drop accordingly. There is no HTTP route for it: it is the in-service hook for a data-subject erasure request, and is the equivalent of `DELETE FROM newsletter_shares WHERE user_hash = encode(sha256(convert_to('<principal>', 'UTF8')), 'hex')`. Rows are otherwise removed only when their newsletter is deleted (`ON DELETE CASCADE`).
+
 Share counts are decorative, so a share-store read failure is logged and the share fields are omitted; it never fails the surrounding response. Share links inside the email body (`render/email_chrome.go`) point straight at the social sites and are not counted.
 
 ### Per-Recipient Engagement

@@ -72,3 +72,32 @@ func TestShares_CheckConstraints(t *testing.T) {
 		t.Error("raw user identifier accepted, want CHECK violation")
 	}
 }
+
+func TestShares_DeleteSharesByUser(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+	first := seed(t, repo, model.StatusSent, []string{"committee-a"}, ts(10))
+	second := seed(t, repo, model.StatusSent, []string{"committee-a"}, ts(20))
+
+	for _, s := range []*model.NewsletterShare{
+		{NewsletterID: first, UserHash: userHash('a'), Channel: model.ShareChannelX},
+		{NewsletterID: second, UserHash: userHash('a'), Channel: model.ShareChannelEmail},
+		{NewsletterID: first, UserHash: userHash('b'), Channel: model.ShareChannelX},
+	} {
+		if err := repo.RecordShare(ctx, s); err != nil {
+			t.Fatalf("RecordShare: %v", err)
+		}
+	}
+
+	n, err := repo.DeleteSharesByUser(ctx, userHash('a'))
+	if err != nil || n != 2 {
+		t.Fatalf("DeleteSharesByUser = %d, %v; want 2 rows across both newsletters", n, err)
+	}
+	counts, err := repo.ShareCounts(ctx, []uuid.UUID{first, second})
+	if err != nil {
+		t.Fatalf("ShareCounts: %v", err)
+	}
+	if counts[first] != 1 || counts[second] != 0 {
+		t.Errorf("counts after erase = %v, want only user b's share on the first newsletter", counts)
+	}
+}

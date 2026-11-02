@@ -51,6 +51,10 @@ func (f *handlerShareRepo) ShareCounts(_ context.Context, ids []uuid.UUID) (map[
 	return out, nil
 }
 
+func (f *handlerShareRepo) DeleteSharesByUser(context.Context, string) (int64, error) {
+	return 0, nil
+}
+
 func (f *handlerShareRepo) ShareStats(context.Context, uuid.UUID) (*model.ShareStats, error) {
 	if f.err != nil {
 		return nil, f.err

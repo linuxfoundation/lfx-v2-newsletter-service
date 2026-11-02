@@ -105,6 +105,18 @@ func (s *ShareService) ShareStats(ctx context.Context, newsletterID uuid.UUID) (
 	return s.shares.ShareStats(ctx, newsletterID)
 }
 
+// DeleteUserShares erases every share recorded for a user, across all
+// newsletters, given their principal (hashed here the same way RecordShare
+// hashes it). It is the erasure path for a user's share data; it returns how
+// many rows were removed. Share counts drop accordingly.
+func (s *ShareService) DeleteUserShares(ctx context.Context, user string) (int64, error) {
+	user = strings.TrimSpace(user)
+	if user == "" {
+		return 0, fmt.Errorf("%w: a user principal is required to erase shares", domain.ErrInvalidRequest)
+	}
+	return s.shares.DeleteSharesByUser(ctx, hashShareUser(user))
+}
+
 // hashShareUser returns the lowercase hex SHA-256 of the user principal, the
 // shape the newsletter_shares.user_hash CHECK constraint enforces.
 func hashShareUser(user string) string {

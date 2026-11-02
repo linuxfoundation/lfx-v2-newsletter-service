@@ -767,6 +767,23 @@ func (r *PostgresNewsletterRepo) ShareStats(ctx context.Context, newsletterID uu
 	return stats, nil
 }
 
+// DeleteSharesByUser erases every share recorded for one user hash, across
+// all newsletters (the erasure path for a user's share data).
+func (r *PostgresNewsletterRepo) DeleteSharesByUser(ctx context.Context, userHash string) (int64, error) {
+	res, err := r.db.NewDelete().
+		Table("newsletter_shares").
+		Where("user_hash = ?", userHash).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("delete shares by user: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete shares by user: rows affected: %w", err)
+	}
+	return n, nil
+}
+
 // CreateUnsubscribe records a project-scoped opt-out. Idempotent: a second
 // call for the same (project_uid, email) pair is a no-op via the unique
 // index. Email is normalized to lowercase before insert so the index matches

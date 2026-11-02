@@ -4,8 +4,6 @@
 package model
 
 import (
-	"time"
-
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 )
@@ -43,14 +41,14 @@ func (c ShareChannel) Valid() bool {
 }
 
 // NewsletterShare is one recorded share intent, unique per
-// (newsletter, user, channel).
+// (newsletter, user, channel). It deliberately carries no timestamp: the
+// count only needs the dedupe key.
 type NewsletterShare struct {
 	bun.BaseModel `bun:"table:newsletter_shares,alias:s"`
 
 	NewsletterID uuid.UUID    `bun:"newsletter_id,pk,type:uuid"`
 	UserHash     string       `bun:"user_hash,pk"`
 	Channel      ShareChannel `bun:"channel,pk"`
-	SharedAt     time.Time    `bun:"shared_at,nullzero,notnull,default:current_timestamp"`
 }
 
 // ShareStats is a newsletter's share count, in total and per channel. Each

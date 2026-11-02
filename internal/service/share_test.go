@@ -27,10 +27,11 @@ func (f *shareNewsletterFake) Get(_ context.Context, id uuid.UUID) (*model.Newsl
 }
 
 type shareRepoFake struct {
-	recorded  []*model.NewsletterShare
-	counts    map[uuid.UUID]int
-	countsErr error
-	gotIDs    []uuid.UUID
+	recorded    []*model.NewsletterShare
+	counts      map[uuid.UUID]int
+	countsErr   error
+	gotIDs      []uuid.UUID
+	deletedHash string
 }
 
 func (f *shareRepoFake) RecordShare(_ context.Context, s *model.NewsletterShare) error {
@@ -54,6 +55,11 @@ func (f *shareRepoFake) ShareCounts(_ context.Context, ids []uuid.UUID) (map[uui
 
 func (f *shareRepoFake) ShareStats(context.Context, uuid.UUID) (*model.ShareStats, error) {
 	return &model.ShareStats{}, nil
+}
+
+func (f *shareRepoFake) DeleteSharesByUser(_ context.Context, userHash string) (int64, error) {
+	f.deletedHash = userHash
+	return 2, nil
 }
 
 func TestShareService_RecordShare(t *testing.T) {
@@ -135,5 +141,22 @@ func TestShareService_ShareCounts(t *testing.T) {
 	repo.countsErr = errors.New("db down")
 	if _, err := NewShareService(&shareNewsletterFake{}, repo).ShareCounts(context.Background(), []*model.Newsletter{{ID: sharedID, Status: model.StatusSent}}); err == nil {
 		t.Error("ShareCounts swallowed a repository error")
+	}
+}
+
+func TestShareService_DeleteUserShares(t *testing.T) {
+	repo := &shareRepoFake{}
+	svc := NewShareService(&shareNewsletterFake{}, repo)
+
+	n, err := svc.DeleteUserShares(context.Background(), "  alice ")
+	if err != nil || n != 2 {
+		t.Fatalf("DeleteUserShares = %d, %v; want 2, nil", n, err)
+	}
+	if repo.deletedHash != hashShareUser("alice") {
+		t.Errorf("deleted hash = %q, want the same hash RecordShare stores for the trimmed principal", repo.deletedHash)
+	}
+
+	if _, err := svc.DeleteUserShares(context.Background(), " "); !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Errorf("blank principal: err = %v, want ErrInvalidRequest", err)
 	}
 }
