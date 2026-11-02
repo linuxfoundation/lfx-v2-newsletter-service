@@ -40,9 +40,13 @@ const (
 type NewsletterService struct {
 	repo port.NewsletterRepository
 	// unsubEnabled mirrors UnsubscribeService.Enabled(). When false the
-	// render-on-write step renders the reply-based opt-out fallback copy
-	// (unsubFooterReplyFallback) instead of a link whose href would
-	// substitute to an empty string at send time.
+	// render-on-write step binds unsubFooterReplyFallback instead of a link whose
+	// href would substitute to an empty string at send time — but none of the
+	// embedded wrappers render a reply-based fallback row, so in practice the
+	// wrapper simply DROPS its opt-out row, and SendNewsletter refuses a real
+	// layout send with 503 rather than mailing without an opt-out (see
+	// LayoutWrapperContent and SendNewsletter). The binding stays in the contract
+	// for a wrapper that does render one.
 	unsubEnabled bool
 }
 

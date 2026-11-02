@@ -588,6 +588,56 @@ func TestCheckLayoutBounds(t *testing.T) {
 	}
 }
 
+// TestCheckLayoutBounds_ContentItems pins the Content array-item ceiling. A
+// single block can hold an arbitrarily long `each=` source array, so the
+// block-count walk alone does not bound the pre-compile fan-out: one block with
+// hundreds of thousands of `{}` entries used to pass every check and still be
+// bound and translated item by item. The count is transitive (an `each=` body
+// can repeat over a per-item array) and spans the whole layout, not one block.
+func TestCheckLayoutBounds_ContentItems(t *testing.T) {
+	gems := func(n int) []Block {
+		items := make([]any, n)
+		for i := range items {
+			items[i] = map[string]any{"title": "x"}
+		}
+		return []Block{{BlockType: "hidden_gems", Content: map[string]any{"gems": items}}}
+	}
+	if err := checkLayoutBounds(gems(maxLayoutItems)); err != nil {
+		t.Errorf("a layout at maxLayoutItems (%d) should pass, got %v", maxLayoutItems, err)
+	}
+	if err := checkLayoutBounds(gems(maxLayoutItems + 1)); !errors.Is(err, ErrUnrenderableLayout) {
+		t.Errorf("a layout over maxLayoutItems should be rejected, got %v", err)
+	}
+
+	// Items accumulate across blocks: two blocks each under the ceiling but over
+	// it together must be rejected, since both are bound in the same render.
+	half := maxLayoutItems/2 + 1
+	spread := append(gems(half), gems(half)...)
+	if err := checkLayoutBounds(spread); !errors.Is(err, ErrUnrenderableLayout) {
+		t.Errorf("items spread across blocks should still be bounded, got %v", err)
+	}
+
+	// Nested arrays count too — the lf_blogs shape repeats over groups, then over
+	// each group's own items.
+	groups := make([]any, 10)
+	for i := range groups {
+		inner := make([]any, maxLayoutItems/5)
+		for j := range inner {
+			inner[j] = map[string]any{"title": "x"}
+		}
+		groups[i] = map[string]any{"items": inner}
+	}
+	nested := []Block{{BlockType: "lf_blogs", Content: map[string]any{"groups": groups}}}
+	if err := checkLayoutBounds(nested); !errors.Is(err, ErrUnrenderableLayout) {
+		t.Errorf("nested per-item arrays should be counted, got %v", err)
+	}
+
+	// A legitimate edition-sized layout is unaffected.
+	if err := checkLayoutBounds(gems(24)); err != nil {
+		t.Errorf("an edition-sized layout should pass, got %v", err)
+	}
+}
+
 // TestRenderMJML_RejectsOversizedLayout confirms the bound is wired into
 // renderMJML (the choke point every render path funnels through), so an
 // oversized layout surfaces as ErrUnrenderableLayout (→ 422) and a small

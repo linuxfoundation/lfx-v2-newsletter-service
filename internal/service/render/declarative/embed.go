@@ -80,10 +80,19 @@ func LoadEmbeddedTemplate(key string) (Templates, error) {
 		return Templates{}, fmt.Errorf("%w: %q", ErrTemplateNotFound, key)
 	}
 	root := "templates/" + key
-	if _, err := fs.Stat(embeddedTemplates, root); err != nil {
-		// Missing directory: the key names no embedded library. Wrap the sentinel
-		// so callers can map it to 422 (vs a parse failure of a present library,
-		// which stays an untyped 500 deployment defect).
+	// The entry must be a DIRECTORY, not merely present: templates.lock is
+	// embedded as a FILE directly under templates/, so a client-supplied
+	// template_key of "templates.lock" would Stat-match, reach loadFromFS, fail
+	// there on its nonexistent wrappers/ dir, and surface as a 500 deployment
+	// defect instead of the documented 422 for an unknown library. Requiring
+	// IsDir keeps every non-directory entry (now or after a future file lands
+	// beside the template sets) on the ErrTemplateNotFound path.
+	info, err := fs.Stat(embeddedTemplates, root)
+	if err != nil || !info.IsDir() {
+		// Missing entry, or an entry that is not a template-set directory: the key
+		// names no embedded library. Wrap the sentinel so callers can map it to 422
+		// (vs a parse failure of a present library, which stays an untyped 500
+		// deployment defect).
 		return Templates{}, fmt.Errorf("%w: %q", ErrTemplateNotFound, key)
 	}
 	return loadFromFS(embeddedTemplates, root)

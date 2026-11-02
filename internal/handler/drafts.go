@@ -198,9 +198,12 @@ func toAPILayout(ctx context.Context, raw json.RawMessage, newsletterID string) 
 	var layout publicapi.NewsletterLayout
 	if err := json.Unmarshal(raw, &layout); err != nil {
 		// Corrupt stored layout: serve the (still valid) body_html rather than a
-		// 500. Log WITH the id — the newsletter then reads as html-only, so a
-		// later save would clear the structured layout; the id makes that
-		// silent-loss case traceable.
+		// 500. Log WITH the id, because the row then needs operator attention: the
+		// newsletter reads as html-only, so a client that omits body_layout on the
+		// next PUT hits UpdateDraft's preserve branch, which unmarshals the SAME
+		// corrupt payload and fails the save (an untyped error → 500). The draft
+		// stays uneditable until a client sends an explicit "body_layout": null or
+		// a replacement layout. The id makes that row findable.
 		slog.WarnContext(ctx, "decode stored body_layout failed; omitting from response", "newsletter_id", newsletterID, "error", err)
 		return nil
 	}

@@ -32,19 +32,33 @@ const mjmlCompileTimeout = 15 * time.Second
 // real edition has at most dozens of blocks a few levels deep, so these ceilings
 // sit far above any legitimate newsletter while capping the pre-compile work by
 // construction.
+// maxLayoutItems bounds the total number of array elements carried in block
+// Content across the whole layout. `each=` repeaters (bindNode → lookupSlice)
+// iterate a content array with no cap of their own, and each item is bound and
+// translated in the same pre-compile stage the block-count ceiling guards. A
+// single block holding one huge array — hundreds of thousands of `{}` entries
+// under `hidden_gems.gems`, `items`, or `lf_blogs.groups[].items`, well within
+// the 1 MiB request cap — therefore passed the block/depth check and still drove
+// bind, spacing expansion and MJML generation linearly in the array length
+// before the compile deadline began. Counting items puts that fan-out under the
+// same kind of ceiling. A real edition carries at most a few dozen items per
+// block, so this sits far above any legitimate newsletter.
 const (
 	maxLayoutBlocks = 1000
 	maxLayoutDepth  = 16
+	maxLayoutItems  = 2000
 )
 
-// checkLayoutBounds rejects a layout whose total block count or container nesting
-// depth exceeds the render limits, before renderMJML runs the unbounded
-// pre-compile pipeline. The walk is cheap and short-circuits at the first breach,
-// so it cannot become the amplification it guards against. Returns
-// ErrUnrenderableLayout (→ 422 at the callers), matching how any other layout the
-// emitter cannot process surfaces.
+// checkLayoutBounds rejects a layout whose total block count, container nesting
+// depth, or total Content array-item count exceeds the render limits, before
+// renderMJML runs the unbounded pre-compile pipeline. The walk is cheap (linear
+// in the already-parsed layout, which the request cap bounds) and short-circuits
+// at the first breach, so it cannot become the amplification it guards against.
+// Returns ErrUnrenderableLayout (→ 422 at the callers), matching how any other
+// layout the emitter cannot process surfaces.
 func checkLayoutBounds(blocks []Block) error {
 	total := 0
+	items := 0
 	// walk visits every block at the given depth. It guards the DESCENT (only
 	// recurses into non-empty children, and only when the child level is within
 	// the limit) rather than the entry, so a leaf at exactly maxLayoutDepth is
@@ -55,6 +69,11 @@ func checkLayoutBounds(blocks []Block) error {
 			total++
 			if total > maxLayoutBlocks {
 				return fmt.Errorf("%w: layout exceeds %d blocks", ErrUnrenderableLayout, maxLayoutBlocks)
+			}
+			// Content arrays drive `each=` fan-out, which the block count does not
+			// see. See maxLayoutItems.
+			if err := countContentItems(bs[i].Content, &items); err != nil {
+				return err
 			}
 			if len(bs[i].Blocks) > 0 {
 				if depth+1 > maxLayoutDepth {
@@ -68,6 +87,45 @@ func checkLayoutBounds(blocks []Block) error {
 		return nil
 	}
 	return walk(blocks, 1)
+}
+
+// countContentItems adds every element of every array nested anywhere in one
+// block's Content to items, failing as soon as the running total crosses
+// maxLayoutItems. Nested arrays are counted too, because an `each=` body can
+// itself repeat over a per-item array (`lf_blogs.groups[].items`), so only the
+// transitive count bounds the real fan-out. The length is added before
+// descending, so a breach is detected without walking the offending array's
+// elements. Content is already-unmarshalled JSON, whose nesting the decoder
+// bounds, so the recursion cannot be driven arbitrarily deep.
+func countContentItems(content map[string]any, items *int) error {
+	var walkValue func(v any) error
+	walkValue = func(v any) error {
+		switch t := v.(type) {
+		case []any:
+			*items += len(t)
+			if *items > maxLayoutItems {
+				return fmt.Errorf("%w: layout exceeds %d content items", ErrUnrenderableLayout, maxLayoutItems)
+			}
+			for _, e := range t {
+				if err := walkValue(e); err != nil {
+					return err
+				}
+			}
+		case map[string]any:
+			for _, e := range t {
+				if err := walkValue(e); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	for _, v := range content {
+		if err := walkValue(v); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Render binds a structured newsletter Layout against the declarative

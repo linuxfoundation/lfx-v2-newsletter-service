@@ -140,9 +140,9 @@ func (h *Handler) CancelScheduleNewsletter(w http.ResponseWriter, r *http.Reques
 	// post-cancel state, not editable content, so omit body_layout (a layout can
 	// approach 1 MiB and the client already holds what it composed). Shallow-copy
 	// and clear before converting so toAPINewsletter never decodes it.
-	copy := *reverted
-	copy.BodyLayout = nil
-	writeJSON(r.Context(), w, http.StatusOK, publicapi.CancelScheduleResponse{Newsletter: *toAPINewsletter(r.Context(), &copy)})
+	item := *reverted
+	item.BodyLayout = nil
+	writeJSON(r.Context(), w, http.StatusOK, publicapi.CancelScheduleResponse{Newsletter: *toAPINewsletter(r.Context(), &item)})
 }
 
 // RecipientCount handles POST /projects/{project_uid}/newsletters/recipient-count.
@@ -224,10 +224,10 @@ func toAPIScheduleResponse(ctx context.Context, result *service.SendResult) publ
 	// Mirror toAPISendResponse: omit body_layout in this send-lifecycle response
 	// (it echoes post-schedule state, not editable content, and a layout can
 	// approach 1 MiB). Shallow-copy and clear before converting.
-	copy := *result.Newsletter
-	copy.BodyLayout = nil
+	item := *result.Newsletter
+	item.BodyLayout = nil
 	return publicapi.ScheduleNewsletterResponse{
-		Newsletter:      *toAPINewsletter(ctx, &copy),
+		Newsletter:      *toAPINewsletter(ctx, &item),
 		GroupID:         result.GroupID,
 		ScheduledAt:     scheduledAt,
 		TotalRecipients: result.TotalRecipients,
@@ -250,9 +250,9 @@ func toAPISendResponse(ctx context.Context, result *service.SendResult) publicap
 	// already holds the layout it just sent. Shallow-copy and clear BodyLayout
 	// on the copy (mirroring toAPIListItem) so toAPINewsletter never decodes a
 	// layout the response discards anyway — a layout can approach 1 MiB.
-	copy := *result.Newsletter
-	copy.BodyLayout = nil
-	newsletter := toAPINewsletter(ctx, &copy)
+	item := *result.Newsletter
+	item.BodyLayout = nil
+	newsletter := toAPINewsletter(ctx, &item)
 	return publicapi.SendNewsletterResponse{
 		Newsletter:      *newsletter,
 		GroupID:         result.GroupID,

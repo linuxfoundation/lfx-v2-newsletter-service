@@ -91,6 +91,31 @@ func TestLoadEmbeddedTemplate_NonSingleSegmentKeyIs422(t *testing.T) {
 	}
 }
 
+// TestLoadEmbeddedTemplate_EmbeddedFileKeyIs422 pins that a client-controlled
+// template_key naming an embedded FILE rather than a template-set directory is an
+// unknown library (ErrTemplateNotFound → 422), not a 500 defect. templates.lock
+// sits directly under templates/, so before the IsDir guard it Stat-matched here
+// and then failed in loadFromFS on its nonexistent wrappers/ dir, surfacing as a
+// deployment defect for what is purely client input. EmbeddedTemplateKeys already
+// filters to directories, so no real library is affected.
+func TestLoadEmbeddedTemplate_EmbeddedFileKeyIs422(t *testing.T) {
+	keys, err := EmbeddedTemplateKeys()
+	if err != nil {
+		t.Fatalf("EmbeddedTemplateKeys: %v", err)
+	}
+	for _, key := range keys {
+		if key == "templates.lock" {
+			t.Fatalf("templates.lock is listed as a template set; the IsDir filter regressed")
+		}
+	}
+	if _, err := LoadEmbeddedTemplate("templates.lock"); !errors.Is(err, ErrTemplateNotFound) {
+		t.Errorf("LoadEmbeddedTemplate(\"templates.lock\") err = %v, want ErrTemplateNotFound", err)
+	}
+	if _, err := LoadEmbeddedTemplateCached("templates.lock"); !errors.Is(err, ErrTemplateNotFound) {
+		t.Errorf("LoadEmbeddedTemplateCached(\"templates.lock\") err = %v, want ErrTemplateNotFound", err)
+	}
+}
+
 // TestEmptyKeyFallbackRendersFallbackLibrary proves a layout that omits template_key
 // falls back to the FallbackTemplateKey library: it resolves that library's blocks
 // and renders the wrapper's unsubscribe row. This is the path for drafts saved

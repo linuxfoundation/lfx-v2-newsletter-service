@@ -499,6 +499,28 @@ func EmailText(input Chrome) string {
 	return strings.Join(lines, "\n")
 }
 
+// textBlockTags are the elements whose boundaries are visible structure in the
+// rendered email, so htmlToText must turn them into line breaks in the
+// text/plain part. Table parts are included because MJML compiles every row and
+// cell of a layout into a table: a cell's content is a separate visual unit and
+// must not be glued to its neighbour's.
+//
+// A boundary is emitted on BOTH the start and the end tag. The tokenizer never
+// synthesizes an omitted close (a bare "<li>a<li>b" or "<td>a<td>b" sequence
+// yields no end tags at all), so keying on one alone would still run those
+// items together; the \n{3,} collapse below folds the resulting doubled breaks
+// back into a single blank line.
+var textBlockTags = map[string]bool{
+	"address": true, "article": true, "aside": true, "blockquote": true,
+	"caption": true, "dd": true, "div": true, "dl": true, "dt": true,
+	"figcaption": true, "figure": true, "footer": true, "h1": true,
+	"h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
+	"header": true, "hr": true, "li": true, "main": true, "nav": true,
+	"ol": true, "p": true, "pre": true, "section": true, "table": true,
+	"tbody": true, "td": true, "tfoot": true, "th": true, "thead": true,
+	"tr": true, "ul": true,
+}
+
 // htmlToText derives a plain-text body from a compiled HTML document for the
 // text/plain part of a layout email. It tokenizes with golang.org/x/net/html
 // instead of matching tags with regexes, so:
@@ -508,7 +530,11 @@ func EmailText(input Chrome) string {
 //     attribute value cannot spill CSS or script text into the output.
 //   - Link destinations survive: <a href="X">label</a> becomes "label (X)",
 //     unless the label is already the raw URL (or the href is empty).
-//   - A <br> becomes a newline.
+//   - A <br> becomes a newline, and so does every block boundary
+//     (textBlockTags): paragraphs, headings, list items, table rows and cells.
+//     The emitter inlines a block's authored richtext with no whitespace between
+//     tags, so without this "<p>First.</p><p>Second.</p>" would collapse to
+//     "First.Second." and adjacent <li> items would run together.
 //
 // Entities are decoded by the tokenizer. A decoded &nbsp; (U+00A0) becomes a
 // plain space, then whitespace is collapsed as in stripHTML.
@@ -519,6 +545,20 @@ func htmlToText(input string) string {
 	inAnchor := false
 	anchorHref := ""
 	var anchorText strings.Builder
+
+	// writeBreak emits a line break into whichever builder is currently
+	// collecting text, honoring the <head>/<style>/<script>/<title> skip. Both
+	// the <br> cases and the block-boundary cases go through it.
+	writeBreak := func() {
+		if skip > 0 {
+			return
+		}
+		if inAnchor {
+			anchorText.WriteByte('\n')
+		} else {
+			out.WriteByte('\n')
+		}
+	}
 
 	flushAnchor := func() {
 		if !inAnchor {
@@ -559,13 +599,7 @@ loop:
 				// (e.g. "The Linux Foundation<br />2810 N Church St...") collapse
 				// into one run. net/html emits <br> as a start tag and <br/> as a
 				// self-closing tag, so both cases emit here and below.
-				if skip == 0 {
-					if inAnchor {
-						anchorText.WriteByte('\n')
-					} else {
-						out.WriteByte('\n')
-					}
-				}
+				writeBreak()
 			case "a":
 				if skip == 0 && !inAnchor {
 					href := ""
@@ -580,6 +614,10 @@ loop:
 					anchorHref = href
 					anchorText.Reset()
 				}
+			default:
+				if textBlockTags[string(name)] {
+					writeBreak()
+				}
 			}
 		case nethtml.EndTagToken:
 			name, _ := z.TagName()
@@ -590,19 +628,17 @@ loop:
 				}
 			case "a":
 				flushAnchor()
+			default:
+				if textBlockTags[string(name)] {
+					writeBreak()
+				}
 			}
 		case nethtml.SelfClosingTagToken:
 			name, _ := z.TagName()
 			switch string(name) {
 			case "br":
 				// Self-closing <br/> — emit a newline, matching the start-tag case.
-				if skip == 0 {
-					if inAnchor {
-						anchorText.WriteByte('\n')
-					} else {
-						out.WriteByte('\n')
-					}
-				}
+				writeBreak()
 			case "style", "script", "title":
 				// style/script/title are raw-text/RCDATA elements: the tokenizer
 				// switches to raw-text mode after the start tag even when it is
@@ -611,8 +647,14 @@ loop:
 				// until the matching close (or EOF). This is exactly the
 				// self-closing <style/> case the old regex skip-scanner missed.
 				skip++
+			default:
+				// A block element written self-closing (<p/>) still ends its block.
+				if textBlockTags[string(name)] {
+					writeBreak()
+				}
 			}
-			// Other self-closing/void tags (<br/>, <img/>, …) contribute no text.
+			// Other self-closing/void tags (<img/>, <input/>, …) are neither block
+			// boundaries nor text, so they contribute nothing.
 		}
 	}
 	flushAnchor() // document ended mid-anchor (unterminated <a>)

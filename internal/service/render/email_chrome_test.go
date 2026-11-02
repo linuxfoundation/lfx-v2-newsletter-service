@@ -91,6 +91,83 @@ func TestStripHTMLForTextBreakEmitsNewline(t *testing.T) {
 	}
 }
 
+// TestStripHTMLForTextSeparatesBlocks pins that block boundaries survive into
+// the text/plain part. The emitter inlines a block's authored richtext with no
+// whitespace between tags, so compact markup used to collapse: two paragraphs
+// became "First paragraph.Second paragraph.", and adjacent list items,
+// headings and table cells ran together the same way.
+func TestStripHTMLForTextSeparatesBlocks(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "compact paragraphs",
+			input: `<p>First paragraph.</p><p>Second paragraph.</p>`,
+			want:  []string{"First paragraph.\n\nSecond paragraph."},
+		},
+		{
+			name:  "compact list items",
+			input: `<ul><li>One</li><li>Two</li><li>Three</li></ul>`,
+			want:  []string{"One\n\nTwo", "Two\n\nThree"},
+		},
+		{
+			// No end tags at all, and the tokenizer does not synthesize them, so the
+			// separation comes from the second <li>'s START tag alone: one newline
+			// rather than the blank line a closed pair produces. Still separated,
+			// which is the point.
+			name:  "unclosed list items",
+			input: `<ul><li>One<li>Two</ul>`,
+			want:  []string{"One\nTwo"},
+		},
+		{
+			name:  "heading then paragraph",
+			input: `<h2>Headline</h2><p>Body copy.</p>`,
+			want:  []string{"Headline\n\nBody copy."},
+		},
+		{
+			name:  "table cells",
+			input: `<table><tr><td>Left</td><td>Right</td></tr></table>`,
+			want:  []string{"Left\n\nRight"},
+		},
+		{
+			name:  "linked paragraphs keep hrefs and separate",
+			input: `<p><a href="https://example.com/a">Alpha</a></p><p><a href="https://example.com/b">Beta</a></p>`,
+			want: []string{
+				"Alpha (https://example.com/a)",
+				"Beta (https://example.com/b)",
+				")\n\nBeta",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := StripHTMLForText(tc.input)
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("StripHTMLForText(%q) = %q, want it to contain %q", tc.input, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestStripHTMLForTextInlineTextStaysJoined is the counterpart to
+// TestStripHTMLForTextSeparatesBlocks: inline markup inside a block must NOT
+// gain a line break, so emphasis and links keep reading as one sentence.
+func TestStripHTMLForTextInlineTextStaysJoined(t *testing.T) {
+	got := StripHTMLForText(`<p>A <strong>bold</strong> and <em>italic</em> sentence.</p>`)
+	if !strings.Contains(got, "A bold and italic sentence.") {
+		t.Errorf("inline markup split the sentence: %q", got)
+	}
+	got = StripHTMLForText(`<p>See <a href="https://example.com/x">the docs</a> for more.</p>`)
+	if !strings.Contains(got, "See the docs (https://example.com/x) for more.") {
+		t.Errorf("inline anchor split the sentence: %q", got)
+	}
+}
+
 const testMyNewslettersURL = "https://app.lfx.dev/newsletters/my"
 
 func TestEmailHTMLMyNewslettersLine(t *testing.T) {

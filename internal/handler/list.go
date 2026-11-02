@@ -54,8 +54,9 @@ func toAPIListItem(ctx context.Context, n *model.Newsletter) publicapi.Newslette
 	// layouts can be ~1 MiB each and pages return up to 100 rows. Shallow-copy
 	// the newsletter and clear body_layout on the copy, preserving the original
 	// repository-supplied model. This allows toAPINewsletter to convert the copy
-	// without mutating the caller's model.
-	copy := *n
-	copy.BodyLayout = nil
-	return publicapi.NewsletterListItem{Newsletter: *toAPINewsletter(ctx, &copy)}
+	// without mutating the caller's model. The local is named `item`, not `copy`,
+	// so it does not shadow the `copy` builtin.
+	item := *n
+	item.BodyLayout = nil
+	return publicapi.NewsletterListItem{Newsletter: *toAPINewsletter(ctx, &item)}
 }
