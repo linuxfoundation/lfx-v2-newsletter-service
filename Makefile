@@ -12,6 +12,9 @@ DOCKER_TAG := latest
 
 HELM_CHART_PATH := ./charts/lfx-v2-newsletter-service
 HELM_RELEASE_NAME := lfx-v2-newsletter-service
+# The chart names its Deployment from .Chart.Name, not the release, so
+# redeploy-local targets this name whatever HELM_RELEASE_NAME is set to.
+HELM_DEPLOYMENT_NAME := lfx-v2-newsletter-service
 HELM_NAMESPACE := lfx
 HELM_VALUES_FILE := ./charts/lfx-v2-newsletter-service/values.local.yaml
 
@@ -170,9 +173,9 @@ redeploy-local:
 	echo "==> Building $(KO_LOCAL_IMAGE):$$TAG from $$(git rev-parse --short HEAD)..."; \
 	KO_DOCKER_REPO=$(KO_LOCAL_IMAGE) VERSION=$(VERSION) BUILD_TIME=$(BUILD_TIME) GIT_COMMIT=$(GIT_COMMIT) \
 		ko build --local --bare --tags=$$TAG ./cmd/newsletter-api && \
-	echo "==> Rolling $(HELM_RELEASE_NAME) to $$TAG..." && \
-	kubectl --context $(KUBE_CONTEXT) --namespace $(HELM_NAMESPACE) set image deploy/$(HELM_RELEASE_NAME) app=$(KO_LOCAL_IMAGE):$$TAG && \
-	kubectl --context $(KUBE_CONTEXT) --namespace $(HELM_NAMESPACE) rollout status deploy/$(HELM_RELEASE_NAME) --timeout=180s
+	echo "==> Rolling $(HELM_DEPLOYMENT_NAME) to $$TAG..." && \
+	kubectl --context $(KUBE_CONTEXT) --namespace $(HELM_NAMESPACE) set image deploy/$(HELM_DEPLOYMENT_NAME) app=$(KO_LOCAL_IMAGE):$$TAG && \
+	kubectl --context $(KUBE_CONTEXT) --namespace $(HELM_NAMESPACE) rollout status deploy/$(HELM_DEPLOYMENT_NAME) --timeout=180s
 
 # helm-uninstall removes the chart release. Run helm-uninstall-cnpg afterwards
 # (in cluster+database mode) if you want to remove the Postgres data as well.
