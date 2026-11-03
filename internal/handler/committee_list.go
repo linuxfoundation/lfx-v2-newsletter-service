@@ -42,11 +42,11 @@ func (h *Handler) ListCommitteeNewsletters(w http.ResponseWriter, r *http.Reques
 	counts := h.shareCounts(r.Context(), page.Newsletters)
 	views := h.pageViewCounts(r.Context(), page.Newsletters)
 	opens := h.totalOpensFor(r.Context(), page.Newsletters)
-	for i, n := range page.Newsletters {
+	for _, n := range page.Newsletters {
 		item := toAPICommitteeNewsletter(n)
 		item.ShareCount = countFor(counts, n.ID)
 		item.PageViewCount = countFor(views, n.ID)
-		item.TotalOpens = opens[i]
+		item.TotalOpens = countFor(opens, n.ID)
 		out.Newsletters = append(out.Newsletters, item)
 	}
 	writeJSON(r.Context(), w, http.StatusOK, out)

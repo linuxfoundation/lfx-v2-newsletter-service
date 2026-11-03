@@ -26,7 +26,8 @@ type engagementRepo struct {
 	port.NewsletterRepository
 	page       []*model.Newsletter
 	localOpens map[uuid.UUID]int
-	openErr    map[uuid.UUID]error
+	openErr    error
+	openCalls  int
 }
 
 func (r *engagementRepo) ListSentByCommittee(context.Context, string, string) (*port.ListPage, error) {
@@ -42,11 +43,18 @@ func (r *engagementRepo) Get(_ context.Context, id uuid.UUID) (*model.Newsletter
 	return nil, errors.New("not seeded")
 }
 
-func (r *engagementRepo) OpenCount(_ context.Context, id uuid.UUID) (int, error) {
-	if err := r.openErr[id]; err != nil {
-		return 0, err
+func (r *engagementRepo) OpenCounts(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]int, error) {
+	r.openCalls++
+	if r.openErr != nil {
+		return nil, r.openErr
 	}
-	return r.localOpens[id], nil
+	out := map[uuid.UUID]int{}
+	for _, id := range ids {
+		if c, ok := r.localOpens[id]; ok {
+			out[id] = c
+		}
+	}
+	return out, nil
 }
 
 func (r *engagementRepo) Analytics(_ context.Context, id uuid.UUID) (*model.Analytics, error) {
@@ -78,55 +86,24 @@ func sentWithGroup(group string) *model.Newsletter {
 	return &model.Newsletter{ID: uuid.New(), ProjectUID: "p1", Status: model.StatusSent, GroupID: &g}
 }
 
-// TestListCommitteeNewslettersEngagement drives the committee list through the
-// handler and checks each row's total_opens and page_view_count land on that
-// row: provider opens win over local, a hung provider falls back to the local
-// count inside the shared budget, a failed local read omits only that row's
-// total, and a draft row carries neither field.
-func TestListCommitteeNewslettersEngagement(t *testing.T) {
-	providerWins := sentWithGroup("g-provider")
-	hung := sentWithGroup("g-hung")
-	localFails := sentWithGroup("g-local-fails")
-	draft := &model.Newsletter{ID: uuid.New(), ProjectUID: "p1", Status: model.StatusDraft}
-
-	// More sent rows than one concurrency wave would hold if each provider read
-	// had its own budget: they must all finish inside the one shared budget.
-	page := []*model.Newsletter{providerWins, hung, localFails, draft}
-	hangs := map[string]bool{"g-hung": true}
-	for i := 0; i < totalOpensListConcurrency; i++ {
-		extra := sentWithGroup("g-extra-hung")
-		page = append(page, extra)
-	}
-	hangs["g-extra-hung"] = true
-
-	repo := &engagementRepo{
-		page:       page,
-		localOpens: map[uuid.UUID]int{providerWins.ID: 2, hung.ID: 5},
-		openErr:    map[uuid.UUID]error{localFails.ID: errors.New("db down")},
-	}
-	readers := map[string]port.EngagementReader{
-		model.SendProviderEmailService: &groupReader{opened: map[string]int{"g-provider": 40, "g-local-fails": 9}, hang: hangs},
-	}
+// listCommitteePage runs ListCommitteeNewsletters against repo and returns the
+// rows keyed by id plus how long the call took.
+func listCommitteePage(t *testing.T, repo *engagementRepo, reader port.EngagementReader) (map[string]map[string]any, time.Duration) {
+	t.Helper()
 	h := New(Config{
-		Newsletter: service.NewNewsletterService(repo),
-		Analytics:  service.NewAnalyticsService(repo, readers, nil, model.SendProviderEmailService),
+		Newsletter: service.NewNewsletterService(repo, true),
+		Analytics:  service.NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: reader}, nil, model.SendProviderEmailService),
 		PageViews:  service.NewPageViewService(handlerShareNewsletters{}, &handlerPageViewRepo{}),
 	})
-
 	req := httptest.NewRequest(http.MethodGet, "/committees/c1/newsletters", nil)
 	req.SetPathValue("committee_uid", "c1")
 	rec := httptest.NewRecorder()
 	start := time.Now()
 	h.ListCommitteeNewsletters(rec, req)
 	elapsed := time.Since(start)
-
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
-	if limit := totalOpensListBudget + 750*time.Millisecond; elapsed > limit {
-		t.Errorf("list took %v with hung provider reads, want under %v (one shared budget)", elapsed, limit)
-	}
-
 	var body struct {
 		Newsletters []map[string]any `json:"newsletters"`
 	}
@@ -137,6 +114,40 @@ func TestListCommitteeNewslettersEngagement(t *testing.T) {
 	for _, row := range body.Newsletters {
 		rows[row["id"].(string)] = row
 	}
+	return rows, elapsed
+}
+
+// TestListCommitteeNewslettersEngagement drives the committee list through the
+// handler and checks each row's total_opens and page_view_count land on that
+// row: provider opens win over local, a hung provider falls back to the local
+// count inside the one shared budget, a sent row with no local opens and no
+// provider data reads 0, and a draft row carries neither field. Local counts
+// come from one grouped query for the whole page.
+func TestListCommitteeNewslettersEngagement(t *testing.T) {
+	providerWins := sentWithGroup("g-provider")
+	hung := sentWithGroup("g-hung")
+	quiet := sentWithGroup("g-quiet")
+	draft := &model.Newsletter{ID: uuid.New(), ProjectUID: "p1", Status: model.StatusDraft}
+
+	// More hung rows than fit in one concurrency wave: if each wave (or row)
+	// got its own provider budget the page would take at least two budgets.
+	page := []*model.Newsletter{providerWins, hung, quiet, draft}
+	for i := 0; i < 20; i++ {
+		page = append(page, sentWithGroup("g-hung"))
+	}
+
+	repo := &engagementRepo{page: page, localOpens: map[uuid.UUID]int{providerWins.ID: 2, hung.ID: 5}}
+	reader := &groupReader{opened: map[string]int{"g-provider": 40}, hang: map[string]bool{"g-hung": true}}
+	rows, elapsed := listCommitteePage(t, repo, reader)
+
+	// Anything under two budgets proves the budget is shared; the slack absorbs
+	// -race and a busy CI runner.
+	if limit := 2*totalOpensListBudget - 100*time.Millisecond; elapsed > limit {
+		t.Errorf("list took %v with hung provider reads, want under %v (one shared budget)", elapsed, limit)
+	}
+	if repo.openCalls != 1 {
+		t.Errorf("local open-count queries = %d, want 1 grouped query for the page", repo.openCalls)
+	}
 
 	expect := []struct {
 		name      string
@@ -146,7 +157,7 @@ func TestListCommitteeNewslettersEngagement(t *testing.T) {
 	}{
 		{"provider opens win", providerWins.ID, float64(40), float64(4)},
 		{"hung provider falls back to local", hung.ID, float64(5), float64(4)},
-		{"failed local read omits total", localFails.ID, nil, float64(4)},
+		{"no opens anywhere reads zero", quiet.ID, float64(0), float64(4)},
 		{"draft carries neither", draft.ID, nil, nil},
 	}
 	for _, tc := range expect {
@@ -160,6 +171,25 @@ func TestListCommitteeNewslettersEngagement(t *testing.T) {
 		if got := row["page_view_count"]; got != tc.wantViews {
 			t.Errorf("%s: page_view_count = %v, want %v", tc.name, got, tc.wantViews)
 		}
+	}
+}
+
+// TestListCommitteeNewslettersOpensReadFailure: a failed local open-count read
+// omits total_opens on every row but keeps the list (and page views) intact.
+func TestListCommitteeNewslettersOpensReadFailure(t *testing.T) {
+	sent := sentWithGroup("g-provider")
+	repo := &engagementRepo{page: []*model.Newsletter{sent}, openErr: errors.New("db down")}
+	rows, _ := listCommitteePage(t, repo, &groupReader{opened: map[string]int{"g-provider": 40}})
+
+	row := rows[sent.ID.String()]
+	if row == nil {
+		t.Fatal("row missing from response")
+	}
+	if got, present := row["total_opens"]; present {
+		t.Errorf("total_opens = %v, want omitted on a local read failure", got)
+	}
+	if got := row["page_view_count"]; got != float64(4) {
+		t.Errorf("page_view_count = %v, want 4", got)
 	}
 }
 

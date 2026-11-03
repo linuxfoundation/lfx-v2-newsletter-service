@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 )
 
@@ -91,5 +93,45 @@ func waitClearOfHourBoundary(t *testing.T, repo *PostgresNewsletterRepo) {
 	}
 	if left := time.Duration(secondsLeft * float64(time.Second)); left < hourBoundaryMargin {
 		time.Sleep(left + time.Second)
+	}
+}
+
+// TestOpenCounts_MatchesPerNewsletterCount checks the grouped open count used by
+// the committee list agrees with OpenCount per newsletter, and leaves unopened
+// issues out of the map.
+func TestOpenCounts_MatchesPerNewsletterCount(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+	first := seed(t, repo, model.StatusSent, []string{"committee-a"}, ts(10))
+	second := seed(t, repo, model.StatusSent, []string{"committee-a"}, ts(20))
+	unopened := seed(t, repo, model.StatusSent, []string{"committee-a"}, ts(30))
+
+	for _, open := range []struct {
+		id   uuid.UUID
+		hash string
+	}{{first, recipientA}, {first, recipientB}, {second, recipientA}} {
+		if err := repo.RecordOpen(ctx, open.id, open.hash); err != nil {
+			t.Fatalf("RecordOpen: %v", err)
+		}
+	}
+
+	counts, err := repo.OpenCounts(ctx, []uuid.UUID{first, second, unopened})
+	if err != nil {
+		t.Fatalf("OpenCounts: %v", err)
+	}
+	for _, id := range []uuid.UUID{first, second} {
+		want, err := repo.OpenCount(ctx, id)
+		if err != nil {
+			t.Fatalf("OpenCount: %v", err)
+		}
+		if counts[id] != want || want == 0 {
+			t.Errorf("OpenCounts[%s] = %d, want OpenCount %d (non-zero)", id, counts[id], want)
+		}
+	}
+	if _, ok := counts[unopened]; ok {
+		t.Errorf("unopened newsletter present in counts: %v", counts)
+	}
+	if empty, err := repo.OpenCounts(ctx, nil); err != nil || len(empty) != 0 {
+		t.Errorf("OpenCounts(nil) = %v, %v; want empty, nil", empty, err)
 	}
 }

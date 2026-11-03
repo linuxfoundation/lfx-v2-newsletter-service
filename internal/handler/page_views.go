@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
@@ -21,11 +20,6 @@ import (
 // absent provider adds at most this much to the list, whatever the page size;
 // a row whose provider read misses it falls back to its local count.
 const totalOpensListBudget = time.Second
-
-// totalOpensListConcurrency caps concurrent per-row reads. It matches the
-// repository's default page size, so a normal page runs in a single wave and
-// stays inside totalOpensListBudget.
-const totalOpensListConcurrency = 20
 
 // RecordPageView handles POST /projects/{project_uid}/newsletters/{newsletter_uid}/page-views.
 //
@@ -67,34 +61,19 @@ func (h *Handler) pageViewCounts(ctx context.Context, newsletters []*model.Newsl
 }
 
 // totalOpensFor reads total_opens for every sent newsletter in a list page,
-// with bounded concurrency, using the same rule as the single-newsletter read
-// so a list row and the reader show the same number. Entries are nil when the
-// total is unknown (unsent, or the read failed); the slice is index-aligned
-// with newsletters.
-func (h *Handler) totalOpensFor(ctx context.Context, newsletters []*model.Newsletter) []*int {
-	out := make([]*int, len(newsletters))
-	if h.analytics == nil {
-		return out
+// with the same rule as the single-newsletter read so a list row and the
+// reader show the same number: local counts in one grouped query, provider
+// reads concurrently under one shared totalOpensListBudget. Like the other
+// list decorations it is best-effort: a local read failure is logged and
+// yields nil (every row omits total_opens), and unsent rows are absent.
+func (h *Handler) totalOpensFor(ctx context.Context, newsletters []*model.Newsletter) map[uuid.UUID]int {
+	if h.analytics == nil || len(newsletters) == 0 {
+		return nil
 	}
-	deadline := time.Now().Add(totalOpensListBudget)
-	var g errgroup.Group
-	g.SetLimit(totalOpensListConcurrency)
-	for i, n := range newsletters {
-		if n.Status != model.StatusSent {
-			continue
-		}
-		g.Go(func() error {
-			total, ok, err := h.analytics.TotalOpensBy(ctx, n, deadline)
-			if err != nil {
-				slog.WarnContext(ctx, "failed to read newsletter total opens; omitting total_opens", "newsletter_id", n.ID, "error", err)
-				return nil
-			}
-			if ok {
-				out[i] = &total
-			}
-			return nil
-		})
+	totals, err := h.analytics.TotalOpensForList(ctx, newsletters, time.Now().Add(totalOpensListBudget))
+	if err != nil {
+		slog.WarnContext(ctx, "failed to read newsletter total opens; omitting total_opens", "error", err)
+		return nil
 	}
-	_ = g.Wait() // Rows never fail the group; a failed row is logged and left nil.
-	return out
+	return totals
 }

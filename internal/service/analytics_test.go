@@ -106,6 +106,16 @@ func (a *analyticsRepoFake) OpenCount(_ context.Context, _ uuid.UUID) (int, erro
 	}
 	return a.base.TotalOpens, nil
 }
+func (a *analyticsRepoFake) OpenCounts(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]int, error) {
+	out := make(map[uuid.UUID]int, len(ids))
+	if a.base == nil {
+		return out, nil
+	}
+	for _, id := range ids {
+		out[id] = a.base.TotalOpens
+	}
+	return out, nil
+}
 
 // TestAnalyticsGet_DailyOpensFromGroupStatus verifies the analytics service
 // derives DailyOpens and UniqueOpens from the per-recipient email-service

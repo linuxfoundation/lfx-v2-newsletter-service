@@ -147,13 +147,7 @@ func TestPageViewCountsAreFailSoft(t *testing.T) {
 
 func TestTotalOpensForWithoutAnalytics(t *testing.T) {
 	rows := []*model.Newsletter{{ID: uuid.New(), Status: model.StatusSent}, {ID: uuid.New(), Status: model.StatusDraft}}
-	got := New(Config{}).totalOpensFor(context.Background(), rows)
-	if len(got) != len(rows) {
-		t.Fatalf("len = %d, want %d (index-aligned)", len(got), len(rows))
-	}
-	for i, v := range got {
-		if v != nil {
-			t.Errorf("row %d total opens = %d, want nil without an analytics service", i, *v)
-		}
+	if got := New(Config{}).totalOpensFor(context.Background(), rows); got != nil {
+		t.Errorf("total opens without an analytics service = %v, want nil (omitted)", got)
 	}
 }

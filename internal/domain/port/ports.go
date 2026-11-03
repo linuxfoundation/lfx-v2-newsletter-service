@@ -171,6 +171,10 @@ type NewsletterRepository interface {
 	// OpenCount returns the raw local open total (one COUNT over
 	// newsletter_opens) without the rest of the analytics aggregate.
 	OpenCount(ctx context.Context, newsletterID uuid.UUID) (int, error)
+	// OpenCounts returns the raw local open total for each of the given
+	// newsletters in one grouped query. Newsletters with no recorded opens
+	// are absent from the map.
+	OpenCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error)
 }
 
 // UnsubscribeRepository persists project-scoped opt-outs.

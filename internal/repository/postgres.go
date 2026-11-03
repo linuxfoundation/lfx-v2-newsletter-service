@@ -792,6 +792,33 @@ func (r *PostgresNewsletterRepo) OpenCount(ctx context.Context, newsletterID uui
 	return count, nil
 }
 
+// OpenCounts returns the raw local open total per newsletter for the given ids
+// in one grouped COUNT over newsletter_opens. Newsletters with no recorded
+// opens are absent from the map.
+func (r *PostgresNewsletterRepo) OpenCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	counts := make(map[uuid.UUID]int, len(newsletterIDs))
+	if len(newsletterIDs) == 0 {
+		return counts, nil
+	}
+	var rows []struct {
+		NewsletterID uuid.UUID `bun:"newsletter_id"`
+		Opens        int       `bun:"opens"`
+	}
+	if err := r.db.NewSelect().
+		Table("newsletter_opens").
+		Column("newsletter_id").
+		ColumnExpr("COUNT(*) AS opens").
+		Where("newsletter_id IN (?)", bun.In(newsletterIDs)).
+		Group("newsletter_id").
+		Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("count opens: %w", err)
+	}
+	for _, row := range rows {
+		counts[row.NewsletterID] = row.Opens
+	}
+	return counts, nil
+}
+
 // RecordShare inserts a share intent. The (newsletter_id, user_hash, channel)
 // primary key makes a repeat by the same user to the same channel a no-op.
 func (r *PostgresNewsletterRepo) RecordShare(ctx context.Context, share *model.NewsletterShare) error {
