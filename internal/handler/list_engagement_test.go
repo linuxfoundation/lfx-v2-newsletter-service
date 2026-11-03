@@ -43,6 +43,10 @@ func (r *engagementRepo) Get(_ context.Context, id uuid.UUID) (*model.Newsletter
 	return nil, errors.New("not seeded")
 }
 
+func (r *engagementRepo) GetMeta(ctx context.Context, id uuid.UUID) (*model.Newsletter, error) {
+	return r.Get(ctx, id)
+}
+
 func (r *engagementRepo) OpenCounts(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]int, error) {
 	r.openCalls++
 	if r.openErr != nil {
