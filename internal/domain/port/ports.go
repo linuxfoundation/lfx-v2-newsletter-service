@@ -73,6 +73,20 @@ type ShareRepository interface {
 	DeleteSharesByUser(ctx context.Context, userHash string) (int64, error)
 }
 
+// PageViewRepository persists unique web page views of sent newsletters and
+// reads back view counts.
+type PageViewRepository interface {
+	// RecordPageView inserts a page view. Idempotent per (newsletter, user):
+	// a repeat is a silent no-op.
+	RecordPageView(ctx context.Context, view *model.NewsletterPageView) error
+	// PageViewCounts returns the unique page-view count for each of the given
+	// newsletters. Newsletters with no views are absent from the map.
+	PageViewCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error)
+	// DeletePageViewsByUser erases every page view recorded for one user
+	// hash, across all newsletters, and returns how many rows were removed.
+	DeletePageViewsByUser(ctx context.Context, userHash string) (int64, error)
+}
+
 // NewsletterRepository persists Newsletter aggregates.
 //
 // Implementations must surface optimistic-locking conflicts as

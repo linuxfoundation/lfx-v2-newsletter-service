@@ -19,6 +19,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 - Newsletter list and analytics reads (local opens overlaid with the sending provider's engagement totals, routed by `send_provider`).
 - Local open tracking through the tracking-pixel endpoint.
 - In-app share-intent recording (`newsletter_shares`) and the share counts exposed on read endpoints.
+- Unique web page-view recording (`newsletter_page_views`) and the page-view counts exposed on read endpoints.
 - The public Go DTOs in `pkg/api/newsletter.go`.
 
 ## Routes
@@ -43,6 +44,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `GET` | `/projects/{project_uid}/newsletters/templates/{template_key}/manifest` | yes | Return the editor manifest for one template set: the palette of block types (`block_type`, `label`, `category`, `schema`, optional `is_container`, comment-stripped `template`) plus the page-chrome `wrapper` and `wrapper_key`, and the `starter_blocks` a new edition starts with. Unknown keys return `404 not_found`. Mirrors `NewsletterTemplateManifest` in `@lfx-one/shared`. |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics` | yes | Return analytics for one newsletter. |
 | `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/shares` | yes | Record an in-app share intent. Body `{ "channel": "x" \| "linkedin" \| "reddit" \| "email" \| "copy_link" }`. Gated on project `viewer`. Returns `204`; idempotent per (user, channel). `401` for unauthenticated callers (OIDC only at the gateway); `400` for an unknown channel, an unknown body field, or a missing or anonymous (`_anonymous`) principal; `404` for drafts, unsent newsletters, unknown ids, and project mismatches. See [Share Counts](#share-counts). |
+| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/page-views` | yes | Record a unique web page view of a sent newsletter by the caller. No body. Gated on project `viewer`. Returns `204`; idempotent per user. `401` for unauthenticated callers (OIDC only at the gateway); `400` for a missing or anonymous (`_anonymous`) principal; `404` for drafts, unsent newsletters, unknown ids, and project mismatches. See [Page Views](#page-views). |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients` | yes | Per-recipient engagement: who the newsletter went to, delivery outcome, and every recorded open timestamp, with a best-effort display name from the newsletter's committees. |
 | `GET` | `/committees/{committee_uid}/newsletters` | yes | Member-facing: sent newsletters whose audience includes the committee, ordered `sent_at` descending. Supports `page_token`. The gateway gates on `committee:{committee_uid}` `member` OR `auditor` (openfga_or_check), checked per request against OpenFGA — auditor folds in committee writers and project oversight roles so stronger roles never see less than members. Member tuples are maintained by committee-service via fga-sync, so revocation after a membership removal is eventual — normally near-immediate, but tuple removal is asynchronous/best-effort (see committee-service's `docs/fga-contract.md`); this endpoint adds no caching on top of tuple state. Returns `CommitteeNewsletterListResponse` — a reduced DTO without `body_html`, `ed_reply_email`, `group_id`, `created_by`, or `committee_uids` (the full audience list would let a single-committee member enumerate the newsletter's other committees). Clients fetch the rendered body via the project-scoped get, which is reachable for members because the platform model's project `viewer` relation includes all authenticated users (`[user:*]`). |
 | `GET` | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}` | no | Tracking pixel. Records open by recipient hash and returns a GIF. |
@@ -76,7 +78,8 @@ Core state:
 | `created_by` | Authenticated principal or local fallback. |
 | `version` | Optimistic-locking version. |
 | `share_count` | In-app share count (see [Share Counts](#share-counts)). Present only on sent newsletters in `GET` one, the project list, and the committee list; omitted when the count can't be read, so treat absent as unknown, not zero. |
-| `total_opens` | Raw open total (every open, not unique recipients), the same value as the analytics endpoint's `total_opens` minus the per-recipient detail fetch: the larger of the local pixel count and the provider's scalar opens. Present only on sent newsletters in `GET` one. The provider read is limited to one second so it never holds the main read; a provider failure or timeout falls back to the local count, and a local read failure omits the field, so treat absent as unknown, not zero. |
+| `total_opens` | Raw open total (every open, not unique recipients), the same value as the analytics endpoint's `total_opens` minus the per-recipient detail fetch: the larger of the local pixel count and the provider's scalar opens. Present only on sent newsletters in `GET` one and the committee list (read per row with bounded concurrency). The provider read is limited to one second so it never holds the main read; a provider failure or timeout falls back to the local count, and a local read failure omits the field, so treat absent as unknown, not zero. |
+| `page_view_count` | Unique web page views, one per signed-in user (see [Page Views](#page-views)). Present only on sent newsletters in `GET` one, the project list, and the committee list; omitted when the count can't be read, so treat absent as unknown, not zero. Clients that show a single "views" number display `total_opens + page_view_count`. |
 
 `POST …/send` returns `SendNewsletterResponse`: the newsletter plus `group_id`, `total_recipients`, `sent`, `failed`, and per-recipient `failures`. The send is asynchronous: acceptance returns `202` with the newsletter in `status=sending` and `sent=0`; clients observe the outcome by re-fetching the newsletter (branch on `newsletter.status`, not the HTTP status code). The zero-recipient edge case settles synchronously and returns `200` with `status=sent`.
 
@@ -213,6 +216,19 @@ Counts are read back as:
 **Data minimization and erasure.** Rows hold only the dedupe key — no timestamp — so the table records whether a user shared a newsletter to a channel, never when. A user's share rows are erased across all newsletters by `ShareService.DeleteUserShares(principal)` (repository `DeleteSharesByUser`), which hashes the principal exactly as `RecordShare` does; counts drop accordingly. There is no HTTP route for it: it is the in-service hook for a data-subject erasure request, and is the equivalent of `DELETE FROM newsletter_shares WHERE user_hash = encode(sha256(convert_to('<principal>', 'UTF8')), 'hex')`. Rows are otherwise removed only when their newsletter is deleted (`ON DELETE CASCADE`).
 
 Share counts are decorative, so a share-store read failure is logged and the share fields are omitted; it never fails the surrounding response. Share links inside the email body (`render/email_chrome.go`) point straight at the social sites and are not counted.
+
+### Page Views
+
+`POST …/newsletters/{newsletter_uid}/page-views` records that the signed-in caller opened a sent newsletter's web page in LFX Self Serve (the reader that the email's "Read online" link and share links point at). Rows live in `newsletter_page_views`, keyed by (newsletter, user hash), with the user hashed exactly as for shares (SHA-256 of the JWT principal, a pseudonym). A repeat view by the same user is a no-op, so the count is unique viewers, ever: refreshes and revisits never add to it. The anonymous principal is rejected, because every signed-out visitor shares it.
+
+Page views are stored separately from email opens; this service never merges them. Counts are read back as:
+
+- `page_view_count` on sent newsletters in `GET` one, the project list, and the committee list (one grouped query per page).
+- `total_page_views` on `…/analytics` for sent newsletters.
+
+A reader who opens the email and then clicks "Read online" counts once in `total_opens` and once in page views. That overlap is accepted by clients that sum the two.
+
+**Data minimization and erasure.** As with shares, rows hold only the dedupe key and no timestamp. A user's rows are erased across all newsletters by `PageViewService.DeleteUserPageViews(principal)` (repository `DeletePageViewsByUser`); there is no HTTP route for it. Rows are otherwise removed only when their newsletter is deleted (`ON DELETE CASCADE`). A page-view store read failure is logged and the fields are omitted; it never fails the surrounding response.
 
 ### Per-Recipient Engagement
 

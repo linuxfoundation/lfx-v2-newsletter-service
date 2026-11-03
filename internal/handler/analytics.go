@@ -33,6 +33,9 @@ func (h *Handler) GetAnalytics(w http.ResponseWriter, r *http.Request) {
 
 	dto := toAPIAnalytics(a)
 	h.applyShareStats(r.Context(), a.NewsletterID, &dto)
+	if a.Status == model.StatusSent {
+		dto.TotalPageViews = shareCountFor(h.pageViewCounts(r.Context(), []*model.Newsletter{{ID: a.NewsletterID, Status: a.Status}}), a.NewsletterID)
+	}
 	writeJSON(r.Context(), w, http.StatusOK, dto)
 }
 

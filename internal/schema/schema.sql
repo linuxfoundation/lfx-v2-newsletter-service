@@ -488,3 +488,17 @@ CREATE TABLE IF NOT EXISTS newsletter_shares (
     channel        TEXT         NOT NULL CHECK (channel IN ('x', 'linkedin', 'reddit', 'email', 'copy_link')),
     PRIMARY KEY (newsletter_id, user_hash, channel)
 );
+
+-- newsletter_page_views records unique web page views of a sent newsletter
+-- (a signed-in user opening its page in LFX Self Serve). One row per
+-- (newsletter, user): revisits and refreshes by the same user collapse to a
+-- no-op, so the count is unique viewers and can't be inflated by reloading.
+-- user_hash is the same SHA-256 principal digest newsletter_shares uses (a
+-- pseudonym, not an anonymization). Data minimization: no timestamp, so the
+-- table records whether a user viewed, never when. A user's rows are erased
+-- with PageViewService.DeleteUserPageViews (see the contract's Page Views).
+CREATE TABLE IF NOT EXISTS newsletter_page_views (
+    newsletter_id  UUID         NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
+    user_hash      TEXT         NOT NULL CHECK (user_hash ~ '^[a-f0-9]{64}$'),
+    PRIMARY KEY (newsletter_id, user_hash)
+);
