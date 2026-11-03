@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	nethtml "golang.org/x/net/html"
 )
 
 // Chrome carries everything the renderer needs to wrap a body in the outer
@@ -495,4 +497,179 @@ func EmailText(input Chrome) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// textBlockTags are the elements whose boundaries are visible structure in the
+// rendered email, so htmlToText must turn them into line breaks in the
+// text/plain part. Table parts are included because MJML compiles every row and
+// cell of a layout into a table: a cell's content is a separate visual unit and
+// must not be glued to its neighbour's.
+//
+// A boundary is emitted on BOTH the start and the end tag. The tokenizer never
+// synthesizes an omitted close (a bare "<li>a<li>b" or "<td>a<td>b" sequence
+// yields no end tags at all), so keying on one alone would still run those
+// items together; the \n{3,} collapse below folds the resulting doubled breaks
+// back into a single blank line.
+var textBlockTags = map[string]bool{
+	"address": true, "article": true, "aside": true, "blockquote": true,
+	"caption": true, "dd": true, "div": true, "dl": true, "dt": true,
+	"figcaption": true, "figure": true, "footer": true, "h1": true,
+	"h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
+	"header": true, "hr": true, "li": true, "main": true, "nav": true,
+	"ol": true, "p": true, "pre": true, "section": true, "table": true,
+	"tbody": true, "td": true, "tfoot": true, "th": true, "thead": true,
+	"tr": true, "ul": true,
+}
+
+// htmlToText derives a plain-text body from a compiled HTML document for the
+// text/plain part of a layout email. It tokenizes with golang.org/x/net/html
+// instead of matching tags with regexes, so:
+//
+//   - Non-rendered content never leaks: text inside <head>, <style>, <script>,
+//     and <title> is dropped. A self-closing <style/> or a '>' inside an
+//     attribute value cannot spill CSS or script text into the output.
+//   - Link destinations survive: <a href="X">label</a> becomes "label (X)",
+//     unless the label is already the raw URL (or the href is empty).
+//   - A <br> becomes a newline, and so does every block boundary
+//     (textBlockTags): paragraphs, headings, list items, table rows and cells.
+//     The emitter inlines a block's authored richtext with no whitespace between
+//     tags, so without this "<p>First.</p><p>Second.</p>" would collapse to
+//     "First.Second." and adjacent <li> items would run together.
+//
+// Entities are decoded by the tokenizer. A decoded &nbsp; (U+00A0) becomes a
+// plain space, then whitespace is collapsed as in stripHTML.
+func htmlToText(input string) string {
+	z := nethtml.NewTokenizer(strings.NewReader(input))
+	var out strings.Builder
+	skip := 0 // depth inside <head>/<style>/<script>/<title> — their text is dropped
+	inAnchor := false
+	anchorHref := ""
+	var anchorText strings.Builder
+
+	// writeBreak emits a line break into whichever builder is currently
+	// collecting text, honoring the <head>/<style>/<script>/<title> skip. Both
+	// the <br> cases and the block-boundary cases go through it.
+	writeBreak := func() {
+		if skip > 0 {
+			return
+		}
+		if inAnchor {
+			anchorText.WriteByte('\n')
+		} else {
+			out.WriteByte('\n')
+		}
+	}
+
+	flushAnchor := func() {
+		if !inAnchor {
+			return
+		}
+		label := anchorText.String()
+		out.WriteString(label)
+		if anchorHref != "" && strings.TrimSpace(label) != anchorHref {
+			out.WriteString(" (" + anchorHref + ")")
+		}
+		inAnchor = false
+		anchorHref = ""
+		anchorText.Reset()
+	}
+
+loop:
+	for {
+		switch z.Next() {
+		case nethtml.ErrorToken:
+			break loop // io.EOF or a parse error — emit what we have
+		case nethtml.TextToken:
+			if skip > 0 {
+				continue
+			}
+			if inAnchor {
+				anchorText.Write(z.Text())
+			} else {
+				out.Write(z.Text())
+			}
+		case nethtml.StartTagToken:
+			name, hasAttr := z.TagName()
+			switch string(name) {
+			case "head", "style", "script", "title":
+				skip++
+			case "br":
+				// A line break is visible whitespace in the rendered email, so the
+				// text/plain part must carry a newline — otherwise adjacent lines
+				// (e.g. "The Linux Foundation<br />2810 N Church St...") collapse
+				// into one run. net/html emits <br> as a start tag and <br/> as a
+				// self-closing tag, so both cases emit here and below.
+				writeBreak()
+			case "a":
+				if skip == 0 && !inAnchor {
+					href := ""
+					for hasAttr {
+						k, v, more := z.TagAttr()
+						if string(k) == "href" {
+							href = string(v)
+						}
+						hasAttr = more
+					}
+					inAnchor = true
+					anchorHref = href
+					anchorText.Reset()
+				}
+			default:
+				if textBlockTags[string(name)] {
+					writeBreak()
+				}
+			}
+		case nethtml.EndTagToken:
+			name, _ := z.TagName()
+			switch string(name) {
+			case "head", "style", "script", "title":
+				if skip > 0 {
+					skip--
+				}
+			case "a":
+				flushAnchor()
+			default:
+				if textBlockTags[string(name)] {
+					writeBreak()
+				}
+			}
+		case nethtml.SelfClosingTagToken:
+			name, _ := z.TagName()
+			switch string(name) {
+			case "br":
+				// Self-closing <br/> — emit a newline, matching the start-tag case.
+				writeBreak()
+			case "style", "script", "title":
+				// style/script/title are raw-text/RCDATA elements: the tokenizer
+				// switches to raw-text mode after the start tag even when it is
+				// written self-closing (HTML ignores the slash on these), so the
+				// following content arrives as one text token and must be dropped
+				// until the matching close (or EOF). This is exactly the
+				// self-closing <style/> case the old regex skip-scanner missed.
+				skip++
+			default:
+				// A block element written self-closing (<p/>) still ends its block.
+				if textBlockTags[string(name)] {
+					writeBreak()
+				}
+			}
+			// Other self-closing/void tags (<img/>, <input/>, …) are neither block
+			// boundaries nor text, so they contribute nothing.
+		}
+	}
+	flushAnchor() // document ended mid-anchor (unterminated <a>)
+
+	text := strings.ReplaceAll(out.String(), " ", " ")
+	text = multispaceRe.ReplaceAllString(text, " ")
+	text = multiNewlineRe.ReplaceAllString(text, "\n\n")
+	return strings.TrimSpace(text)
+}
+
+// StripHTMLForText derives a plain-text body from a full HTML email. It is the
+// exported counterpart to EmailText for the layout-based send path, where the
+// emitter already owns the whole email and there is no Chrome to wrap. Link
+// destinations are preserved (`label (href)`); non-rendered <head>/<style>/
+// <script> content is dropped by the tokenizer.
+func StripHTMLForText(input string) string {
+	return htmlToText(input)
 }

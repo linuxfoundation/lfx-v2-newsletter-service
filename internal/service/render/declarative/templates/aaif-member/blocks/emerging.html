@@ -1,0 +1,51 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: {
+  "eyebrow": {
+    "type": "text",
+    "label": "Section label",
+    "default": "EMERGING"
+  },
+  "standfirst": {
+    "type": "text",
+    "label": "One-line intro (optional)"
+  },
+  "items": {
+    "type": "array",
+    "label": "Items",
+    "fields": {
+      "headline": {
+        "type": "text",
+        "label": "Headline (optional; bold lead-in)"
+      },
+      "url": {
+        "type": "text",
+        "label": "Headline link (optional)"
+      },
+      "body": {
+        "type": "richtext",
+        "label": "Text (can carry its own links)"
+      }
+    }
+  }
+} -->
+<!--
+  EMERGING (main section). Fast-rising open-source projects and early trends.
+  Shared layout: a 2px rule and an uppercase label, an optional
+  one-line intro, then a list. Each item is an optional bold lead-in
+  (linked when it has a URL) followed by its text, which keeps its own links.
+  Items with only text render as plain bullets.
+-->
+<Section style="width:100%;max-width:640px;margin:0 auto 8px">
+  <div style="padding:0 20px">
+    <Hr class="dm-rule-strong" style="border:0;border-top:2px solid #111111;margin:0 0 10px" />
+    <Text class="dm-h" style="margin:0 0 6px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:bold;letter-spacing:2.5px;text-transform:uppercase;color:#111111;line-height:1.4">{{eyebrow}}</Text>
+    <Text if="standfirst" class="dm-m" style="margin:0 0 10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#6b6b70">{{standfirst}}</Text>
+    <ul if="items" style="margin:4px 0 16px;padding:0 0 0 18px">
+      <li each="items" class="dm-t" style="margin:0 0 12px;padding-left:2px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:16px;line-height:1.55;color:#333338">
+        <strong if="headline"><Link if="url" href="{{url}}" class="dm-h" style="color:#111111;text-decoration:underline">{{headline}}</Link><span unless="url" class="dm-h" style="color:#111111">{{headline}}</span></strong>
+        <richtext field="body" class="dm-t" style="margin:2px 0 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:16px;line-height:1.55;color:#333338" />
+      </li>
+    </ul>
+  </div>
+</Section>

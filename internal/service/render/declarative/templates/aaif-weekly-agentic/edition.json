@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "blocks": [
+    {
+      "block": "lead_commentary"
+    },
+    {
+      "block": "top_stories"
+    },
+    {
+      "block": "views"
+    },
+    {
+      "block": "protocols"
+    },
+    {
+      "block": "data"
+    },
+    {
+      "block": "prod"
+    },
+    {
+      "block": "trending"
+    },
+    {
+      "block": "finds"
+    },
+    {
+      "block": "lf_blogs"
+    },
+    {
+      "block": "aaif_news"
+    }
+  ]
+}

@@ -59,6 +59,10 @@ func (a *analyticsRepoFake) Create(_ context.Context, _ *model.Newsletter) error
 func (a *analyticsRepoFake) Get(_ context.Context, _ uuid.UUID) (*model.Newsletter, error) {
 	return a.newsletter, nil
 }
+
+func (a *analyticsRepoFake) GetMeta(_ context.Context, _ uuid.UUID) (*model.Newsletter, error) {
+	return a.newsletter, nil
+}
 func (a *analyticsRepoFake) List(_ context.Context, _ string) ([]*model.Newsletter, error) {
 	return nil, nil
 }

@@ -1,0 +1,11 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+#
+# Pinned sources for the embedded newsletter template sets.
+# One line per set: key, repository URL, git ref.
+# Run "make sync-templates" to refresh the files from these refs. The script
+# rewrites each ref to the full commit SHA it resolved.
+# To update a set, change its ref and run "make sync-templates".
+aaif-member https://github.com/gatewaze/newsletter-aaif-member.git e9fc91b8ab67d51492875436ec3897ce647068d2
+aaif-user-community https://github.com/gatewaze/newsletter-aaif-user-community.git ae9957cebf1d660bb930e8996f53a3909096c807
+aaif-weekly-agentic https://github.com/gatewaze/newsletter-aaif-weekly-agentic.git 9d05be7d0a456d89f2b8e3e7c1c57029e62d7c5e

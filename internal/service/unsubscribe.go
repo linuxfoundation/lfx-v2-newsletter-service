@@ -27,6 +27,33 @@ import (
 // envelope for every recipient.
 const UnsubscribeURLPlaceholder = "%%UNSUBSCRIBE_URL%%"
 
+// ViewOnlineURLPlaceholder and ManageSubscriptionsURLPlaceholder are the
+// sibling sentinels for the wrapper's other runtime URLs. Layout render-on-write
+// binds the manage-subscriptions sentinel, and the send path resolves it to the
+// "My Newsletters" archive URL (or empty, de-linking the label, when no
+// Self-Serve base URL is configured). View Online has no hosted surface yet, so
+// render-on-write leaves it empty and its guarded row is omitted; its send-path
+// substitution is a defensive backstop that resolves any leftover sentinel to
+// empty rather than shipping raw %%…%% text. (Layout test sends also zero both.)
+const (
+	ViewOnlineURLPlaceholder          = "%%VIEW_ONLINE_URL%%"
+	ManageSubscriptionsURLPlaceholder = "%%MANAGE_SUBSCRIPTIONS_URL%%"
+)
+
+// SenderNamePlaceholder and ProjectNamePlaceholder are send-scoped sentinels
+// for the wrapper's compliance footer ("Sent by X on behalf of Y"). They are
+// bound at render-on-write and substituted ONCE per send (not per recipient)
+// because the sender display name is only resolved from the sending
+// principal's profile at send time.
+const (
+	SenderNamePlaceholder  = "%%SENDER_NAME%%"
+	ProjectNamePlaceholder = "%%PROJECT_NAME%%"
+	// SendDatePlaceholder is the header edition date. It is send-scoped (the same
+	// for every recipient) and resolved only at send time, so it is bound at
+	// render-on-write and substituted once per send to the formatted send date.
+	SendDatePlaceholder = "%%SEND_DATE%%"
+)
+
 // unsubscribePath is the public route the handler registers for the
 // one-click unsubscribe link.
 const unsubscribePath = "/newsletters/unsubscribe"
