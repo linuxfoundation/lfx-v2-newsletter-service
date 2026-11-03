@@ -57,6 +57,13 @@ type NewsletterGetter interface {
 	Get(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
 }
 
+// NewsletterMetaGetter is the metadata-only read-one slice of
+// NewsletterRepository (see NewsletterRepository.GetMeta), for hot paths that
+// only check existence, project ownership or send state.
+type NewsletterMetaGetter interface {
+	GetMeta(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
+}
+
 // ShareRepository persists in-app newsletter share intents and reads back
 // share counts.
 type ShareRepository interface {
@@ -71,6 +78,20 @@ type ShareRepository interface {
 	// DeleteSharesByUser erases every share recorded for one user hash,
 	// across all newsletters, and returns how many rows were removed.
 	DeleteSharesByUser(ctx context.Context, userHash string) (int64, error)
+}
+
+// PageViewRepository persists unique web page views of sent newsletters and
+// reads back view counts.
+type PageViewRepository interface {
+	// RecordPageView inserts a page view. Idempotent per (newsletter, user):
+	// a repeat is a silent no-op.
+	RecordPageView(ctx context.Context, view *model.NewsletterPageView) error
+	// PageViewCounts returns the unique page-view count for each of the given
+	// newsletters. Newsletters with no views are absent from the map.
+	PageViewCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error)
+	// DeletePageViewsByUser erases every page view recorded for one user
+	// hash, across all newsletters, and returns how many rows were removed.
+	DeletePageViewsByUser(ctx context.Context, userHash string) (int64, error)
 }
 
 // NewsletterRepository persists Newsletter aggregates.
@@ -157,6 +178,10 @@ type NewsletterRepository interface {
 	// OpenCount returns the raw local open total (one COUNT over
 	// newsletter_opens) without the rest of the analytics aggregate.
 	OpenCount(ctx context.Context, newsletterID uuid.UUID) (int, error)
+	// OpenCounts returns the raw local open total for each of the given
+	// newsletters in one grouped query. Newsletters with no recorded opens
+	// are absent from the map.
+	OpenCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error)
 }
 
 // UnsubscribeRepository persists project-scoped opt-outs.

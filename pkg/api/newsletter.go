@@ -73,6 +73,12 @@ type Newsletter struct {
 	// newsletter returned by GET one; omitted when it can't be read, so clients
 	// must treat an absent value as unknown rather than zero.
 	TotalOpens *int `json:"total_opens,omitempty"`
+	// PageViewCount is the number of unique web page views (one per signed-in
+	// user, ever). Set only on sent newsletters returned by the read endpoints
+	// (GET one, project list); omitted when the count can't be read, so
+	// clients must treat an absent value as unknown rather than zero. Clients
+	// that show a single "views" number add it to total_opens.
+	PageViewCount *int `json:"page_view_count,omitempty"`
 }
 
 // CreateNewsletterRequest is the body of POST /projects/{project_uid}/newsletters.
@@ -409,6 +415,12 @@ type CommitteeNewsletter struct {
 	// ShareCount is the number of in-app shares, one per (user, channel).
 	// Omitted when the count can't be read (treat as unknown, not zero).
 	ShareCount *int `json:"share_count,omitempty"`
+	// TotalOpens is the raw open total, the same value GET one returns.
+	// Omitted when it can't be read (treat as unknown, not zero).
+	TotalOpens *int `json:"total_opens,omitempty"`
+	// PageViewCount is the number of unique web page views, one per user.
+	// Omitted when the count can't be read (treat as unknown, not zero).
+	PageViewCount *int `json:"page_view_count,omitempty"`
 }
 
 // CommitteeNewsletterListResponse is the body of
@@ -476,6 +488,9 @@ type NewsletterAnalytics struct {
 	// the share store can't be read.
 	TotalShares     *int           `json:"total_shares,omitempty"`
 	SharesByChannel map[string]int `json:"shares_by_channel,omitempty"`
+	// TotalPageViews is the number of unique web page views, one per user.
+	// Omitted for unsent newsletters and when the view store can't be read.
+	TotalPageViews *int `json:"total_page_views,omitempty"`
 }
 
 // ShareNewsletterRequest is the body of

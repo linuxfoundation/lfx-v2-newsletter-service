@@ -792,6 +792,33 @@ func (r *PostgresNewsletterRepo) OpenCount(ctx context.Context, newsletterID uui
 	return count, nil
 }
 
+// OpenCounts returns the raw local open total per newsletter for the given ids
+// in one grouped COUNT over newsletter_opens. Newsletters with no recorded
+// opens are absent from the map.
+func (r *PostgresNewsletterRepo) OpenCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	counts := make(map[uuid.UUID]int, len(newsletterIDs))
+	if len(newsletterIDs) == 0 {
+		return counts, nil
+	}
+	var rows []struct {
+		NewsletterID uuid.UUID `bun:"newsletter_id"`
+		Opens        int       `bun:"opens"`
+	}
+	if err := r.db.NewSelect().
+		Table("newsletter_opens").
+		Column("newsletter_id").
+		ColumnExpr("COUNT(*) AS opens").
+		Where("newsletter_id IN (?)", bun.In(newsletterIDs)).
+		Group("newsletter_id").
+		Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("count opens: %w", err)
+	}
+	for _, row := range rows {
+		counts[row.NewsletterID] = row.Opens
+	}
+	return counts, nil
+}
+
 // RecordShare inserts a share intent. The (newsletter_id, user_hash, channel)
 // primary key makes a repeat by the same user to the same channel a no-op.
 func (r *PostgresNewsletterRepo) RecordShare(ctx context.Context, share *model.NewsletterShare) error {
@@ -1068,4 +1095,60 @@ func decodeSentCursor(token string) (sentListCursor, error) {
 		return sentListCursor{}, errors.New("cursor fields must be non-zero")
 	}
 	return c, nil
+}
+
+// RecordPageView inserts a page view. The (newsletter_id, user_hash) primary
+// key makes a repeat view by the same user a no-op.
+func (r *PostgresNewsletterRepo) RecordPageView(ctx context.Context, view *model.NewsletterPageView) error {
+	if _, err := r.db.NewInsert().
+		Model(view).
+		On("CONFLICT DO NOTHING").
+		Exec(ctx); err != nil {
+		return fmt.Errorf("record page view: %w", err)
+	}
+	return nil
+}
+
+// PageViewCounts returns the unique page-view count per newsletter for the
+// given ids in one grouped query. Newsletters with no views are absent from
+// the map.
+func (r *PostgresNewsletterRepo) PageViewCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	counts := make(map[uuid.UUID]int, len(newsletterIDs))
+	if len(newsletterIDs) == 0 {
+		return counts, nil
+	}
+	var rows []struct {
+		NewsletterID uuid.UUID `bun:"newsletter_id"`
+		Views        int       `bun:"views"`
+	}
+	if err := r.db.NewSelect().
+		Table("newsletter_page_views").
+		Column("newsletter_id").
+		ColumnExpr("COUNT(*) AS views").
+		Where("newsletter_id IN (?)", bun.In(newsletterIDs)).
+		Group("newsletter_id").
+		Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("count page views: %w", err)
+	}
+	for _, row := range rows {
+		counts[row.NewsletterID] = row.Views
+	}
+	return counts, nil
+}
+
+// DeletePageViewsByUser erases every page view recorded for one user hash,
+// across all newsletters (the erasure path for a user's page-view data).
+func (r *PostgresNewsletterRepo) DeletePageViewsByUser(ctx context.Context, userHash string) (int64, error) {
+	res, err := r.db.NewDelete().
+		Table("newsletter_page_views").
+		Where("user_hash = ?", userHash).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("delete page views by user: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete page views by user: rows affected: %w", err)
+	}
+	return n, nil
 }

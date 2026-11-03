@@ -353,6 +353,10 @@ func (r *fakeNewsletterRepo) OpenCount(_ context.Context, _ uuid.UUID) (int, err
 	return 0, nil
 }
 
+func (r *fakeNewsletterRepo) OpenCounts(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]int, error) {
+	return map[uuid.UUID]int{}, nil
+}
+
 func (r *fakeNewsletterRepo) CreateUnsubscribe(_ context.Context, projectUID, email string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

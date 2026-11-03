@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
@@ -238,12 +239,66 @@ func (a *AnalyticsService) TotalOpens(ctx context.Context, n *model.Newsletter) 
 	if n == nil || n.Status != model.StatusSent {
 		return 0, false, nil
 	}
-	total, err := a.repo.OpenCount(ctx, n.ID)
+	local, err := a.repo.OpenCount(ctx, n.ID)
 	if err != nil {
 		return 0, false, err
 	}
+	return a.withProviderOpens(ctx, n, local, time.Now().Add(totalOpensProviderTimeout)), true, nil
+}
+
+// totalOpensListConcurrency caps the concurrent provider reads behind
+// TotalOpensForList. It matches the repository's default page size, so a
+// normal list page runs its provider reads in a single wave.
+const totalOpensListConcurrency = 20
+
+// TotalOpensForList is TotalOpens for a whole list page. The local counts come
+// from one grouped query (OpenCounts) rather than one COUNT per row, and every
+// row's provider read runs concurrently under one shared providerDeadline
+// (never later than totalOpensProviderTimeout from now), so a slow or absent
+// provider adds at most that much to the page whatever its size. A row whose
+// provider read misses the deadline or fails keeps its local count, as in
+// TotalOpens. Unsent newsletters are absent from the map; a local read failure
+// is returned as an error so the caller can omit the field for the page.
+func (a *AnalyticsService) TotalOpensForList(ctx context.Context, newsletters []*model.Newsletter, providerDeadline time.Time) (map[uuid.UUID]int, error) {
+	sent := make([]*model.Newsletter, 0, len(newsletters))
+	ids := make([]uuid.UUID, 0, len(newsletters))
+	for _, n := range newsletters {
+		if n != nil && n.Status == model.StatusSent {
+			sent = append(sent, n)
+			ids = append(ids, n.ID)
+		}
+	}
+	out := make(map[uuid.UUID]int, len(sent))
+	if len(sent) == 0 {
+		return out, nil
+	}
+	local, err := a.repo.OpenCounts(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	totals := make([]int, len(sent))
+	var g errgroup.Group
+	g.SetLimit(totalOpensListConcurrency)
+	for i, n := range sent {
+		g.Go(func() error {
+			totals[i] = a.withProviderOpens(ctx, n, local[n.ID], providerDeadline)
+			return nil
+		})
+	}
+	_ = g.Wait() // withProviderOpens never fails; it logs and keeps the local count.
+	for i, n := range sent {
+		out[n.ID] = totals[i]
+	}
+	return out, nil
+}
+
+// withProviderOpens overlays the sending provider's scalar open total on a
+// sent newsletter's local count: the larger of the two, read under
+// providerDeadline capped at totalOpensProviderTimeout from now. Any provider
+// gap (no group, no reader, a failed or timed-out read) keeps the local count.
+func (a *AnalyticsService) withProviderOpens(ctx context.Context, n *model.Newsletter, local int, providerDeadline time.Time) int {
 	if n.GroupID == nil || *n.GroupID == "" {
-		return total, true, nil
+		return local
 	}
 	reader := a.readerFor(n.SendProvider)
 	if reader == nil {
@@ -251,9 +306,12 @@ func (a *AnalyticsService) TotalOpens(ctx context.Context, n *model.Newsletter) 
 			"newsletter_id", n.ID,
 			"send_provider", n.SendProvider,
 		)
-		return total, true, nil
+		return local
 	}
-	providerCtx, cancel := context.WithTimeout(ctx, totalOpensProviderTimeout)
+	if latest := time.Now().Add(totalOpensProviderTimeout); providerDeadline.After(latest) {
+		providerDeadline = latest
+	}
+	providerCtx, cancel := context.WithDeadline(ctx, providerDeadline)
 	defer cancel()
 	engagement, engErr := reader.GetEngagement(providerCtx, *n.GroupID)
 	if engErr != nil {
@@ -263,12 +321,12 @@ func (a *AnalyticsService) TotalOpens(ctx context.Context, n *model.Newsletter) 
 			"send_provider", n.SendProvider,
 			"error", engErr.Error(),
 		)
-		return total, true, nil
+		return local
 	}
-	if engagement != nil && engagement.Opened > total {
-		total = engagement.Opened
+	if engagement != nil && engagement.Opened > local {
+		return engagement.Opened
 	}
-	return total, true, nil
+	return local
 }
 
 // Recipients returns the per-recipient engagement records for a sent

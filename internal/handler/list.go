@@ -37,9 +37,11 @@ func (h *Handler) ListNewsletters(w http.ResponseWriter, r *http.Request) {
 		NextPageToken: page.NextPageToken,
 	}
 	counts := h.shareCounts(r.Context(), page.Newsletters)
+	views := h.pageViewCounts(r.Context(), page.Newsletters)
 	for _, n := range page.Newsletters {
 		item := toAPIListItem(r.Context(), n)
-		item.ShareCount = shareCountFor(counts, n.ID)
+		item.ShareCount = countFor(counts, n.ID)
+		item.PageViewCount = countFor(views, n.ID)
 		out.Newsletters = append(out.Newsletters, item)
 	}
 	writeJSON(r.Context(), w, http.StatusOK, out)

@@ -203,6 +203,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		Analytics:       analyticsSvc,
 		Unsubscribe:     unsubSvc,
 		Shares:          service.NewShareService(repo, repo),
+		PageViews:       service.NewPageViewService(repo, repo),
 		Project:         projectClient,
 		DB:              sqlDB,
 		Auth:            authImpl,

@@ -30,6 +30,7 @@ type Handler struct {
 	analytics       *service.AnalyticsService
 	unsub           *service.UnsubscribeService
 	shares          *service.ShareService
+	pageViews       *service.PageViewService
 	project         port.ProjectMetadataClient
 	db              *sql.DB
 	auth            *AuthValidator
@@ -47,6 +48,7 @@ type Config struct {
 	Analytics       *service.AnalyticsService
 	Unsubscribe     *service.UnsubscribeService
 	Shares          *service.ShareService
+	PageViews       *service.PageViewService
 	Project         port.ProjectMetadataClient
 	DB              *sql.DB
 	Auth            *AuthValidator
@@ -64,6 +66,7 @@ func New(cfg Config) *Handler {
 		analytics:       cfg.Analytics,
 		unsub:           cfg.Unsubscribe,
 		shares:          cfg.Shares,
+		pageViews:       cfg.PageViews,
 		project:         cfg.Project,
 		db:              cfg.DB,
 		auth:            cfg.Auth,
@@ -146,6 +149,13 @@ func (h *Handler) Routes() http.Handler {
 	// a ShareService is wired.
 	if h.shares != nil {
 		mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/shares", h.withAuth(http.HandlerFunc(h.ShareNewsletter)))
+	}
+
+	// Unique web page views — JWT auth. Heimdall gates on project viewer, like
+	// shares: any signed-in reader of the project records one view per
+	// newsletter. Only registered when a PageViewService is wired.
+	if h.pageViews != nil {
+		mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/page-views", h.withAuth(http.HandlerFunc(h.RecordPageView)))
 	}
 
 	// Newsletter opt-outs — JWT auth.
