@@ -272,10 +272,19 @@ func TestWrapperStyleElementIsDropped(t *testing.T) {
 }
 
 func TestImageWidthGetsAUnit(t *testing.T) {
-	cases := map[string]string{"230": "230px", "230px": "230px", " 98 ": "98px", "": "", "50%": "50%"}
-	for in, want := range cases {
-		if got := imageWidth(in); got != want {
-			t.Errorf("imageWidth(%q) = %q, want %q", in, got, want)
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"230", "230px"},
+		{"230px", "230px"},
+		{" 98 ", "98px"},
+		{"", ""},
+		{"50%", "50%"},
+	}
+	for _, tc := range cases {
+		if got := imageWidth(tc.in); got != tc.want {
+			t.Errorf("imageWidth(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
