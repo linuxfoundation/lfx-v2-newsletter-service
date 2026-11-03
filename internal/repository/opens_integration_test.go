@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 )
@@ -57,6 +58,7 @@ func TestRecordOpen_CollapsesRepeatWithinHour(t *testing.T) {
 	repo := newIntegrationRepo(t)
 	ctx := context.Background()
 	id := seed(t, repo, model.StatusSent, []string{"committee-a"}, ts(10))
+	waitClearOfHourBoundary(t, repo)
 
 	for _, hash := range []string{recipientA, recipientA, recipientB} {
 		if err := repo.RecordOpen(ctx, id, hash); err != nil {
@@ -70,5 +72,24 @@ func TestRecordOpen_CollapsesRepeatWithinHour(t *testing.T) {
 	}
 	if got != 2 {
 		t.Errorf("OpenCount = %d, want 2 (the repeat by recipientA in the same hour collapsed)", got)
+	}
+}
+
+// waitClearOfHourBoundary sleeps past the next UTC hour boundary when it is
+// less than hourBoundaryMargin away on the database clock. RecordOpen takes
+// opened_at from the column default, so inserts that straddle the boundary
+// land in different opened_at_hour buckets and are correctly kept as
+// separate rows, which would make a dedup assertion fail for no code reason.
+func waitClearOfHourBoundary(t *testing.T, repo *PostgresNewsletterRepo) {
+	t.Helper()
+	const hourBoundaryMargin = 10 * time.Second
+	var secondsLeft float64
+	if err := repo.db.NewRaw(
+		"SELECT 3600 - mod(extract(epoch FROM clock_timestamp())::numeric, 3600)",
+	).Scan(context.Background(), &secondsLeft); err != nil {
+		t.Fatalf("read database clock: %v", err)
+	}
+	if left := time.Duration(secondsLeft * float64(time.Second)); left < hourBoundaryMargin {
+		time.Sleep(left + time.Second)
 	}
 }
