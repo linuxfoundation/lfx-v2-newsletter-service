@@ -5,8 +5,6 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -73,7 +71,7 @@ func (s *ShareService) RecordShare(ctx context.Context, in RecordShareInput) err
 	}
 	return s.shares.RecordShare(ctx, &model.NewsletterShare{
 		NewsletterID: n.ID,
-		UserHash:     hashShareUser(user),
+		UserHash:     hashUserPrincipal(user),
 		Channel:      in.Channel,
 	})
 }
@@ -115,14 +113,5 @@ func (s *ShareService) DeleteUserShares(ctx context.Context, user string) (int64
 	if user == "" {
 		return 0, fmt.Errorf("%w: a user principal is required to erase shares", domain.ErrInvalidRequest)
 	}
-	return s.shares.DeleteSharesByUser(ctx, hashShareUser(user))
-}
-
-// hashShareUser returns the lowercase hex SHA-256 of the user principal, the
-// shape the newsletter_shares and newsletter_page_views user_hash CHECK
-// constraints enforce. Recording and erasure on both tables must use it, so
-// changing the hash breaks both and strands existing rows from erasure.
-func hashShareUser(user string) string {
-	sum := sha256.Sum256([]byte(user))
-	return hex.EncodeToString(sum[:])
+	return s.shares.DeleteSharesByUser(ctx, hashUserPrincipal(user))
 }

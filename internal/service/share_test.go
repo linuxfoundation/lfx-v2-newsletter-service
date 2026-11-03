@@ -111,7 +111,7 @@ func TestShareService_RecordShare(t *testing.T) {
 			if got.NewsletterID != tc.in.NewsletterID || got.Channel != tc.in.Channel {
 				t.Errorf("recorded %+v, want newsletter %s channel %s", got, tc.in.NewsletterID, tc.in.Channel)
 			}
-			if got.UserHash != hashShareUser("alice") || got.UserHash == "alice" || len(got.UserHash) != 64 {
+			if got.UserHash != hashUserPrincipal("alice") || got.UserHash == "alice" || len(got.UserHash) != 64 {
 				t.Errorf("user hash = %q, want the 64-char sha256 of the principal", got.UserHash)
 			}
 		})
@@ -156,7 +156,7 @@ func TestShareService_DeleteUserShares(t *testing.T) {
 	if err != nil || n != 2 {
 		t.Fatalf("DeleteUserShares = %d, %v; want 2, nil", n, err)
 	}
-	if repo.deletedHash != hashShareUser("alice") {
+	if repo.deletedHash != hashUserPrincipal("alice") {
 		t.Errorf("deleted hash = %q, want the same hash RecordShare stores for the trimmed principal", repo.deletedHash)
 	}
 
