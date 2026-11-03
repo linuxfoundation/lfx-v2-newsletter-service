@@ -89,7 +89,7 @@ func TestPageViewService_RecordPageView(t *testing.T) {
 			if got.NewsletterID != tc.in.NewsletterID {
 				t.Errorf("recorded newsletter %s, want %s", got.NewsletterID, tc.in.NewsletterID)
 			}
-			if got.UserHash != hashShareUser("alice") || len(got.UserHash) != 64 {
+			if got.UserHash != hashUserPrincipal("alice") || len(got.UserHash) != 64 {
 				t.Errorf("user hash = %q, want the 64-char sha256 of the principal", got.UserHash)
 			}
 		})
@@ -135,7 +135,7 @@ func TestPageViewService_DeleteUserPageViews(t *testing.T) {
 	if err != nil || n != 3 {
 		t.Fatalf("DeleteUserPageViews = %d, %v; want 3, nil", n, err)
 	}
-	if repo.deletedHash != hashShareUser("alice") {
+	if repo.deletedHash != hashUserPrincipal("alice") {
 		t.Errorf("deleted hash = %q, want the same hash RecordPageView stores for the trimmed principal", repo.deletedHash)
 	}
 	if _, err := svc.DeleteUserPageViews(context.Background(), " "); !errors.Is(err, domain.ErrInvalidRequest) {
