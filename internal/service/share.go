@@ -19,7 +19,8 @@ import (
 
 // AnonymousPrincipal is the principal Heimdall mints for an unauthenticated
 // caller (the platform's anonymous_authenticator subject). It is one identity
-// shared by every anonymous visitor, so it can never record a share.
+// shared by every anonymous visitor, so it can never record a share or a
+// page view.
 const AnonymousPrincipal = "_anonymous"
 
 // ShareService records in-app newsletter share intents and reads back share
@@ -118,7 +119,9 @@ func (s *ShareService) DeleteUserShares(ctx context.Context, user string) (int64
 }
 
 // hashShareUser returns the lowercase hex SHA-256 of the user principal, the
-// shape the newsletter_shares.user_hash CHECK constraint enforces.
+// shape the newsletter_shares and newsletter_page_views user_hash CHECK
+// constraints enforce. Recording and erasure on both tables must use it, so
+// changing the hash breaks both and strands existing rows from erasure.
 func hashShareUser(user string) string {
 	sum := sha256.Sum256([]byte(user))
 	return hex.EncodeToString(sum[:])
