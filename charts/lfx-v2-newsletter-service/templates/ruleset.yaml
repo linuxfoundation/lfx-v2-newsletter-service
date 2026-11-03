@@ -575,7 +575,7 @@ spec:
     # drafts (404) and counts one view per user, ever. No
     # anonymous_authenticator, for the same [user:*] reason as shares.
     # ---------------------------------------------------------------------
-    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:page-views"
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:page_views"
       allow_encoded_slashes: 'off'
       match:
         methods:

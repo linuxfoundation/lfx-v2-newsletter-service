@@ -235,6 +235,16 @@ const totalOpensProviderTimeout = time.Second
 // field instead of reporting zero. A provider read failure or timeout degrades
 // to the local count, as in Get; only a local read failure is an error.
 func (a *AnalyticsService) TotalOpens(ctx context.Context, n *model.Newsletter) (int, bool, error) {
+	return a.TotalOpensBy(ctx, n, time.Now().Add(totalOpensProviderTimeout))
+}
+
+// TotalOpensBy is TotalOpens with an explicit provider deadline, so a caller
+// decorating many newsletters (a list page) can give every row's provider read
+// one shared budget instead of a fresh second each. The deadline only bounds
+// the provider read, and never extends past totalOpensProviderTimeout; the
+// local count runs on ctx, so a row whose provider read misses the deadline
+// still reports its local count, exactly as on any other provider failure.
+func (a *AnalyticsService) TotalOpensBy(ctx context.Context, n *model.Newsletter, providerDeadline time.Time) (int, bool, error) {
 	if n == nil || n.Status != model.StatusSent {
 		return 0, false, nil
 	}
@@ -253,7 +263,10 @@ func (a *AnalyticsService) TotalOpens(ctx context.Context, n *model.Newsletter) 
 		)
 		return total, true, nil
 	}
-	providerCtx, cancel := context.WithTimeout(ctx, totalOpensProviderTimeout)
+	if latest := time.Now().Add(totalOpensProviderTimeout); providerDeadline.After(latest) {
+		providerDeadline = latest
+	}
+	providerCtx, cancel := context.WithDeadline(ctx, providerDeadline)
 	defer cancel()
 	engagement, engErr := reader.GetEngagement(providerCtx, *n.GroupID)
 	if engErr != nil {

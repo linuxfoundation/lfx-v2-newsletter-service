@@ -133,15 +133,15 @@ func TestShareCountsAreFailSoft(t *testing.T) {
 
 	h := New(Config{Shares: service.NewShareService(handlerShareNewsletters{}, &handlerShareRepo{})})
 	counts := h.shareCounts(context.Background(), rows)
-	if got := shareCountFor(counts, sentID); got == nil || *got != 2 {
+	if got := countFor(counts, sentID); got == nil || *got != 2 {
 		t.Errorf("sent share count = %v, want 2", got)
 	}
-	if got := shareCountFor(counts, draftID); got != nil {
+	if got := countFor(counts, draftID); got != nil {
 		t.Errorf("draft share count = %v, want nil (omitted)", *got)
 	}
 
 	failing := New(Config{Shares: service.NewShareService(handlerShareNewsletters{}, &handlerShareRepo{err: errors.New("db down")})})
-	if got := shareCountFor(failing.shareCounts(context.Background(), rows), sentID); got != nil {
+	if got := countFor(failing.shareCounts(context.Background(), rows), sentID); got != nil {
 		t.Errorf("share count on read failure = %v, want nil (omitted)", *got)
 	}
 

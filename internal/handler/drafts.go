@@ -70,9 +70,9 @@ func (h *Handler) GetNewsletter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dto := toAPINewsletter(r.Context(), n)
-	dto.ShareCount = shareCountFor(h.shareCounts(r.Context(), []*model.Newsletter{n}), n.ID)
+	dto.ShareCount = countFor(h.shareCounts(r.Context(), []*model.Newsletter{n}), n.ID)
 	dto.TotalOpens = h.totalOpens(r.Context(), n)
-	dto.PageViewCount = shareCountFor(h.pageViewCounts(r.Context(), []*model.Newsletter{n}), n.ID)
+	dto.PageViewCount = countFor(h.pageViewCounts(r.Context(), []*model.Newsletter{n}), n.ID)
 	w.Header().Set("ETag", formatETag(n.Version))
 	writeJSON(r.Context(), w, http.StatusOK, dto)
 }

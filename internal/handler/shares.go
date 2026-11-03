@@ -80,9 +80,10 @@ func (h *Handler) totalOpens(ctx context.Context, n *model.Newsletter) *int {
 	return &total
 }
 
-// shareCountFor returns a pointer to the newsletter's share count, or nil
-// when no count was read for it (unsent, or the read failed).
-func shareCountFor(counts map[uuid.UUID]int, id uuid.UUID) *int {
+// countFor returns a pointer to the newsletter's entry in a per-newsletter
+// count map (shares, page views), or nil when no count was read for it
+// (unsent, or the read failed).
+func countFor(counts map[uuid.UUID]int, id uuid.UUID) *int {
 	count, ok := counts[id]
 	if !ok {
 		return nil

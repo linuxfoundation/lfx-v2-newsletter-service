@@ -115,15 +115,15 @@ func TestPageViewCountsAreFailSoft(t *testing.T) {
 
 	h := New(Config{PageViews: service.NewPageViewService(handlerShareNewsletters{}, &handlerPageViewRepo{})})
 	counts := h.pageViewCounts(context.Background(), rows)
-	if got := shareCountFor(counts, sentID); got == nil || *got != 4 {
+	if got := countFor(counts, sentID); got == nil || *got != 4 {
 		t.Errorf("sent page-view count = %v, want 4", got)
 	}
-	if got := shareCountFor(counts, draftID); got != nil {
+	if got := countFor(counts, draftID); got != nil {
 		t.Errorf("draft page-view count = %v, want nil (omitted)", *got)
 	}
 
 	failing := New(Config{PageViews: service.NewPageViewService(handlerShareNewsletters{}, &handlerPageViewRepo{err: errors.New("db down")})})
-	if got := shareCountFor(failing.pageViewCounts(context.Background(), rows), sentID); got != nil {
+	if got := countFor(failing.pageViewCounts(context.Background(), rows), sentID); got != nil {
 		t.Errorf("page-view count on read failure = %v, want nil (omitted)", *got)
 	}
 	if got := New(Config{}).pageViewCounts(context.Background(), rows); got != nil {

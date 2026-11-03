@@ -44,8 +44,8 @@ func (h *Handler) ListCommitteeNewsletters(w http.ResponseWriter, r *http.Reques
 	opens := h.totalOpensFor(r.Context(), page.Newsletters)
 	for i, n := range page.Newsletters {
 		item := toAPICommitteeNewsletter(n)
-		item.ShareCount = shareCountFor(counts, n.ID)
-		item.PageViewCount = shareCountFor(views, n.ID)
+		item.ShareCount = countFor(counts, n.ID)
+		item.PageViewCount = countFor(views, n.ID)
 		item.TotalOpens = opens[i]
 		out.Newsletters = append(out.Newsletters, item)
 	}

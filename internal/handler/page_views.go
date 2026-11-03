@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
@@ -15,9 +16,16 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 )
 
-// totalOpensListConcurrency bounds the per-row provider reads that decorate
-// a list page with total_opens.
-const totalOpensListConcurrency = 8
+// totalOpensListBudget is the one provider-read budget shared by every row of
+// a list page decorated with total_opens. Rows run concurrently, so a slow or
+// absent provider adds at most this much to the list, whatever the page size;
+// a row whose provider read misses it falls back to its local count.
+const totalOpensListBudget = time.Second
+
+// totalOpensListConcurrency caps concurrent per-row reads. It matches the
+// repository's default page size, so a normal page runs in a single wave and
+// stays inside totalOpensListBudget.
+const totalOpensListConcurrency = 20
 
 // RecordPageView handles POST /projects/{project_uid}/newsletters/{newsletter_uid}/page-views.
 //
@@ -68,6 +76,7 @@ func (h *Handler) totalOpensFor(ctx context.Context, newsletters []*model.Newsle
 	if h.analytics == nil {
 		return out
 	}
+	deadline := time.Now().Add(totalOpensListBudget)
 	var g errgroup.Group
 	g.SetLimit(totalOpensListConcurrency)
 	for i, n := range newsletters {
@@ -75,10 +84,17 @@ func (h *Handler) totalOpensFor(ctx context.Context, newsletters []*model.Newsle
 			continue
 		}
 		g.Go(func() error {
-			out[i] = h.totalOpens(ctx, n)
+			total, ok, err := h.analytics.TotalOpensBy(ctx, n, deadline)
+			if err != nil {
+				slog.WarnContext(ctx, "failed to read newsletter total opens; omitting total_opens", "newsletter_id", n.ID, "error", err)
+				return nil
+			}
+			if ok {
+				out[i] = &total
+			}
 			return nil
 		})
 	}
-	_ = g.Wait() // totalOpens never fails; it logs and yields nil.
+	_ = g.Wait() // Rows never fail the group; a failed row is logged and left nil.
 	return out
 }
