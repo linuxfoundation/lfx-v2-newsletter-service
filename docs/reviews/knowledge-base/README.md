@@ -53,6 +53,20 @@ left as the record of that pass, and this note supersedes them for current count
   clean** on the compliant case. "Fires on everything in the trigger set" is not a
   detection rule, however real the miss behind it.
 
+### Update — 2026-11-03 (GH-107)
+
+The bullets above, and the § Corrections on record entry for this pattern, are left as
+the record of their passes; this note supersedes them for
+`persistence/on-conflict-target-mismatch`.
+
+- The open gap recorded in the 2026-07-30 refresh is closed. The integration test
+  reproduced the failure against Postgres 16 (SQLSTATE 42704), and `RecordOpen` now
+  names the index columns as its conflict target. `TestRecordOpen_CollapsesRepeatWithinHour`
+  pins the dedup.
+- The entry stays in the firing set to catch new `ON CONFLICT ON CONSTRAINT` callers.
+  The weak-probe note in § Corrections on record still applies: a literal
+  `grep 'ON CONFLICT'` only finds comments, so run the entry's `**Detect:**` clause.
+
 ## Corpus stats — first build (PRs #3–#9)
 
 - **Merged PRs sampled:** 7 (PRs #3–#9). All merged PRs in repo history as of 2026-05-29.
@@ -90,7 +104,7 @@ The maintainer-blocking, cost-of-miss patterns from PR #3 and the contract-integ
 
 - `security/unauthenticated-pixel-unbounded-write` — the open pixel takes attacker-controlled input on an unauthenticated path.
 - `security/5xx-error-body-leak` and `security/jwt-error-leak-to-client` — infra detail leaking to unauthenticated callers.
-- `persistence/non-immutable-generated-column-expr` and `persistence/on-conflict-target-mismatch` — both break `schema.sql` apply or runtime inserts; the latter recurred across PRs #3 and #6.
+- `persistence/non-immutable-generated-column-expr` and `persistence/on-conflict-target-mismatch` — both break `schema.sql` apply or runtime inserts; the latter recurred across PRs #3 and #6. (The conflict-target entry is **forward-looking only** since GH-107; its construct is gone from the repo.)
 - `recipient/errgroup-cancellation-on-failure` and `recipient/unbounded-pagination-loop` — orphaned/infinite upstream work. (The pagination entry is **forward-looking only**; its construct is gone from the repo.)
 - `chart/db-password-composed-into-pod-spec` — DB password exposed in the Pod spec.
 

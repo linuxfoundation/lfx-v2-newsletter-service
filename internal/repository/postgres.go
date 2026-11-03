@@ -620,6 +620,10 @@ func (r *PostgresNewsletterRepo) RecoverStuckSending(ctx context.Context, olderT
 // within the same hour collapse to a no-op via the
 // uq_opens_newsletter_recipient_hour unique index — this bounds growth on the
 // unauthenticated tracking pixel without losing unique-open counts.
+//
+// The conflict target names the index columns rather than the index itself:
+// uq_opens_newsletter_recipient_hour is a UNIQUE INDEX, not a constraint, and
+// ON CONFLICT ON CONSTRAINT only resolves pg_constraint entries.
 func (r *PostgresNewsletterRepo) RecordOpen(ctx context.Context, newsletterID uuid.UUID, recipientHash string) error {
 	open := &model.NewsletterOpen{
 		NewsletterID:  newsletterID,
@@ -627,7 +631,7 @@ func (r *PostgresNewsletterRepo) RecordOpen(ctx context.Context, newsletterID uu
 	}
 	if _, err := r.db.NewInsert().
 		Model(open).
-		On("CONFLICT ON CONSTRAINT uq_opens_newsletter_recipient_hour DO NOTHING").
+		On("CONFLICT (newsletter_id, recipient_hash, opened_at_hour) DO NOTHING").
 		Exec(ctx); err != nil {
 		return fmt.Errorf("record open: %w", err)
 	}
