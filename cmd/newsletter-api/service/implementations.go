@@ -54,6 +54,15 @@ const (
 // finish is recovered by the stuck-sending sweep on the next pod.
 const drainTimeout = 20 * time.Second
 
+// newBunDB opens the bun handle the service runs on. It tolerates columns
+// this build does not model, so a pod still on this version keeps working
+// after a newer release adds a column (e.g. body_layout) during a rollout, and
+// a rollback to it stays safe. The repository integration tests keep a strict
+// handle on purpose, so an alias or tag mismatch still fails in CI.
+func newBunDB(sqlDB *sql.DB) *bun.DB {
+	return bun.NewDB(sqlDB, pgdialect.New(), bun.WithDiscardUnknownColumns())
+}
+
 // InitInfrastructure wires every singleton in dependency order. Idempotent
 // in the sense that callers should not call it twice.
 func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
@@ -69,7 +78,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	pgPool = pool
 
 	sqlDB = stdlib.OpenDBFromPool(pool)
-	bunDB = bun.NewDB(sqlDB, pgdialect.New())
+	bunDB = newBunDB(sqlDB)
 
 	// Step 2: bootstrap database schema (idempotent, advisory-locked).
 	if err := schema.Apply(ctx, pgPool); err != nil {
