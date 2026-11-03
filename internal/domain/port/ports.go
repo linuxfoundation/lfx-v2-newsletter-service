@@ -57,6 +57,13 @@ type NewsletterGetter interface {
 	Get(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
 }
 
+// NewsletterMetaGetter is the metadata-only read-one slice of
+// NewsletterRepository (see NewsletterRepository.GetMeta), for hot paths that
+// only check existence, project ownership or send state.
+type NewsletterMetaGetter interface {
+	GetMeta(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
+}
+
 // ShareRepository persists in-app newsletter share intents and reads back
 // share counts.
 type ShareRepository interface {

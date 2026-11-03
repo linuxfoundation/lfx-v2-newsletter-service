@@ -18,6 +18,10 @@ type shareNewsletterFake struct {
 	rows map[uuid.UUID]*model.Newsletter
 }
 
+func (f *shareNewsletterFake) GetMeta(ctx context.Context, id uuid.UUID) (*model.Newsletter, error) {
+	return f.Get(ctx, id)
+}
+
 func (f *shareNewsletterFake) Get(_ context.Context, id uuid.UUID) (*model.Newsletter, error) {
 	n, ok := f.rows[id]
 	if !ok {

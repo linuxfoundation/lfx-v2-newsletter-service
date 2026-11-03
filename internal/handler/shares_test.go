@@ -22,6 +22,10 @@ import (
 
 type handlerShareNewsletters map[uuid.UUID]*model.Newsletter
 
+func (f handlerShareNewsletters) GetMeta(ctx context.Context, id uuid.UUID) (*model.Newsletter, error) {
+	return f.Get(ctx, id)
+}
+
 func (f handlerShareNewsletters) Get(_ context.Context, id uuid.UUID) (*model.Newsletter, error) {
 	if n, ok := f[id]; ok {
 		return n, nil

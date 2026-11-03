@@ -18,12 +18,12 @@ import (
 // PageViewService records unique web page views of sent newsletters and reads
 // back view counts. A view is counted once per (newsletter, user), ever.
 type PageViewService struct {
-	newsletters port.NewsletterGetter
+	newsletters port.NewsletterMetaGetter
 	views       port.PageViewRepository
 }
 
 // NewPageViewService wires a PageViewService.
-func NewPageViewService(newsletters port.NewsletterGetter, views port.PageViewRepository) *PageViewService {
+func NewPageViewService(newsletters port.NewsletterMetaGetter, views port.PageViewRepository) *PageViewService {
 	return &PageViewService{newsletters: newsletters, views: views}
 }
 
@@ -49,7 +49,9 @@ func (s *PageViewService) RecordPageView(ctx context.Context, in RecordPageViewI
 	if err := validateProjectUID(in.ProjectUID); err != nil {
 		return err
 	}
-	n, err := s.newsletters.Get(ctx, in.NewsletterID)
+	// GetMeta: the check needs only project_uid and status, so a page view
+	// (often a repeat the insert discards) never loads the body layout.
+	n, err := s.newsletters.GetMeta(ctx, in.NewsletterID)
 	if err != nil {
 		return err
 	}
