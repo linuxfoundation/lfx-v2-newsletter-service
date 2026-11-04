@@ -83,14 +83,18 @@ WHERE newsletter_audiences.status <> 'processing'`,
 
 // ReplaceMembers deletes the snapshot's members and inserts the new ones in one
 // transaction. It first touches the audience row, which only matches while the
-// row is 'processing'. That check stops a job whose row was already failed by
-// the stale sweep from writing members, and it moves updated_at forward so a
-// long resolution is not swept while it makes progress.
+// row is 'processing' and the newsletter is still a draft. That stops a job
+// whose row was already failed by the stale sweep, or whose newsletter has been
+// sent meanwhile, from writing members. A running job is protected from the
+// stale sweep by AUDIENCE_STALE_TTL exceeding AUDIENCE_JOB_TIMEOUT, not by this
+// touch, which only happens once the reads have finished.
 func (r *PostgresAudienceRepo) ReplaceMembers(ctx context.Context, newsletterID uuid.UUID, members []model.CommitteeMember) error {
 	return r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		res, err := tx.ExecContext(ctx,
-			`UPDATE newsletter_audiences SET updated_at = now() WHERE newsletter_id = ? AND status = 'processing'`,
-			newsletterID)
+			`UPDATE newsletter_audiences SET updated_at = now()
+WHERE newsletter_id = ? AND status = 'processing'
+  AND EXISTS (SELECT 1 FROM newsletters WHERE id = ? AND status = 'draft')`,
+			newsletterID, newsletterID)
 		if err != nil {
 			return fmt.Errorf("touch audience: %w", err)
 		}
@@ -99,7 +103,7 @@ func (r *PostgresAudienceRepo) ReplaceMembers(ctx context.Context, newsletterID 
 			return fmt.Errorf("touch audience rows affected: %w", err)
 		}
 		if n == 0 {
-			return fmt.Errorf("%w: audience is not processing", domain.ErrNotFound)
+			return fmt.Errorf("%w: audience is not processing or the newsletter left draft", domain.ErrNotFound)
 		}
 
 		if _, err := tx.ExecContext(ctx,
@@ -238,6 +242,27 @@ WHERE newsletter_id = ? ORDER BY email`, newsletterID)
 
 // FailStale fails 'processing' rows that have not moved for olderThan. The
 // UPDATE is status and time gated, so concurrent sweeps on several pods fail
+
+// PurgeSentMembers deletes the snapshot members of every newsletter that is
+// sent or scheduled. The send purges inline; this catches the paths that do not
+// (scheduled sends settled by the sweep, rows recovered from 'sending', a failed
+// inline purge). A 'sending' newsletter keeps its members, because a send that
+// fails for every recipient reverts it to draft.
+func (r *PostgresAudienceRepo) PurgeSentMembers(ctx context.Context) (int, error) {
+	res, err := r.db.ExecContext(ctx, `
+DELETE FROM newsletter_audience_members m
+USING newsletters n
+WHERE m.newsletter_id = n.id AND n.status IN ('sent', 'scheduled')`)
+	if err != nil {
+		return 0, fmt.Errorf("purge sent audience members: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("purge sent audience members rows affected: %w", err)
+	}
+	return int(n), nil
+}
+
 // each row once.
 func (r *PostgresAudienceRepo) FailStale(ctx context.Context, olderThan time.Duration) (int, error) {
 	res, err := r.db.ExecContext(ctx, `

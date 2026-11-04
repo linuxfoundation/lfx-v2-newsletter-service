@@ -183,3 +183,62 @@ func TestSendNewsletter_DeletesSnapshotMembersAfterTheSend(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, members)
 }
+
+func TestAudienceResolve_CommitteeOfAnotherProjectFailsTheAudience(t *testing.T) {
+	ctx := context.Background()
+	f := newAudienceFixture(t, &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "a@example.com", ProjectUID: "p1"}},
+		"c2": {{Email: "b@example.com", ProjectUID: "other-project"}},
+	}})
+	n := f.repo.addDraft("p1", []string{"c1", "c2"})
+
+	_, err := f.svc.Resolve(ctx, "p1", n.ID, []string{"c1", "c2"}, false)
+	require.NoError(t, err)
+	f.svc.Drain(ctx)
+
+	a := waitForAudienceStatus(t, f, n.ID, model.AudienceFailed)
+	assert.Equal(t, "a selected committee belongs to another project", a.Error)
+}
+
+func TestRecipientCount_LivePathOnlyLogsACommitteeOfAnotherProject(t *testing.T) {
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "a@example.com", ProjectUID: "other-project"}},
+	}}
+	orch := newCompatOrchestrator(newFakeRepo(), newFakeAudienceRepo(), committee, &fakeEmailDispatcher{})
+
+	count, err := orch.RecipientCount(context.Background(), "p1", uuid.Nil, []string{"c1"})
+	require.NoError(t, err, "the read clients used before snapshots behaves as before")
+	assert.Equal(t, 1, count)
+}
+
+func TestRecipients_RefusedOnceTheNewsletterIsSent(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	audiences := newFakeAudienceRepo()
+	orch := newCompatOrchestrator(repo, audiences, &fakeCommitteeClient{}, &fakeEmailDispatcher{})
+	n := repo.addDraft("p1", []string{"c1"})
+	audiences.put(n, []string{"c1"}, model.AudienceReady, []model.CommitteeMember{{Email: "a@example.com"}})
+	repo.mu.Lock()
+	repo.drafts[n.ID].Status = model.StatusSent
+	repo.mu.Unlock()
+
+	_, err := orch.Recipients(ctx, "p1", n.ID, []string{"c1"})
+	assert.ErrorIs(t, err, domain.ErrAlreadySent)
+}
+
+func TestSendNewsletter_ReadySnapshotWithPurgedMembersIsStale(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	audiences := newFakeAudienceRepo()
+	email := &fakeEmailDispatcher{}
+	orch := newCompatOrchestrator(repo, audiences, &fakeCommitteeClient{}, email)
+	n := repo.addDraft("p1", []string{"c1"})
+	audiences.put(n, []string{"c1"}, model.AudienceReady, []model.CommitteeMember{{Email: "a@example.com"}})
+	require.NoError(t, audiences.DeleteMembers(ctx, n.ID))
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: n.ID})
+	var notReady *domain.AudienceNotReadyError
+	require.ErrorAs(t, err, &notReady)
+	assert.Equal(t, domain.AudienceStateStale, notReady.Status)
+	assert.Empty(t, email.sends, "the newsletter is not used up on an empty send")
+}

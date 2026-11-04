@@ -9,7 +9,7 @@ Update it in the same PR as any change to committee member lookup, the audience 
 
 ## Overview
 
-The service reads committee members from the LFX V2 query service over HTTPS. It does this in a background job, one job per newsletter. The job writes an audience snapshot to the database. The send, the recipient count and the recipient preview all read that snapshot. None of them reads committee members live.
+The service reads committee members from the LFX V2 query service over HTTPS. It does this in a background job, one job per newsletter. The job writes an audience snapshot to the database. The send, the recipient count and the recipient preview read that snapshot. For one release they also accept clients that have not adopted snapshots, and read committees live for them (see Clients that have not adopted snapshots below).
 
 The design was agreed at architecture office hours on 29 October 2026. The record is in `lfx-architecture-scratch`, folder `2026-10-Newsletter-Committee-Audience-Query-Service`.
 
@@ -30,14 +30,16 @@ The snapshot is stored in two tables.
 - `newsletter_audiences` has one row per newsletter. It holds the status, the sorted committee UID list the snapshot was built from, the recipient count, the number of members skipped because they had no email, an error message for a failed audience, and timestamps.
 - `newsletter_audience_members` has one row per recipient, with the email (trimmed and lowercased), the first name and the last name.
 
-Both tables are deleted with the newsletter. Once a newsletter is sent, its `newsletter_audience_members` rows are deleted, so member emails and names are kept only while the newsletter is a draft. The `newsletter_audiences` row and its counts stay. Per-recipient analytics then read display names from the committees live. Newsletters sent before this feature have no snapshot, and no snapshot is created for them.
+Both tables are deleted with the newsletter. Once a newsletter is sent or scheduled, its `newsletter_audience_members` rows are deleted, so member emails and names are kept only while the newsletter is a draft or sending. The send deletes them inline, and the recovery sweep (every 5 minutes) deletes any it missed, e.g. for a scheduled send settled by the sweep. A resolution that finishes after the newsletter left draft writes no members. The `newsletter_audiences` row and its counts stay. Per-recipient analytics then read display names from the committees live. Newsletters sent before this feature have no snapshot, and no snapshot is created for them.
 
 ### Rules
 
 - A `ready` audience always matches the committee list it was built from. The send, the recipient count and the recipient preview compare that list with the newsletter's current committee list. If the two differ, the audience is treated as stale and must be resolved again.
 - Only one resolution runs per newsletter. `BeginResolve` is a single SQL statement that claims the row unless it is already `processing`, so this holds across pods. A second request while one is running gets the running audience back.
 - A failed read fails the whole audience. A `ready` audience never holds part of a committee.
-- A send never fans out from an audience that is `processing`, `failed` or stale.
+- A send never fans out from an audience that is `processing`, `failed` or stale. A `ready` audience whose members were already deleted counts as stale, so a newsletter that reverted to draft is never sent to nobody.
+- `POST .../recipients` with a `newsletter_uid` returns `409 already_sent` once the newsletter is no longer a draft, because its members are gone.
+- Every member a committee returns must be indexed under the newsletter's own project. A committee of another project, including a child project, fails the audience with "a selected committee belongs to another project". Members with no project in the index are accepted.
 - Only the committees saved on the draft can be resolved. A request with any other list is a `400`, so a caller cannot make the service read and store an arbitrary committee.
 - A committee that returns no members fails the audience with "a selected committee returned no members". The query service answers an unknown committee, or one this service cannot see, with an empty page, so an empty result is far more likely a missing access grant than a real empty committee.
 - A `ready` audience is returned unchanged until the committee list changes. `POST .../audience` with `"refresh": true` rebuilds it from the committees' current membership.
@@ -54,7 +56,7 @@ Both tables are deleted with the newsletter. Once a newsletter is sent, its `new
 6. The caller polls `GET .../audience` until the status is `ready` or `failed`. It returns `404` if the audience was never resolved.
 7. `POST .../recipient-count` and `POST .../recipients` read the snapshot. They return `409` with `audience_status` when it is not ready. `POST .../send` returns the same `409` and does not send.
 
-A pod that shuts down cancels its running jobs, and each one marks its audience `failed` so the user can resolve it again straight away. A pod can also stop without a clean shutdown. For that case the recovery sweep, which runs every 5 minutes, marks any `processing` audience that has not changed for `AUDIENCE_STALE_TTL` as `failed`. The job refreshes the row when it writes members, so a slow job is not swept while it makes progress. `AUDIENCE_STALE_TTL` must be at least `AUDIENCE_JOB_TIMEOUT` plus 5 minutes. The service raises a smaller value to that minimum.
+A pod that shuts down cancels its running jobs, and each one marks its audience `failed` so the user can resolve it again straight away. A pod can also stop without a clean shutdown. For that case the recovery sweep, which runs every 5 minutes, marks any `processing` audience that has not changed for `AUDIENCE_STALE_TTL` as `failed`. A running job is protected from the sweep by the TTL margin: `AUDIENCE_STALE_TTL` must be at least `AUDIENCE_JOB_TIMEOUT` plus 5 minutes. The service raises a smaller value to that minimum.
 
 ### The 409 response
 
@@ -73,7 +75,7 @@ In every case the client starts a resolution with `POST .../audience`, and then 
 
 The snapshot routes and the old request shapes work side by side for one release, so the service can deploy before the front end.
 
-- `POST .../recipient-count` and `POST .../recipients` without a `newsletter_uid` read the committees live, less the unsubscribe list, as they did before snapshots. An empty committee counts as 0 here, as before.
+- `POST .../recipient-count` and `POST .../recipients` without a `newsletter_uid` read the committees live, less the unsubscribe list, as they did before snapshots. An empty committee counts as 0 here, as before, and a committee of another project is logged rather than refused, so these reads behave exactly as before.
 - `POST .../send` for a newsletter with no audience at all reads the committees live and sends to them, as before. An empty committee refuses the send with `422`, so the newsletter is not used up. Once a client has started an audience for a newsletter, a `processing`, `failed` or stale audience still stops the send with `409`.
 
 Remove these paths once the front end resolves an audience for every send.
@@ -166,7 +168,7 @@ A newsletter's engagement lives in whichever provider dispatched it, so analytic
 - `AnalyticsService` holds one `EngagementReader` per provider and resolves the reader from `send_provider` (`email-service` reads engagement from email-service over NATS; `sendgrid` reads from the local SendGrid engagement store). An empty or unrecognized value falls back to the default provider (`email-service`).
 - Both readers are always registered. The SendGrid reader is store-backed and needs no API key, so a deployment serves analytics for SendGrid-sent newsletters even when email-service is the currently-active sender, and vice versa. A missing reader degrades that newsletter to local-only analytics rather than failing the request — except on the per-recipient endpoint, which has no local fallback and returns an error instead (an empty list must always mean "no records").
 - Net effect: historical SES newsletters keep their analytics and SendGrid sends surface analytics through the same `/analytics` endpoint and DTO after a per-foundation flip, with no UI change.
-- The per-recipient endpoint (`…/analytics/recipients`) reads the same provider-routed source via `EngagementReader.RecipientRecords` (email-service's by-group status reply over NATS, or the SendGrid store's engagement rows joined with their open events). Display names are matched on lowercased email. They come from the newsletter's audience snapshot when one is `ready`. A newsletter sent before snapshots existed has none, so its names are read live from the query service for each of its committees. Name resolution is best-effort in both paths. A failed lookup degrades to email-only rows.
+- The per-recipient endpoint (`…/analytics/recipients`) reads the same provider-routed source via `EngagementReader.RecipientRecords` (email-service's by-group status reply over NATS, or the SendGrid store's engagement rows joined with their open events). Display names are matched on lowercased email. They come from the newsletter's audience snapshot while it still holds members. A sent newsletter's members are deleted after the send, so for sent newsletters (and those sent before snapshots existed) the names are read live from the query service, for all its committees in parallel under a 10-second limit. Name resolution is best-effort in both paths. A failed lookup degrades to email-only rows.
 - **Clicks are SendGrid-only.** The SendGrid store's `EngagementReader` additionally reports click totals, a daily click series, per-recipient click detail, and a top-clicked-links breakdown, all sourced from the `click` event on the same signed event webhook that feeds opens (`sendgrid_click_events`, joined to `sendgrid_recipient_engagement` by `email_id`). The email-service reader's `GroupDetailFromRecords` builder leaves every click field zero/empty — SES has no click-event delivery path into this service — so an `email-service`-provider newsletter always reports zero clicks rather than erroring. The compliance-footer's Unsubscribe and My Newsletters links are rendered with `clicktracking="off"` so opt-out/browse clicks never inflate `click_rate` or `top_links`.
 
 ## Change Checklist

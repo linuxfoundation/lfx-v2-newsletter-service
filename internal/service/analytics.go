@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,9 +44,11 @@ type AnalyticsService struct {
 // for defaultProvider; a nil or missing reader for a newsletter's provider
 // degrades that newsletter to local-only analytics rather than panicking.
 // audience and committee resolve recipient display names for the per-recipient
-// endpoint. Names come from the newsletter's audience snapshot when one is
-// ready. Newsletters sent before snapshots existed fall back to a live committee
-// read. A nil audience or committee is tolerated (names stay empty).
+// endpoint. Names come from the newsletter's audience snapshot while it still
+// holds members. A sent newsletter's members are deleted after the send, so for
+// sent newsletters (and those sent before snapshots existed) the names come from
+// a live committee read. A nil audience or committee is tolerated (names stay
+// empty).
 func NewAnalyticsService(repo port.NewsletterRepository, readers map[string]port.EngagementReader, audience port.AudienceReader, committee port.CommitteeClient, defaultProvider string) *AnalyticsService {
 	return &AnalyticsService{repo: repo, readers: readers, audience: audience, committee: committee, defaultProvider: defaultProvider}
 }
@@ -455,19 +458,38 @@ func (a *AnalyticsService) recipientNames(ctx context.Context, n *model.Newslett
 	if a.committee == nil {
 		return names
 	}
-	for _, uid := range n.CommitteeUIDs {
-		list, err := a.committee.ListMembers(ctx, uid)
-		if err != nil {
-			slog.WarnContext(ctx, "analytics: committee member lookup failed, recipient names degrade to email",
-				"committee_uid", uid,
-				"error", err.Error(),
-			)
-			continue
-		}
+	// Read the committees in parallel under one time limit, so a large committee
+	// cannot hold the request for long. Names are decorative: a committee that
+	// fails or runs out of time is skipped and its recipients show their email.
+	readCtx, cancel := context.WithTimeout(ctx, recipientNamesReadTimeout)
+	defer cancel()
+	lists := make([]model.CommitteeMembers, len(n.CommitteeUIDs))
+	var wg sync.WaitGroup
+	for i, uid := range n.CommitteeUIDs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			list, err := a.committee.ListMembers(readCtx, uid)
+			if err != nil {
+				slog.WarnContext(ctx, "analytics: committee member lookup failed, recipient names degrade to email",
+					"committee_uid", uid,
+					"error", err.Error(),
+				)
+				return
+			}
+			lists[i] = list
+		}()
+	}
+	wg.Wait()
+	for _, list := range lists {
 		addMemberNames(names, list.Members)
 	}
 	return names
 }
+
+// recipientNamesReadTimeout bounds the live committee read behind per-recipient
+// analytics names.
+const recipientNamesReadTimeout = 10 * time.Second
 
 // addMemberNames adds each member that has an email and a name to names, keyed
 // by lowercased email.

@@ -18,6 +18,14 @@ type sweepRecorder struct {
 	audienceTTLs  []time.Duration
 	audienceErr   error
 	recoverResult int64
+	purgeCalls    int
+}
+
+func (s *sweepRecorder) PurgeSentMembers(context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeCalls++
+	return 0, nil
 }
 
 func (s *sweepRecorder) RecoverStuckSending(_ context.Context, olderThan time.Duration) (int64, error) {

@@ -39,7 +39,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/audience` | yes | Start the background resolution of the newsletter's audience. Body `{ "committee_uids": [...], "refresh": false }`. `committee_uids` must be the committees saved on the draft (`400` otherwise). Returns `202` with the audience while it is `processing`, whether this call started the job or one was already running. Returns `200` when a `ready` audience already exists for the same committee list, unless `refresh` is `true`, which rebuilds it. Only a draft can be resolved. Gated on `writer_guard`. |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/audience` | yes | Return the audience status. `404` when it was never resolved. |
 | `POST` | `/projects/{project_uid}/newsletters/recipient-count` | yes | Return the recipient count of the newsletter's audience snapshot. `409 audience_not_ready` when it is not ready. Without `newsletter_uid`, counts the committees live. |
-| `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Return the recipient preview from the audience snapshot. `409 audience_not_ready` when it is not ready. Without `newsletter_uid`, reads the committees live. |
+| `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Return the recipient preview from the audience snapshot. `409 audience_not_ready` when it is not ready, and `409 already_sent` once the newsletter is no longer a draft. Without `newsletter_uid`, reads the committees live. Gated on `writer_guard`. |
 | `POST` | `/projects/{project_uid}/newsletters/test-send` | yes | Dispatch a single test email (no persistence, no analytics). |
 | `POST` | `/projects/{project_uid}/newsletters/render-preview` | yes | Render a `NewsletterLayout` to email-safe HTML for the editor's live preview. Stateless — nothing is persisted. Returns `422 unprocessable_entity` when the layout cannot be rendered. |
 | `GET` | `/projects/{project_uid}/newsletters/templates` | yes | List the embedded editor template sets (`{"templates": [{"key", "label"}]}`). The catalog is compiled into the binary and identical for every project. |
@@ -190,7 +190,7 @@ Recipient resolution and the provider fan-out are documented in `docs/recipient-
 
 The audience is the stored list of recipients for one newsletter. It is built by a background job, so a request never waits for the committees to be read. The design is described in `docs/recipient-resolution.md`.
 
-`POST …/newsletters/{newsletter_uid}/audience` takes `ResolveAudienceRequest`, `{ "committee_uids": [...] }`. The list is trimmed, deduplicated and sorted before it is stored. The response is `AudienceResponse` and has this shape:
+`POST …/newsletters/{newsletter_uid}/audience` takes `ResolveAudienceRequest`, `{ "committee_uids": [...], "refresh": false }`. `committee_uids` must be the draft's saved committees; `refresh: true` rebuilds a ready snapshot. The list is trimmed, deduplicated and sorted before it is stored. The response is `AudienceResponse` and has this shape:
 
 | Field | Description |
 | --- | --- |

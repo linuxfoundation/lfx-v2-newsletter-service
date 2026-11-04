@@ -1247,7 +1247,16 @@ func (o *SendOrchestrator) Recipients(ctx context.Context, projectUID string, ne
 	if newsletterID == uuid.Nil {
 		return o.liveRecipients(ctx, projectUID, committeeUIDs, false)
 	}
-	if _, err := o.readyAudience(ctx, projectUID, newsletterID, committeeUIDs); err != nil {
+	n, err := o.newsletterInProject(ctx, projectUID, newsletterID, committeeUIDs)
+	if err != nil {
+		return nil, err
+	}
+	// A sent or scheduled newsletter's members are deleted after the send, so
+	// the preview only exists while the newsletter is a draft.
+	if n.Status != model.StatusDraft {
+		return nil, domain.ErrAlreadySent
+	}
+	if _, err := o.readyAudienceFor(ctx, n, committeeUIDs); err != nil {
 		return nil, err
 	}
 	return o.audience.ListMembers(ctx, newsletterID)
@@ -1257,6 +1266,16 @@ func (o *SendOrchestrator) Recipients(ctx context.Context, projectUID string, ne
 // built from committeeUIDs. Otherwise it returns *domain.AudienceNotReadyError
 // carrying the reason. The newsletter must belong to projectUID.
 func (o *SendOrchestrator) readyAudience(ctx context.Context, projectUID string, newsletterID uuid.UUID, committeeUIDs []string) (*model.Audience, error) {
+	n, err := o.newsletterInProject(ctx, projectUID, newsletterID, committeeUIDs)
+	if err != nil {
+		return nil, err
+	}
+	return o.readyAudienceFor(ctx, n, committeeUIDs)
+}
+
+// newsletterInProject validates the inputs and loads the newsletter, which must
+// belong to projectUID.
+func (o *SendOrchestrator) newsletterInProject(ctx context.Context, projectUID string, newsletterID uuid.UUID, committeeUIDs []string) (*model.Newsletter, error) {
 	if err := validateProjectUID(projectUID); err != nil {
 		return nil, err
 	}
@@ -1270,7 +1289,7 @@ func (o *SendOrchestrator) readyAudience(ctx context.Context, projectUID string,
 	if n.ProjectUID != projectUID {
 		return nil, domain.ErrNotFound
 	}
-	return o.readyAudienceFor(ctx, n, committeeUIDs)
+	return n, nil
 }
 
 // readyAudienceFor is readyAudience for a newsletter that is already loaded and
@@ -1299,7 +1318,8 @@ func (o *SendOrchestrator) readyAudienceFor(ctx context.Context, n *model.Newsle
 // unsubscribed after the snapshot was taken. Only the email and first name are
 // kept, which is all the fan-out needs.
 func (o *SendOrchestrator) snapshotRecipients(ctx context.Context, n *model.Newsletter) ([]model.CommitteeMember, error) {
-	if _, err := o.readyAudienceFor(ctx, n, n.CommitteeUIDs); err != nil {
+	audience, err := o.readyAudienceFor(ctx, n, n.CommitteeUIDs)
+	if err != nil {
 		// A newsletter with no snapshot at all was drafted by a client that has
 		// not adopted snapshots, so it is sent from a live read, as before. A
 		// snapshot that is processing, failed or stale still stops the send.
@@ -1312,6 +1332,12 @@ func (o *SendOrchestrator) snapshotRecipients(ctx context.Context, n *model.News
 	members, err := o.audience.ListMembers(ctx, n.ID)
 	if err != nil {
 		return nil, fmt.Errorf("read audience members: %w", err)
+	}
+	// A ready audience whose members are gone was purged after an earlier
+	// send. Sending from it would reach nobody and use the newsletter up, so
+	// treat it as stale and have the client resolve it again.
+	if len(members) == 0 && audience.RecipientCount > 0 {
+		return nil, &domain.AudienceNotReadyError{Status: domain.AudienceStateStale}
 	}
 	excluded, err := o.listUnsubscribed(ctx, n.ProjectUID)
 	if err != nil {
@@ -1348,7 +1374,7 @@ func (o *SendOrchestrator) liveRecipients(ctx context.Context, projectUID string
 	if o.committee == nil {
 		return nil, &domain.AudienceNotReadyError{Status: domain.AudienceStateNone}
 	}
-	lists, err := readCommittees(ctx, o.committee, canonicalCommitteeUIDs(committeeUIDs), requireMembers)
+	lists, err := readCommittees(ctx, o.committee, projectUID, canonicalCommitteeUIDs(committeeUIDs), committeeReadRules{requireMembers: requireMembers})
 	if err != nil {
 		return nil, err
 	}

@@ -259,9 +259,10 @@ func (s *AudienceService) runResolve(ctx context.Context, projectUID string, new
 }
 
 // collect reads every committee and merges the members. A committee that
-// returns no members fails the audience (see readCommittees).
+// returns no members, or belongs to another project, fails the audience (see
+// readCommittees).
 func (s *AudienceService) collect(ctx context.Context, projectUID string, committeeUIDs []string) (audienceMembers, error) {
-	lists, err := readCommittees(ctx, s.committee, committeeUIDs, true)
+	lists, err := readCommittees(ctx, s.committee, projectUID, committeeUIDs, committeeReadRules{requireMembers: true, requireProject: true})
 	if err != nil {
 		return audienceMembers{}, err
 	}
@@ -280,6 +281,8 @@ func audienceFailureMessage(err error) string {
 	switch {
 	case errors.As(err, &notFound):
 		return "a selected committee was not found"
+	case errors.Is(err, errCommitteeOtherProject):
+		return "a selected committee belongs to another project"
 	case errors.Is(err, domain.ErrUnprocessable):
 		return "a selected committee returned no members"
 	case errors.Is(err, context.DeadlineExceeded):

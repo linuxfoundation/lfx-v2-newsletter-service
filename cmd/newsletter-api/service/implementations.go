@@ -245,15 +245,10 @@ type stuckSendRecoverer interface {
 	SettleDueScheduled(ctx context.Context, now time.Time) (int64, error)
 }
 
-// staleAudienceFailer is the audience repository slice the recovery sweep needs.
-type staleAudienceFailer interface {
-	FailStale(ctx context.Context, olderThan time.Duration) (int, error)
-}
-
 // startStuckSendRecovery launches the background sweep that settles
 // newsletters stranded in 'sending' and fails audiences stranded in
 // 'processing'. Stopped via recoveryStop in Shutdown.
-func startStuckSendRecovery(repo stuckSendRecoverer, audiences staleAudienceFailer, ttl, audienceTTL time.Duration) {
+func startStuckSendRecovery(repo stuckSendRecoverer, audiences port.AudienceSweeper, ttl, audienceTTL time.Duration) {
 	// The goroutine holds its own reference so Shutdown can clear the package
 	// variable without racing the select below.
 	stop := make(chan struct{})
@@ -276,6 +271,15 @@ func startStuckSendRecovery(repo stuckSendRecoverer, audiences staleAudienceFail
 					"failed", failed,
 					"ttl", audienceTTL.String(),
 				)
+			}
+
+			// Delete snapshot members of sent and scheduled newsletters, so member
+			// emails and names are not kept after a send on any path.
+			purged, err := audiences.PurgeSentMembers(ctx)
+			if err != nil {
+				slog.ErrorContext(ctx, "sent-audience purge sweep failed", "error", err)
+			} else if purged > 0 {
+				slog.InfoContext(ctx, "sent-audience purge sweep deleted snapshot members", "deleted", purged)
 			}
 
 			recovered, err := repo.RecoverStuckSending(ctx, ttl)

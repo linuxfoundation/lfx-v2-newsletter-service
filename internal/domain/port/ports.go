@@ -219,11 +219,22 @@ type AudiencePurger interface {
 	DeleteMembers(ctx context.Context, newsletterID uuid.UUID) error
 }
 
+// AudienceSweeper is the audience slice the recovery sweep runs.
+type AudienceSweeper interface {
+	// FailStale sets 'processing' rows not updated for olderThan to 'failed'.
+	// It is safe to call from several pods. It returns the number of rows changed.
+	FailStale(ctx context.Context, olderThan time.Duration) (int, error)
+	// PurgeSentMembers deletes the snapshot members of every newsletter that is
+	// sent or scheduled, so a purge missed on any send path is caught.
+	PurgeSentMembers(ctx context.Context) (int, error)
+}
+
 // AudienceRepository persists audience snapshots (newsletter_audiences and
 // newsletter_audience_members).
 type AudienceRepository interface {
 	AudienceReader
 	AudiencePurger
+	AudienceSweeper
 
 	// BeginResolve starts a resolution in one statement. It inserts the row, or
 	// moves an existing row to 'processing' unless it is already 'processing'.
@@ -236,9 +247,6 @@ type AudienceRepository interface {
 	MarkReady(ctx context.Context, newsletterID uuid.UUID, count, skippedNoEmail int) error
 	// MarkFailed sets the audience to 'failed'. It matches only a 'processing' row.
 	MarkFailed(ctx context.Context, newsletterID uuid.UUID, msg string) error
-	// FailStale sets 'processing' rows not updated for olderThan to 'failed'.
-	// It is safe to call from several pods. It returns the number of rows changed.
-	FailStale(ctx context.Context, olderThan time.Duration) (int, error)
 }
 
 // ProjectMetadataClient resolves the project name and slug used for email

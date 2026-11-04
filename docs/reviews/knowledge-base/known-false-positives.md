@@ -90,7 +90,7 @@ deleted silently so the disposition stays auditable.
 
 ### Retired send and recipient-lookup designs still described in older prose
 
-**Pattern matched:** a finding that asserts the send path should accept a caller-supplied `groupId`, transition `draft → sent` directly with no `sending` state, fan out synchronously inside the `POST …/send` request or without a concurrency bound, or that recipient lookup should use the NATS subject `lfx.committee-api.list_members` or resolve recipients live inside the send, recipient-count or recipient-preview request.
+**Pattern matched:** a finding that asserts the send path should accept a caller-supplied `groupId`, transition `draft → sent` directly with no `sending` state, fan out synchronously inside the `POST …/send` request or without a concurrency bound, or that recipient lookup should use the NATS subject `lfx.committee-api.list_members` or resolve recipients live inside the send, recipient-count or recipient-preview request (other than the documented one-release compatibility paths in `docs/recipient-resolution.md`, which are current design).
 
 **Why false:** those describe retired behavior. Current truth is in
 `docs/newsletter-service-contract.md` (§ Routes and § State Transitions: `status` is `draft`, `sending`, `scheduled` or `sent`; `draft → sending` inside the request and the `sent` transition in a detached job bounded by `SEND_JOB_TIMEOUT`; `group_id` minted by this service; `409 send_in_progress`) and

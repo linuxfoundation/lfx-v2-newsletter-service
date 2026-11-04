@@ -169,6 +169,8 @@ type resourceData struct {
 	Email     string `json:"email"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
+	// ProjectUID is optional in the committee_member resource.
+	ProjectUID string `json:"project_uid"`
 }
 
 // memberEmail is the only place that knows where a committee member's email
@@ -212,9 +214,10 @@ func (c *Client) ListMembers(ctx context.Context, committeeUID string) (model.Co
 				continue
 			}
 			out.Members = append(out.Members, model.CommitteeMember{
-				Email:     email,
-				FirstName: r.Data.FirstName,
-				LastName:  r.Data.LastName,
+				Email:      email,
+				FirstName:  r.Data.FirstName,
+				LastName:   r.Data.LastName,
+				ProjectUID: strings.TrimSpace(r.Data.ProjectUID),
 			})
 		}
 		if page.PageToken == "" {

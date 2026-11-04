@@ -138,6 +138,8 @@ func (r *fakeAudienceRepo) ListMembers(_ context.Context, id uuid.UUID) ([]model
 	return out, nil
 }
 
+func (r *fakeAudienceRepo) PurgeSentMembers(context.Context) (int, error) { return 0, nil }
+
 func (r *fakeAudienceRepo) FailStale(_ context.Context, olderThan time.Duration) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

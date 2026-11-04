@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -104,16 +105,31 @@ func sameCommitteeUIDs(a, b []string) bool {
 	return true
 }
 
+// errEmptyCommittee and errCommitteeOtherProject are the two ways a committee
+// read is refused. Both wrap domain.ErrUnprocessable.
+var (
+	errEmptyCommittee        = fmt.Errorf("%w: committee returned no members", domain.ErrUnprocessable)
+	errCommitteeOtherProject = fmt.Errorf("%w: committee belongs to another project", domain.ErrUnprocessable)
+)
+
+// committeeReadRules sets how strict readCommittees is.
+type committeeReadRules struct {
+	// requireMembers fails the read when a committee returns no members at all
+	// (none with an email and none skipped). The query service answers an
+	// unknown committee, or one this service is not allowed to see, with an empty
+	// page, so an empty result is far more likely a missing access grant or a
+	// mistyped UID than a real empty committee.
+	requireMembers bool
+	// requireProject fails the read when a member's committee is indexed under
+	// a project other than projectUID. When it is false a mismatch is only
+	// logged, which keeps the read clients used before snapshots unchanged.
+	requireProject bool
+}
+
 // readCommittees reads every committee in parallel. The errgroup cancels the
-// other reads as soon as one fails.
-//
-// With requireMembers set, a committee that returns no members at all (none
-// with an email and none skipped) fails the read with domain.ErrUnprocessable.
-// The query service answers an unknown committee, or one this service is not
-// allowed to see, with an empty page, so an empty result is far more likely a
-// missing access grant or a mistyped UID than a real empty committee, and
-// sending to it would use the newsletter up for nobody.
-func readCommittees(ctx context.Context, client port.CommitteeClient, committeeUIDs []string, requireMembers bool) ([]model.CommitteeMembers, error) {
+// other reads as soon as one fails. Members whose source gives no project are
+// accepted.
+func readCommittees(ctx context.Context, client port.CommitteeClient, projectUID string, committeeUIDs []string, rules committeeReadRules) ([]model.CommitteeMembers, error) {
 	lists := make([]model.CommitteeMembers, len(committeeUIDs))
 	g, gctx := errgroup.WithContext(ctx)
 	for i, uid := range committeeUIDs {
@@ -122,8 +138,21 @@ func readCommittees(ctx context.Context, client port.CommitteeClient, committeeU
 			if err != nil {
 				return err
 			}
-			if requireMembers && len(list.Members) == 0 && list.SkippedNoEmail == 0 {
-				return fmt.Errorf("%w: committee %s returned no members", domain.ErrUnprocessable, uid)
+			if rules.requireMembers && len(list.Members) == 0 && list.SkippedNoEmail == 0 {
+				return fmt.Errorf("committee %s: %w", uid, errEmptyCommittee)
+			}
+			for _, m := range list.Members {
+				if m.ProjectUID == "" || m.ProjectUID == projectUID {
+					continue
+				}
+				if rules.requireProject {
+					return fmt.Errorf("committee %s: %w", uid, errCommitteeOtherProject)
+				}
+				slog.WarnContext(gctx, "committee read: committee is indexed under another project",
+					"committee_uid", uid,
+					"project_uid", projectUID,
+				)
+				break
 			}
 			lists[i] = list
 			return nil

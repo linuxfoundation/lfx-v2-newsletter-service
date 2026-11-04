@@ -96,6 +96,8 @@ func (r *audienceStubRepo) ListMembers(_ context.Context, id uuid.UUID) ([]model
 	return r.members[id], nil
 }
 
+func (r *audienceStubRepo) PurgeSentMembers(context.Context) (int, error) { return 0, nil }
+
 func (r *audienceStubRepo) FailStale(context.Context, time.Duration) (int, error) { return 0, nil }
 
 type newsletterStub struct{ n *model.Newsletter }

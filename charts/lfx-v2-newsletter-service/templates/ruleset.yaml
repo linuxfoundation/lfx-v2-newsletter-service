@@ -373,6 +373,8 @@ spec:
             values:
               aud: {{ .Values.app.audience }}
 
+    # The recipient preview returns member emails and names, and the read runs
+    # with the service's M2M identity, so it carries writer_guard like send.
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:recipients"
       allow_encoded_slashes: 'off'
       match:
@@ -390,7 +392,7 @@ spec:
         - authorizer: openfga_check
           config:
             values:
-              relation: viewer
+              relation: writer_guard
               object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
         {{- else }}
         - authorizer: allow_all
