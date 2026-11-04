@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
 	"strings"
@@ -33,6 +34,7 @@ import (
 type AnalyticsService struct {
 	repo            port.NewsletterRepository
 	readers         map[string]port.EngagementReader
+	audience        port.AudienceReader
 	committee       port.CommitteeClient
 	defaultProvider string
 }
@@ -40,10 +42,12 @@ type AnalyticsService struct {
 // NewAnalyticsService wires an AnalyticsService. readers must contain an entry
 // for defaultProvider; a nil or missing reader for a newsletter's provider
 // degrades that newsletter to local-only analytics rather than panicking.
-// committee resolves recipient display names for the per-recipient endpoint;
-// nil is tolerated (names stay empty).
-func NewAnalyticsService(repo port.NewsletterRepository, readers map[string]port.EngagementReader, committee port.CommitteeClient, defaultProvider string) *AnalyticsService {
-	return &AnalyticsService{repo: repo, readers: readers, committee: committee, defaultProvider: defaultProvider}
+// audience and committee resolve recipient display names for the per-recipient
+// endpoint. Names come from the newsletter's audience snapshot when one is
+// ready. Newsletters sent before snapshots existed fall back to a live committee
+// read. A nil audience or committee is tolerated (names stay empty).
+func NewAnalyticsService(repo port.NewsletterRepository, readers map[string]port.EngagementReader, audience port.AudienceReader, committee port.CommitteeClient, defaultProvider string) *AnalyticsService {
+	return &AnalyticsService{repo: repo, readers: readers, audience: audience, committee: committee, defaultProvider: defaultProvider}
 }
 
 // readerFor resolves the engagement reader for a newsletter's send_provider.
@@ -378,7 +382,7 @@ func (a *AnalyticsService) Recipients(ctx context.Context, projectUID string, ne
 		return nil, err
 	}
 
-	names := a.recipientNames(ctx, n.CommitteeUIDs)
+	names := a.recipientNames(ctx, n)
 	out := make([]port.RecipientEngagement, 0, len(records))
 	for _, r := range records {
 		// Open timestamps come pre-sorted from the SendGrid store's ORDER BY;
@@ -416,16 +420,43 @@ func (a *AnalyticsService) Recipients(ctx context.Context, projectUID string, ne
 	}, nil
 }
 
-// recipientNames builds a lowercased-email → "First Last" map from the
-// newsletter's committees. Best-effort: a failed committee lookup is logged
-// and skipped, so callers still get names for the committees that resolved.
-func (a *AnalyticsService) recipientNames(ctx context.Context, committeeUIDs []string) map[string]string {
+// recipientNames builds a lowercased-email → "First Last" map for the
+// newsletter. It reads the audience snapshot when one is ready. Without a ready
+// snapshot (newsletters sent before snapshots existed) it reads the newsletter's
+// committees live. Both paths are best-effort: a failed lookup is logged and
+// skipped, so callers still get the names that resolved.
+func (a *AnalyticsService) recipientNames(ctx context.Context, n *model.Newsletter) map[string]string {
 	names := make(map[string]string)
+	if a.audience != nil {
+		audience, err := a.audience.Get(ctx, n.ID)
+		switch {
+		case err == nil && audience.Status == model.AudienceReady:
+			// A sent newsletter's members are deleted after the send, so an
+			// empty list falls through to the live committee read.
+			members, err := a.audience.ListMembers(ctx, n.ID)
+			if err == nil && len(members) > 0 {
+				addMemberNames(names, members)
+				return names
+			}
+			if err == nil {
+				break
+			}
+			slog.WarnContext(ctx, "analytics: audience member lookup failed, falling back to committees",
+				"newsletter_id", n.ID,
+				"error", err.Error(),
+			)
+		case err != nil && !errors.Is(err, domain.ErrNotFound):
+			slog.WarnContext(ctx, "analytics: audience lookup failed, falling back to committees",
+				"newsletter_id", n.ID,
+				"error", err.Error(),
+			)
+		}
+	}
 	if a.committee == nil {
 		return names
 	}
-	for _, uid := range committeeUIDs {
-		members, err := a.committee.ListMembers(ctx, uid)
+	for _, uid := range n.CommitteeUIDs {
+		list, err := a.committee.ListMembers(ctx, uid)
 		if err != nil {
 			slog.WarnContext(ctx, "analytics: committee member lookup failed, recipient names degrade to email",
 				"committee_uid", uid,
@@ -433,17 +464,23 @@ func (a *AnalyticsService) recipientNames(ctx context.Context, committeeUIDs []s
 			)
 			continue
 		}
-		for _, m := range members {
-			email := strings.ToLower(strings.TrimSpace(m.Email))
-			if email == "" {
-				continue
-			}
-			name := strings.TrimSpace(strings.TrimSpace(m.FirstName) + " " + strings.TrimSpace(m.LastName))
-			if name == "" {
-				continue
-			}
-			names[email] = name
-		}
+		addMemberNames(names, list.Members)
 	}
 	return names
+}
+
+// addMemberNames adds each member that has an email and a name to names, keyed
+// by lowercased email.
+func addMemberNames(names map[string]string, members []model.CommitteeMember) {
+	for _, m := range members {
+		email := strings.ToLower(strings.TrimSpace(m.Email))
+		if email == "" {
+			continue
+		}
+		name := strings.TrimSpace(strings.TrimSpace(m.FirstName) + " " + strings.TrimSpace(m.LastName))
+		if name == "" {
+			continue
+		}
+		names[email] = name
+	}
 }

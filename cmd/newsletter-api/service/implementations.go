@@ -21,7 +21,9 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/handler"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/m2m"
 	natsinfra "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/nats"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/queryservice"
 	sendgridinfra "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/infrastructure/sendgrid"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/repository"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/schema"
@@ -38,6 +40,7 @@ var (
 	authImpl     *handler.AuthValidator
 	natsClient   *natsinfra.Client
 	sendSvc      *service.SendOrchestrator
+	audienceSvc  *service.AudienceService
 	recoveryStop chan struct{}
 )
 
@@ -53,6 +56,10 @@ const (
 // jobs. Kept under main's 25s graceful-shutdown window; anything that doesn't
 // finish is recovered by the stuck-sending sweep on the next pod.
 const drainTimeout = 20 * time.Second
+
+// audienceDrainTimeout bounds the wait for cancelled audience jobs to record
+// their failure. It covers one database write (persistTimeout in the service).
+const audienceDrainTimeout = 5 * time.Second
 
 // newBunDB opens the bun handle the service runs on. It tolerates columns
 // this build does not model, so a pod still on this version keeps working
@@ -85,11 +92,8 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		return fmt.Errorf("schema apply: %w", err)
 	}
 
-	// Step 3: NATS — used by the email dispatcher, committee client, and
-	// project metadata client. No upstream HTTP service-to-service calls
-	// remain (the prior HTTP committee query client used to forward the user
-	// bearer token, but Heimdall mints a JWT the query-service can't validate,
-	// so that path returned empty results in practice).
+	// Step 3: NATS — used by the email dispatcher, the project metadata client
+	// and the user metadata client.
 	nc, err := natsinfra.New(ctx, natsinfra.Config{
 		URL:           cfg.NATSURL,
 		Timeout:       cfg.NATSTimeout,
@@ -100,7 +104,6 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		return fmt.Errorf("nats connect: %w", err)
 	}
 	natsClient = nc
-	committeeClient := natsinfra.NewCommitteeClient(nc)
 	projectClient := natsinfra.NewProjectClient(nc)
 	emailDispatcher, err := newEmailDispatcher(ctx, cfg, nc)
 	if err != nil {
@@ -128,6 +131,13 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	}
 	userMetadataClient := natsinfra.NewUserMetadataClient(nc)
 
+	// Committee members come from the query service, read as this service with an
+	// Auth0 M2M token. The inbound user token is never forwarded.
+	committeeClient, err := newCommitteeClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
 	// Step 4: auth.
 	auth, err := handler.NewAuthValidator(ctx, cfg.JWKSURL, cfg.ExpectedAudience)
 	if err != nil {
@@ -151,9 +161,19 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	// Step 5: domain wiring.
 	repo := repository.NewPostgresNewsletterRepo(bunDB)
 	unsubSvc := service.NewUnsubscribeService(repo, []byte(cfg.UnsubscribeSecret), cfg.PublicBaseURL)
+	audienceRepo := repository.NewPostgresAudienceRepo(bunDB)
+	audienceSvc = service.NewAudienceService(service.AudienceServiceConfig{
+		Newsletters:  repo,
+		Audiences:    audienceRepo,
+		Committee:    committeeClient,
+		Unsubscribed: repo,
+		JobTimeout:   cfg.AudienceJobTimeout,
+	})
 	newsletterSvc := service.NewNewsletterService(repo, unsubSvc.Enabled())
 	sendSvc = service.NewSendOrchestrator(service.SendOrchestratorConfig{
 		Repo:                  repo,
+		Audience:              audienceRepo,
+		AudiencePurge:         audienceRepo,
 		Committee:             committeeClient,
 		Project:               projectClient,
 		Email:                 emailDispatcher,
@@ -185,12 +205,12 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		model.SendProviderEmailService: natsinfra.NewEmailDispatcher(nc),
 		model.SendProviderSendGrid:     sendgridinfra.NewEngagementReader(repository.NewSendGridEngagementStore(bunDB)),
 	}
-	analyticsSvc := service.NewAnalyticsService(repo, engagementReaders, committeeClient, model.SendProviderEmailService)
+	analyticsSvc := service.NewAnalyticsService(repo, engagementReaders, audienceRepo, committeeClient, model.SendProviderEmailService)
 
 	// Step 6: recovery sweep for newsletters stranded in 'sending' by a pod
 	// crash mid-fan-out. Runs once at startup (catches strands from previous
 	// pods immediately) and then on a ticker.
-	startStuckSendRecovery(repo, cfg.StuckSendTTL)
+	startStuckSendRecovery(repo, audienceRepo, cfg.StuckSendTTL, cfg.AudienceStaleTTL)
 
 	sendgridWebhook, err := newSendGridWebhook(ctx, cfg)
 	if err != nil {
@@ -200,6 +220,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	handlerImpl = handler.New(handler.Config{
 		Newsletter:      newsletterSvc,
 		Send:            sendSvc,
+		Audience:        audienceSvc,
 		Analytics:       analyticsSvc,
 		Unsubscribe:     unsubSvc,
 		Shares:          service.NewShareService(repo, repo),
@@ -224,16 +245,39 @@ type stuckSendRecoverer interface {
 	SettleDueScheduled(ctx context.Context, now time.Time) (int64, error)
 }
 
+// staleAudienceFailer is the audience repository slice the recovery sweep needs.
+type staleAudienceFailer interface {
+	FailStale(ctx context.Context, olderThan time.Duration) (int, error)
+}
+
 // startStuckSendRecovery launches the background sweep that settles
-// newsletters stranded in 'sending'. Stopped via recoveryStop in Shutdown.
-func startStuckSendRecovery(repo stuckSendRecoverer, ttl time.Duration) {
-	recoveryStop = make(chan struct{})
+// newsletters stranded in 'sending' and fails audiences stranded in
+// 'processing'. Stopped via recoveryStop in Shutdown.
+func startStuckSendRecovery(repo stuckSendRecoverer, audiences staleAudienceFailer, ttl, audienceTTL time.Duration) {
+	// The goroutine holds its own reference so Shutdown can clear the package
+	// variable without racing the select below.
+	stop := make(chan struct{})
+	recoveryStop = stop
 	go func() {
 		sweep := func() {
 			// Bound each iteration so a hung DB call can't wedge the sweep
 			// goroutine (Shutdown closes recoveryStop without awaiting it).
 			ctx, cancel := context.WithTimeout(context.Background(), stuckSendSweepTimeout)
 			defer cancel()
+
+			// An audience whose pod died mid-job would stay 'processing' and block
+			// a retry. Failing it lets the UI offer one. This runs first and does not
+			// return on error, so a failure here never skips the send recovery below.
+			failed, err := audiences.FailStale(ctx, audienceTTL)
+			if err != nil {
+				slog.ErrorContext(ctx, "stale-audience sweep failed", "error", err)
+			} else if failed > 0 {
+				slog.WarnContext(ctx, "stale-audience sweep failed stranded audiences",
+					"failed", failed,
+					"ttl", audienceTTL.String(),
+				)
+			}
+
 			recovered, err := repo.RecoverStuckSending(ctx, ttl)
 			if err != nil {
 				slog.ErrorContext(ctx, "stuck-sending recovery sweep failed", "error", err)
@@ -268,7 +312,7 @@ func startStuckSendRecovery(repo stuckSendRecoverer, ttl time.Duration) {
 			select {
 			case <-ticker.C:
 				sweep()
-			case <-recoveryStop:
+			case <-stop:
 				return
 			}
 		}
@@ -292,6 +336,18 @@ func Shutdown() {
 		defer cancel()
 		if !sendSvc.Drain(drainCtx) {
 			slog.WarnContext(drainCtx, "shutdown: background send jobs did not drain in time; stuck-sending sweep will recover them")
+		}
+	}
+	// Audience resolution jobs are cancelled rather than waited for: a job can
+	// run for many minutes, longer than the pod's grace period. Each cancelled
+	// job records its audience as failed, so the user can resolve it again
+	// straight away. The short drain only covers that write.
+	if audienceSvc != nil {
+		audienceSvc.Stop()
+		drainCtx, cancel := context.WithTimeout(context.Background(), audienceDrainTimeout)
+		defer cancel()
+		if !audienceSvc.Drain(drainCtx) {
+			slog.WarnContext(drainCtx, "shutdown: audience resolution jobs did not drain in time; stale-audience sweep will fail them")
 		}
 	}
 	if natsClient != nil {
@@ -365,3 +421,33 @@ func newSendGridWebhook(ctx context.Context, cfg AppConfig) (http.Handler, error
 // extractSendGridScheduler extracts the SendGrid scheduler from an email
 // dispatcher if it implements port.ScheduledSender. Used to support scheduled
 // send cancellation even after a provider switch (LFXV2-2685).
+
+// newCommitteeClient builds the query service committee client. It logs only
+// whether each credential is set, never a value.
+func newCommitteeClient(ctx context.Context, cfg AppConfig) (port.CommitteeClient, error) {
+	slog.InfoContext(ctx, "query service committee client",
+		"query_service_url_set", cfg.QueryServiceURL != "",
+		"client_id_set", cfg.M2MAuthClientID != "",
+		"private_key_set", cfg.M2MAuthPrivateKey != "",
+		"domain_set", cfg.M2MAuthDomain != "",
+	)
+	identity, err := m2m.NewIdentity(ctx, m2m.IdentityConfig{
+		ClientID:   cfg.M2MAuthClientID,
+		PrivateKey: cfg.M2MAuthPrivateKey,
+		Domain:     cfg.M2MAuthDomain,
+		Audience:   cfg.M2MAuthAudience,
+	}, cfg.QueryServiceTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("m2m identity: %w", err)
+	}
+	client, err := queryservice.New(queryservice.Config{
+		BaseURL:  cfg.QueryServiceURL,
+		PageSize: cfg.QueryServicePageSize,
+		MaxPages: cfg.QueryServiceMaxPages,
+		Timeout:  cfg.QueryServiceTimeout,
+	}, identity.Client(), identity)
+	if err != nil {
+		return nil, fmt.Errorf("query service client: %w", err)
+	}
+	return client, nil
+}

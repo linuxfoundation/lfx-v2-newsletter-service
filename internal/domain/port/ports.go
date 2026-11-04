@@ -195,14 +195,50 @@ type UnsubscribeRepository interface {
 	DeleteUnsubscribe(ctx context.Context, projectUID string, id uuid.UUID) error
 }
 
-// CommitteeClient resolves committee members for newsletter recipient calculation.
+// CommitteeClient reads committee members for newsletter recipient calculation.
 //
-// The concrete implementation talks to lfx-v2-committee-service via the
-// `lfx.committee-api.list_members` NATS subject. No auth context flows through
-// — NATS is network-isolated and authorization is enforced at the inbound
-// gateway before the request ever reaches newsletter-service.
+// The concrete implementation pages through the LFX V2 query service over HTTPS
+// as this service, using its own M2M token. The inbound user's token is never
+// forwarded.
 type CommitteeClient interface {
-	ListMembers(ctx context.Context, committeeUID string) ([]model.CommitteeMember, error)
+	ListMembers(ctx context.Context, committeeUID string) (model.CommitteeMembers, error)
+}
+
+// AudienceReader reads audience snapshots.
+type AudienceReader interface {
+	// Get returns the audience, or domain.ErrNotFound when none exists.
+	Get(ctx context.Context, newsletterID uuid.UUID) (*model.Audience, error)
+	// ListMembers returns the snapshot members ordered by email.
+	ListMembers(ctx context.Context, newsletterID uuid.UUID) ([]model.CommitteeMember, error)
+}
+
+// AudiencePurger deletes a snapshot's members once its newsletter is sent, so
+// member emails and names are not kept after the send. The audience row and its
+// counts stay.
+type AudiencePurger interface {
+	DeleteMembers(ctx context.Context, newsletterID uuid.UUID) error
+}
+
+// AudienceRepository persists audience snapshots (newsletter_audiences and
+// newsletter_audience_members).
+type AudienceRepository interface {
+	AudienceReader
+	AudiencePurger
+
+	// BeginResolve starts a resolution in one statement. It inserts the row, or
+	// moves an existing row to 'processing' unless it is already 'processing'.
+	// It returns false when another resolution is in flight.
+	BeginResolve(ctx context.Context, newsletterID uuid.UUID, projectUID string, committeeUIDs []string) (claimed bool, err error)
+	// ReplaceMembers deletes the snapshot's members and inserts members in one
+	// transaction.
+	ReplaceMembers(ctx context.Context, newsletterID uuid.UUID, members []model.CommitteeMember) error
+	// MarkReady sets the audience to 'ready'. It matches only a 'processing' row.
+	MarkReady(ctx context.Context, newsletterID uuid.UUID, count, skippedNoEmail int) error
+	// MarkFailed sets the audience to 'failed'. It matches only a 'processing' row.
+	MarkFailed(ctx context.Context, newsletterID uuid.UUID, msg string) error
+	// FailStale sets 'processing' rows not updated for olderThan to 'failed'.
+	// It is safe to call from several pods. It returns the number of rows changed.
+	FailStale(ctx context.Context, olderThan time.Duration) (int, error)
 }
 
 // ProjectMetadataClient resolves the project name and slug used for email

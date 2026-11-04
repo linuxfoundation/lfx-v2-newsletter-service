@@ -96,7 +96,7 @@ func listCommitteePage(t *testing.T, repo *engagementRepo, reader port.Engagemen
 	t.Helper()
 	h := New(Config{
 		Newsletter: service.NewNewsletterService(repo, true),
-		Analytics:  service.NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: reader}, nil, model.SendProviderEmailService),
+		Analytics:  service.NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: reader}, nil, nil, model.SendProviderEmailService),
 		PageViews:  service.NewPageViewService(handlerShareNewsletters{}, &handlerPageViewRepo{}),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/committees/c1/newsletters", nil)
@@ -204,7 +204,7 @@ func TestGetAnalyticsTotalPageViews(t *testing.T) {
 	draft := &model.Newsletter{ID: uuid.New(), ProjectUID: "p1", Status: model.StatusDraft}
 	repo := &engagementRepo{page: []*model.Newsletter{sent, draft}}
 	h := New(Config{
-		Analytics: service.NewAnalyticsService(repo, map[string]port.EngagementReader{}, nil, model.SendProviderEmailService),
+		Analytics: service.NewAnalyticsService(repo, map[string]port.EngagementReader{}, nil, nil, model.SendProviderEmailService),
 		PageViews: service.NewPageViewService(handlerShareNewsletters{}, &handlerPageViewRepo{}),
 	})
 

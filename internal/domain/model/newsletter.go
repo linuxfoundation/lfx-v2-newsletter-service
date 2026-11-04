@@ -171,6 +171,14 @@ type CommitteeMember struct {
 	LastName  string
 }
 
+// CommitteeMembers is the result of listing one committee's members.
+// SkippedNoEmail counts members the source returned without an email address.
+// They are not in Members.
+type CommitteeMembers struct {
+	Members        []CommitteeMember
+	SkippedNoEmail int
+}
+
 // ProjectBranding is the slice of a project used to brand newsletter emails.
 type ProjectBranding struct {
 	DisplayName string

@@ -17,7 +17,7 @@ Important templates:
 | --- | --- |
 | `deployment.yaml` | Container image, env vars, Postgres secret wiring, probes, resources. |
 | `database.yaml` | Optional CloudNativePG `Cluster` and `Database` resources. |
-| `httproute.yaml` | Gateway API routing for the project-scoped newsletter paths, the open pixel, `/newsletters/unsubscribe`, and (when the webhook key is configured) the SendGrid event webhook. |
+| `httproute.yaml` | Gateway API routing for the project-scoped newsletter paths (this includes the audience routes), the open pixel, `/newsletters/unsubscribe`, and (when the webhook key is configured) the SendGrid event webhook. |
 | `ruleset.yaml` | Heimdall rules for authenticated API routes plus the unauthenticated open pixel, unsubscribe, and (when the webhook key is configured) SendGrid-webhook endpoints. |
 | `heimdall-middleware.yaml` | Optional Traefik middleware resources when this chart owns them locally. |
 | `networkpolicy.yaml` | Optional egress controls for DNS, NATS, OTel, Postgres, and external HTTPS (e.g. JWKS). |
@@ -30,9 +30,19 @@ Important templates:
 | --- | --- | --- |
 | `service.port` | `PORT` | HTTP listen port. |
 | `app.logLevel` | `LOG_LEVEL` | `debug`, `info`, `warn`, or `error`. |
-| `app.nats.url` | `NATS_URL` | Single NATS connection used by the email dispatcher, committee member client, and project metadata client. |
+| `app.nats.url` | `NATS_URL` | Single NATS connection used by the email dispatcher, the project metadata client and the user metadata client. Committee members are not read over NATS. |
 | `app.nats.timeout` / `maxReconnect` / `reconnectWait` | `NATS_TIMEOUT` / `NATS_MAX_RECONNECT` / `NATS_RECONNECT_WAIT` | Empty falls back to app defaults (10s / unlimited / 2s). |
-| `app.send.fanoutEnabled` | `SEND_FANOUT_ENABLED` | Toggles real email dispatch; false validates and resolves recipients without sending. |
+| `app.queryService.url` | `QUERY_SERVICE_URL` | Base URL of the LFX V2 query service, e.g. `https://lfx-api.dev.v2.cluster.linuxfound.info/`. Required. The service does not start without it, because committee members are only read from the query service. |
+| `app.queryService.pageSize` | `QUERY_SERVICE_PAGE_SIZE` | Page size for committee member reads. Allowed range 1 to 1000. Default 1000, the largest value the query service accepts. |
+| `app.queryService.maxPages` | `QUERY_SERVICE_MAX_PAGES` | Most pages read for one committee. Default 100, which is 100,000 members at the default page size. A committee that needs more fails its audience. |
+| `app.queryService.timeout` | `QUERY_SERVICE_TIMEOUT` | Timeout for one page request. Default 15s. |
+| `app.m2mAuth.domain` | `M2M_AUTH_DOMAIN` | Auth0 tenant domain, e.g. `linuxfoundation-dev.auth0.com`. Required. |
+| `app.m2mAuth.audience` | `M2M_AUTH_AUDIENCE` | Audience of the access token. On dev it is the same value as `app.queryService.url`. Required. |
+| `app.m2mAuth.clientIDSecretRef` | `M2M_AUTH_CLIENT_ID` | Sources the Auth0 client ID from a Kubernetes Secret. The default key is `auth0_client_id`. The secret name is required, and the chart fails to render without it. |
+| `app.m2mAuth.privateKeySecretRef` | `M2M_AUTH_PRIVATE_KEY` | Sources the PEM private key of the Auth0 client from a Kubernetes Secret. The default key is `auth0_client_private_key`. The secret name is required, and the chart fails to render without it. |
+| `app.audienceResolution.jobTimeout` | `AUDIENCE_JOB_TIMEOUT` | Bounds one background audience resolution job. Default 30m. |
+| `app.audienceResolution.staleTTL` | `AUDIENCE_STALE_TTL` | Age after which an audience stuck in `processing` is marked `failed` by the recovery sweep. Default 40m. The app raises a smaller value to `AUDIENCE_JOB_TIMEOUT` plus 5m. |
+| `app.send.fanoutEnabled` | `SEND_FANOUT_ENABLED` | Toggles real email dispatch; false validates the send and reads the audience snapshot without sending. |
 | `app.send.concurrency` | `SEND_CONCURRENCY` | Caps in-flight email-service requests during fan-out (default 5). |
 | `app.send.jobTimeout` | `SEND_JOB_TIMEOUT` | Bounds the detached background fan-out after a send is accepted (default 30m). |
 | `app.send.stuckSendTTL` | `STUCK_SEND_TTL` | Age after which a `sending` row stranded by a pod crash is recovered to `sent` (default 45m; app enforces ≥ jobTimeout + 5m). |
@@ -55,6 +65,18 @@ Important templates:
 | `database.*` | `DATABASE_URL` or `PG*` | See database modes below. |
 | `app.extraEnv` | varies | Escape hatch for additional env vars. |
 | `app.otel.*` | `OTEL_*` | OpenTelemetry configuration. |
+
+## Query Service Identity
+
+The service reads committee members from the query service as itself. It needs an Auth0 client that uses a private key JWT client assertion, and read access to every committee member in OpenFGA.
+
+- The client is created in `auth0-terraform`. The client ID and the PEM private key are stored in `lfx-secrets-management`, and `lfx-v2-argocd` syncs them into the `lfx-v2-newsletter-service-secrets` secret in each environment under the keys `auth0_client_id` and `auth0_client_private_key`.
+- The chart takes the client ID and the key only as secret references. It never takes the values. `helm template` fails if `app.m2mAuth.clientIDSecretRef.name`, `app.m2mAuth.privateKeySecretRef.name`, `app.queryService.url`, `app.m2mAuth.domain` or `app.m2mAuth.audience` is empty.
+- The grant is a direct `auditor` tuple on the root project for the client, or membership of the global project auditors team. If a valid token returns empty pages, check the principal string in that tuple first.
+- The network policy already allows egress on ports 80 and 443, which covers the query service and the Auth0 tenant.
+- The `app.nats.*` values stay, because NATS is still used for email, project and user metadata lookups.
+
+The values are described in `docs/recipient-resolution.md`.
 
 ## Database Modes
 
@@ -86,6 +108,7 @@ When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 - The editor template routes (`…/newsletters/templates` and `…/newsletters/templates/{template_key}/manifest`) carry explicit project-scoped `viewer` rules. The list path would otherwise match the `{newsletter_uid}` GET rule only by coincidence, and the manifest path matches no other rule at all, so both are declared rather than inherited. Both rules are declared before the `{newsletter_uid}` GET rule because Heimdall uses the first matching rule.
 - The scheduled-send routes (`POST …/newsletters/{newsletter_uid}/schedule` and `POST …/cancel-schedule`, LFXV2-2685) are copied verbatim from `newsletters:send` — same `writer_guard` relation, same `allow_all` fallback. Rationale: arming and cancelling a send carry exactly the authority `send` already carries — same actor, same blast radius, no new data exposure — so they deliberately do **not** follow the fail-closed pattern below.
 - The opt-out list endpoint (`GET /projects/{project_uid}/newsletter-opt-outs`) returns PII (email addresses) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor_guard` role and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` or OpenFGA is misconfigured — that is intentional for PII security.
+- The audience snapshot routes (`…/newsletters/{newsletter_uid}/audience`) are split by method. `POST` starts or restarts the background recipient resolution, which reads committee members with the service's M2M identity, so it carries the same `writer_guard` rule as `newsletters:send`. `GET` returns only the snapshot status, counts and committee UIDs, no email addresses, so it uses project `viewer` like `recipient-count`. Both fall back to `allow_all` when `openfga.enabled=false`.
 - The opt-out delete endpoint (`DELETE /projects/{project_uid}/newsletter-opt-outs/{opt_out_id}`) mutates a user's consent record and is **always fail-closed**: it uses direct `openfga_check` with the `writer_guard` role and does NOT have an `allow_all` fallback, matching the security posture of the list endpoint.
 - The per-recipient analytics endpoint (`GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients`) returns PII (recipient email addresses and per-recipient engagement history) and is **always fail-closed**: it uses direct `openfga_check` with the `auditor_guard` role — not `viewer`, whose project relation includes the public wildcard `[user:*]` — and does NOT have an `allow_all` fallback. This route is unreachable when `openfga.enabled=false` — that is intentional for PII security.
 - The committee-scoped list (`GET /committees/{committee_uid}/newsletters`) is **always fail-closed**: it uses `openfga_or_check` with `member` OR `auditor` on `committee:{committee_uid}` (auditor folds in committee writers and project oversight roles) and does NOT have an `allow_all` fallback. The FGA check is the route's entire authorization boundary, so it is unreachable when `openfga.enabled=false` — that is intentional.
