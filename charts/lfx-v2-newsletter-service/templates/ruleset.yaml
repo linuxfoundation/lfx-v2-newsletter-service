@@ -373,6 +373,8 @@ spec:
             values:
               aud: {{ .Values.app.audience }}
 
+    # The recipient preview returns member emails and names, and the read runs
+    # with the service's M2M identity, so it carries writer_guard like send.
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:recipients"
       allow_encoded_slashes: 'off'
       match:
@@ -380,6 +382,67 @@ spec:
           - POST
         routes:
           - path: /projects/:project_uid/newsletters/recipients
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer_guard
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    # ---------------------------------------------------------------------
+    # Audience snapshot. POST starts (or restarts) the background resolution
+    # of a newsletter's recipients, a write that reads committee members with
+    # the service's M2M identity, so it carries the same writer_guard rule as
+    # send. GET only reports status and counts, no email addresses, so it uses
+    # the same rule as recipient-count: viewer on the project.
+    # ---------------------------------------------------------------------
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:audience_resolve"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - POST
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/audience
+      execute:
+        - authenticator: oidc
+        - authenticator: anonymous_authenticator
+        {{- if .Values.app.use_oidc_contextualizer }}
+        - contextualizer: oidc_contextualizer
+        {{- end }}
+        {{- if .Values.openfga.enabled }}
+        - authorizer: openfga_check
+          config:
+            values:
+              relation: writer_guard
+              object: "project:{{ "{{- .Request.URL.Captures.project_uid -}}" }}"
+        {{- else }}
+        - authorizer: allow_all
+        {{- end }}
+        - finalizer: create_jwt
+          config:
+            values:
+              aud: {{ .Values.app.audience }}
+
+    - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:audience_get"
+      allow_encoded_slashes: 'off'
+      match:
+        methods:
+          - GET
+        routes:
+          - path: /projects/:project_uid/newsletters/:newsletter_uid/audience
       execute:
         - authenticator: oidc
         - authenticator: anonymous_authenticator

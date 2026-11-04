@@ -28,12 +28,39 @@ type AppConfig struct {
 	// pod spec — the env-var interpolation pattern would embed it verbatim.
 	DatabaseURL string
 
-	// NATS (required) — single connection used by the email dispatcher,
-	// committee member client, and project metadata client.
+	// NATS (required) — single connection used by the email dispatcher, the
+	// project metadata client and the user metadata client.
 	NATSURL           string
 	NATSTimeout       time.Duration
 	NATSMaxReconnect  int
 	NATSReconnectWait time.Duration
+
+	// QueryServiceURL is the base URL of the LFX V2 query service (required).
+	// Committee members are read from it over HTTPS as this service, using the
+	// M2M identity below. There is no other way to resolve an audience.
+	QueryServiceURL string
+	// QueryServicePageSize is the page size for committee member reads, 1 to 1000.
+	QueryServicePageSize int
+	// QueryServiceMaxPages caps the pages read for one committee. A committee that
+	// needs more fails the audience instead of being cut short.
+	QueryServiceMaxPages int
+	// QueryServiceTimeout bounds one page request.
+	QueryServiceTimeout time.Duration
+
+	// M2M identity (all four required): Auth0 client credentials with a private
+	// key JWT client assertion. M2MAuthPrivateKey is a PEM string and is never
+	// logged.
+	M2MAuthDomain     string
+	M2MAuthAudience   string
+	M2MAuthClientID   string
+	M2MAuthPrivateKey string
+
+	// AudienceJobTimeout bounds one background audience resolution.
+	AudienceJobTimeout time.Duration
+	// AudienceStaleTTL is the age after which an audience stuck in 'processing'
+	// (pod crash mid-job) is failed by the periodic sweep. Kept above
+	// AudienceJobTimeout so the sweep never races a live job.
+	AudienceStaleTTL time.Duration
 
 	// SendFanoutEnabled toggles the per-recipient send loop. When false, the
 	// send orchestrator validates inputs and transitions the draft to sent
@@ -148,6 +175,12 @@ const (
 	defaultEmailReplyToDomain    = "linuxfoundation.org"
 	defaultSendJobTimeout        = 30 * time.Minute
 	defaultStuckSendTTL          = 45 * time.Minute
+	defaultAudienceJobTimeout    = 30 * time.Minute
+	defaultAudienceStaleTTL      = 40 * time.Minute
+	defaultQueryServicePageSize  = 1000
+	defaultQueryServiceMaxPages  = 100
+	defaultQueryServiceTimeout   = 15 * time.Second
+	maxQueryServicePageSize      = 1000
 	defaultSelfServeBaseURL      = "https://app.lfx.dev"
 	// maxScheduleHorizon mirrors SendGrid Mail Send's own send_at limit
 	// (LFXV2-2685); a larger configured ScheduleMaxHorizon is rejected at
@@ -159,6 +192,8 @@ const (
 	// and StuckSendTTL so the recovery sweep never marks a row 'sent' while
 	// its fan-out job is still running.
 	minStuckSendSlack = 5 * time.Minute
+	// minAudienceStaleSlack is the same margin for audience resolution jobs.
+	minAudienceStaleSlack = 5 * time.Minute
 )
 
 // AppConfigFromEnv reads AppConfig from environment variables, applying defaults
@@ -172,6 +207,11 @@ func AppConfigFromEnv() (AppConfig, error) {
 		NATSTimeout:               durationOr("NATS_TIMEOUT", defaultNATSTimeout),
 		NATSMaxReconnect:          intOr("NATS_MAX_RECONNECT", -1),
 		NATSReconnectWait:         durationOr("NATS_RECONNECT_WAIT", time.Duration(defaultNATSReconnectWaitSecs)*time.Second),
+		QueryServiceURL:           strings.TrimSpace(os.Getenv("QUERY_SERVICE_URL")),
+		M2MAuthDomain:             strings.TrimSpace(os.Getenv("M2M_AUTH_DOMAIN")),
+		M2MAuthAudience:           strings.TrimSpace(os.Getenv("M2M_AUTH_AUDIENCE")),
+		M2MAuthClientID:           strings.TrimSpace(os.Getenv("M2M_AUTH_CLIENT_ID")),
+		M2MAuthPrivateKey:         strings.TrimSpace(os.Getenv("M2M_AUTH_PRIVATE_KEY")),
 		SendFanoutEnabled:         boolOr("SEND_FANOUT_ENABLED", true),
 		SendConcurrency:           intOr("SEND_CONCURRENCY", defaultSendConcurrency),
 		SendJobTimeout:            durationOr("SEND_JOB_TIMEOUT", defaultSendJobTimeout),
@@ -225,9 +265,56 @@ func AppConfigFromEnv() (AppConfig, error) {
 	if cfg.EmailProvider == "sendgrid" && cfg.SendGridAPIKey == "" {
 		missing = append(missing, "SENDGRID_API_KEY (required when EMAIL_PROVIDER=sendgrid)")
 	}
+	// Committee members are read from the query service as this service, so the
+	// URL and the whole M2M identity are required. With no URL there is no way to
+	// resolve an audience, so the service does not start.
+	if cfg.QueryServiceURL == "" {
+		missing = append(missing, "QUERY_SERVICE_URL")
+	}
+	if cfg.M2MAuthDomain == "" {
+		missing = append(missing, "M2M_AUTH_DOMAIN")
+	}
+	if cfg.M2MAuthAudience == "" {
+		missing = append(missing, "M2M_AUTH_AUDIENCE")
+	}
+	if cfg.M2MAuthClientID == "" {
+		missing = append(missing, "M2M_AUTH_CLIENT_ID")
+	}
+	if cfg.M2MAuthPrivateKey == "" {
+		missing = append(missing, "M2M_AUTH_PRIVATE_KEY")
+	}
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
 	}
+	var err error
+	if cfg.QueryServicePageSize, err = intStrict("QUERY_SERVICE_PAGE_SIZE", defaultQueryServicePageSize); err != nil {
+		return cfg, err
+	}
+	if cfg.QueryServicePageSize < 1 || cfg.QueryServicePageSize > maxQueryServicePageSize {
+		return cfg, fmt.Errorf("QUERY_SERVICE_PAGE_SIZE must be between 1 and %d, got %d", maxQueryServicePageSize, cfg.QueryServicePageSize)
+	}
+	if cfg.QueryServiceMaxPages, err = intStrict("QUERY_SERVICE_MAX_PAGES", defaultQueryServiceMaxPages); err != nil {
+		return cfg, err
+	}
+	if cfg.QueryServiceMaxPages < 1 {
+		return cfg, fmt.Errorf("QUERY_SERVICE_MAX_PAGES must be at least 1, got %d", cfg.QueryServiceMaxPages)
+	}
+	if cfg.QueryServiceTimeout, err = durationStrict("QUERY_SERVICE_TIMEOUT", defaultQueryServiceTimeout); err != nil {
+		return cfg, err
+	}
+	if cfg.QueryServiceTimeout <= 0 {
+		return cfg, fmt.Errorf("QUERY_SERVICE_TIMEOUT must be positive, got %s", cfg.QueryServiceTimeout)
+	}
+	if cfg.AudienceJobTimeout, err = durationStrict("AUDIENCE_JOB_TIMEOUT", defaultAudienceJobTimeout); err != nil {
+		return cfg, err
+	}
+	if cfg.AudienceJobTimeout <= 0 {
+		return cfg, fmt.Errorf("AUDIENCE_JOB_TIMEOUT must be positive, got %s", cfg.AudienceJobTimeout)
+	}
+	if cfg.AudienceStaleTTL, err = durationStrict("AUDIENCE_STALE_TTL", defaultAudienceStaleTTL); err != nil {
+		return cfg, err
+	}
+
 	// Reject an unknown EMAIL_PROVIDER up front. newEmailDispatcher treats any
 	// non-"sendgrid" value as email-service, but the raw value is also stamped
 	// onto newsletters.send_provider, whose CHECK constraint would then fail every
@@ -260,6 +347,12 @@ func AppConfigFromEnv() (AppConfig, error) {
 	// never mark a row 'sent' while its fan-out is still running.
 	if cfg.StuckSendTTL < cfg.SendJobTimeout+minStuckSendSlack {
 		cfg.StuckSendTTL = cfg.SendJobTimeout + minStuckSendSlack
+	}
+
+	// Same rule for audience resolution: the sweep must never fail an audience
+	// whose job is still running.
+	if cfg.AudienceStaleTTL < cfg.AudienceJobTimeout+minAudienceStaleSlack {
+		cfg.AudienceStaleTTL = cfg.AudienceJobTimeout + minAudienceStaleSlack
 	}
 
 	// A configured horizon beyond SendGrid's own send_at limit would let a
@@ -401,4 +494,32 @@ func durationOr(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+// intStrict is intOr, but a value that is not an integer is an error instead of
+// the fallback.
+func intStrict(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer, got %q", key, raw)
+	}
+	return v, nil
+}
+
+// durationStrict is durationOr, but a value that is not a duration is an error
+// instead of the fallback.
+func durationStrict(key string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a duration such as 15s, got %q", key, raw)
+	}
+	return d, nil
 }

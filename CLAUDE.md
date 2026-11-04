@@ -17,7 +17,7 @@
 The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It owns:
 
 - **Persistence** of project-scoped newsletter drafts and send history in PostgreSQL (CloudNativePG-backed).
-- **Recipient resolution** via NATS request/reply to committee-service (`lfx.committee-api.list_members`).
+- **Audience resolution** in a background job per newsletter. The job reads committee members from the LFX V2 query service over HTTPS, as this service with an Auth0 M2M token, and stores them as an audience snapshot. The send, the recipient count and the recipient preview read the snapshot.
 - **Email dispatch**: the send orchestrator mints the email-service `group_id`, renders email chrome, and fans out per-recipient sends to `lfx-v2-email-service` over NATS (`lfx.email-service.send_email`).
 - **State transitions** for drafts (draft → sent; a draft is marked sent only when at least one recipient was delivered to).
 - **Unsubscribe**: per-recipient HMAC-signed, project-scoped opt-out links served at `GET /newsletters/unsubscribe`.
@@ -26,7 +26,7 @@ The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It ow
 
 ## Repo Role
 
-This repo owns project-scoped newsletter drafts, sent-state persistence, recipient preview/count behavior, email dispatch and send fan-out, unsubscribe opt-outs, local open tracking, newsletter analytics, the newsletter HTTP API, and the service-local Helm chart. It consumes committee-service for committee-member recipient lookup, project-service for project name/slug, and auth-service for the sender's display name and primary email — all over NATS request/reply.
+This repo owns project-scoped newsletter drafts, sent-state persistence, recipient preview/count behavior, email dispatch and send fan-out, unsubscribe opt-outs, local open tracking, newsletter analytics, the newsletter HTTP API, and the service-local Helm chart. It reads committee members from the query service over HTTPS with its own M2M token, and consumes project-service for project name/slug and auth-service for the sender's display name and primary email over NATS request/reply.
 
 Newsletter delivery is provider-selectable via `EMAIL_PROVIDER`. The default (`email-service`) fans out to lfx-v2-email-service over NATS (SES), which also serves engagement analytics over NATS; `sendgrid` brokers SendGrid directly over HTTPS and owns engagement in a local store its signed event webhook populates. Either way, a `group_id` is minted and persisted when a draft is marked sent, each send stamps `send_provider`, and analytics is routed by `send_provider` so a newsletter's opens/delivered/failed totals always come from the store that dispatched it — local open-pixel rows overlaid on top.
 
@@ -35,15 +35,15 @@ It does not render AI content, publish indexer messages, or emit FGA tuples.
 ## Authoritative Repo Docs
 
 - `docs/newsletter-service-contract.md`: HTTP routes, public DTOs, ETag behavior, state transitions, errors, analytics, open tracking, and unsubscribe.
-- `docs/recipient-resolution.md`: committee-service member lookup over NATS, unsubscribe exclusion, recipient normalization, and the email-service send fan-out / `group_id` handoff.
+- `docs/recipient-resolution.md`: the query service member read, the audience snapshot and its 409 contract, unsubscribe exclusion, recipient normalization, and the email-service send fan-out / `group_id` handoff.
 - `docs/service-helm-chart.md`: service-local chart values, Postgres database modes, Gateway/Heimdall wiring, and deployment handoffs.
 - `charts/lfx-v2-newsletter-service/`: service-local Helm templates and defaults.
 
-Read the relevant contract before changing `pkg/api`, handlers, database schema, recipient resolution, analytics, open tracking, or chart values. Update docs in the same PR as behavior changes. These contract docs are authoritative: where prose in this file or in a `.claude/skills/**` skill disagrees with a contract doc in `docs/`, the contract doc wins and the prose is the bug. Not a review finding (2026-09-29): code that follows the contract docs' current send design (`sending` state, service-minted `group_id`, bounded detached fan-out, NATS member lookup) while older prose here, in `README.md`, or in `.claude/skills/**` still says `draft → sent` / query-service over HTTP — the stale prose is the docs bug; see docs/reviews/knowledge-base/known-false-positives.md § Retired send and recipient-lookup designs still described in older prose.
+Read the relevant contract before changing `pkg/api`, handlers, database schema, recipient resolution, analytics, open tracking, or chart values. Update docs in the same PR as behavior changes. These contract docs are authoritative: where prose in this file or in a `.claude/skills/**` skill disagrees with a contract doc in `docs/`, the contract doc wins and the prose is the bug. Not a review finding (2026-09-29): code that follows the contract docs' current send design (`sending` state, service-minted `group_id`, bounded detached fan-out, query-service audience snapshot) while older prose here, in `README.md`, or in `.claude/skills/**` still says `draft → sent` / NATS `list_members` or live recipient resolution — the stale prose is the docs bug; see docs/reviews/knowledge-base/known-false-positives.md § Retired send and recipient-lookup designs still described in older prose.
 
 ## Consumed Cross-Repo Contracts
 
-- Committee members over NATS (`lfx.committee-api.list_members`): `lfx-v2-committee-service`
+- Committee members over HTTPS (`GET /query/resources`, type `committee_member`), read with the service's own M2M token: `lfx-v2-query-service` (the data is indexed by `lfx-v2-committee-service`)
 - Project name/slug over NATS (`lfx.projects-api.get_name` / `get_slug`): `lfx-v2-project-service`
 - Email send and engagement tracking over NATS (`lfx.email-service.*`): `lfx-v2-email-service/docs/email-service-contract.md`
 - Sender display name over NATS (`lfx.auth-service.user_metadata.read`): `lfx-v2-auth-service/docs/user_metadata.md`
@@ -57,7 +57,7 @@ Use `/lfx-skills:lfx` if an owner repo is missing locally, a path has moved, or 
 
 - **Language**: Go 1.26.10+
 - **HTTP**: stdlib `net/http` with Go 1.22+ mux pattern
-- **Messaging**: NATS request/reply for service-to-service calls (committee, project, email, auth). Exception: when `EMAIL_PROVIDER=sendgrid`, newsletter delivery and engagement go direct to SendGrid over HTTPS (a signed event webhook feeds a local engagement store); email-service/SES over NATS is the default
+- **Messaging**: NATS request/reply for service-to-service calls (project, email, auth). Committee members are the exception: they are read from the query service over HTTPS. Exception: when `EMAIL_PROVIDER=sendgrid`, newsletter delivery and engagement go direct to SendGrid over HTTPS (a signed event webhook feeds a local engagement store); email-service/SES over NATS is the default
 - **Database**: PostgreSQL via [pgx](https://github.com/jackc/pgx) + [bun](https://bun.uptrace.dev), provisioned by [CloudNativePG](https://cloudnative-pg.io)
 - **Schema**: single embedded `schema.sql` applied idempotently on startup (CREATE … IF NOT EXISTS), serialized across pods via a Postgres advisory transaction lock
 - **Auth**: Heimdall-issued JWTs verified via JWKS (`MicahParks/keyfunc`)
@@ -75,14 +75,15 @@ cmd/newsletter-api/
     └── implementations.go    # Wires infrastructure into service structs
 
 internal/domain/
-├── model/                    # Pure data: Newsletter, Status, CommitteeMember, Unsubscribe
-├── port/                     # Interfaces: NewsletterRepository, CommitteeClient, ProjectMetadataClient, EmailDispatcher, UserMetadataReader
-└── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent, ErrSendInProgress, ErrUnprocessable
+├── model/                    # Pure data: Newsletter, Status, Audience, CommitteeMember, Unsubscribe
+├── port/                     # Interfaces: NewsletterRepository, AudienceRepository, CommitteeClient, ProjectMetadataClient, EmailDispatcher, UserMetadataReader
+└── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent, ErrSendInProgress, ErrUnprocessable, ErrAudienceNotReady
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
 ├── send_orchestrator.go      # Resolve recipients, render chrome, fan out sends, mark draft sent
 ├── analytics.go              # Local opens overlaid with email-service engagement totals
+├── audience.go               # Background audience resolution: query service to snapshot
 ├── unsubscribe.go            # HMAC token mint/verify + project-scoped opt-out persistence
 └── render/
     ├── email_chrome.go       # HTML/text email chrome around the draft body
@@ -90,7 +91,8 @@ internal/service/
         └── templates/        # Embedded template sets copied from git (templates.lock, make sync-templates)
 
 internal/repository/
-└── postgres.go               # bun-backed NewsletterRepository with optimistic locking
+├── postgres.go               # bun-backed NewsletterRepository with optimistic locking
+└── audience.go               # bun-backed AudienceRepository (snapshot tables)
 
 internal/schema/
 ├── schema.go                 # //go:embed schema.sql + Apply()
@@ -102,6 +104,7 @@ internal/handler/
 ├── send.go                   # …/send, …/test-send, …/recipients, …/recipient-count
 ├── render.go                 # POST …/newsletters/render-preview (stateless layout render)
 ├── templates.go              # GET …/newsletters/templates, …/templates/{template_key}/manifest
+├── audience.go               # …/audience (POST starts the resolution, GET reports status)
 ├── list.go                   # GET /projects/{project_uid}/newsletters unified list
 ├── analytics.go              # GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics
 ├── open.go                   # GET /projects/{project_uid}/newsletter-opens/{newsletter_uid} tracking pixel
@@ -117,11 +120,11 @@ internal/infrastructure/
 ├── nats/
 │   ├── client.go             # NATS connection + request/reply helper
 │   ├── subjects.go           # Centralized upstream subject constants
-│   ├── committee_client.go   # lfx.committee-api.list_members
 │   ├── project_client.go     # lfx.projects-api.get_name / get_slug
 │   ├── email_dispatcher.go   # lfx.email-service.send_email + engagement analytics
 │   └── user_metadata_client.go # lfx.auth-service.user_metadata.read + lfx.auth-service.user_emails.read
-└── upstream/                 # Retired HTTP client package (placeholder only)
+├── queryservice/             # query service client: pages committee members over HTTPS
+└── m2m/                      # Auth0 M2M identity (private key JWT client assertion)
 
 pkg/api/
 └── newsletter.go             # Public contract: request/response DTOs
@@ -210,7 +213,7 @@ Every `.go` file must start with:
 
 | Service                    | Relationship                                                              |
 | -------------------------- | ------------------------------------------------------------------------- |
-| `lfx-v2-committee-service` | Source of committee member emails (`lfx.committee-api.list_members` NATS) |
+| `lfx-v2-query-service` | Source of committee member emails (`/query/resources` over HTTPS, M2M token) |
 | `lfx-v2-project-service`   | Project name/slug lookup (`lfx.projects-api.get_name` / `get_slug` NATS)  |
 | `lfx-v2-email-service`     | Per-recipient send fan-out and engagement analytics (NATS)                |
 | `lfx-v2-auth-service`      | Sender display-name and primary-email lookup (`lfx.auth-service.user_metadata.read` / `user_emails.read` NATS) |

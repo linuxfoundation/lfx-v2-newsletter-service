@@ -27,7 +27,7 @@ Use this skill alongside:
 - `lfx-skills:lfx` for cross-repo topology, owner lookup, and missing local checkouts.
 - `lfx-skills:lfx-platform-architecture` for platform composition, service classes, query-service/FGA/indexer flows, and deployment handoffs.
 - `docs/newsletter-service-contract.md` for this repo's HTTP API and public DTO contract.
-- `docs/recipient-resolution.md` for committee-service member lookup over NATS and the email-service fan-out.
+- `docs/recipient-resolution.md` for the query-service member read, the audience snapshot, and the email-service fan-out.
 - `docs/service-helm-chart.md` for service-local chart values, database modes, Gateway/Heimdall wiring, and deployment surfaces.
 
 ## Repo Layout
@@ -35,13 +35,14 @@ Use this skill alongside:
 ```text
 cmd/newsletter-api/                 entry point, runtime config, dependency wiring
 internal/domain/model/              newsletter aggregate, open event, unsubscribe, analytics DTOs
-internal/domain/port/               repository and upstream interfaces (committee, project, email, user metadata)
+internal/domain/port/               repository and upstream interfaces (audience, committee, project, email, user metadata)
 internal/service/                   draft CRUD, validation, send orchestration + fan-out, unsubscribe, analytics, email chrome render
 internal/repository/                Postgres/Bun implementation and pagination cursor codec
 internal/schema/                    embedded idempotent schema.sql, advisory-lock bootstrap
 internal/handler/                   stdlib net/http routes, auth middleware, JSON/error mapping
-internal/infrastructure/nats/       NATS request/reply clients (committee, project, email dispatcher, user metadata) and subject constants
-internal/infrastructure/upstream/   retired HTTP client package (placeholder only)
+internal/infrastructure/nats/       NATS request/reply clients (project, email dispatcher, user metadata) and subject constants
+internal/infrastructure/queryservice/ query service client that pages committee members over HTTPS
+internal/infrastructure/m2m/        Auth0 M2M identity (private key JWT client assertion) behind the query service client
 internal/infrastructure/observability/ slog and OpenTelemetry setup
 pkg/api/                            public request/response DTOs
 pkg/errors/                         typed client/server error helpers
@@ -77,10 +78,11 @@ Match the existing package boundaries before adding a new abstraction.
 
 ## Recipient Resolution
 
-- Recipient resolution calls committee-service over NATS (`lfx.committee-api.list_members`), one request per committee UID, concurrently via `errgroup.WithContext`.
-- The inbound bearer token is validated by this service but never attached to context or forwarded — outbound NATS calls carry no token (trust is enforced upstream of NATS). Keep it that way.
-- The orchestrator deduplicates recipients by lowercased email, filters empty or obviously invalid addresses, and excludes the project's unsubscribed addresses.
-- Subject constants live in `internal/infrastructure/nats/subjects.go`; keep them in sync with the owning services. Read `docs/recipient-resolution.md` before changing member lookup, unsubscribe exclusion, or recipient selection.
+- Committee members are read from the LFX V2 query service over HTTPS (`internal/infrastructure/queryservice`), paging until the service returns no `page_token`. The service calls it with its own Auth0 M2M token (`internal/infrastructure/m2m`), never with the inbound user's token.
+- The inbound bearer token is validated by this service but never attached to context or forwarded. Outbound calls to the query service carry only the service's own M2M token. Keep it that way, and never log a token, the Authorization header, the private key or recipient emails.
+- Recipients are resolved by a background job per newsletter (`AudienceService`) and stored as an audience snapshot. The send, `recipient-count` and `recipients` read the snapshot and return `409 audience_not_ready` when it is not ready. They do not read committee members live, except on the one-release compatibility paths in `docs/recipient-resolution.md` (no `newsletter_uid`, or a send with no audience at all), which go once the front end resolves an audience for every send.
+- The job deduplicates recipients by lowercased email, filters empty or invalid addresses, and drops the project's unsubscribed addresses (`buildAudienceMembers`). The send applies the current unsubscribe list to the snapshot again.
+- NATS subject constants live in `internal/infrastructure/nats/subjects.go`; keep them in sync with the owning services. Read `docs/recipient-resolution.md` before changing member lookup, the audience snapshot, unsubscribe exclusion, or recipient selection.
 
 ## Logging And Observability
 
@@ -107,7 +109,7 @@ Match the existing package boundaries before adding a new abstraction.
 
 - Prefer table-driven tests and co-locate `*_test.go` with the code under test.
 - Depend on `internal/domain/port` interfaces for repositories and upstream clients.
-- Use fake repositories or fake `CommitteeClient`/`EmailDispatcher` implementations for service tests. Do not require a live NATS server for unit tests.
+- Use fake repositories or fake `CommitteeClient`/`AudienceRepository`/`EmailDispatcher` implementations for service tests. Do not require a live NATS server or query service for unit tests. Fakes record the scoping arguments they are called with, and tests assert on them.
 - Handler tests should exercise `http.Handler` paths and assert status, ETag, and JSON bodies where the route contract changes.
 - Run `make test` before handoff; it enables the race detector.
 
@@ -140,7 +142,7 @@ Match the existing package boundaries before adding a new abstraction.
 ## Boundaries
 
 - This repo owns newsletter persistence, newsletter API behavior, and the newsletter email fan-out.
-- `lfx-v2-committee-service` owns committee-member data and the `lfx.committee-api.list_members` payload.
+- `lfx-v2-query-service` owns the `/query/resources` API this service reads committee members from, and `lfx-v2-committee-service` owns the `committee_member` data indexed there.
 - `lfx-v2-project-service` owns project name/slug lookup payloads.
 - `lfx-v2-email-service` owns transactional email delivery, the `send_email` payload, and engagement tracking records.
 - `lfx-v2-auth-service` owns the user-metadata payload used for sender display names.

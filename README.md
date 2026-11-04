@@ -33,8 +33,10 @@ Two supported paths for running the service locally:
 - Go 1.26.10+
 - A running PostgreSQL 16+ instance (Path A) **or** OrbStack/kind with `kubectl`,
   `helm` 3.8+, and [`ko`](https://ko.build) (Path B)
-- A reachable `lfx-v2-query-service` (or a stubbed `COMMITTEE_SERVICE_URL` —
-  the service starts without it being live, but recipient resolution will fail)
+- Access to an LFX V2 query service, and an Auth0 M2M client that can read committee
+  members through it (a client ID and a PEM private key). The service reads
+  committee members from the query service as itself. It starts without the
+  query service being live, but resolving an audience will fail.
 
 ---
 
@@ -53,7 +55,11 @@ you do **not** need to run any SQL files manually.
 
 ```bash
 export DATABASE_URL='postgres://<your-user>@localhost:5432/newsletters?sslmode=disable'
-export COMMITTEE_SERVICE_URL='http://localhost:8081'   # lfx-v2-query-service / API gateway
+export QUERY_SERVICE_URL='https://lfx-api.dev.v2.cluster.linuxfound.info/'   # LFX V2 query service
+export M2M_AUTH_DOMAIN='linuxfoundation-dev.auth0.com'                       # Auth0 tenant of the M2M client
+export M2M_AUTH_AUDIENCE='https://lfx-api.dev.v2.cluster.linuxfound.info/'     # audience of the access token
+export M2M_AUTH_CLIENT_ID='<client id>'
+export M2M_AUTH_PRIVATE_KEY="$(cat /path/to/client-private-key.pem)"
 export REQUIRE_USER_AUTH=false                         # local only — production must verify JWTs
 export LOG_LEVEL=debug
 ```
@@ -81,7 +87,7 @@ curl -s http://localhost:8080/livez && echo
 # → ok
 ```
 
-If you see `missing required env vars: DATABASE_URL, COMMITTEE_SERVICE_URL`,
+If you see `missing required env vars: DATABASE_URL, QUERY_SERVICE_URL, ...`,
 the env vars above are not set in the shell you ran `make run` from — `make`
 does **not** load your shell rc.
 
@@ -120,7 +126,7 @@ cp charts/lfx-v2-newsletter-service/values.local.yaml.example \
 The example file pins the chart to `database.mode=cluster+database`, points
 `image.repository` at `ko.local/newsletter-api`, disables `requireUserAuth`,
 and disables the NetworkPolicy for easier debugging. Adjust
-`app.committeeServiceURL` to point at your local query-service if needed.
+`app.queryService.url`, `app.m2mAuth.domain` and `app.m2mAuth.audience` to point at your query service, and create the Kubernetes Secret named in the example's `m2mAuth` secret references. That Secret holds the client ID and the PEM private key.
 
 **4. Install the chart.**
 
@@ -207,13 +213,14 @@ cmd/newsletter-api/
     └── implementations.go    # wires infrastructure into service structs
 
 internal/domain/
-├── model/                    # Newsletter, Status, ContextType, CommitteeMember
-├── port/                     # interfaces: NewsletterRepository, CommitteeClient
+├── model/                    # Newsletter, Status, Audience, CommitteeMember
+├── port/                     # interfaces: NewsletterRepository, AudienceRepository, CommitteeClient
 └── errors.go                 # ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
-└── send_orchestrator.go      # resolve recipients, mark draft sent (no email dispatch)
+├── audience.go               # background audience resolution (query service to snapshot)
+└── send_orchestrator.go      # read audience snapshot, fan out the send
 
 internal/repository/
 └── postgres.go               # bun-backed NewsletterRepository with optimistic locking
@@ -231,7 +238,8 @@ internal/handler/
 
 internal/infrastructure/
 ├── observability/            # OTel SDK + slog handler
-└── upstream/                 # HTTP client for committee/query service
+├── queryservice/             # HTTPS client that pages committee members from the query service
+└── m2m/                      # Auth0 M2M identity used by the query service client
 
 pkg/api/
 └── newsletter.go             # public DTOs (mirror lfx-v2-ui shared interfaces)
@@ -291,5 +299,5 @@ column atomically incremented on each `UPDATE`. `GET` returns
 
 | Service                          | Relationship                                                  |
 | -------------------------------- | ------------------------------------------------------------- |
-| `lfx-v2-query-service`           | Source of committee member emails (via `/query/resources`)    |
+| `lfx-v2-query-service`           | Source of committee member emails (via `/query/resources`, read with the service's own M2M token) |
 | `lfx-v2-ui` (Express server)     | HTTP client; proxies UI requests to this service               |
