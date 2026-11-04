@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -731,11 +732,15 @@ func TestAnalyticsGet_EmailServiceProviderReturnsZeroClicks(t *testing.T) {
 type committeeFake struct {
 	members map[string][]model.CommitteeMember
 	err     error
-	calls   []string
+
+	mu    sync.Mutex
+	calls []string
 }
 
 func (c *committeeFake) ListMembers(_ context.Context, uid string) (model.CommitteeMembers, error) {
+	c.mu.Lock()
 	c.calls = append(c.calls, uid)
+	c.mu.Unlock()
 	if c.err != nil {
 		return model.CommitteeMembers{}, c.err
 	}

@@ -240,9 +240,6 @@ WHERE newsletter_id = ? ORDER BY email`, newsletterID)
 	return out, nil
 }
 
-// FailStale fails 'processing' rows that have not moved for olderThan. The
-// UPDATE is status and time gated, so concurrent sweeps on several pods fail
-
 // PurgeSentMembers deletes the snapshot members of every newsletter that is
 // sent or scheduled. The send purges inline; this catches the paths that do not
 // (scheduled sends settled by the sweep, rows recovered from 'sending', a failed
@@ -263,6 +260,8 @@ WHERE m.newsletter_id = n.id AND n.status IN ('sent', 'scheduled')`)
 	return int(n), nil
 }
 
+// FailStale fails 'processing' rows that have not moved for olderThan. The
+// UPDATE is status and time gated, so concurrent sweeps on several pods fail
 // each row once.
 func (r *PostgresAudienceRepo) FailStale(ctx context.Context, olderThan time.Duration) (int, error) {
 	res, err := r.db.ExecContext(ctx, `

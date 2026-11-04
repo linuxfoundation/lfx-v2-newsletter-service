@@ -158,7 +158,15 @@ func (s *AudienceService) Resolve(ctx context.Context, projectUID string, newsle
 			return nil, domain.ErrNotFound
 		}
 		if !refresh && existing.Status == model.AudienceReady && sameCommitteeUIDs(existing.CommitteeUIDs, uids) {
-			return existing, nil
+			// A scheduled send purges the members, and cancelling the schedule
+			// leaves the row ready. Rebuild it rather than return an empty snapshot.
+			members, err := s.audiences.ListMembers(ctx, newsletterID)
+			if err != nil {
+				return nil, fmt.Errorf("read audience members: %w", err)
+			}
+			if len(members) > 0 || existing.RecipientCount == 0 {
+				return existing, nil
+			}
 		}
 	case errors.Is(err, domain.ErrNotFound):
 	default:
@@ -259,10 +267,10 @@ func (s *AudienceService) runResolve(ctx context.Context, projectUID string, new
 }
 
 // collect reads every committee and merges the members. A committee that
-// returns no members, or belongs to another project, fails the audience (see
-// readCommittees).
+// returns no members, or cannot be matched to projectUID, fails the audience
+// (see readCommittees).
 func (s *AudienceService) collect(ctx context.Context, projectUID string, committeeUIDs []string) (audienceMembers, error) {
-	lists, err := readCommittees(ctx, s.committee, projectUID, committeeUIDs, committeeReadRules{requireMembers: true, requireProject: true})
+	lists, err := readCommittees(ctx, s.committee, projectUID, committeeUIDs, committeeReadRules{requireMembers: true})
 	if err != nil {
 		return audienceMembers{}, err
 	}
@@ -283,6 +291,8 @@ func audienceFailureMessage(err error) string {
 		return "a selected committee was not found"
 	case errors.Is(err, errCommitteeOtherProject):
 		return "a selected committee belongs to another project"
+	case errors.Is(err, errCommitteeUnknownProject):
+		return "a selected committee could not be matched to this project"
 	case errors.Is(err, domain.ErrUnprocessable):
 		return "a selected committee returned no members"
 	case errors.Is(err, context.DeadlineExceeded):

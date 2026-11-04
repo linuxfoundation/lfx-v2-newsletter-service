@@ -39,7 +39,7 @@ Both tables are deleted with the newsletter. Once a newsletter is sent or schedu
 - A failed read fails the whole audience. A `ready` audience never holds part of a committee.
 - A send never fans out from an audience that is `processing`, `failed` or stale. A `ready` audience whose members were already deleted counts as stale, so a newsletter that reverted to draft is never sent to nobody.
 - `POST .../recipients` with a `newsletter_uid` returns `409 already_sent` once the newsletter is no longer a draft, because its members are gone.
-- Every member a committee returns must be indexed under the newsletter's own project. A committee of another project, including a child project, fails the audience with "a selected committee belongs to another project". Members with no project in the index are accepted.
+- A committee is checked against the newsletter's own project on every read, snapshot or live, because the service reads as its own M2M identity and can see every project. No member may be indexed under another project, including a child project: that fails with "a selected committee belongs to another project". A committee with members must also have at least one member indexed under the project. A member's project is copied from its committee, so one such member proves the committee's project, and members with no project in the index are accepted alongside it. A committee where no member has a project fails with "a selected committee could not be matched to this project".
 - Only the committees saved on the draft can be resolved. A request with any other list is a `400`, so a caller cannot make the service read and store an arbitrary committee.
 - A committee that returns no members fails the audience with "a selected committee returned no members". The query service answers an unknown committee, or one this service cannot see, with an empty page, so an empty result is far more likely a missing access grant than a real empty committee.
 - A `ready` audience is returned unchanged until the committee list changes. `POST .../audience` with `"refresh": true` rebuilds it from the committees' current membership.
@@ -75,7 +75,7 @@ In every case the client starts a resolution with `POST .../audience`, and then 
 
 The snapshot routes and the old request shapes work side by side for one release, so the service can deploy before the front end.
 
-- `POST .../recipient-count` and `POST .../recipients` without a `newsletter_uid` read the committees live, less the unsubscribe list, as they did before snapshots. An empty committee counts as 0 here, as before, and a committee of another project is logged rather than refused, so these reads behave exactly as before.
+- `POST .../recipient-count` and `POST .../recipients` without a `newsletter_uid` read the committees live, less the unsubscribe list, as they did before snapshots. An empty committee counts as 0 here, as before. A committee that cannot be matched to the project is refused with `422`, as on the snapshot path, because these reads take committee UIDs straight from the request body.
 - `POST .../send` for a newsletter with no audience at all reads the committees live and sends to them, as before. An empty committee refuses the send with `422`, so the newsletter is not used up. Once a client has started an audience for a newsletter, a `processing`, `failed` or stale audience still stops the send with `409`.
 
 Remove these paths once the front end resolves an audience for every send.

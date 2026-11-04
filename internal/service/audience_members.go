@@ -105,11 +105,12 @@ func sameCommitteeUIDs(a, b []string) bool {
 	return true
 }
 
-// errEmptyCommittee and errCommitteeOtherProject are the two ways a committee
-// read is refused. Both wrap domain.ErrUnprocessable.
+// errEmptyCommittee, errCommitteeOtherProject and errCommitteeUnknownProject
+// are the ways a committee read is refused. All wrap domain.ErrUnprocessable.
 var (
-	errEmptyCommittee        = fmt.Errorf("%w: committee returned no members", domain.ErrUnprocessable)
-	errCommitteeOtherProject = fmt.Errorf("%w: committee belongs to another project", domain.ErrUnprocessable)
+	errEmptyCommittee          = fmt.Errorf("%w: committee returned no members", domain.ErrUnprocessable)
+	errCommitteeOtherProject   = fmt.Errorf("%w: committee belongs to another project", domain.ErrUnprocessable)
+	errCommitteeUnknownProject = fmt.Errorf("%w: committee members have no project", domain.ErrUnprocessable)
 )
 
 // committeeReadRules sets how strict readCommittees is.
@@ -120,15 +121,17 @@ type committeeReadRules struct {
 	// page, so an empty result is far more likely a missing access grant or a
 	// mistyped UID than a real empty committee.
 	requireMembers bool
-	// requireProject fails the read when a member's committee is indexed under
-	// a project other than projectUID. When it is false a mismatch is only
-	// logged, which keeps the read clients used before snapshots unchanged.
-	requireProject bool
 }
 
 // readCommittees reads every committee in parallel. The errgroup cancels the
-// other reads as soon as one fails. Members whose source gives no project are
-// accepted.
+// other reads as soon as one fails.
+//
+// This service reads as its own M2M identity, which can see every project, so
+// this is where a committee is checked against projectUID. A committee with
+// members must have at least one member indexed under projectUID and none under
+// another project. Members whose source gives no project are accepted only
+// alongside a member that proves the project, because a member's project is
+// copied from its committee.
 func readCommittees(ctx context.Context, client port.CommitteeClient, projectUID string, committeeUIDs []string, rules committeeReadRules) ([]model.CommitteeMembers, error) {
 	lists := make([]model.CommitteeMembers, len(committeeUIDs))
 	g, gctx := errgroup.WithContext(ctx)
@@ -141,18 +144,13 @@ func readCommittees(ctx context.Context, client port.CommitteeClient, projectUID
 			if rules.requireMembers && len(list.Members) == 0 && list.SkippedNoEmail == 0 {
 				return fmt.Errorf("committee %s: %w", uid, errEmptyCommittee)
 			}
-			for _, m := range list.Members {
-				if m.ProjectUID == "" || m.ProjectUID == projectUID {
-					continue
-				}
-				if rules.requireProject {
-					return fmt.Errorf("committee %s: %w", uid, errCommitteeOtherProject)
-				}
-				slog.WarnContext(gctx, "committee read: committee is indexed under another project",
+			if err := checkCommitteeProject(list.Members, projectUID); err != nil {
+				slog.WarnContext(gctx, "committee read: committee refused for this project",
 					"committee_uid", uid,
 					"project_uid", projectUID,
+					"error", err,
 				)
-				break
+				return fmt.Errorf("committee %s: %w", uid, err)
 			}
 			lists[i] = list
 			return nil
@@ -162,4 +160,23 @@ func readCommittees(ctx context.Context, client port.CommitteeClient, projectUID
 		return nil, err
 	}
 	return lists, nil
+}
+
+// checkCommitteeProject reports whether members belong to a committee of
+// projectUID. No members is not an error: there is nothing to return.
+func checkCommitteeProject(members []model.CommitteeMember, projectUID string) error {
+	proven := false
+	for _, m := range members {
+		switch m.ProjectUID {
+		case "":
+		case projectUID:
+			proven = true
+		default:
+			return errCommitteeOtherProject
+		}
+	}
+	if len(members) > 0 && !proven {
+		return errCommitteeUnknownProject
+	}
+	return nil
 }

@@ -200,15 +200,75 @@ func TestAudienceResolve_CommitteeOfAnotherProjectFailsTheAudience(t *testing.T)
 	assert.Equal(t, "a selected committee belongs to another project", a.Error)
 }
 
-func TestRecipientCount_LivePathOnlyLogsACommitteeOfAnotherProject(t *testing.T) {
+func TestLiveReads_RefuseACommitteeOfAnotherProject(t *testing.T) {
+	ctx := context.Background()
 	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
 		"c1": {{Email: "a@example.com", ProjectUID: "other-project"}},
 	}}
 	orch := newCompatOrchestrator(newFakeRepo(), newFakeAudienceRepo(), committee, &fakeEmailDispatcher{})
 
+	_, err := orch.RecipientCount(ctx, "p1", uuid.Nil, []string{"c1"})
+	assert.ErrorIs(t, err, errCommitteeOtherProject)
+
+	members, err := orch.Recipients(ctx, "p1", uuid.Nil, []string{"c1"})
+	assert.ErrorIs(t, err, errCommitteeOtherProject)
+	assert.Empty(t, members, "no member emails of another project's committee")
+}
+
+func TestLiveReads_RefuseACommitteeWithNoProjectOnAnyMember(t *testing.T) {
+	ctx := context.Background()
+	committee := &fakeCommitteeClient{unindexed: true, members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "a@example.com"}},
+	}}
+	orch := newCompatOrchestrator(newFakeRepo(), newFakeAudienceRepo(), committee, &fakeEmailDispatcher{})
+
+	members, err := orch.Recipients(ctx, "p1", uuid.Nil, []string{"c1"})
+	assert.ErrorIs(t, err, errCommitteeUnknownProject)
+	assert.Empty(t, members)
+}
+
+func TestLiveReads_AcceptAnUnindexedMemberAlongsideOneOfTheProject(t *testing.T) {
+	committee := &fakeCommitteeClient{unindexed: true, members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "a@example.com", ProjectUID: "p1"}, {Email: "b@example.com"}},
+	}}
+	orch := newCompatOrchestrator(newFakeRepo(), newFakeAudienceRepo(), committee, &fakeEmailDispatcher{})
+
 	count, err := orch.RecipientCount(context.Background(), "p1", uuid.Nil, []string{"c1"})
-	require.NoError(t, err, "the read clients used before snapshots behaves as before")
-	assert.Equal(t, 1, count)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+}
+
+func TestSendNewsletter_NoSnapshotRefusesACommitteeOfAnotherProject(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "a@example.com", ProjectUID: "other-project"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	orch := newCompatOrchestrator(repo, newFakeAudienceRepo(), committee, email)
+	draft := repo.addDraft("p1", []string{"c1"})
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID})
+	assert.ErrorIs(t, err, domain.ErrUnprocessable)
+	assert.Empty(t, email.sends)
+}
+
+func TestAudienceResolve_RebuildsAReadySnapshotWhoseMembersWerePurged(t *testing.T) {
+	ctx := context.Background()
+	f := newAudienceFixture(t, &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "a@example.com"}},
+	}})
+	n := f.repo.addDraft("p1", []string{"c1"})
+	f.audiences.put(n, []string{"c1"}, model.AudienceReady, []model.CommitteeMember{{Email: "a@example.com"}})
+	require.NoError(t, f.audiences.DeleteMembers(ctx, n.ID))
+
+	_, err := f.svc.Resolve(ctx, "p1", n.ID, []string{"c1"}, false)
+	require.NoError(t, err)
+	f.svc.Drain(ctx)
+	require.Len(t, f.audiences.begins, 1, "a purged ready snapshot starts a new resolution without refresh")
+	members, err := f.audiences.ListMembers(ctx, n.ID)
+	require.NoError(t, err)
+	assert.Len(t, members, 1)
 }
 
 func TestRecipients_RefusedOnceTheNewsletterIsSent(t *testing.T) {

@@ -33,6 +33,11 @@ type fakeCommitteeClient struct {
 	// skippedNoEmail is returned as the no-email count for every committee.
 	skippedNoEmail int
 	err            error
+	// project stamps members that set no ProjectUID, as the query service
+	// indexes every member under its committee's project. Empty means "p1".
+	// unindexed leaves ProjectUID empty instead.
+	project   string
+	unindexed bool
 
 	mu    sync.Mutex
 	calls []string
@@ -45,7 +50,18 @@ func (f *fakeCommitteeClient) ListMembers(_ context.Context, committeeUID string
 	if f.err != nil {
 		return model.CommitteeMembers{}, f.err
 	}
-	return model.CommitteeMembers{Members: f.members[committeeUID], SkippedNoEmail: f.skippedNoEmail}, nil
+	project := f.project
+	if project == "" {
+		project = "p1"
+	}
+	members := make([]model.CommitteeMember, 0, len(f.members[committeeUID]))
+	for _, m := range f.members[committeeUID] {
+		if m.ProjectUID == "" && !f.unindexed {
+			m.ProjectUID = project
+		}
+		members = append(members, m)
+	}
+	return model.CommitteeMembers{Members: members, SkippedNoEmail: f.skippedNoEmail}, nil
 }
 
 func (f *fakeCommitteeClient) calledWith() []string {

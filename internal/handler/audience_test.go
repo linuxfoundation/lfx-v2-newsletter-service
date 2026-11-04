@@ -145,7 +145,7 @@ func newAudienceHarness(t *testing.T) *audienceHarness {
 	t.Helper()
 	n := &model.Newsletter{ID: uuid.New(), ProjectUID: testProject, Status: model.StatusDraft, CommitteeUIDs: []string{"c1"}}
 	audiences := newAudienceStubRepo()
-	committee := &committeeStub{members: []model.CommitteeMember{{Email: "first.last@example.com", FirstName: "First", LastName: "Last"}}}
+	committee := &committeeStub{members: []model.CommitteeMember{{Email: "first.last@example.com", FirstName: "First", LastName: "Last", ProjectUID: "p1"}}}
 	svc := service.NewAudienceService(service.AudienceServiceConfig{
 		Newsletters:  newsletterStub{n: n},
 		Audiences:    audiences,
@@ -311,8 +311,8 @@ func TestWriteError_OtherErrorsHaveNoAudienceStatus(t *testing.T) {
 // adopted snapshots keeps working. A malformed newsletter_uid is still a 400.
 func TestRecipientRoutes_NewsletterUIDOptional(t *testing.T) {
 	committee := &committeeStub{members: []model.CommitteeMember{
-		{Email: "first.last@example.com", FirstName: "First"},
-		{Email: "second.person@example.com", FirstName: "Second"},
+		{Email: "first.last@example.com", FirstName: "First", ProjectUID: "p1"},
+		{Email: "second.person@example.com", FirstName: "Second", ProjectUID: "p1"},
 	}}
 	send := service.NewSendOrchestrator(service.SendOrchestratorConfig{Committee: committee})
 	srv := New(Config{Send: send, RequireUserAuth: false}).Routes()
