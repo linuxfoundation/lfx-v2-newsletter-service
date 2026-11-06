@@ -77,7 +77,7 @@ cmd/newsletter-api/
 internal/domain/
 ├── model/                    # Pure data: Newsletter, Status, CommitteeMember, Unsubscribe
 ├── port/                     # Interfaces: NewsletterRepository, CommitteeClient, ProjectMetadataClient, EmailDispatcher, UserMetadataReader
-└── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent, ErrSendInProgress, ErrUnprocessable
+└── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent, ErrSendInProgress, ErrUnprocessable, ErrForbidden, ErrRateLimited
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
@@ -184,7 +184,7 @@ All `os.Getenv` calls belong in `cmd/newsletter-api/service/config.go` →
 4. Register the route in `internal/handler/http.go`.
 
 ### Error handling
-- Domain errors live in `internal/domain/errors.go` (`ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrSendInProgress`, `ErrUnprocessable` for a well-formed layout the renderer cannot render, 422).
+- Domain errors live in `internal/domain/errors.go` (`ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrSendInProgress`, `ErrUnprocessable` for a well-formed layout the renderer cannot render, 422, `ErrForbidden` 403 and `ErrRateLimited` 429 for the test-send guards).
 - Map domain errors to HTTP status codes in `internal/handler/http.go`.
 - Always pass `ctx` for OTel trace correlation.
 

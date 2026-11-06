@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// Test sends allowed per principal per window. Matches the per-user cap in the
-// LFX Self-Serve BFF; this is the service-side guard behind it.
+// Test sends allowed per principal per window. The LFX Self-Serve BFF applies
+// the same per-user cap (lfx-self-serve#5095); this is the service-side guard.
 const (
 	testSendLimit  = 20
 	testSendWindow = time.Hour

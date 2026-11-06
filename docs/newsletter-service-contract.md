@@ -266,6 +266,8 @@ Semantics and caveats:
 | Newsletter is scheduled (edit/delete/send/schedule attempted) | 409 | `scheduled` |
 | Cancel-schedule requested inside the cancel buffer | 409 | `cancel_window_closed` |
 | Invalid request | 400 | `invalid_request` |
+| Test send to an address other than the caller's verified email, or the token carries no email | 403 | `forbidden` |
+| Too many test sends for this principal (20 an hour per pod) | 429 | `rate_limited` |
 | A layout cannot be rendered — unknown `block_type`, an unknown/unembedded `template_key`, malformed markup, MJML compile failure, or a layout exceeding the block-count / nesting-depth / content-item limits (on `render-preview`, on render-on-write during create/update, or on the send-time re-render during `send` / `schedule`) | 422 | `unprocessable_entity` |
 | Upstream conflict (typed `pkgerrors.Conflict`) | 409 | `conflict` |
 | Upstream dependency unavailable, or a real send of a layout newsletter while the unsubscribe service is not configured | 503 | `service_unavailable` |

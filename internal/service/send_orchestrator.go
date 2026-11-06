@@ -1074,15 +1074,12 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// the dispatch To must carry the same canonical value.
 	toEmail := parsedTo.Address
 	// A test send goes from the LF sending domain, so an authenticated caller
-	// may only send it to their own verified address, and only so often
-	// (lfx-self-serve#4358 F1). With auth disabled (local dev) there is no
-	// principal and both checks are skipped.
+	// may only send it to their own verified address (lfx-self-serve#4358 F1),
+	// and only so often (checked just before dispatch below). With auth
+	// disabled (local dev) there is no principal and both checks are skipped.
 	if in.Principal != "" {
 		if in.PrincipalEmail == "" || !strings.EqualFold(in.PrincipalEmail, toEmail) {
 			return fmt.Errorf("%w: test emails can only be sent to your own email address", domain.ErrForbidden)
-		}
-		if !o.testSendLimiter.allow(in.Principal, time.Now()) {
-			return fmt.Errorf("%w: too many test emails, try again later", domain.ErrRateLimited)
 		}
 	}
 
@@ -1211,6 +1208,11 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		From:            o.resolveFromAddress(ctx, in.ProjectUID),
 		FromDisplayName: fromDisplayName,
 		ReplyTo:         replyTo,
+	}
+	// Charge the per-principal limit only once the email is ready to go, so a
+	// layout that fails to render or validate doesn't use up the allowance.
+	if in.Principal != "" && !o.testSendLimiter.allow(in.Principal, time.Now()) {
+		return fmt.Errorf("%w: too many test emails, try again later", domain.ErrRateLimited)
 	}
 	if _, dispatchErr := o.email.SendEmail(ctx, sendInput); dispatchErr != nil {
 		return fmt.Errorf("dispatch test-send: %w", dispatchErr)
