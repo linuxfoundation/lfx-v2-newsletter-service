@@ -180,7 +180,7 @@ Recipient resolution and the provider fan-out are documented in `docs/recipient-
 | --- | --- |
 | `…/newsletters/recipient-count` | Returns unique recipient count after resolving committee members. |
 | `…/newsletters/recipients` | Returns unique recipient emails and first names. |
-| `…/newsletters/test-send` | Validates fields and dispatches a single test email to `to_email` — no persistence, no analytics. The body renders the same compliance footer as a real send: sender attribution, optional reply-to line, the "My Newsletters" link, and a working unsubscribe link minted for `to_email` (clicking it records a real project-scoped opt-out for that address). Returns `{ "ok": true }`. |
+| `…/newsletters/test-send` | Validates fields and dispatches a single test email to `to_email` — no persistence, no analytics. The body renders the same compliance footer as a real send: sender attribution, optional reply-to line, the "My Newsletters" link, and a working unsubscribe link minted for `to_email` (clicking it records a real project-scoped opt-out for that address). Returns `{ "ok": true }`. With auth on, `to_email` must match the caller's verified `email` claim (case-insensitive), else `403 forbidden`, and each principal may send 20 test emails an hour per pod, else `429 rate_limited` (lfx-self-serve#4358 F1). |
 
 The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sends validate and transition state without dispatching email.
 

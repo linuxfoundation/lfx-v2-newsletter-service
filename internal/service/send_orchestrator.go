@@ -140,6 +140,8 @@ type SendOrchestrator struct {
 	// jobs tracks detached background send goroutines so graceful shutdown
 	// (and tests) can wait for in-flight fan-outs via Drain.
 	jobs sync.WaitGroup
+	// testSendLimiter caps test sends per principal (in memory, per pod).
+	testSendLimiter *windowLimiter
 	// scheduleMaxHorizon/scheduleMinLead/scheduleCancelBuffer configure the
 	// arm-time and cancel-time validation windows for scheduled sends
 	// (LFXV2-2685). See SendOrchestratorConfig for their meaning.
@@ -293,6 +295,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		scheduleCancelBuffer = minScheduleCancelBuffer
 	}
 	return &SendOrchestrator{
+		testSendLimiter:       newWindowLimiter(testSendLimit, testSendWindow),
 		repo:                  cfg.Repo,
 		committee:             cfg.Committee,
 		project:               cfg.Project,
@@ -1022,6 +1025,9 @@ type TestSendInput struct {
 	ToEmail      string
 	EDReplyEmail string
 	Principal    string
+	// PrincipalEmail is the caller's verified email from the token. When the
+	// caller is authenticated, a test send may only go to this address.
+	PrincipalEmail string
 	// IsLayout is DEPRECATED and ignored (see api.TestSendRequest.IsLayout).
 	// BodyLayout is the sole layout trigger; this field has no effect and is
 	// retained only for wire-compatibility with clients that still send it.
@@ -1067,6 +1073,18 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// the bare address recipient resolution compares opt-outs against, and
 	// the dispatch To must carry the same canonical value.
 	toEmail := parsedTo.Address
+	// A test send goes from the LF sending domain, so an authenticated caller
+	// may only send it to their own verified address, and only so often
+	// (lfx-self-serve#4358 F1). With auth disabled (local dev) there is no
+	// principal and both checks are skipped.
+	if in.Principal != "" {
+		if in.PrincipalEmail == "" || !strings.EqualFold(in.PrincipalEmail, toEmail) {
+			return fmt.Errorf("%w: test emails can only be sent to your own email address", domain.ErrForbidden)
+		}
+		if !o.testSendLimiter.allow(in.Principal, time.Now()) {
+			return fmt.Errorf("%w: too many test emails, try again later", domain.ErrRateLimited)
+		}
+	}
 
 	// Resolve the sender's email and name early. The email becomes the envelope
 	// Reply-To (and the legacy chrome's reply line), matching a real send, where

@@ -274,6 +274,10 @@ func classifyError(err error) (int, string) {
 		return http.StatusConflict, "scheduled"
 	case errors.Is(err, domain.ErrCancelWindowClosed):
 		return http.StatusConflict, "cancel_window_closed"
+	case errors.Is(err, domain.ErrForbidden):
+		return http.StatusForbidden, "forbidden"
+	case errors.Is(err, domain.ErrRateLimited):
+		return http.StatusTooManyRequests, "rate_limited"
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest, "invalid_request"
 	case errors.Is(err, domain.ErrUnprocessable):

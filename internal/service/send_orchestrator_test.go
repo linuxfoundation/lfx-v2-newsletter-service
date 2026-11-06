@@ -1418,11 +1418,12 @@ func TestTestSendUsesAuthServiceName(t *testing.T) {
 	orch := newTestOrchestratorWithUser(repo, committee, email, unsub, users)
 
 	if err := orch.TestSend(ctx, TestSendInput{
-		ProjectUID: "p1",
-		Subject:    "Hello",
-		BodyHTML:   "<p>Body</p>",
-		ToEmail:    "tester@example.com",
-		Principal:  "auth0|abc",
+		ProjectUID:     "p1",
+		Subject:        "Hello",
+		BodyHTML:       "<p>Body</p>",
+		ToEmail:        "tester@example.com",
+		Principal:      "auth0|abc",
+		PrincipalEmail: "tester@example.com",
 	}); err != nil {
 		t.Fatalf("TestSend: %v", err)
 	}
@@ -1450,12 +1451,13 @@ func TestTestSendReplyToUsesSenderEmail(t *testing.T) {
 	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
 
 	if err := orch.TestSend(ctx, TestSendInput{
-		ProjectUID:   "p1",
-		Subject:      "Hello",
-		BodyHTML:     "<p>Body</p>",
-		ToEmail:      "tester@example.com",
-		EDReplyEmail: "drafter@example.com",
-		Principal:    "auth0|jzemlin",
+		ProjectUID:     "p1",
+		Subject:        "Hello",
+		BodyHTML:       "<p>Body</p>",
+		ToEmail:        "tester@example.com",
+		EDReplyEmail:   "drafter@example.com",
+		Principal:      "auth0|jzemlin",
+		PrincipalEmail: "tester@example.com",
 	}); err != nil {
 		t.Fatalf("TestSend: %v", err)
 	}
@@ -1481,12 +1483,13 @@ func TestTestSendReplyToFallsBackOnDisallowedDomain(t *testing.T) {
 	orch := newTestOrchestratorWithUserEmail(repo, committee, email, unsub, users, userEmail)
 
 	if err := orch.TestSend(ctx, TestSendInput{
-		ProjectUID:   "p1",
-		Subject:      "Hello",
-		BodyHTML:     "<p>Body</p>",
-		ToEmail:      "tester@example.com",
-		EDReplyEmail: "drafter@example.com",
-		Principal:    "auth0|jzemlin",
+		ProjectUID:     "p1",
+		Subject:        "Hello",
+		BodyHTML:       "<p>Body</p>",
+		ToEmail:        "tester@example.com",
+		EDReplyEmail:   "drafter@example.com",
+		Principal:      "auth0|jzemlin",
+		PrincipalEmail: "tester@example.com",
 	}); err != nil {
 		t.Fatalf("TestSend: %v", err)
 	}
@@ -3112,5 +3115,68 @@ func TestLegacySendMatchesChromeOutput(t *testing.T) {
 	}
 	if s.Text != wantText {
 		t.Errorf("legacy text differs from the chrome output:\n got: %s\nwant: %s", s.Text, wantText)
+	}
+}
+
+func TestTestSendOnlyToTheCallersOwnAddress(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	email := &fakeEmailDispatcher{}
+	orch := newTestOrchestratorWithUser(repo, &fakeCommitteeClient{}, email, NewUnsubscribeService(repo, []byte("k"), "https://api.example"), &fakeUserMetadataReader{name: "Jane Doe"})
+	in := TestSendInput{ProjectUID: "p1", Subject: "Hi", BodyHTML: "<p>hi</p>", ToEmail: "someone@example.com", Principal: "auth0|abc", PrincipalEmail: "me@example.com"}
+
+	if err := orch.TestSend(ctx, in); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("send to another address: got %v, want ErrForbidden", err)
+	}
+	in.PrincipalEmail = ""
+	if err := orch.TestSend(ctx, in); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("no verified email on the token: got %v, want ErrForbidden", err)
+	}
+	if len(email.sends) != 0 {
+		t.Fatalf("refused test sends dispatched %d emails", len(email.sends))
+	}
+	in.ToEmail, in.PrincipalEmail = "Me@Example.com", "me@example.com"
+	if err := orch.TestSend(ctx, in); err != nil {
+		t.Fatalf("own address (case-insensitive): %v", err)
+	}
+}
+
+func TestTestSendIsRateLimitedPerPrincipal(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	orch := newTestOrchestratorWithUser(repo, &fakeCommitteeClient{}, &fakeEmailDispatcher{}, NewUnsubscribeService(repo, []byte("k"), "https://api.example"), &fakeUserMetadataReader{name: "Jane Doe"})
+	in := TestSendInput{ProjectUID: "p1", Subject: "Hi", BodyHTML: "<p>hi</p>", ToEmail: "me@example.com", Principal: "auth0|abc", PrincipalEmail: "me@example.com"}
+
+	for i := 0; i < testSendLimit; i++ {
+		if err := orch.TestSend(ctx, in); err != nil {
+			t.Fatalf("send %d: %v", i+1, err)
+		}
+	}
+	if err := orch.TestSend(ctx, in); !errors.Is(err, domain.ErrRateLimited) {
+		t.Fatalf("over the limit: got %v, want ErrRateLimited", err)
+	}
+	other := in
+	other.Principal, other.ToEmail, other.PrincipalEmail = "auth0|def", "other@example.com", "other@example.com"
+	if err := orch.TestSend(ctx, other); err != nil {
+		t.Fatalf("the limit is per principal: %v", err)
+	}
+}
+
+func TestWindowLimiterForgetsEventsOutsideTheWindow(t *testing.T) {
+	l := newWindowLimiter(2, time.Hour)
+	start := time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)
+	steps := []struct {
+		at   time.Time
+		want bool
+	}{
+		{start, true},
+		{start.Add(time.Minute), true},
+		{start.Add(2 * time.Minute), false},
+		{start.Add(61 * time.Minute), true},
+	}
+	for i, s := range steps {
+		if got := l.allow("u", s.at); got != s.want {
+			t.Fatalf("step %d: allow = %v, want %v", i, got, s.want)
+		}
 	}
 }
