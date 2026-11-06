@@ -43,4 +43,12 @@ var (
 	// close to the newsletter's scheduled_at — inside the configured buffer
 	// where the provider's cancel is no longer reliable.
 	ErrCancelWindowClosed = errors.New("cancel window closed")
+
+	// ErrForbidden indicates the caller is authenticated but not allowed to do
+	// this, e.g. a test send to an address that is not their own.
+	ErrForbidden = errors.New("forbidden")
+
+	// ErrRateLimited indicates the caller has made too many requests of this
+	// kind recently. It maps to HTTP 429.
+	ErrRateLimited = errors.New("rate limited")
 )

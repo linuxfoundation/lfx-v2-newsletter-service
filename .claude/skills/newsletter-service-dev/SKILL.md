@@ -92,7 +92,7 @@ Match the existing package boundaries before adding a new abstraction.
 
 ## Errors
 
-- Domain sentinels: `ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrUnprocessable`.
+- Domain sentinels: `ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrUnprocessable`, `ErrForbidden` (403), `ErrRateLimited` (429).
 - Transport mapping:
   - not found -> 404
   - version mismatch -> 412

@@ -17,9 +17,15 @@ import (
 
 type userContextKey struct{}
 
+type userEmailContextKey struct{}
+
 // userContextKeyValue is the context key under which the authenticated user identifier
 // is stored after JWT validation. Use UserFromContext to read it.
 var userContextKeyValue = userContextKey{}
+
+// userEmailContextKeyValue holds the verified email claim from the same JWT,
+// when Heimdall included one. Use UserEmailFromContext to read it.
+var userEmailContextKeyValue = userEmailContextKey{}
 
 // AuthValidator validates inbound Heimdall-issued JWTs via a JWKS endpoint.
 //
@@ -49,12 +55,19 @@ func NewAuthValidator(ctx context.Context, jwksURL, expectedAudience string) (*A
 	}, nil
 }
 
+// tokenIdentity is what withAuth takes from a validated JWT.
+type tokenIdentity struct {
+	user  string
+	email string
+}
+
 // validate parses and verifies the JWT. Returns the user identifier (sub or
-// principal claim) on success.
-func (a *AuthValidator) validate(tokenStr string) (string, error) {
+// principal claim) and the email claim, if any, on success. Heimdall only adds
+// email when the identity provider marked it verified.
+func (a *AuthValidator) validate(tokenStr string) (tokenIdentity, error) {
 	if a == nil {
 		// Auth disabled: extract no user identity.
-		return "", nil
+		return tokenIdentity{}, nil
 	}
 	token, err := jwt.Parse(tokenStr, a.jwks.Keyfunc,
 		// PS256 is the default for Heimdall's JWT finalizer.
@@ -62,23 +75,24 @@ func (a *AuthValidator) validate(tokenStr string) (string, error) {
 		jwt.WithExpirationRequired(),
 	)
 	if err != nil {
-		return "", err
+		return tokenIdentity{}, err
 	}
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok || !token.Valid {
-		return "", errors.New("invalid token claims")
+		return tokenIdentity{}, errors.New("invalid token claims")
 	}
 	if a.expectedAudience != "" {
 		if !audienceMatches(claims["aud"], a.expectedAudience) {
-			return "", errors.New("token audience mismatch")
+			return tokenIdentity{}, errors.New("token audience mismatch")
 		}
 	}
+	email, _ := claims["email"].(string)
 	for _, claim := range []string{"principal", "sub"} {
 		if v, ok := claims[claim].(string); ok && v != "" {
-			return v, nil
+			return tokenIdentity{user: v, email: strings.TrimSpace(email)}, nil
 		}
 	}
-	return "", errors.New("token has no principal or sub claim")
+	return tokenIdentity{}, errors.New("token has no principal or sub claim")
 }
 
 // audienceMatches checks whether the JWT aud claim contains expected.
@@ -121,7 +135,7 @@ func (h *Handler) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		user, err := h.auth.validate(bearer)
+		identity, err := h.auth.validate(bearer)
 		if err != nil {
 			if h.requireUserAuth {
 				// Log the full JWT library error server-side only; surface a
@@ -148,7 +162,8 @@ func (h *Handler) withAuth(next http.Handler) http.Handler {
 		// keeping it off the context prevents future code paths from
 		// accidentally forwarding it.
 		_ = bearer
-		ctx := context.WithValue(r.Context(), userContextKeyValue, user)
+		ctx := context.WithValue(r.Context(), userContextKeyValue, identity.user)
+		ctx = context.WithValue(ctx, userEmailContextKeyValue, identity.email)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -196,6 +211,15 @@ func extractBearer(r *http.Request) string {
 // UserFromContext extracts the authenticated user identifier set by withAuth.
 func UserFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(userContextKeyValue).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// UserEmailFromContext returns the verified email claim set by withAuth, or ""
+// when the token carried none or auth is disabled.
+func UserEmailFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(userEmailContextKeyValue).(string); ok {
 		return v
 	}
 	return ""
