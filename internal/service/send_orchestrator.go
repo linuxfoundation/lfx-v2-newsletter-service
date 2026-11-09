@@ -1081,14 +1081,16 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// so often. A caller already over the limit stops here, before the lookups
 	// and the render; the charge itself happens just before dispatch. With auth
 	// disabled (local dev) there is no principal and both checks are skipped.
+	var fetchedPrimary string
 	if in.Principal != "" {
 		if o.testSendLimiter.exhausted(in.Principal, time.Now()) {
 			return fmt.Errorf("%w: too many test emails, try again later", domain.ErrRateLimited)
 		}
-		ownEmail, err := o.testSendCallerEmail(ctx, in.Principal, in.PrincipalEmail)
+		ownEmail, primary, err := o.testSendCallerEmail(ctx, in.Principal, in.PrincipalEmail)
 		if err != nil {
 			return err
 		}
+		fetchedPrimary = primary
 		if ownEmail == "" || !strings.EqualFold(ownEmail, toEmail) {
 			return fmt.Errorf("%w: test emails can only be sent to your own email address", domain.ErrForbidden)
 		}
@@ -1109,7 +1111,14 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// Mirror SendNewsletter's Reply-To resolution so a test-send previews the
 	// same envelope a real send would produce, not the drafter's stored
 	// EDReplyEmail unconditionally.
-	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), strings.TrimSpace(in.EDReplyEmail))
+	// The guard may already have fetched the primary email; don't ask twice.
+	var senderEmail string
+	if fetchedPrimary != "" {
+		senderEmail = o.replyToFromPrimary(ctx, fetchedPrimary)
+	} else {
+		senderEmail = o.resolveSenderEmail(ctx, in.Principal)
+	}
+	replyTo := fallbackString(senderEmail, strings.TrimSpace(in.EDReplyEmail))
 
 	// body_layout is the SOLE layout trigger for a test send. in.IsLayout is
 	// deprecated and ignored here (a precompiled is_layout body_html is no longer
@@ -1504,25 +1513,27 @@ func (o *SendOrchestrator) resolveSenderName(ctx context.Context, principal stri
 // resolveSenderEmail's Reply-To domain filter. auth-service does not always
 // report whether that address is verified, so the guard doesn't rely on it.
 //
-// "" means the caller has no known address, which the guard refuses. A lookup
-// that fails for any other reason is a 503, so an outage isn't reported to the
-// caller as the wrong recipient.
-func (o *SendOrchestrator) testSendCallerEmail(ctx context.Context, principal, tokenEmail string) (string, error) {
+// An empty own address means the caller has no known address, which the guard
+// refuses. A lookup that fails for any other reason is a 503, so an outage isn't
+// reported to the caller as the wrong recipient. primary is the fetched
+// primary email, or "" when no lookup returned one, so the caller can reuse it.
+func (o *SendOrchestrator) testSendCallerEmail(ctx context.Context, principal, tokenEmail string) (own, primary string, err error) {
 	if email := strings.TrimSpace(tokenEmail); email != "" {
-		return email, nil
+		return email, "", nil
 	}
 	if o.userEmail == nil {
-		return "", nil
+		return "", "", nil
 	}
-	email, err := o.userEmail.PrimaryEmail(ctx, principal)
-	if err != nil {
+	email, lookupErr := o.userEmail.PrimaryEmail(ctx, principal)
+	if lookupErr != nil {
 		var notFound pkgerrors.NotFound
-		if errors.As(err, &notFound) {
-			return "", nil
+		if errors.As(lookupErr, &notFound) {
+			return "", "", nil
 		}
-		return "", pkgerrors.NewServiceUnavailable("resolve caller email from auth-service", err)
+		return "", "", pkgerrors.NewServiceUnavailable("resolve caller email from auth-service", lookupErr)
 	}
-	return strings.TrimSpace(email), nil
+	email = strings.TrimSpace(email)
+	return email, email, nil
 }
 
 // resolveSenderEmail looks up the sender's primary email from auth-service
@@ -1547,6 +1558,12 @@ func (o *SendOrchestrator) resolveSenderEmail(ctx context.Context, principal str
 		)
 		return ""
 	}
+	return o.replyToFromPrimary(ctx, email)
+}
+
+// replyToFromPrimary applies the Reply-To checks to a primary email already
+// fetched from auth-service, returning "" when it can't be used.
+func (o *SendOrchestrator) replyToFromPrimary(ctx context.Context, email string) string {
 	trimmed := strings.TrimSpace(email)
 	if trimmed == "" {
 		return ""

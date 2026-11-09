@@ -57,6 +57,35 @@ func TestTestSendGuardFallsBackToPrimaryEmail(t *testing.T) {
 	}
 }
 
+func TestTestSendLooksUpThePrimaryEmailOnce(t *testing.T) {
+	cases := []struct {
+		name        string
+		primary     string
+		to          string
+		tokenEmail  string
+		wantReplyTo string
+	}{
+		{name: "guard fallback is reused for Reply-To", primary: "me@linuxfoundation.org", to: "me@linuxfoundation.org", wantReplyTo: "me@linuxfoundation.org"},
+		{name: "reused primary still passes the Reply-To domain filter", primary: "me@gmail.com", to: "me@gmail.com", wantReplyTo: ""},
+		{name: "token email leaves the lookup to Reply-To", primary: "me@linuxfoundation.org", to: "token@example.com", tokenEmail: "token@example.com", wantReplyTo: "me@linuxfoundation.org"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			email := &fakeEmailDispatcher{}
+			reader := &fakeUserEmailReader{email: tc.primary}
+			if err := guardOrchestrator(email, reader).TestSend(context.Background(), guardInput(tc.to, tc.tokenEmail)); err != nil {
+				t.Fatalf("TestSend: %v", err)
+			}
+			if reader.calls != 1 {
+				t.Fatalf("auth-service lookups = %d, want 1", reader.calls)
+			}
+			if len(email.sends) != 1 || email.sends[0].ReplyTo != tc.wantReplyTo {
+				t.Fatalf("sends = %+v, want one with Reply-To %q", email.sends, tc.wantReplyTo)
+			}
+		})
+	}
+}
+
 func TestTestSendGuardReportsAnAuthServiceOutageAsUnavailable(t *testing.T) {
 	email := &fakeEmailDispatcher{}
 	orch := guardOrchestrator(email, &fakeUserEmailReader{err: errors.New("nats: timeout")})
