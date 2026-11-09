@@ -77,7 +77,9 @@ type Newsletter struct {
 	// user, ever). Set only on sent newsletters returned by the read endpoints
 	// (GET one, project list); omitted when the count can't be read, so
 	// clients must treat an absent value as unknown rather than zero. Clients
-	// that show a single "views" number add it to total_opens.
+	// that show a single "views" number add it to total_opens where both are
+	// present (GET one); project-list rows carry no total_opens. The committee
+	// list carries both on CommitteeNewsletter.
 	PageViewCount *int `json:"page_view_count,omitempty"`
 }
 

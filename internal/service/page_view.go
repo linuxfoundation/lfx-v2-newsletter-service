@@ -60,7 +60,7 @@ func (s *PageViewService) RecordPageView(ctx context.Context, in RecordPageViewI
 	}
 	return s.views.RecordPageView(ctx, &model.NewsletterPageView{
 		NewsletterID: n.ID,
-		UserHash:     hashShareUser(user),
+		UserHash:     hashUserPrincipal(user),
 	})
 }
 
@@ -94,5 +94,5 @@ func (s *PageViewService) DeleteUserPageViews(ctx context.Context, user string) 
 	if user == "" {
 		return 0, fmt.Errorf("%w: a user principal is required to erase page views", domain.ErrInvalidRequest)
 	}
-	return s.views.DeletePageViewsByUser(ctx, hashShareUser(user))
+	return s.views.DeletePageViewsByUser(ctx, hashUserPrincipal(user))
 }
