@@ -1079,19 +1079,18 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// A test send goes from the LF sending domain, so an authenticated caller
 	// may only send it to their own address (lfx-self-serve#4358 F1), and only
 	// so often. A caller already over the limit stops here, before the lookups
-	// and the render below; the charge itself happens just before dispatch.
-	// With auth disabled (local dev) there is no principal and both checks are
-	// skipped.
+	// and the render; the charge itself happens just before dispatch. With auth
+	// disabled (local dev) there is no principal and both checks are skipped.
 	if in.Principal != "" {
+		if o.testSendLimiter.exhausted(in.Principal, time.Now()) {
+			return fmt.Errorf("%w: too many test emails, try again later", domain.ErrRateLimited)
+		}
 		ownEmail, err := o.testSendCallerEmail(ctx, in.Principal, in.PrincipalEmail)
 		if err != nil {
 			return err
 		}
 		if ownEmail == "" || !strings.EqualFold(ownEmail, toEmail) {
 			return fmt.Errorf("%w: test emails can only be sent to your own email address", domain.ErrForbidden)
-		}
-		if o.testSendLimiter.exhausted(in.Principal, time.Now()) {
-			return fmt.Errorf("%w: too many test emails, try again later", domain.ErrRateLimited)
 		}
 	}
 
@@ -1502,8 +1501,8 @@ func (o *SendOrchestrator) resolveSenderName(ctx context.Context, principal stri
 // test email to. The token's verified email wins. Deployed tokens carry none
 // while newsletter-service runs with the Heimdall OIDC contextualizer off, so
 // the fallback is the caller's auth-service primary email, without
-// resolveSenderEmail's Reply-To domain filter. auth-service does not report
-// whether that address is verified.
+// resolveSenderEmail's Reply-To domain filter. auth-service does not always
+// report whether that address is verified, so the guard doesn't rely on it.
 //
 // "" means the caller has no known address, which the guard refuses. A lookup
 // that fails for any other reason is a 503, so an outage isn't reported to the
@@ -1521,7 +1520,7 @@ func (o *SendOrchestrator) testSendCallerEmail(ctx context.Context, principal, t
 		if errors.As(err, &notFound) {
 			return "", nil
 		}
-		return "", pkgerrors.NewServiceUnavailable(fmt.Sprintf("resolve caller email from auth-service: %v", err))
+		return "", pkgerrors.NewServiceUnavailable("resolve caller email from auth-service", err)
 	}
 	return strings.TrimSpace(email), nil
 }

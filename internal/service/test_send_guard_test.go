@@ -105,6 +105,24 @@ func TestTestSendOverTheLimitStopsBeforeRendering(t *testing.T) {
 	}
 }
 
+func TestTestSendOverTheLimitDoesNotLookUpTheCaller(t *testing.T) {
+	ctx := context.Background()
+	reader := &fakeUserEmailReader{email: "me@example.com"}
+	orch := guardOrchestrator(&fakeEmailDispatcher{}, reader)
+	for i := 0; i < testSendLimit; i++ {
+		if err := orch.TestSend(ctx, guardInput("me@example.com", "")); err != nil {
+			t.Fatalf("send %d: %v", i+1, err)
+		}
+	}
+	reader.calls = 0
+	if err := orch.TestSend(ctx, guardInput("me@example.com", "")); !errors.Is(err, domain.ErrRateLimited) {
+		t.Fatalf("got %v, want ErrRateLimited", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("auth-service lookups = %d, want 0", reader.calls)
+	}
+}
+
 func TestWindowLimiterDropsIdleKeys(t *testing.T) {
 	l := newWindowLimiter(2, time.Hour)
 	start := time.Date(2026, 11, 9, 9, 0, 0, 0, time.UTC)

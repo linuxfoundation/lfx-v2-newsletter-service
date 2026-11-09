@@ -414,9 +414,11 @@ func (f *fakeUserMetadataReader) Name(_ context.Context, _ string) (string, erro
 type fakeUserEmailReader struct {
 	email string
 	err   error
+	calls int
 }
 
 func (f *fakeUserEmailReader) PrimaryEmail(_ context.Context, _ string) (string, error) {
+	f.calls++
 	return f.email, f.err
 }
 

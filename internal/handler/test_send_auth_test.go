@@ -20,10 +20,14 @@ type stubProject struct{}
 func (stubProject) Name(context.Context, string) (string, error) { return "Project", nil }
 func (stubProject) Slug(context.Context, string) (string, error) { return "project", nil }
 
-type stubUser struct{ primary string }
+type stubUser struct {
+	primary  string
+	lookedUp []string
+}
 
-func (stubUser) Name(context.Context, string) (string, error) { return "Tester", nil }
-func (u stubUser) PrimaryEmail(context.Context, string) (string, error) {
+func (*stubUser) Name(context.Context, string) (string, error) { return "Tester", nil }
+func (u *stubUser) PrimaryEmail(_ context.Context, principal string) (string, error) {
+	u.lookedUp = append(u.lookedUp, principal)
 	return u.primary, nil
 }
 
@@ -47,7 +51,7 @@ func TestTestSendHandlerAppliesTheOwnAddressGuard(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			user := stubUser{primary: tc.primary}
+			user := &stubUser{primary: tc.primary}
 			// FanoutEnabled is left false, so an allowed send stops before dispatch.
 			h := &Handler{auth: validator, requireUserAuth: true, send: service.NewSendOrchestrator(service.SendOrchestratorConfig{
 				Project:      stubProject{},
@@ -62,6 +66,11 @@ func TestTestSendHandlerAppliesTheOwnAddressGuard(t *testing.T) {
 			h.withAuth(http.HandlerFunc(h.TestSend)).ServeHTTP(rec, req)
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			for _, principal := range user.lookedUp {
+				if principal != "jdoe" {
+					t.Fatalf("looked up %q, want the token's principal", principal)
+				}
 			}
 		})
 	}
