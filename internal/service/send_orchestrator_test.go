@@ -71,13 +71,19 @@ type capturedSend struct {
 }
 
 type fakeEmailDispatcher struct {
-	mu    sync.Mutex
-	sends []capturedSend
+	mu       sync.Mutex
+	sends    []capturedSend
+	err      error
+	attempts int
 }
 
 func (f *fakeEmailDispatcher) SendEmail(_ context.Context, in port.SendEmailInput) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.attempts++
+	if f.err != nil {
+		return "", f.err
+	}
 	f.sends = append(f.sends, capturedSend{
 		To:              in.To,
 		HTML:            in.HTML,

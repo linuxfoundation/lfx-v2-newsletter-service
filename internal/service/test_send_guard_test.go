@@ -105,6 +105,23 @@ func TestTestSendOverTheLimitStopsBeforeRendering(t *testing.T) {
 	}
 }
 
+func TestTestSendFailedDispatchesUseTheAllowance(t *testing.T) {
+	ctx := context.Background()
+	email := &fakeEmailDispatcher{err: errors.New("email-service timeout")}
+	orch := guardOrchestrator(email, &fakeUserEmailReader{})
+	for i := 0; i < testSendLimit; i++ {
+		if err := orch.TestSend(ctx, guardInput("me@example.com", "me@example.com")); err == nil || errors.Is(err, domain.ErrRateLimited) {
+			t.Fatalf("send %d: got %v, want the dispatch error", i+1, err)
+		}
+	}
+	if err := orch.TestSend(ctx, guardInput("me@example.com", "me@example.com")); !errors.Is(err, domain.ErrRateLimited) {
+		t.Fatalf("over the limit: got %v, want ErrRateLimited", err)
+	}
+	if email.attempts != testSendLimit {
+		t.Fatalf("dispatch attempts = %d, want %d", email.attempts, testSendLimit)
+	}
+}
+
 func TestTestSendOverTheLimitDoesNotLookUpTheCaller(t *testing.T) {
 	ctx := context.Background()
 	reader := &fakeUserEmailReader{email: "me@example.com"}
