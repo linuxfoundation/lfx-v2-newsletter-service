@@ -36,8 +36,8 @@ func (r *handlerPublicationRepo) GetPublication(_ context.Context, projectUID st
 	return r.pub, nil
 }
 
-func (r *handlerPublicationRepo) ListPublications(_ context.Context, _, _ string) (*port.PublicationListPage, error) {
-	if r.pub == nil {
+func (r *handlerPublicationRepo) ListPublications(_ context.Context, projectUID, _ string) (*port.PublicationListPage, error) {
+	if r.pub == nil || r.pub.ProjectUID != projectUID {
 		return &port.PublicationListPage{}, nil
 	}
 	return &port.PublicationListPage{Publications: []*model.Publication{r.pub}, NextPageToken: "next"}, nil
@@ -52,7 +52,7 @@ func (r *handlerPublicationRepo) UpdatePublication(_ context.Context, p *model.P
 }
 
 func publicationsHandler(pub *model.Publication) *Handler {
-	return &Handler{publications: service.NewPublicationService(&handlerPublicationRepo{pub: pub}, nil)}
+	return &Handler{publications: service.NewPublicationService(&handlerPublicationRepo{pub: pub}, nil, []string{"example.com"})}
 }
 
 func doJSON(h http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -66,7 +66,7 @@ func doJSON(h http.Handler, method, path, body string, headers map[string]string
 }
 
 func TestPublicationRoutesRequireAuth(t *testing.T) {
-	h := &Handler{requireUserAuth: true, publications: service.NewPublicationService(&handlerPublicationRepo{}, nil)}
+	h := &Handler{requireUserAuth: true, publications: service.NewPublicationService(&handlerPublicationRepo{}, nil, nil)}
 	routes := h.Routes()
 	cases := []struct{ method, path string }{
 		{http.MethodPost, "/projects/p1/newsletter-publications"},
@@ -146,6 +146,15 @@ func TestListPublicationsHandler(t *testing.T) {
 	}
 	if len(got.Publications) != 1 || got.NextPageToken != "next" {
 		t.Errorf("list = %+v", got)
+	}
+
+	other := doJSON(publicationsHandler(pub).Routes(), http.MethodGet, "/projects/p2/newsletter-publications", "", nil)
+	var empty publicapi.PublicationListResponse
+	if err := json.Unmarshal(other.Body.Bytes(), &empty); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(empty.Publications) != 0 {
+		t.Errorf("project p2 received project p1's publication: %+v", empty)
 	}
 }
 

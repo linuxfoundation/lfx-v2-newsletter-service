@@ -15,9 +15,10 @@ import (
 // taking the publication's when it fixes them. Implicit publications leave both
 // unset, so their editions keep the sender-resolved values unchanged.
 //
-// A reply-to outside the allowed domains is skipped with a warning rather than
-// sent: email-service rejects such an address outright, which would fail the
-// whole fan-out. A failed lookup fails the request before anything is claimed
+// A reply-to outside the allowed domains is refused when the publication is
+// saved. The check here covers the allowlist changing afterwards: the override
+// is skipped with a warning and the existing Reply-To chain applies. A failed
+// lookup fails the request before anything is claimed
 // or sent, so a mailing can't go out under the wrong sender.
 func (o *SendOrchestrator) applyPublicationSender(ctx context.Context, draft *model.Newsletter, fromName, replyTo string) (string, string, error) {
 	if o.publications == nil || draft.PublicationUID == nil {
@@ -34,7 +35,7 @@ func (o *SendOrchestrator) applyPublicationSender(ctx context.Context, draft *mo
 		if domainAllowed(*pub.ReplyToEmail, o.replyToAllowedDomains) {
 			replyTo = *pub.ReplyToEmail
 		} else {
-			slog.WarnContext(ctx, "reply-to: publication reply_to_email domain not in allowed reply-to domains, using sender-resolved address",
+			slog.WarnContext(ctx, "reply-to: publication reply_to_email domain not in allowed reply-to domains, ignoring the override",
 				"publication_id", pub.ID,
 				"domain", domainOf(*pub.ReplyToEmail),
 			)

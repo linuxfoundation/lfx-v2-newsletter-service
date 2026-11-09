@@ -65,6 +65,7 @@ func TestSendImplicitPublicationKeepsResolvedSender(t *testing.T) {
 	}
 }
 
+// Covers the allowlist changing after the publication was saved.
 func TestSendSkipsDisallowedPublicationReplyTo(t *testing.T) {
 	pub := &model.Publication{ID: uuid.New(), ProjectUID: "p1", ReplyToEmail: ptr("weekly@not-allowed.test")}
 	email, err := sendToPublication(t, pub, newFakePublicationRepo(pub))

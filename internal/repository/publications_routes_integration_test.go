@@ -28,7 +28,7 @@ func newPublicationsAPI(t *testing.T) http.Handler {
 	pubRepo := NewPostgresPublicationRepo(repo.db)
 	newsletterSvc := service.NewNewsletterService(repo, true)
 	newsletterSvc.UsePublications(pubRepo)
-	return handler.New(handler.Config{Newsletter: newsletterSvc, Publications: service.NewPublicationService(pubRepo, repo)}).Routes()
+	return handler.New(handler.Config{Newsletter: newsletterSvc, Publications: service.NewPublicationService(pubRepo, repo, []string{"example.com"})}).Routes()
 }
 
 func doJSON(h http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {

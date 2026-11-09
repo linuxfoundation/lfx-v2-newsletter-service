@@ -256,17 +256,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	// Normalize the reply-to allowlist the same way; empty config falls back
 	// to the email-service default rather than an empty (reject-everything)
 	// list.
-	var replyToDomains []string
-	for _, domain := range cfg.ReplyToAllowedDomains {
-		domain = strings.ToLower(strings.TrimSpace(domain))
-		if domain == "" {
-			continue
-		}
-		replyToDomains = append(replyToDomains, domain)
-	}
-	if len(replyToDomains) == 0 {
-		replyToDomains = defaultReplyToAllowedDomains
-	}
+	replyToDomains := normalizeReplyToDomains(cfg.ReplyToAllowedDomains)
 	jobTimeout := cfg.SendJobTimeout
 	if jobTimeout <= 0 {
 		jobTimeout = defaultSendJobTimeout
@@ -1107,6 +1097,9 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		fromDisplayName = projectName + fromDisplayNameSuffix
 	}
 
+	// A test send has no newsletter ID, so a publication's from_name and
+	// reply_to_email are not applied to it.
+	//
 	// A test send is immediate, so the header date is today. No "Read online"
 	// link: a test send is not tied to a newsletter ID, so there is no reader
 	// permalink to link to.
@@ -1514,6 +1507,21 @@ func (o *SendOrchestrator) resolveSenderEmail(ctx context.Context, principal str
 		return ""
 	}
 	return trimmed
+}
+
+// normalizeReplyToDomains lowercases and trims the configured allowlist,
+// dropping blanks, and applies the default when nothing is left.
+func normalizeReplyToDomains(domains []string) []string {
+	var out []string
+	for _, d := range domains {
+		if d = strings.ToLower(strings.TrimSpace(d)); d != "" {
+			out = append(out, d)
+		}
+	}
+	if len(out) == 0 {
+		return defaultReplyToAllowedDomains
+	}
+	return out
 }
 
 // domainOf returns the lowercased domain portion of an email address, or ""

@@ -202,7 +202,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 
 	handlerImpl = handler.New(handler.Config{
 		Newsletter:      newsletterSvc,
-		Publications:    service.NewPublicationService(publicationRepo, repo),
+		Publications:    service.NewPublicationService(publicationRepo, repo, cfg.EmailReplyToAllowedDomains),
 		Send:            sendSvc,
 		Analytics:       analyticsSvc,
 		Unsubscribe:     unsubSvc,

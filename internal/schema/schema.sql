@@ -510,16 +510,17 @@ CREATE TABLE IF NOT EXISTS newsletter_page_views (
 -- is one edition of its publication. Publications carry the choices that
 -- outlive one send: the template set, the sender name, the reply-to address and
 -- the default audience. Inheritance is copied onto the edition when it is
--- created (see NewsletterService.CreateDraft), so the send path and a rollback
--- to a binary that knows nothing about publications stay unaffected.
+-- created (see NewsletterService.CreateDraft), so a binary that knows nothing
+-- about publications can still send it. from_name and reply_to_email are read
+-- from the publication at send time, so an edit applies to unsent editions too.
 --
 -- Every newsletter belongs to a publication. Rows that predate publications,
 -- and rows inserted without a publication_uid (by a client that does not know
 -- about publications, or by a pod on an older binary during a rolling deploy),
 -- get their own IMPLICIT publication: name = subject, template_key and the
 -- sender fields NULL, audience empty, so nothing about how they send changes.
--- An implicit publication stays behind if its edition is deleted; such rows are
--- excluded from the list route and only reachable by id.
+-- Implicit publications are excluded from the list route, are not writable and
+-- cannot take further editions, and are removed with their edition.
 --
 -- Rolling-deploy safety: only the column and trigger are needed for an older
 -- binary to keep working, and an older binary tolerates the new column through
@@ -575,6 +576,24 @@ DROP TRIGGER IF EXISTS trg_assign_implicit_publication ON newsletters;
 CREATE TRIGGER trg_assign_implicit_publication
     BEFORE INSERT ON newsletters
     FOR EACH ROW EXECUTE FUNCTION assign_implicit_publication();
+
+-- Remove an implicit publication when its edition is deleted, so deleting a
+-- draft also removes the subject and created_by copied onto it. In the database
+-- for the same reason as the insert trigger: older binaries delete rows too.
+CREATE OR REPLACE FUNCTION remove_orphaned_implicit_publication() RETURNS trigger AS $$
+BEGIN
+    DELETE FROM publications p
+    WHERE p.id = OLD.publication_uid
+      AND p.implicit
+      AND NOT EXISTS (SELECT 1 FROM newsletters n WHERE n.publication_uid = OLD.publication_uid);
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_remove_orphaned_implicit_publication ON newsletters;
+CREATE TRIGGER trg_remove_orphaned_implicit_publication
+    AFTER DELETE ON newsletters
+    FOR EACH ROW EXECUTE FUNCTION remove_orphaned_implicit_publication();
 
 -- Backfill: one implicit publication per newsletter that has none. Touches only
 -- publication_uid — not version (open editors keep their ETag) and not updated_at

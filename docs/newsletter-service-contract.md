@@ -76,7 +76,7 @@ Core state:
 | `subject` | Subject line. |
 | `body_html` | Newsletter HTML body. For layout-based newsletters this is derived from `body_layout` on write (see below); for legacy newsletters it is the authored HTML. |
 | `body_layout` | Optional `NewsletterLayout` — the editor's structured layout. Returned **only by the editable single-resource reads** (get / create / update) and **only** for layout-based newsletters (`omitempty` for legacy / html-only rows). The **list** and **send** responses always omit it (`NewsletterListItem` and the send response DTO clear `body_layout` on the returned copy regardless of type — the persisted newsletter's stored layout is untouched, since it is still needed for later reads and send-time re-rendering), so those consumers must never rely on receiving it — fetch the single resource when the structured layout is needed. |
-| `ed_reply_email` | Reply-to address stored on the draft. Fallback only — at send time the orchestrator resolves the sender's own primary email via `lfx.auth-service.user_emails.read` and uses it as Reply-To instead, so replies reach whoever sends rather than whoever last drafted. This field is used only when that resolution fails or the sender's domain isn't in the Reply-To allowlist. |
+| `ed_reply_email` | Reply-to address stored on the draft. Fallback only — at send time the orchestrator resolves the sender's own primary email via `lfx.auth-service.user_emails.read` and uses it as Reply-To instead, so replies reach whoever sends rather than whoever last drafted. This field is used only when that resolution fails or the sender's domain isn't in the Reply-To allowlist. A publication's `reply_to_email` takes precedence over both at send; see [Publications](#publications). |
 | `committee_uids` | Committees used for recipient resolution. |
 | `status` | `draft`, `sending`, `scheduled`, or `sent`. |
 | `sent_at` | Set when status becomes `sent`. |
@@ -159,9 +159,9 @@ A publication is the recurring parent of newsletters: each row in `newsletters` 
 | `name` | Required, up to 200 characters. |
 | `template_key` | Optional. An embedded template set (see `GET .../newsletters/templates`). |
 | `from_name` | Optional. Replaces the From display name at send. The From address is per-project deployment configuration and cannot be set here. |
-| `reply_to_email` | Optional bare email address. Replaces Reply-To at send when its domain is in `EMAIL_REPLY_TO_ALLOWED_DOMAINS` (otherwise a warning is logged and the sender-resolved address is used), and is the default `ed_reply_email` for new editions. |
+| `reply_to_email` | Optional bare email address on a domain in `EMAIL_REPLY_TO_ALLOWED_DOMAINS` (otherwise `400`). Replaces Reply-To at send, and is the default `ed_reply_email` for new editions. If the allowlist later drops the domain, the override is skipped with a warning and the usual Reply-To resolution applies. |
 | `committee_uids` | Default audience for new editions. Empty is allowed. |
-| `implicit` | `true` when the service created this publication for a newsletter that named none. |
+| `implicit` | `true` when the service created this publication for a newsletter that named none. An implicit publication cannot be updated (`400`), cannot take new editions (`400`), and is deleted with its edition. |
 | `created_by`, `version`, `created_at`, `updated_at` | As on a newsletter. `version` is the ETag. |
 
 `POST` and `PUT` take `PublicationRequest` (`name`, `template_key`, `from_name`, `reply_to_email`, `committee_uids`). `PUT` is full-replace: an omitted optional field is cleared.
@@ -172,7 +172,7 @@ A publication is the recurring parent of newsletters: each row in `newsletters` 
 - `ed_reply_email` when the request omits it.
 - The template set when the publication has one. A `body_layout` with no `template_key` takes the publication's, one naming a different template set is `400`, and a request with neither `body_layout` nor `body_html` starts from an empty layout on that template set. `body_html` on its own is `400`, because such a publication renders through its template set.
 
-Updating a publication changes new editions only; existing editions keep what they were created with. An edition of a publication with a template set cannot be moved to another template set or cleared to html-only through `PUT`, except that the template key the edition already has stays allowed, so a publication changing its template set does not strand an edition created before it.
+Updating the template set or the default audience changes new editions only; existing editions keep what they were created with. `from_name` and `reply_to_email` are read from the publication at send, so changing them applies to every edition not yet sent. A test send has no newsletter to resolve a publication from, so `POST .../test-send` uses the sender-resolved values. An edition of a publication with a template set cannot be moved to another template set or cleared to html-only through `PUT`, except that the template key the edition already has stays allowed, so a publication changing its template set does not strand an edition created before it.
 
 **Implicit publications and existing clients.** `publication_uid` is optional on create. A client that does not send one is unaffected: the database gives the new row its own implicit publication and the response carries its `publication_uid`. Implicit publications have no `template_key`, `from_name`, `reply_to_email` or default audience, so their editions send exactly as a newsletter with no publication did. Rows that predate publications get one the same way, in the schema backfill.
 

@@ -257,11 +257,13 @@ func TestPublicationValidation(t *testing.T) {
 		{"control char in from name", PublicationInput{Name: "n", FromName: ptr("a\r\nb")}},
 		{"reply-to not an address", PublicationInput{Name: "n", ReplyToEmail: ptr("not-an-email")}},
 		{"reply-to with display name", PublicationInput{Name: "n", ReplyToEmail: ptr("Name <a@example.com>")}},
+		{"reply-to on a domain not allowed", PublicationInput{Name: "n", ReplyToEmail: ptr("a@not-allowed.test")}},
+		{"name over 200 characters", PublicationInput{Name: strings.Repeat("é", 201)}},
 		{"blank committee", PublicationInput{Name: "n", CommitteeUIDs: []string{" "}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			svc := NewPublicationService(newFakePublicationRepo(), newFakeRepo())
+			svc := NewPublicationService(newFakePublicationRepo(), newFakeRepo(), []string{"example.com"})
 			if _, err := svc.CreatePublication(context.Background(), "p1", "u1", tc.in); !errors.Is(err, domain.ErrInvalidRequest) {
 				t.Fatalf("err = %v, want ErrInvalidRequest", err)
 			}
@@ -270,7 +272,7 @@ func TestPublicationValidation(t *testing.T) {
 }
 
 func TestCreatePublicationNormalizes(t *testing.T) {
-	svc := NewPublicationService(newFakePublicationRepo(), newFakeRepo())
+	svc := NewPublicationService(newFakePublicationRepo(), newFakeRepo(), []string{"example.com"})
 	p, err := svc.CreatePublication(context.Background(), "p1", "u1", PublicationInput{
 		Name:          "  Weekly ",
 		TemplateKey:   ptr(" " + testTemplateKey),
@@ -286,9 +288,57 @@ func TestCreatePublicationNormalizes(t *testing.T) {
 	}
 }
 
+// A multi-byte name is limited by characters, matching the database CHECK.
+func TestCreatePublicationCountsNameInCharacters(t *testing.T) {
+	svc := NewPublicationService(newFakePublicationRepo(), newFakeRepo(), nil)
+	if _, err := svc.CreatePublication(context.Background(), "p1", "u1", PublicationInput{Name: strings.Repeat("é", 200)}); err != nil {
+		t.Fatalf("200 characters must pass: %v", err)
+	}
+}
+
+func TestImplicitPublicationIsNotWritable(t *testing.T) {
+	implicit := &model.Publication{ID: uuid.New(), ProjectUID: "p1", Name: "Implicit", Implicit: true, CommitteeUIDs: []string{"c1"}}
+
+	svc := NewPublicationService(newFakePublicationRepo(implicit), newFakeRepo(), nil)
+	if _, err := svc.UpdatePublication(context.Background(), "p1", implicit.ID, 1, PublicationInput{Name: "x", FromName: ptr("x")}); !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("update: err = %v, want ErrInvalidRequest", err)
+	}
+
+	newsletters, _ := publicationSvc(implicit)
+	_, err := newsletters.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID: "p1", PublicationUID: &implicit.ID, Subject: "s", BodyHTML: "<p>x</p>", EDReplyEmail: "e@example.com", CommitteeUIDs: []string{"c1"}, CreatedBy: "u1",
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("create edition: err = %v, want ErrInvalidRequest", err)
+	}
+}
+
+// filterCapturingRepo records the filters ListEditions passes down.
+type filterCapturingRepo struct {
+	*fakeNewsletterRepo
+	got port.ListFilters
+}
+
+func (r *filterCapturingRepo) ListAll(_ context.Context, f port.ListFilters) (*port.ListPage, error) {
+	r.got = f
+	return &port.ListPage{}, nil
+}
+
+func TestListEditionsForwardsProjectAndPublication(t *testing.T) {
+	pub := weeklyPublication()
+	repo := &filterCapturingRepo{fakeNewsletterRepo: newFakeRepo()}
+	svc := NewPublicationService(newFakePublicationRepo(pub), repo, nil)
+	if _, err := svc.ListEditions(context.Background(), ListEditionsInput{ProjectUID: "p1", PublicationUID: pub.ID, Status: model.StatusDraft}); err != nil {
+		t.Fatalf("ListEditions: %v", err)
+	}
+	if repo.got.ProjectUID != "p1" || repo.got.PublicationUID == nil || *repo.got.PublicationUID != pub.ID || len(repo.got.Statuses) != 1 {
+		t.Fatalf("filters = %+v", repo.got)
+	}
+}
+
 func TestListEditionsScopesToProjectPublication(t *testing.T) {
 	pub := weeklyPublication()
-	svc := NewPublicationService(newFakePublicationRepo(pub), newFakeRepo())
+	svc := NewPublicationService(newFakePublicationRepo(pub), newFakeRepo(), nil)
 	if _, err := svc.ListEditions(context.Background(), ListEditionsInput{ProjectUID: "p1", PublicationUID: uuid.New()}); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("unknown publication: err = %v, want ErrNotFound", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -30,13 +31,16 @@ const (
 // PublicationService implements publication CRUD and the read of a
 // publication's editions.
 type PublicationService struct {
-	repo       port.PublicationRepository
-	newsletter port.NewsletterRepository
+	repo                  port.PublicationRepository
+	newsletter            port.NewsletterRepository
+	replyToAllowedDomains []string
 }
 
 // NewPublicationService wires a PublicationService over the given repositories.
-func NewPublicationService(repo port.PublicationRepository, newsletter port.NewsletterRepository) *PublicationService {
-	return &PublicationService{repo: repo, newsletter: newsletter}
+// replyToAllowedDomains is the deployment's Reply-To allowlist (empty uses the
+// same default as the send path); a publication's reply_to_email must be on it.
+func NewPublicationService(repo port.PublicationRepository, newsletter port.NewsletterRepository, replyToAllowedDomains []string) *PublicationService {
+	return &PublicationService{repo: repo, newsletter: newsletter, replyToAllowedDomains: normalizeReplyToDomains(replyToAllowedDomains)}
 }
 
 // PublicationInput is the editable part of a publication, shared by create and
@@ -58,7 +62,7 @@ func (s *PublicationService) CreatePublication(ctx context.Context, projectUID, 
 		return nil, fmt.Errorf("%w: createdBy is required", domain.ErrInvalidRequest)
 	}
 	p := &model.Publication{ProjectUID: projectUID, CreatedBy: createdBy}
-	if err := applyPublicationInput(p, in); err != nil {
+	if err := s.applyPublicationInput(p, in); err != nil {
 		return nil, err
 	}
 	if err := s.repo.CreatePublication(ctx, p); err != nil {
@@ -85,7 +89,10 @@ func (s *PublicationService) ListPublications(ctx context.Context, projectUID, p
 
 // UpdatePublication full-replaces the editable fields of a publication, gated
 // by optimistic locking. Changing the template set or the default audience
-// affects new editions only: existing editions keep what they were created with.
+// affects new editions only. Changing from_name or reply_to_email also applies
+// to unsent editions, because the send path reads them from the publication.
+// An implicit publication is not writable: its editions must keep sending as a
+// newsletter with no publication does.
 func (s *PublicationService) UpdatePublication(ctx context.Context, projectUID string, id uuid.UUID, expectedVersion int64, in PublicationInput) (*model.Publication, error) {
 	if err := validateProjectUID(projectUID); err != nil {
 		return nil, err
@@ -94,7 +101,10 @@ func (s *PublicationService) UpdatePublication(ctx context.Context, projectUID s
 	if err != nil {
 		return nil, err
 	}
-	if err := applyPublicationInput(p, in); err != nil {
+	if p.Implicit {
+		return nil, fmt.Errorf("%w: an implicit publication cannot be updated", domain.ErrInvalidRequest)
+	}
+	if err := s.applyPublicationInput(p, in); err != nil {
 		return nil, err
 	}
 	return s.repo.UpdatePublication(ctx, p, expectedVersion)
@@ -128,12 +138,12 @@ func (s *PublicationService) ListEditions(ctx context.Context, in ListEditionsIn
 }
 
 // applyPublicationInput validates in and copies it onto p.
-func applyPublicationInput(p *model.Publication, in PublicationInput) error {
+func (s *PublicationService) applyPublicationInput(p *model.Publication, in PublicationInput) error {
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
 		return fmt.Errorf("%w: name is required", domain.ErrInvalidRequest)
 	}
-	if len(name) > maxPublicationNameLength {
+	if utf8.RuneCountInString(name) > maxPublicationNameLength {
 		return fmt.Errorf("%w: name exceeds %d characters", domain.ErrInvalidRequest, maxPublicationNameLength)
 	}
 	templateKey, err := validateTemplateKey(in.TemplateKey)
@@ -144,7 +154,7 @@ func applyPublicationInput(p *model.Publication, in PublicationInput) error {
 	if err != nil {
 		return err
 	}
-	replyTo, err := validateReplyToEmail(in.ReplyToEmail)
+	replyTo, err := validateReplyToEmail(in.ReplyToEmail, s.replyToAllowedDomains)
 	if err != nil {
 		return err
 	}
@@ -201,7 +211,7 @@ func validateFromName(name *string) (*string, error) {
 	if trimmed == nil {
 		return nil, nil
 	}
-	if len(*trimmed) > maxFromNameLength {
+	if utf8.RuneCountInString(*trimmed) > maxFromNameLength {
 		return nil, fmt.Errorf("%w: from_name exceeds %d characters", domain.ErrInvalidRequest, maxFromNameLength)
 	}
 	if strings.IndexFunc(*trimmed, unicode.IsControl) >= 0 {
@@ -210,8 +220,11 @@ func validateFromName(name *string) (*string, error) {
 	return trimmed, nil
 }
 
-// validateReplyToEmail requires a bare RFC 5322 address (no display name).
-func validateReplyToEmail(email *string) (*string, error) {
+// validateReplyToEmail requires a bare RFC 5322 address (no display name) on an
+// allowed domain. The domain is checked here so a misconfigured publication
+// fails when someone saves it, not at send, where the address could be refused
+// and fail the whole fan-out.
+func validateReplyToEmail(email *string, allowedDomains []string) (*string, error) {
 	trimmed := trimOptional(email)
 	if trimmed == nil {
 		return nil, nil
@@ -222,6 +235,9 @@ func validateReplyToEmail(email *string) (*string, error) {
 	parsed, err := mail.ParseAddress(*trimmed)
 	if err != nil || parsed.Address != *trimmed {
 		return nil, fmt.Errorf("%w: reply_to_email is not a valid email address", domain.ErrInvalidRequest)
+	}
+	if !domainAllowed(*trimmed, allowedDomains) {
+		return nil, fmt.Errorf("%w: reply_to_email domain %q is not an allowed reply-to domain", domain.ErrInvalidRequest, domainOf(*trimmed))
 	}
 	return trimmed, nil
 }
@@ -236,9 +252,14 @@ func (s *NewsletterService) publicationFor(ctx context.Context, projectUID strin
 
 // applyPublicationDefaults fills in what a new edition inherits from its
 // publication: audience and reply-to when omitted, and the template set. The
-// copy is deliberate, so the send path reads the edition row alone and an
-// already-created edition isn't changed by a later edit to the publication.
+// copy is deliberate: an already-created edition keeps these through a later
+// edit to the publication, and a binary that knows nothing about publications
+// can still send it. An implicit publication belongs to one newsletter and
+// cannot take further editions.
 func applyPublicationDefaults(in *CreateDraftInput, pub *model.Publication) error {
+	if pub.Implicit {
+		return fmt.Errorf("%w: an implicit publication cannot take new editions", domain.ErrInvalidRequest)
+	}
 	if len(in.CommitteeUIDs) == 0 {
 		in.CommitteeUIDs = slices.Clone(pub.CommitteeUIDs)
 	}

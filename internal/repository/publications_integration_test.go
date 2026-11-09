@@ -27,6 +27,8 @@ func rewindToPrePublications(t *testing.T, repo *PostgresNewsletterRepo) {
 		`ALTER TABLE newsletters DROP CONSTRAINT IF EXISTS newsletters_publication_fk`,
 		`DROP TRIGGER IF EXISTS trg_assign_implicit_publication ON newsletters`,
 		`DROP FUNCTION IF EXISTS assign_implicit_publication()`,
+		`DROP TRIGGER IF EXISTS trg_remove_orphaned_implicit_publication ON newsletters`,
+		`DROP FUNCTION IF EXISTS remove_orphaned_implicit_publication()`,
 		`ALTER TABLE newsletters DROP COLUMN IF EXISTS publication_uid`,
 		`TRUNCATE publications CASCADE`,
 	} {
@@ -185,6 +187,44 @@ func TestLegacyInsertGetsImplicitPublication(t *testing.T) {
 	}
 	if !implicit || name != "Old pod draft" {
 		t.Fatalf("publication implicit=%v name=%q", implicit, name)
+	}
+}
+
+// Deleting a draft must also remove the subject and created_by copied onto its
+// implicit publication, while a named publication outlives its editions.
+func TestDeleteRemovesImplicitPublicationOnly(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	pubs := NewPostgresPublicationRepo(repo.db)
+	ctx := context.Background()
+	project := "project-" + uuid.NewString()
+
+	mk := func(publicationUID *uuid.UUID) *model.Newsletter {
+		n := &model.Newsletter{ProjectUID: project, PublicationUID: publicationUID, Subject: "s", BodyHTML: "<p>b</p>", EDReplyEmail: "ed@example.com", CommitteeUIDs: []string{"c1"}, Status: model.StatusDraft, CreatedBy: "seeder"}
+		if err := repo.Create(ctx, n); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		return n
+	}
+
+	implicit := mk(nil)
+	implicitPub := *implicit.PublicationUID
+	if err := repo.Delete(ctx, implicit.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := pubs.GetPublication(ctx, project, implicitPub); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("implicit publication after delete: err = %v, want ErrNotFound", err)
+	}
+
+	named := &model.Publication{ProjectUID: project, Name: "Weekly", CommitteeUIDs: []string{}, CreatedBy: "seeder"}
+	if err := pubs.CreatePublication(ctx, named); err != nil {
+		t.Fatalf("create publication: %v", err)
+	}
+	edition := mk(&named.ID)
+	if err := repo.Delete(ctx, edition.ID); err != nil {
+		t.Fatalf("delete edition: %v", err)
+	}
+	if _, err := pubs.GetPublication(ctx, project, named.ID); err != nil {
+		t.Fatalf("named publication after delete: %v", err)
 	}
 }
 
