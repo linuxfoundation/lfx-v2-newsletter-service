@@ -165,12 +165,6 @@ make lint        # golangci-lint
 
 - KB review skill: `/newsletter-service-learnings-reviewer`
 - Preflight: `/newsletter-service-pr-readiness origin/main`, then `/newsletter-service-preflight origin/main --report-only`
-- PR driver: `/newsletter-service-agentic-pr`
-
-Once the PR is open, load `/newsletter-service-agentic-pr` with the Skill tool
-and follow its "Launching the PR driver" section. It owns this repo's PR-thread
-iteration for the agentic review gate — do not use `/lfx-skills:lfx-pr-resolve`
-here — and it never runs a local reviewer and never merges.
 
 ## Conventions
 
