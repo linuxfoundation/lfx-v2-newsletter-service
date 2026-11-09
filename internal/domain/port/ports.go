@@ -233,7 +233,8 @@ type UserMetadataReader interface {
 // that drives the From display name — but only when the address resolves,
 // parses, and passes the Reply-To domain allowlist; the orchestrator falls
 // back to the draft's stored `ed_reply_email` otherwise, so Reply-To does
-// not unconditionally track the sender.
+// not unconditionally track the sender. Also the test-send guard's source for
+// the caller's own address when the token carries no email.
 type UserEmailReader interface {
 	PrimaryEmail(ctx context.Context, principal string) (string, error)
 }
