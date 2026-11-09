@@ -72,6 +72,7 @@ In CNPG modes and `external.shape=fields`, the deployment forwards `PGHOST`, `PG
 
 - `^/projects/[^/]+/newsletters(/.*)?$`
 - `^/projects/[^/]+/newsletter-opt-outs(/.*)?$`
+- `^/projects/[^/]+/newsletter-publications(/.*)?$`
 - `^/projects/[^/]+/newsletter-opens/[^/]+$`
 - `^/committees/[^/]+/newsletters$` (member-facing committee-scoped list)
 - `/newsletters/unsubscribe` (exact)
@@ -82,6 +83,7 @@ When `heimdall.enabled=true`, the HTTPRoute attaches `heimdall-forward-body`.
 `ruleset.yaml` authentication and authorization:
 
 - Most authenticated project routes (newsletter CRUD, analytics, etc.) authenticate via OIDC and fall back to `allow_all` when `openfga.enabled=false`. When OpenFGA is enabled, these routes enforce `viewer` (read) or `writer_guard` (write) on the project.
+- The publication routes (`…/newsletter-publications[/…]`) use the project-scoped CRUD shape: `writer_guard` for create, update and creating an edition, `auditor_guard` (not `viewer`, whose project relation includes `[user:*]`) for reads, with the `allow_all` fallback when `openfga.enabled=false`. No publication-level OpenFGA type: access is expressed entirely through the project.
 - The stateless `…/newsletters/render-preview` route carries a project-scoped `writer_guard` rule (mirroring `…/test-send`, a write-scoped authoring action), so it is FGA-gated and not JWT-only.
 - The editor template routes (`…/newsletters/templates` and `…/newsletters/templates/{template_key}/manifest`) carry explicit project-scoped `viewer` rules. The list path would otherwise match the `{newsletter_uid}` GET rule only by coincidence, and the manifest path matches no other rule at all, so both are declared rather than inherited. Both rules are declared before the `{newsletter_uid}` GET rule because Heimdall uses the first matching rule.
 - The scheduled-send routes (`POST …/newsletters/{newsletter_uid}/schedule` and `POST …/cancel-schedule`, LFXV2-2685) are copied verbatim from `newsletters:send` — same `writer_guard` relation, same `allow_all` fallback. Rationale: arming and cancelling a send carry exactly the authority `send` already carries — same actor, same blast radius, no new data exposure — so they deliberately do **not** follow the fail-closed pattern below.

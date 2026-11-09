@@ -151,8 +151,11 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	// Step 5: domain wiring.
 	repo := repository.NewPostgresNewsletterRepo(bunDB)
 	unsubSvc := service.NewUnsubscribeService(repo, []byte(cfg.UnsubscribeSecret), cfg.PublicBaseURL)
+	publicationRepo := repository.NewPostgresPublicationRepo(bunDB)
 	newsletterSvc := service.NewNewsletterService(repo, unsubSvc.Enabled())
+	newsletterSvc.UsePublications(publicationRepo)
 	sendSvc = service.NewSendOrchestrator(service.SendOrchestratorConfig{
+		Publications:          publicationRepo,
 		Repo:                  repo,
 		Committee:             committeeClient,
 		Project:               projectClient,
@@ -199,6 +202,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 
 	handlerImpl = handler.New(handler.Config{
 		Newsletter:      newsletterSvc,
+		Publications:    service.NewPublicationService(publicationRepo, repo),
 		Send:            sendSvc,
 		Analytics:       analyticsSvc,
 		Unsubscribe:     unsubSvc,

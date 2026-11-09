@@ -26,6 +26,7 @@ import (
 // and exposes registered routes via Routes().
 type Handler struct {
 	newsletter      *service.NewsletterService
+	publications    *service.PublicationService
 	send            *service.SendOrchestrator
 	analytics       *service.AnalyticsService
 	unsub           *service.UnsubscribeService
@@ -44,6 +45,7 @@ type Handler struct {
 // Config wires a Handler.
 type Config struct {
 	Newsletter      *service.NewsletterService
+	Publications    *service.PublicationService
 	Send            *service.SendOrchestrator
 	Analytics       *service.AnalyticsService
 	Unsubscribe     *service.UnsubscribeService
@@ -62,6 +64,7 @@ type Config struct {
 func New(cfg Config) *Handler {
 	return &Handler{
 		newsletter:      cfg.Newsletter,
+		publications:    cfg.Publications,
 		send:            cfg.Send,
 		analytics:       cfg.Analytics,
 		unsub:           cfg.Unsubscribe,
@@ -156,6 +159,17 @@ func (h *Handler) Routes() http.Handler {
 	// newsletter. Only registered when a PageViewService is wired.
 	if h.pageViews != nil {
 		mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/page-views", h.withAuth(http.HandlerFunc(h.RecordPageView)))
+	}
+
+	// Publications and the editions under one — JWT auth. Only registered when a
+	// PublicationService is wired.
+	if h.publications != nil {
+		mux.Handle("POST /projects/{project_uid}/newsletter-publications", h.withAuth(http.HandlerFunc(h.CreatePublication)))
+		mux.Handle("GET /projects/{project_uid}/newsletter-publications", h.withAuth(http.HandlerFunc(h.ListPublications)))
+		mux.Handle("GET /projects/{project_uid}/newsletter-publications/{publication_uid}", h.withAuth(http.HandlerFunc(h.GetPublication)))
+		mux.Handle("PUT /projects/{project_uid}/newsletter-publications/{publication_uid}", h.withAuth(http.HandlerFunc(h.UpdatePublication)))
+		mux.Handle("GET /projects/{project_uid}/newsletter-publications/{publication_uid}/editions", h.withAuth(http.HandlerFunc(h.ListEditions)))
+		mux.Handle("POST /projects/{project_uid}/newsletter-publications/{publication_uid}/editions", h.withAuth(http.HandlerFunc(h.CreateEdition)))
 	}
 
 	// Newsletter opt-outs — JWT auth.
