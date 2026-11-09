@@ -39,6 +39,9 @@ const (
 // NewsletterService implements business logic for draft management.
 type NewsletterService struct {
 	repo port.NewsletterRepository
+	// publications resolves the publication an edition is created under. Set by
+	// UsePublications; required once a request names a publication.
+	publications port.PublicationRepository
 	// unsubEnabled mirrors UnsubscribeService.Enabled(). When false the
 	// render-on-write step binds unsubFooterReplyFallback instead of a link whose
 	// href would substitute to an empty string at send time — but none of the
@@ -57,19 +60,29 @@ func NewNewsletterService(repo port.NewsletterRepository, unsubEnabled bool) *Ne
 	return &NewsletterService{repo: repo, unsubEnabled: unsubEnabled}
 }
 
+// UsePublications wires the publication lookup CreateDraft and UpdateDraft use.
+func (s *NewsletterService) UsePublications(publications port.PublicationRepository) {
+	s.publications = publications
+}
+
 // CreateDraftInput is the typed input for CreateDraft.
 //
 // BodyLayout is optional. When non-nil, the service renders it to HTML via the
 // declarative emitter and stores both the layout and the derived BodyHTML; any
 // BodyHTML supplied in the input is ignored. When nil, BodyHTML is taken as-is.
 type CreateDraftInput struct {
-	ProjectUID    string
-	Subject       string
-	BodyHTML      string
-	BodyLayout    *declarative.Layout
-	EDReplyEmail  string
-	CommitteeUIDs []string
-	CreatedBy     string
+	ProjectUID string
+	// PublicationUID is optional. When set, the draft is created as an edition of
+	// that publication and inherits from it (see applyPublicationDefaults). When
+	// nil, the schema gives the draft its own implicit publication, so a client
+	// that knows nothing about publications is unaffected.
+	PublicationUID *uuid.UUID
+	Subject        string
+	BodyHTML       string
+	BodyLayout     *declarative.Layout
+	EDReplyEmail   string
+	CommitteeUIDs  []string
+	CreatedBy      string
 	// ScheduledAt is optional save-time intent — see validateScheduledAtSave.
 	ScheduledAt *time.Time
 }
@@ -102,6 +115,15 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	}
 	if err := validateSubject(in.Subject); err != nil {
 		return nil, err
+	}
+	if in.PublicationUID != nil {
+		pub, err := s.publicationFor(ctx, in.ProjectUID, *in.PublicationUID)
+		if err != nil {
+			return nil, err
+		}
+		if err := applyPublicationDefaults(&in, pub); err != nil {
+			return nil, err
+		}
 	}
 	if err := validateEDReplyEmail(in.EDReplyEmail); err != nil {
 		return nil, err
@@ -138,15 +160,16 @@ func (s *NewsletterService) CreateDraft(ctx context.Context, in CreateDraftInput
 	}
 
 	n := &model.Newsletter{
-		ProjectUID:    in.ProjectUID,
-		Subject:       strings.TrimSpace(in.Subject),
-		BodyHTML:      bodyHTML,
-		BodyLayout:    bodyLayout,
-		EDReplyEmail:  strings.TrimSpace(in.EDReplyEmail),
-		CommitteeUIDs: normalizeCommitteeUIDs(in.CommitteeUIDs),
-		Status:        model.StatusDraft,
-		CreatedBy:     in.CreatedBy,
-		ScheduledAt:   in.ScheduledAt,
+		ProjectUID:     in.ProjectUID,
+		PublicationUID: in.PublicationUID,
+		Subject:        strings.TrimSpace(in.Subject),
+		BodyHTML:       bodyHTML,
+		BodyLayout:     bodyLayout,
+		EDReplyEmail:   strings.TrimSpace(in.EDReplyEmail),
+		CommitteeUIDs:  normalizeCommitteeUIDs(in.CommitteeUIDs),
+		Status:         model.StatusDraft,
+		CreatedBy:      in.CreatedBy,
+		ScheduledAt:    in.ScheduledAt,
 	}
 
 	if err := s.repo.Create(ctx, n); err != nil {
@@ -198,22 +221,31 @@ func (s *NewsletterService) ListNewsletters(ctx context.Context, in ListNewslett
 	if err := validateProjectUID(in.ProjectUID); err != nil {
 		return nil, err
 	}
-	var statuses []model.Status
-	switch in.Status {
-	case "":
-		// No filter — every state.
-	case model.StatusDraft, model.StatusSending, model.StatusScheduled:
-		statuses = []model.Status{in.Status}
-	case model.StatusSent:
-		statuses = []model.Status{model.StatusSent, model.StatusSending}
-	default:
-		return nil, fmt.Errorf("%w: status must be 'draft', 'sending', 'scheduled', or 'sent'", domain.ErrInvalidRequest)
+	statuses, err := listStatuses(in.Status)
+	if err != nil {
+		return nil, err
 	}
 	return s.repo.ListAll(ctx, port.ListFilters{
 		ProjectUID: in.ProjectUID,
 		Statuses:   statuses,
 		PageToken:  in.PageToken,
 	})
+}
+
+// listStatuses maps the public status filter to the persisted statuses. The
+// public 'sent' filter also matches in-flight 'sending' rows; see
+// ListNewsletters.
+func listStatuses(status model.Status) ([]model.Status, error) {
+	switch status {
+	case "":
+		return nil, nil // No filter — every state.
+	case model.StatusDraft, model.StatusSending, model.StatusScheduled:
+		return []model.Status{status}, nil
+	case model.StatusSent:
+		return []model.Status{model.StatusSent, model.StatusSending}, nil
+	default:
+		return nil, fmt.Errorf("%w: status must be 'draft', 'sending', 'scheduled', or 'sent'", domain.ErrInvalidRequest)
+	}
 }
 
 // ListCommitteeNewslettersInput is the typed input for ListCommitteeNewsletters.
@@ -299,6 +331,9 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	// cancelled back to draft (POST .../cancel-schedule) before it can be edited.
 	if existing.Status == model.StatusScheduled {
 		return nil, domain.ErrScheduled
+	}
+	if err := s.enforcePublicationTemplate(ctx, existing, &in); err != nil {
+		return nil, err
 	}
 
 	// Resolve the body. A render failure returns before repo.Update, so nothing

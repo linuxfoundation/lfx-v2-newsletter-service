@@ -118,6 +118,7 @@ type SendOrchestrator struct {
 	userMetadata  port.UserMetadataReader
 	userEmail     port.UserEmailReader
 	unsub         *UnsubscribeService
+	publications  port.PublicationRepository
 	concurrency   int
 	fanoutEnabled bool
 	fromAddress   string
@@ -168,7 +169,11 @@ type SendOrchestratorConfig struct {
 	// resolveSenderEmail falls back to the draft's stored ed_reply_email.
 	UserEmail   port.UserEmailReader
 	Unsubscribe *UnsubscribeService
-	Concurrency int
+	// Publications supplies the From display name and Reply-To a publication
+	// fixes for its editions. Nil is tolerated (e.g. tests): every edition then
+	// uses the sender-resolved values.
+	Publications port.PublicationRepository
+	Concurrency  int
 	// FanoutEnabled is the feature toggle for the per-recipient send loop.
 	// Defaults to true; flip false in environments where we want to validate
 	// the recipient-resolution path without sending real mail.
@@ -300,6 +305,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		userMetadata:          cfg.UserMetadata,
 		userEmail:             cfg.UserEmail,
 		unsub:                 cfg.Unsubscribe,
+		publications:          cfg.Publications,
 		concurrency:           c,
 		fanoutEnabled:         cfg.FanoutEnabled,
 		fromAddress:           from,
@@ -443,6 +449,10 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// draft.EDReplyEmail (the drafter's address, captured at save time) is
 	// only a fallback for dev mode or a resolution failure.
 	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), draft.EDReplyEmail)
+	fromDisplayName, replyTo, err = o.applyPublicationSender(ctx, draft, fromDisplayName, replyTo)
+	if err != nil {
+		return nil, err
+	}
 
 	// One slug lookup feeds both the From override and the "Read online"
 	// permalink, so the two can't disagree and a slow project-service costs a
