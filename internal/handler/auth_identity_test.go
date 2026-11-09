@@ -6,7 +6,6 @@ package handler
 import (
 	"crypto/rand"
 	"crypto/rsa"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,10 +18,12 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain"
 )
 
-// staticKeyfunc serves one RSA public key. Only Keyfunc is used by validate;
-// the embedded interface leaves the other methods unimplemented.
+// keyfuncSet names the interface so staticKeyfunc can embed it without its
+// field clashing with the Keyfunc method.
 type keyfuncSet = keyfunc.Keyfunc
 
+// staticKeyfunc serves one RSA public key. Only Keyfunc is used by validate;
+// the embedded interface leaves the other methods unimplemented.
 type staticKeyfunc struct {
 	keyfuncSet
 	pub *rsa.PublicKey
@@ -95,9 +96,6 @@ func TestClassifyErrorMapsTheTestSendGuards(t *testing.T) {
 		status, code := classifyError(tc.err)
 		if status != tc.wantStatus || code != tc.wantCode {
 			t.Fatalf("classifyError(%v) = (%d, %q), want (%d, %q)", tc.err, status, code, tc.wantStatus, tc.wantCode)
-		}
-		if !errors.Is(tc.err, domain.ErrForbidden) && !errors.Is(tc.err, domain.ErrRateLimited) {
-			t.Fatal("test case does not wrap a guard sentinel")
 		}
 	}
 }

@@ -110,9 +110,10 @@ func (u *UserMetadataClient) Name(ctx context.Context, principal string) (string
 // PrimaryEmail resolves the user's primary email address. Used to derive the
 // send-time Reply-To address from the same principal driving the From
 // display name, so replies always reach whoever sent the newsletter rather
-// than whoever last saved the draft. Callers should treat lookup failure as
-// non-fatal and fall back to the newsletter's stored ed_reply_email — unlike
-// Name, an unresolved sender email should not block the send.
+// than whoever last saved the draft. For Reply-To, callers should treat lookup
+// failure as non-fatal and fall back to the newsletter's stored ed_reply_email:
+// unlike Name, an unresolved sender email should not block the send. The
+// test-send guard also uses it, and refuses the send when it can't resolve one.
 func (u *UserMetadataClient) PrimaryEmail(ctx context.Context, principal string) (string, error) {
 	if strings.TrimSpace(principal) == "" {
 		return "", pkgerrors.NewValidation("principal is required")

@@ -180,7 +180,7 @@ Recipient resolution and the provider fan-out are documented in `docs/recipient-
 | --- | --- |
 | `…/newsletters/recipient-count` | Returns unique recipient count after resolving committee members. |
 | `…/newsletters/recipients` | Returns unique recipient emails and first names. |
-| `…/newsletters/test-send` | Validates fields and dispatches a single test email to `to_email` — no persistence, no analytics. The body renders the same compliance footer as a real send: sender attribution, optional reply-to line, the "My Newsletters" link, and a working unsubscribe link minted for `to_email` (clicking it records a real project-scoped opt-out for that address). Returns `{ "ok": true }`. With auth on, `to_email` must match the caller's verified `email` claim (case-insensitive), else `403 forbidden`, and each principal may send 20 test emails an hour per pod, else `429 rate_limited` (lfx-self-serve#4358 F1). |
+| `…/newsletters/test-send` | Validates fields and dispatches a single test email to `to_email` — no persistence, no analytics. The body renders the same compliance footer as a real send: sender attribution, optional reply-to line, the "My Newsletters" link, and a working unsubscribe link minted for `to_email` (clicking it records a real project-scoped opt-out for that address). Returns `{ "ok": true }`. With auth on, `to_email` must match the caller's own email (case-insensitive), else `403 forbidden`. That is the token's verified `email` claim when present, else the caller's primary email from `lfx.auth-service.user_emails.read`, which does not report whether it is verified, and each principal may send 20 test emails an hour per pod, else `429 rate_limited` (lfx-self-serve#4358 F1). |
 
 The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sends validate and transition state without dispatching email.
 
@@ -266,7 +266,8 @@ Semantics and caveats:
 | Newsletter is scheduled (edit/delete/send/schedule attempted) | 409 | `scheduled` |
 | Cancel-schedule requested inside the cancel buffer | 409 | `cancel_window_closed` |
 | Invalid request | 400 | `invalid_request` |
-| Test send to an address other than the caller's verified email, or the token carries no email | 403 | `forbidden` |
+| Test send to an address other than the caller's own email (the token's verified email, else their auth-service primary email), or neither is available | 403 | `forbidden` |
+| Test send when auth-service cannot be reached to look up the caller's email | 503 | `service_unavailable` |
 | Too many test sends for this principal (20 an hour per pod) | 429 | `rate_limited` |
 | A layout cannot be rendered — unknown `block_type`, an unknown/unembedded `template_key`, malformed markup, MJML compile failure, or a layout exceeding the block-count / nesting-depth / content-item limits (on `render-preview`, on render-on-write during create/update, or on the send-time re-render during `send` / `schedule`) | 422 | `unprocessable_entity` |
 | Upstream conflict (typed `pkgerrors.Conflict`) | 409 | `conflict` |

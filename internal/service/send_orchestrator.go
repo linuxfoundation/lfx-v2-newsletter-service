@@ -166,8 +166,10 @@ type SendOrchestratorConfig struct {
 	Email        port.EmailDispatcher
 	UserMetadata port.UserMetadataReader
 	// UserEmail resolves the sender's primary email by principal, used to
-	// derive the send-time Reply-To address. Nil is tolerated (e.g. tests) —
-	// resolveSenderEmail falls back to the draft's stored ed_reply_email.
+	// derive the send-time Reply-To address and, when the token has no email,
+	// the address a test send may go to. Nil is tolerated (e.g. tests):
+	// resolveSenderEmail falls back to the draft's stored ed_reply_email, and
+	// the test-send guard refuses a caller it has no address for.
 	UserEmail   port.UserEmailReader
 	Unsubscribe *UnsubscribeService
 	Concurrency int
@@ -1025,8 +1027,9 @@ type TestSendInput struct {
 	ToEmail      string
 	EDReplyEmail string
 	Principal    string
-	// PrincipalEmail is the caller's verified email from the token. When the
-	// caller is authenticated, a test send may only go to this address.
+	// PrincipalEmail is the caller's verified email from the token, when the
+	// token carries one. When the caller is authenticated, a test send may only
+	// go to this address or, without one, their auth-service primary email.
 	PrincipalEmail string
 	// IsLayout is DEPRECATED and ignored (see api.TestSendRequest.IsLayout).
 	// BodyLayout is the sole layout trigger; this field has no effect and is
@@ -1074,12 +1077,21 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// the dispatch To must carry the same canonical value.
 	toEmail := parsedTo.Address
 	// A test send goes from the LF sending domain, so an authenticated caller
-	// may only send it to their own verified address (lfx-self-serve#4358 F1),
-	// and only so often (checked just before dispatch below). With auth
-	// disabled (local dev) there is no principal and both checks are skipped.
+	// may only send it to their own address (lfx-self-serve#4358 F1), and only
+	// so often. A caller already over the limit stops here, before the lookups
+	// and the render below; the charge itself happens just before dispatch.
+	// With auth disabled (local dev) there is no principal and both checks are
+	// skipped.
 	if in.Principal != "" {
-		if in.PrincipalEmail == "" || !strings.EqualFold(in.PrincipalEmail, toEmail) {
+		ownEmail, err := o.testSendCallerEmail(ctx, in.Principal, in.PrincipalEmail)
+		if err != nil {
+			return err
+		}
+		if ownEmail == "" || !strings.EqualFold(ownEmail, toEmail) {
 			return fmt.Errorf("%w: test emails can only be sent to your own email address", domain.ErrForbidden)
+		}
+		if o.testSendLimiter.exhausted(in.Principal, time.Now()) {
+			return fmt.Errorf("%w: too many test emails, try again later", domain.ErrRateLimited)
 		}
 	}
 
@@ -1210,7 +1222,8 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		ReplyTo:         replyTo,
 	}
 	// Charge the per-principal limit only once the email is ready to go, so a
-	// layout that fails to render or validate doesn't use up the allowance.
+	// layout that fails to render or validate doesn't use up the allowance. A
+	// failed dispatch still counts, because a timeout doesn't prove nothing went.
 	if in.Principal != "" && !o.testSendLimiter.allow(in.Principal, time.Now()) {
 		return fmt.Errorf("%w: too many test emails, try again later", domain.ErrRateLimited)
 	}
@@ -1483,6 +1496,34 @@ func (o *SendOrchestrator) resolveSenderName(ctx context.Context, principal stri
 		return "", pkgerrors.NewUnexpected(fmt.Sprintf("invalid sender display name from auth-service: %v", err))
 	}
 	return parsed.Name, nil
+}
+
+// testSendCallerEmail returns the address an authenticated caller may send a
+// test email to. The token's verified email wins. Deployed tokens carry none
+// while newsletter-service runs with the Heimdall OIDC contextualizer off, so
+// the fallback is the caller's auth-service primary email, without
+// resolveSenderEmail's Reply-To domain filter. auth-service does not report
+// whether that address is verified.
+//
+// "" means the caller has no known address, which the guard refuses. A lookup
+// that fails for any other reason is a 503, so an outage isn't reported to the
+// caller as the wrong recipient.
+func (o *SendOrchestrator) testSendCallerEmail(ctx context.Context, principal, tokenEmail string) (string, error) {
+	if email := strings.TrimSpace(tokenEmail); email != "" {
+		return email, nil
+	}
+	if o.userEmail == nil {
+		return "", nil
+	}
+	email, err := o.userEmail.PrimaryEmail(ctx, principal)
+	if err != nil {
+		var notFound pkgerrors.NotFound
+		if errors.As(err, &notFound) {
+			return "", nil
+		}
+		return "", pkgerrors.NewServiceUnavailable(fmt.Sprintf("resolve caller email from auth-service: %v", err))
+	}
+	return strings.TrimSpace(email), nil
 }
 
 // resolveSenderEmail looks up the sender's primary email from auth-service

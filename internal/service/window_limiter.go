@@ -22,6 +22,9 @@ type windowLimiter struct {
 	limit  int
 	window time.Duration
 	events map[string][]time.Time
+	// nextSweep is when allow next drops keys with no event left in the window,
+	// so memory tracks recent callers and not every caller since the pod started.
+	nextSweep time.Time
 }
 
 func newWindowLimiter(limit int, window time.Duration) *windowLimiter {
@@ -34,6 +37,10 @@ func (l *windowLimiter) allow(key string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	cutoff := now.Add(-l.window)
+	if !now.Before(l.nextSweep) {
+		l.sweep(cutoff)
+		l.nextSweep = now.Add(l.window)
+	}
 	kept := l.events[key][:0]
 	for _, t := range l.events[key] {
 		if t.After(cutoff) {
@@ -46,4 +53,29 @@ func (l *windowLimiter) allow(key string, now time.Time) bool {
 	}
 	l.events[key] = append(kept, now)
 	return true
+}
+
+// exhausted reports whether key has no allowance left at now. It records
+// nothing, so a caller can check before doing work that allow will charge for.
+func (l *windowLimiter) exhausted(key string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cutoff := now.Add(-l.window)
+	count := 0
+	for _, t := range l.events[key] {
+		if t.After(cutoff) {
+			count++
+		}
+	}
+	return count >= l.limit
+}
+
+// sweep deletes keys whose newest event is at or before cutoff. Events are
+// appended in time order, so the last one is the newest. The caller holds mu.
+func (l *windowLimiter) sweep(cutoff time.Time) {
+	for key, events := range l.events {
+		if len(events) == 0 || !events[len(events)-1].After(cutoff) {
+			delete(l.events, key)
+		}
+	}
 }

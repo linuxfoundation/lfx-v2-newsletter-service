@@ -63,7 +63,8 @@ type tokenIdentity struct {
 
 // validate parses and verifies the JWT. Returns the user identifier (sub or
 // principal claim) and the email claim, if any, on success. Heimdall only adds
-// email when the identity provider marked it verified.
+// email when its OIDC contextualizer ran and the identity provider marked the
+// address verified.
 func (a *AuthValidator) validate(tokenStr string) (tokenIdentity, error) {
 	if a == nil {
 		// Auth disabled: extract no user identity.
