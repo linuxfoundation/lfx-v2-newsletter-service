@@ -55,8 +55,12 @@ type Newsletter struct {
 
 	ID         uuid.UUID `bun:"id,pk,type:uuid,default:gen_random_uuid()" json:"id"`
 	ProjectUID string    `bun:"project_uid,notnull" json:"projectUid"`
-	Subject    string    `bun:"subject,notnull" json:"subject"`
-	BodyHTML   string    `bun:"body_html,notnull" json:"bodyHtml"`
+	// PublicationUID is the publication this newsletter is an edition of. Left
+	// nil on insert when the caller names none: the schema's BEFORE INSERT
+	// trigger then creates an implicit publication and RETURNING populates it.
+	PublicationUID *uuid.UUID `bun:"publication_uid,type:uuid" json:"publicationUid,omitempty"`
+	Subject        string     `bun:"subject,notnull" json:"subject"`
+	BodyHTML       string     `bun:"body_html,notnull" json:"bodyHtml"`
 	// BodyLayout is the editor's structured layout (wrapper key + ordered
 	// blocks) stored verbatim as JSONB. When present it is the source of truth:
 	// BodyHTML is derived from it by the declarative emitter on write. Nil for

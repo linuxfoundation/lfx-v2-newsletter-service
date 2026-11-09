@@ -39,9 +39,18 @@ const MaxTopLinks = 20
 // PageToken is the opaque cursor returned in the previous page's response.
 type ListFilters struct {
 	ProjectUID string
-	Statuses   []model.Status
-	PageToken  string
-	Limit      int
+	// PublicationUID, when non-nil, limits the page to editions of one publication.
+	PublicationUID *uuid.UUID
+	Statuses       []model.Status
+	PageToken      string
+	Limit          int
+}
+
+// PublicationListPage is one page of publications plus an optional
+// NextPageToken for continuation.
+type PublicationListPage struct {
+	Publications  []*model.Publication
+	NextPageToken string
 }
 
 // ListPage is one page of newsletters plus an optional NextPageToken for
@@ -500,4 +509,21 @@ func DailyOpensFromRecords(records []EmailRecipientRecord) ([]model.DailyOpens, 
 	}
 	sort.Slice(daily, func(i, j int) bool { return daily[i].Date.Before(daily[j].Date) })
 	return daily, lastEvent
+}
+
+// PublicationRepository persists publications. Every read is scoped by project
+// so a publication id cannot be probed across projects (FGA only gates the
+// project in the URL). A publication missing from the project surfaces as
+// domain.ErrNotFound.
+type PublicationRepository interface {
+	// CreatePublication inserts p and populates its generated fields.
+	CreatePublication(ctx context.Context, p *model.Publication) error
+	GetPublication(ctx context.Context, projectUID string, id uuid.UUID) (*model.Publication, error)
+	// ListPublications returns a keyset page of the project's named
+	// publications, most recently updated first. Implicit publications are not
+	// listed.
+	ListPublications(ctx context.Context, projectUID, pageToken string) (*PublicationListPage, error)
+	// UpdatePublication full-replaces the editable fields, gated on
+	// expectedVersion: a mismatch is domain.ErrVersionMismatch.
+	UpdatePublication(ctx context.Context, p *model.Publication, expectedVersion int64) (*model.Publication, error)
 }

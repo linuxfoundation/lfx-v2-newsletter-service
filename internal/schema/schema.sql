@@ -502,3 +502,130 @@ CREATE TABLE IF NOT EXISTS newsletter_page_views (
     user_hash      TEXT         NOT NULL CHECK (user_hash ~ '^[a-f0-9]{64}$'),
     PRIMARY KEY (newsletter_id, user_hash)
 );
+
+-- ---------------------------------------------------------------------------
+-- Publications (lfx-self-serve#4349)
+--
+-- A publication is the recurring parent of newsletters: a row in `newsletters`
+-- is one edition of its publication. Publications carry the choices that
+-- outlive one send: the template set, the sender name, the reply-to address and
+-- the default audience. Inheritance is copied onto the edition when it is
+-- created (see NewsletterService.CreateDraft), so the send path and a rollback
+-- to a binary that knows nothing about publications stay unaffected.
+--
+-- Every newsletter belongs to a publication. Rows that predate publications,
+-- and rows inserted without a publication_uid (by a client that does not know
+-- about publications, or by a pod on an older binary during a rolling deploy),
+-- get their own IMPLICIT publication: name = subject, template_key and the
+-- sender fields NULL, audience empty, so nothing about how they send changes.
+-- An implicit publication stays behind if its edition is deleted; such rows are
+-- excluded from the list route and only reachable by id.
+--
+-- Rolling-deploy safety: only the column and trigger are needed for an older
+-- binary to keep working, and an older binary tolerates the new column through
+-- bun.WithDiscardUnknownColumns (v0.2.10 and later).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS publications (
+    id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_uid     TEXT         NOT NULL,
+    name            TEXT         NOT NULL CHECK (char_length(name) BETWEEN 1 AND 200),
+    template_key    TEXT,
+    from_name       TEXT,
+    reply_to_email  TEXT,
+    committee_uids  TEXT[]       NOT NULL DEFAULT '{}',
+    implicit        BOOLEAN      NOT NULL DEFAULT FALSE,
+    created_by      TEXT         NOT NULL,
+    version         BIGINT       NOT NULL DEFAULT 1,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    -- Target of the composite foreign key below, so a newsletter can only join a
+    -- publication in its own project.
+    UNIQUE (project_uid, id)
+);
+
+-- Supports the (updated_at DESC, id DESC) keyset list of named publications.
+CREATE INDEX IF NOT EXISTS idx_publications_list
+    ON publications (project_uid, updated_at DESC, id DESC) WHERE NOT implicit;
+
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS publication_uid UUID;
+
+-- Supports the (updated_at DESC, id DESC) keyset list of a publication's editions.
+CREATE INDEX IF NOT EXISTS idx_newsletters_publication_list
+    ON newsletters (publication_uid, updated_at DESC, id DESC);
+
+-- Give a newsletter inserted without a publication its own implicit one. A BEFORE
+-- INSERT trigger rather than application code, so the same behaviour covers this
+-- binary, pods on an older binary during a rolling deploy, and a rollback.
+CREATE OR REPLACE FUNCTION assign_implicit_publication() RETURNS trigger AS $$
+DECLARE
+    new_publication_uid UUID;
+BEGIN
+    IF NEW.publication_uid IS NULL THEN
+        INSERT INTO publications (project_uid, name, implicit, created_by)
+        VALUES (NEW.project_uid, left(COALESCE(NULLIF(btrim(NEW.subject), ''), 'Untitled newsletter'), 200), TRUE, NEW.created_by)
+        RETURNING id INTO new_publication_uid;
+        NEW.publication_uid := new_publication_uid;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_assign_implicit_publication ON newsletters;
+CREATE TRIGGER trg_assign_implicit_publication
+    BEFORE INSERT ON newsletters
+    FOR EACH ROW EXECUTE FUNCTION assign_implicit_publication();
+
+-- Backfill: one implicit publication per newsletter that has none. Touches only
+-- publication_uid — not version (open editors keep their ETag) and not updated_at
+-- (the list order stays put).
+--
+-- The UPDATE fires trg_reject_armed_scheduled_mutation, which rejects any update
+-- of a row with a batch_id unless app.allow_armed_mutation is set. Armed and
+-- already-released scheduled rows carry a batch_id, so without the flag this
+-- backfill would fail and abort every pod's startup. The flag is transaction-local
+-- and cleared immediately after, and only set when there is work to do: once the
+-- trigger above exists no NULLs appear, so a normal boot never relaxes the guard.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM newsletters WHERE publication_uid IS NULL) THEN
+        PERFORM set_config('app.allow_armed_mutation', 'true', true);
+
+        WITH legacy AS (
+            SELECT id, gen_random_uuid() AS publication_uid, project_uid, subject, created_by, created_at
+            FROM newsletters
+            WHERE publication_uid IS NULL
+        ), created AS (
+            INSERT INTO publications (id, project_uid, name, implicit, created_by, created_at, updated_at)
+            SELECT publication_uid, project_uid, left(COALESCE(NULLIF(btrim(subject), ''), 'Untitled newsletter'), 200),
+                   TRUE, created_by, created_at, created_at
+            FROM legacy
+        )
+        UPDATE newsletters n
+        SET publication_uid = legacy.publication_uid
+        FROM legacy
+        WHERE n.id = legacy.id;
+
+        PERFORM set_config('app.allow_armed_mutation', '', true);
+    END IF;
+END$$;
+
+-- Composite so the database itself refuses a newsletter attached to another
+-- project's publication.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_publication_fk'
+    ) THEN
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_publication_fk
+            FOREIGN KEY (project_uid, publication_uid)
+            REFERENCES publications (project_uid, id)
+            ON DELETE RESTRICT;
+    END IF;
+END$$;
+
+-- Safe in this release (and for a rollback): every insert path runs through the
+-- trigger above, so an older binary that doesn't send publication_uid still
+-- satisfies NOT NULL.
+ALTER TABLE newsletters ALTER COLUMN publication_uid SET NOT NULL;
