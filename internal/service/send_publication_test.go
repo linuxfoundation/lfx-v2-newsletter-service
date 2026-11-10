@@ -89,3 +89,36 @@ func TestSendPublicationLookupFailureSendsNothing(t *testing.T) {
 		t.Fatalf("sent %d emails despite a failed publication lookup", len(email.sends))
 	}
 }
+
+// When the publication's reply-to is no longer allowed, a copy of it stored on
+// the edition must not be used either.
+func TestPublicationSenderDropsDisallowedInheritedReplyTo(t *testing.T) {
+	pub := &model.Publication{ID: uuid.New(), ProjectUID: "p1", ReplyToEmail: ptr("weekly@not-allowed.test")}
+	orch := publicationSendOrchestrator(newFakeRepo(), &fakeEmailDispatcher{}, newFakePublicationRepo(pub))
+	draft := &model.Newsletter{ProjectUID: "p1", PublicationUID: &pub.ID}
+
+	_, replyTo, err := orch.applyPublicationSender(context.Background(), draft, "Sender", "Weekly@not-allowed.test")
+	if err != nil {
+		t.Fatalf("applyPublicationSender: %v", err)
+	}
+	if replyTo != "" {
+		t.Errorf("replyTo = %q, want the copied address dropped", replyTo)
+	}
+
+	// A copy of an older publication address on a domain that is also no longer allowed.
+	_, replyTo, err = orch.applyPublicationSender(context.Background(), draft, "Sender", "old-weekly@not-allowed.test")
+	if err != nil {
+		t.Fatalf("applyPublicationSender: %v", err)
+	}
+	if replyTo != "" {
+		t.Errorf("replyTo = %q, want a disallowed older copy dropped", replyTo)
+	}
+
+	_, replyTo, err = orch.applyPublicationSender(context.Background(), draft, "Sender", "sender@example.com")
+	if err != nil {
+		t.Fatalf("applyPublicationSender: %v", err)
+	}
+	if replyTo != "sender@example.com" {
+		t.Errorf("replyTo = %q, want an unrelated fallback kept", replyTo)
+	}
+}

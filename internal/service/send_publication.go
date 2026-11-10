@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 )
@@ -39,6 +40,12 @@ func (o *SendOrchestrator) applyPublicationSender(ctx context.Context, draft *mo
 				"publication_id", pub.ID,
 				"domain", domainOf(*pub.ReplyToEmail),
 			)
+			// The edition may carry a copy of a publication address from when it
+			// was created, as its stored reply-to fallback. Drop any fallback the
+			// allowlist no longer accepts, or email-service refuses every send.
+			if !domainAllowed(strings.TrimSpace(replyTo), o.replyToAllowedDomains) {
+				replyTo = ""
+			}
 		}
 	}
 	return fromName, replyTo, nil

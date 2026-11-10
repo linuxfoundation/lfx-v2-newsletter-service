@@ -246,10 +246,35 @@ func validateReplyToEmail(email *string, allowedDomains []string) (*string, erro
 	if err != nil || parsed.Address != *trimmed {
 		return nil, fmt.Errorf("%w: reply_to_email is not a valid email address", domain.ErrInvalidRequest)
 	}
+	// Match the address rules email-service applies at send, so a reply-to it
+	// would refuse can't be saved and then fail every send from the publication.
+	if !emailServiceAcceptsAddress(*trimmed) {
+		return nil, fmt.Errorf("%w: reply_to_email must be a plain ASCII address with at most %d characters before the @", domain.ErrInvalidRequest, maxEmailLocalPartLength)
+	}
 	if !domainAllowed(*trimmed, allowedDomains) {
 		return nil, fmt.Errorf("%w: reply_to_email domain %q is not an allowed reply-to domain", domain.ErrInvalidRequest, domainOf(*trimmed))
 	}
 	return trimmed, nil
+}
+
+// maxEmailLocalPartLength is email-service's limit on the part of an address
+// before the "@" (api.MaxAddressLocalPartLength in lfx-v2-email-service).
+const maxEmailLocalPartLength = 64
+
+// emailServiceAcceptsAddress mirrors email-service's checks on a bare address:
+// ASCII only, a local part of at most maxEmailLocalPartLength bytes, and no
+// local part that would need RFC 5322 quoting.
+func emailServiceAcceptsAddress(addr string) bool {
+	for i := 0; i < len(addr); i++ {
+		if addr[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	at := strings.LastIndex(addr, "@")
+	if at <= 0 || at > maxEmailLocalPartLength || at == len(addr)-1 {
+		return false
+	}
+	return (&mail.Address{Address: addr}).String() == "<"+addr+">"
 }
 
 // publicationFor fetches the publication an edition is created under.
@@ -270,7 +295,9 @@ func applyPublicationDefaults(in *CreateDraftInput, pub *model.Publication) erro
 	if pub.Implicit {
 		return fmt.Errorf("%w: an implicit publication cannot take new editions", domain.ErrInvalidRequest)
 	}
-	if len(in.CommitteeUIDs) == 0 {
+	// Only an omitted audience inherits. An explicit empty list is left for the
+	// empty-audience check to refuse, so clearing a selection can't widen it.
+	if in.CommitteeUIDs == nil {
 		in.CommitteeUIDs = slices.Clone(pub.CommitteeUIDs)
 	}
 	if strings.TrimSpace(in.EDReplyEmail) == "" && pub.ReplyToEmail != nil {
@@ -323,6 +350,11 @@ func (s *NewsletterService) enforcePublicationTemplate(ctx context.Context, exis
 		return nil
 	}
 	if in.BodyLayout == nil {
+		// An edition saved before its publication had a template set has no
+		// layout to clear, so it keeps saving as a basic edition.
+		if len(existing.BodyLayout) == 0 {
+			return nil
+		}
 		return fmt.Errorf("%w: body_layout cannot be cleared on an edition of a publication with a template set", domain.ErrInvalidRequest)
 	}
 	var stored struct {

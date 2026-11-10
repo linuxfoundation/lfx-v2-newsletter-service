@@ -160,6 +160,7 @@ func TestCreateDraftPublicationErrors(t *testing.T) {
 		{"body_html under a template set", CreateDraftInput{PublicationUID: &pub.ID, BodyHTML: "<p>x</p>"}, domain.ErrInvalidRequest},
 		{"layout with another template", CreateDraftInput{PublicationUID: &pub.ID, BodyLayout: &declarative.Layout{TemplateKey: "aaif-weekly-agentic"}}, domain.ErrInvalidRequest},
 		{"no audience anywhere", CreateDraftInput{PublicationUID: &bare.ID, BodyHTML: "<p>x</p>", EDReplyEmail: "e@example.com"}, domain.ErrInvalidRequest},
+		{"explicitly empty audience does not inherit", CreateDraftInput{PublicationUID: &pub.ID, CommitteeUIDs: []string{}, EDReplyEmail: "e@example.com"}, domain.ErrInvalidRequest},
 		{"no reply-to anywhere", CreateDraftInput{PublicationUID: &bare.ID, BodyHTML: "<p>x</p>", CommitteeUIDs: []string{"c1"}}, domain.ErrInvalidRequest},
 	}
 	for _, tc := range cases {
@@ -262,6 +263,8 @@ func TestPublicationValidation(t *testing.T) {
 		{"reply-to not an address", PublicationInput{Name: "n", ReplyToEmail: ptr("not-an-email")}},
 		{"reply-to with display name", PublicationInput{Name: "n", ReplyToEmail: ptr("Name <a@example.com>")}},
 		{"reply-to on a domain not allowed", PublicationInput{Name: "n", ReplyToEmail: ptr("a@not-allowed.test")}},
+		{"reply-to with a non-ASCII local part", PublicationInput{Name: "n", ReplyToEmail: ptr("jos\u00e9@example.com")}},
+		{"reply-to local part over 64 bytes", PublicationInput{Name: "n", ReplyToEmail: ptr(strings.Repeat("a", 65) + "@example.com")}},
 		{"name over 200 characters", PublicationInput{Name: strings.Repeat("é", 201)}},
 		{"blank committee", PublicationInput{Name: "n", CommitteeUIDs: []string{" "}}},
 	}
@@ -348,5 +351,25 @@ func TestListEditionsScopesToProjectPublication(t *testing.T) {
 	}
 	if _, err := svc.ListEditions(context.Background(), ListEditionsInput{ProjectUID: "p2", PublicationUID: pub.ID}); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("other project: err = %v, want ErrNotFound", err)
+	}
+}
+
+// A publication that gains a template set later must not strand an edition
+// saved as basic HTML before that.
+func TestUpdateDraftKeepsHTMLOnlyEditionAfterTemplateAdded(t *testing.T) {
+	pinned := weeklyPublication()
+	svc, repo := publicationSvc(pinned)
+	n := repo.addDraft("p1", []string{"c1"})
+	repo.mu.Lock()
+	repo.drafts[n.ID].PublicationUID = &pinned.ID
+	repo.drafts[n.ID].BodyLayout = nil
+	repo.mu.Unlock()
+
+	_, err := svc.UpdateDraft(context.Background(), "p1", UpdateDraftInput{
+		ID: n.ID, ExpectedVersion: n.Version, Subject: "s", BodyHTML: "<p>x</p>", BodyLayoutSet: true, BodyLayout: nil,
+		EDReplyEmail: "e@example.com", CommitteeUIDs: []string{"c1"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateDraft: %v", err)
 	}
 }
