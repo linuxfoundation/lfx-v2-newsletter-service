@@ -107,12 +107,32 @@ func (u *UserMetadataClient) Name(ctx context.Context, principal string) (string
 	return "", pkgerrors.NewNotFound("user metadata has no display name")
 }
 
+// authUserNotFoundReply is the error auth-service sends for an unknown user on
+// lfx.auth-service.user_emails.read.
+const authUserNotFoundReply = "user not found"
+
+// userEmailsRejection maps a success:false user_emails.read reply to an error.
+// auth-service also sends success:false when it can't read the user, e.g. an
+// identity provider failure. That doesn't mean the user has no email, and the
+// test-send guard has to tell the two apart.
+func userEmailsRejection(reply string) error {
+	if reply == "" {
+		reply = authUserNotFoundReply
+	}
+	message := fmt.Sprintf("user emails lookup rejected by auth-service: %s", reply)
+	if reply == authUserNotFoundReply {
+		return pkgerrors.NewNotFound(message)
+	}
+	return pkgerrors.NewServiceUnavailable(message)
+}
+
 // PrimaryEmail resolves the user's primary email address. Used to derive the
 // send-time Reply-To address from the same principal driving the From
 // display name, so replies always reach whoever sent the newsletter rather
-// than whoever last saved the draft. Callers should treat lookup failure as
-// non-fatal and fall back to the newsletter's stored ed_reply_email — unlike
-// Name, an unresolved sender email should not block the send.
+// than whoever last saved the draft. For Reply-To, callers should treat lookup
+// failure as non-fatal and fall back to the newsletter's stored ed_reply_email:
+// unlike Name, an unresolved sender email should not block the send. The
+// test-send guard also uses it, and refuses the send when it can't resolve one.
 func (u *UserMetadataClient) PrimaryEmail(ctx context.Context, principal string) (string, error) {
 	if strings.TrimSpace(principal) == "" {
 		return "", pkgerrors.NewValidation("principal is required")
@@ -130,11 +150,7 @@ func (u *UserMetadataClient) PrimaryEmail(ctx context.Context, principal string)
 		return "", pkgerrors.NewUnexpected("malformed user_emails.read reply", jsonErr)
 	}
 	if !response.Success {
-		msg := response.Error
-		if msg == "" {
-			msg = "user not found"
-		}
-		return "", pkgerrors.NewNotFound(fmt.Sprintf("user emails lookup rejected by auth-service: %s", msg))
+		return "", userEmailsRejection(response.Error)
 	}
 	if response.Data == nil {
 		return "", pkgerrors.NewNotFound("user emails response has no data")
