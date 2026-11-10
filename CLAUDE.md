@@ -81,6 +81,7 @@ internal/domain/
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
+├── publication.go            # Publication CRUD and what editions inherit
 ├── send_orchestrator.go      # Resolve recipients, render chrome, fan out sends, mark draft sent
 ├── analytics.go              # Local opens overlaid with email-service engagement totals
 ├── unsubscribe.go            # HMAC token mint/verify + project-scoped opt-out persistence
@@ -90,7 +91,8 @@ internal/service/
         └── templates/        # Embedded template sets copied from git (templates.lock, make sync-templates)
 
 internal/repository/
-└── postgres.go               # bun-backed NewsletterRepository with optimistic locking
+├── postgres.go               # bun-backed NewsletterRepository with optimistic locking
+└── publications.go           # bun-backed PublicationRepository
 
 internal/schema/
 ├── schema.go                 # //go:embed schema.sql + Apply()
@@ -103,6 +105,7 @@ internal/handler/
 ├── render.go                 # POST …/newsletters/render-preview (stateless layout render)
 ├── templates.go              # GET …/newsletters/templates, …/templates/{template_key}/manifest
 ├── list.go                   # GET /projects/{project_uid}/newsletters unified list
+├── publications.go           # /projects/{project_uid}/newsletter-publications CRUD + editions
 ├── analytics.go              # GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics
 ├── open.go                   # GET /projects/{project_uid}/newsletter-opens/{newsletter_uid} tracking pixel
 ├── unsubscribe.go            # GET /newsletters/unsubscribe (unauthenticated, HMAC token)

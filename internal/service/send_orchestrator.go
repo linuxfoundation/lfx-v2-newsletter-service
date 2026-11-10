@@ -118,6 +118,7 @@ type SendOrchestrator struct {
 	userMetadata  port.UserMetadataReader
 	userEmail     port.UserEmailReader
 	unsub         *UnsubscribeService
+	publications  port.PublicationRepository
 	concurrency   int
 	fanoutEnabled bool
 	fromAddress   string
@@ -172,7 +173,11 @@ type SendOrchestratorConfig struct {
 	// the test-send guard refuses a caller it has no address for.
 	UserEmail   port.UserEmailReader
 	Unsubscribe *UnsubscribeService
-	Concurrency int
+	// Publications supplies the From display name and Reply-To a publication
+	// fixes for its editions. Nil is tolerated (e.g. tests): every edition then
+	// uses the sender-resolved values.
+	Publications port.PublicationRepository
+	Concurrency  int
 	// FanoutEnabled is the feature toggle for the per-recipient send loop.
 	// Defaults to true; flip false in environments where we want to validate
 	// the recipient-resolution path without sending real mail.
@@ -255,17 +260,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	// Normalize the reply-to allowlist the same way; empty config falls back
 	// to the email-service default rather than an empty (reject-everything)
 	// list.
-	var replyToDomains []string
-	for _, domain := range cfg.ReplyToAllowedDomains {
-		domain = strings.ToLower(strings.TrimSpace(domain))
-		if domain == "" {
-			continue
-		}
-		replyToDomains = append(replyToDomains, domain)
-	}
-	if len(replyToDomains) == 0 {
-		replyToDomains = defaultReplyToAllowedDomains
-	}
+	replyToDomains := normalizeReplyToDomains(cfg.ReplyToAllowedDomains)
 	jobTimeout := cfg.SendJobTimeout
 	if jobTimeout <= 0 {
 		jobTimeout = defaultSendJobTimeout
@@ -305,6 +300,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		userMetadata:          cfg.UserMetadata,
 		userEmail:             cfg.UserEmail,
 		unsub:                 cfg.Unsubscribe,
+		publications:          cfg.Publications,
 		concurrency:           c,
 		fanoutEnabled:         cfg.FanoutEnabled,
 		fromAddress:           from,
@@ -448,6 +444,10 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// draft.EDReplyEmail (the drafter's address, captured at save time) is
 	// only a fallback for dev mode or a resolution failure.
 	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), draft.EDReplyEmail)
+	fromDisplayName, replyTo, err = o.applyPublicationSender(ctx, draft, fromDisplayName, replyTo)
+	if err != nil {
+		return nil, err
+	}
 
 	// One slug lookup feeds both the From override and the "Read online"
 	// permalink, so the two can't disagree and a slow project-service costs a
@@ -1132,6 +1132,9 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		fromDisplayName = projectName + fromDisplayNameSuffix
 	}
 
+	// A test send has no newsletter ID, so a publication's from_name and
+	// reply_to_email are not applied to it.
+	//
 	// A test send is immediate, so the header date is today. No "Read online"
 	// link: a test send is not tied to a newsletter ID, so there is no reader
 	// permalink to link to.
@@ -1581,6 +1584,21 @@ func (o *SendOrchestrator) replyToFromPrimary(ctx context.Context, email string)
 		return ""
 	}
 	return trimmed
+}
+
+// normalizeReplyToDomains lowercases and trims the configured allowlist,
+// dropping blanks, and applies the default when nothing is left.
+func normalizeReplyToDomains(domains []string) []string {
+	var out []string
+	for _, d := range domains {
+		if d = strings.ToLower(strings.TrimSpace(d)); d != "" {
+			out = append(out, d)
+		}
+	}
+	if len(out) == 0 {
+		return defaultReplyToAllowedDomains
+	}
+	return out
 }
 
 // domainOf returns the lowercased domain portion of an email address, or ""

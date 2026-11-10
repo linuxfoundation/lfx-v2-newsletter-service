@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
+	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
@@ -32,19 +33,25 @@ func (h *Handler) ListNewsletters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	writeNewsletterPage(r.Context(), h, w, page)
+}
+
+// writeNewsletterPage writes one page of newsletters as NewsletterListResponse,
+// with the share and page-view counts the unified list carries.
+func writeNewsletterPage(ctx context.Context, h *Handler, w http.ResponseWriter, page *port.ListPage) {
 	out := publicapi.NewsletterListResponse{
 		Newsletters:   make([]publicapi.NewsletterListItem, 0, len(page.Newsletters)),
 		NextPageToken: page.NextPageToken,
 	}
-	counts := h.shareCounts(r.Context(), page.Newsletters)
-	views := h.pageViewCounts(r.Context(), page.Newsletters)
+	counts := h.shareCounts(ctx, page.Newsletters)
+	views := h.pageViewCounts(ctx, page.Newsletters)
 	for _, n := range page.Newsletters {
-		item := toAPIListItem(r.Context(), n)
+		item := toAPIListItem(ctx, n)
 		item.ShareCount = countFor(counts, n.ID)
 		item.PageViewCount = countFor(views, n.ID)
 		out.Newsletters = append(out.Newsletters, item)
 	}
-	writeJSON(r.Context(), w, http.StatusOK, out)
+	writeJSON(ctx, w, http.StatusOK, out)
 }
 
 // toAPIListItem converts a domain Newsletter into the list DTO. Engagement

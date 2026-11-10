@@ -20,7 +20,8 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 - Local open tracking through the tracking-pixel endpoint.
 - In-app share-intent recording (`newsletter_shares`) and the share counts exposed on read endpoints.
 - Unique web page-view recording (`newsletter_page_views`) and the page-view counts exposed on read endpoints.
-- The public Go DTOs in `pkg/api/newsletter.go`.
+- Publications (`publications`): the recurring parent of newsletters. See [Publications](#publications).
+- The public Go DTOs in `pkg/api/newsletter.go` and `pkg/api/publication.go`.
 
 ## Routes
 
@@ -28,7 +29,7 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | --- | --- | --- | --- |
 | `GET` | `/livez` | no | Liveness probe. |
 | `GET` | `/readyz` | no | Readiness probe. |
-| `POST` | `/projects/{project_uid}/newsletters` | yes | Create a draft. |
+| `POST` | `/projects/{project_uid}/newsletters` | yes | Create a draft. Optional `publication_uid` makes it an edition of that publication; see [Publications](#publications). |
 | `GET` | `/projects/{project_uid}/newsletters` | yes | Unified list of drafts and sent newsletters. Supports `status` and `page_token` query params. |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Get one newsletter and return its ETag. |
 | `PUT` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Update a draft. Requires `If-Match`. |
@@ -50,6 +51,12 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | `GET` | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}` | no | Tracking pixel. Records open by recipient hash and returns a GIF. |
 | `GET` | `/newsletters/unsubscribe` | no | One-click unsubscribe via HMAC-signed `t` token. Returns HTML. A direct-service HEAD is a no-op so link previews don't unsubscribe; the gateway ruleset allows only `GET`, so HEAD is blocked at the gateway. |
 | `POST` | `/newsletters/sendgrid/events` | no | SendGrid signed event webhook (delivered / open / click / bounce / dropped / spamreport / blocked). Authenticity is the ECDSA signature over `timestamp + body` plus a 10-minute freshness window against replay; no user session. Registered whenever `SENDGRID_WEBHOOK_PUBLIC_KEY` is set — independent of `EMAIL_PROVIDER`, so events for historical and scheduled SendGrid sends keep flowing after the outbound provider is flipped back to `email-service`; do not remove or block this route on a provider flip. Returns `204`; `400` on a malformed body, `401` on a bad signature or stale timestamp. The chart routes this path (`httproute.yaml` + an anonymous `ruleset.yaml` rule) whenever `app.send.sendgrid.webhookPublicKeySecretRef.name` is set — independent of the outbound provider, so ingestion survives a flip back to `email-service`. |
+| `POST` | `/projects/{project_uid}/newsletter-publications` | yes | Create a publication. Returns `201` and its ETag. See [Publications](#publications). |
+| `GET` | `/projects/{project_uid}/newsletter-publications` | yes | List the project's named publications, most recently updated first. Supports `page_token`. Implicit publications are not listed. |
+| `GET` | `/projects/{project_uid}/newsletter-publications/{publication_uid}` | yes | Get one publication and return its ETag. `404` when it is not in this project. |
+| `PUT` | `/projects/{project_uid}/newsletter-publications/{publication_uid}` | yes | Full-replace update. Requires `If-Match`. |
+| `GET` | `/projects/{project_uid}/newsletter-publications/{publication_uid}/editions` | yes | List the publication's editions as a `NewsletterListResponse`. Supports `status` and `page_token`. `404` when the publication is not in this project. |
+| `POST` | `/projects/{project_uid}/newsletter-publications/{publication_uid}/editions` | yes | Create an edition under the publication. Same body as `POST .../newsletters`; a `publication_uid` in the body must match the path. |
 | `GET` | `/projects/{project_uid}/newsletter-opt-outs` | yes | List all unsubscribes for the project — `id`, `email`, and `unsubscribed_at`, ordered by `unsubscribed_at` descending. No pagination (opt-out volumes are small). |
 | `DELETE` | `/projects/{project_uid}/newsletter-opt-outs/{opt_out_id}` | yes | Delete an opt-out entry. Returns `204 No Content` on success, `400` for a malformed `opt_out_id` UUID, `404` for unknown `opt_out_id` or project mismatch. |
 
@@ -57,7 +64,7 @@ Auth routes expect a Heimdall-issued JWT. `REQUIRE_USER_AUTH=false` is only for 
 
 ## DTOs
 
-Public DTOs live in `pkg/api/newsletter.go`. Field names are snake_case to match the LFX V2 attribute-naming convention.
+Public DTOs live in `pkg/api/newsletter.go` and `pkg/api/publication.go`. Field names are snake_case to match the LFX V2 attribute-naming convention.
 
 Core state:
 
@@ -65,10 +72,11 @@ Core state:
 | --- | --- |
 | `id` | Newsletter UUID. |
 | `project_uid` | Owning project UID (also in the URL path). |
+| `publication_uid` | The publication this newsletter is an edition of. Every newsletter has one; see [Publications](#publications). |
 | `subject` | Subject line. |
 | `body_html` | Newsletter HTML body. For layout-based newsletters this is derived from `body_layout` on write (see below); for legacy newsletters it is the authored HTML. |
 | `body_layout` | Optional `NewsletterLayout` — the editor's structured layout. Returned **only by the editable single-resource reads** (get / create / update) and **only** for layout-based newsletters (`omitempty` for legacy / html-only rows). The **list** and **send** responses always omit it (`NewsletterListItem` and the send response DTO clear `body_layout` on the returned copy regardless of type — the persisted newsletter's stored layout is untouched, since it is still needed for later reads and send-time re-rendering), so those consumers must never rely on receiving it — fetch the single resource when the structured layout is needed. |
-| `ed_reply_email` | Reply-to address stored on the draft. Fallback only — at send time the orchestrator resolves the sender's own primary email via `lfx.auth-service.user_emails.read` and uses it as Reply-To instead, so replies reach whoever sends rather than whoever last drafted. This field is used only when that resolution fails or the sender's domain isn't in the Reply-To allowlist. |
+| `ed_reply_email` | Reply-to address stored on the draft. Fallback only — at send time the orchestrator resolves the sender's own primary email via `lfx.auth-service.user_emails.read` and uses it as Reply-To instead, so replies reach whoever sends rather than whoever last drafted. This field is used only when that resolution fails or the sender's domain isn't in the Reply-To allowlist. A publication's `reply_to_email` takes precedence over both at send; see [Publications](#publications). |
 | `committee_uids` | Committees used for recipient resolution. |
 | `status` | `draft`, `sending`, `scheduled`, or `sent`. |
 | `sent_at` | Set when status becomes `sent`. |
@@ -140,9 +148,39 @@ The wrappers read six runtime values from the `edition` object: `date`, `view_on
 
 **Save-time vs. arm-time validation.** `scheduled_at` on create/update is validated leniently — only that it is in the future. The full arm-time window (minimum lead, and a hard cap at the send provider's horizon — currently 72 hours for SendGrid Mail Send) is validated only when `POST …/schedule` is called, independently of when the value was saved. An author can save a schedule five days out on a draft; arming it fails with `400 invalid_request` until it falls inside the window.
 
+## Publications
+
+A publication is the recurring parent of newsletters: each row in `newsletters` is one edition of a publication. A publication holds the choices that outlive one send.
+
+| Field | Description |
+| --- | --- |
+| `id` | Publication UUID. |
+| `project_uid` | Owning project UID (also in the URL path). |
+| `name` | Required, up to 200 characters. |
+| `template_key` | Optional. An embedded template set (see `GET .../newsletters/templates`). |
+| `from_name` | Optional. Replaces the From display name at send. At most 100 characters and 256 bytes, with no control, invisible (format) or line separator characters. The From address is per-project deployment configuration and cannot be set here. |
+| `reply_to_email` | Optional bare email address on a domain in `EMAIL_REPLY_TO_ALLOWED_DOMAINS` (otherwise `400`). It must also pass email-service's address rules: ASCII only, at most 64 characters before the `@`, and nothing that needs quoting. Replaces Reply-To at send, and is the default `ed_reply_email` for new editions. If the allowlist later drops the domain, the override is skipped with a warning, a stored reply-to on the edition that the allowlist no longer accepts is not used either, and the usual Reply-To resolution applies. |
+| `committee_uids` | Default audience for new editions. Empty is allowed. |
+| `implicit` | `true` when the service created this publication for a newsletter that named none. An implicit publication cannot be updated (`400`), cannot take new editions (`400`), and is deleted with its edition. |
+| `created_by`, `version`, `created_at`, `updated_at` | As on a newsletter. `version` is the ETag. |
+
+`POST` and `PUT` take `PublicationRequest` (`name`, `template_key`, `from_name`, `reply_to_email`, `committee_uids`). `PUT` is full-replace: an omitted optional field is cleared.
+
+**Editions.** A draft created with `publication_uid`, or through `POST .../editions`, is an edition of that publication. At create it copies from the publication:
+
+- `committee_uids` when the request omits them. An explicit empty list is not inherited and gets the usual empty-audience `400`.
+- `ed_reply_email` when the request omits it.
+- The template set when the publication has one. A `body_layout` with no `template_key` takes the publication's, one naming a different template set is `400`, and a request with neither `body_layout` nor `body_html` starts from an empty layout on that template set. `body_html` on its own is `400`, because such a publication renders through its template set.
+
+Updating the template set or the default audience changes new editions only; existing editions keep what they were created with. An edition saved without a layout before its publication gained a template set keeps saving as a basic edition. `from_name` and `reply_to_email` are read from the publication at send, so changing them applies to every edition not yet sent. A test send has no newsletter to resolve a publication from, so `POST .../test-send` uses the sender-resolved values. An edition of a publication with a template set cannot be moved to another template set or cleared to html-only through `PUT`, except that the template key the edition already has stays allowed, so a publication changing its template set does not strand an edition created before it.
+
+**Implicit publications and existing clients.** `publication_uid` is optional on create. A client that does not send one is unaffected: the database gives the new row its own implicit publication and the response carries its `publication_uid`. Implicit publications have no `template_key`, `from_name`, `reply_to_email` or default audience, so their editions send exactly as a newsletter with no publication did. Rows that predate publications get one the same way, in the schema backfill.
+
+**Rolling deploys.** The schema change is additive and takes one release. Older pods do not name `publication_uid`, so a `BEFORE INSERT` trigger assigns their rows an implicit publication and the column can be `NOT NULL` from the start. They ignore the extra column on `RETURNING *` because v0.2.10 and later run with `bun.WithDiscardUnknownColumns`. Rolling back to any such version keeps working against the new schema, and the publications objects stay in place; only the sender override and the new routes go away, since those are in this binary. The UI must stop sending `publication_uid` before a rollback past this release, because older versions reject the unknown field with `400`.
+
 ## Optimistic Locking
 
-`POST /projects/{project_uid}/newsletters`, `GET …/newsletters/{newsletter_uid}`, and `PUT …/newsletters/{newsletter_uid}` return a strong ETag formatted as the current integer version.
+`POST /projects/{project_uid}/newsletters`, `GET …/newsletters/{newsletter_uid}`, and `PUT …/newsletters/{newsletter_uid}` return a strong ETag formatted as the current integer version. The publication `POST`, `GET` one and `PUT`, and `POST …/editions`, follow the same rules, and `PUT …/newsletter-publications/{publication_uid}` requires `If-Match` (publication `version`).
 
 `PUT …/newsletters/{newsletter_uid}`, `POST …/newsletters/{newsletter_uid}/send`, `POST …/schedule`, and `POST …/cancel-schedule` require `If-Match`. Missing or malformed `If-Match` returns `400 invalid_request`. A stale version returns `412 version_mismatch`.
 
@@ -280,7 +318,7 @@ Domain sentinels match first; typed `pkgerrors.*` wrappers from the NATS upstrea
 
 ## Change Checklist
 
-- Update `pkg/api/newsletter.go`.
+- Update `pkg/api/newsletter.go` (or `pkg/api/publication.go`).
 - Update `internal/handler/http.go` and route handlers.
 - Update `internal/service/` and `internal/repository/` when behavior or persistence changes.
 - Update `internal/schema/schema.sql` for database changes.

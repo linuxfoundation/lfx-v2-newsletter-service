@@ -39,8 +39,12 @@ const (
 type Newsletter struct {
 	ID         string `json:"id"`
 	ProjectUID string `json:"project_uid"`
-	Subject    string `json:"subject"`
-	BodyHTML   string `json:"body_html"`
+	// PublicationUID is the publication this newsletter is an edition of. Every
+	// newsletter has one: when none was named at create, the service created an
+	// implicit publication for it.
+	PublicationUID *string `json:"publication_uid,omitempty"`
+	Subject        string  `json:"subject"`
+	BodyHTML       string  `json:"body_html"`
 	// BodyLayout is the editor's structured layout. Present only for layout-based
 	// newsletters; body_html is derived from it. Omitted for legacy / html-only
 	// newsletters.
@@ -86,12 +90,19 @@ type Newsletter struct {
 // BodyLayout is optional. When supplied, the service renders it to body_html via
 // the declarative emitter and persists both — any body_html in the request is
 // ignored. When omitted, body_html is taken from the request as-is (legacy path).
+//
+// PublicationUID is optional. When set the draft is created as an edition of
+// that publication: committee_uids and ed_reply_email default to the
+// publication's when omitted, and the publication's template set applies. When
+// omitted the service creates an implicit publication, so existing clients are
+// unaffected.
 type CreateNewsletterRequest struct {
-	Subject       string            `json:"subject"`
-	BodyHTML      string            `json:"body_html"`
-	BodyLayout    *NewsletterLayout `json:"body_layout,omitempty"`
-	EDReplyEmail  string            `json:"ed_reply_email"`
-	CommitteeUIDs []string          `json:"committee_uids"`
+	PublicationUID *string           `json:"publication_uid,omitempty"`
+	Subject        string            `json:"subject"`
+	BodyHTML       string            `json:"body_html"`
+	BodyLayout     *NewsletterLayout `json:"body_layout,omitempty"`
+	EDReplyEmail   string            `json:"ed_reply_email"`
+	CommitteeUIDs  []string          `json:"committee_uids"`
 	// ScheduledAt is optional. When set, only a future time is required at
 	// save time — arming the schedule (72h horizon, minimum lead) is
 	// validated separately by POST .../schedule.

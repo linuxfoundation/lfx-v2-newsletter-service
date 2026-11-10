@@ -35,6 +35,9 @@ spec:
             value: "^/projects/[^/]+/newsletter-opt-outs(/.*)?$"
         - path:
             type: RegularExpression
+            value: "^/projects/[^/]+/newsletter-publications(/.*)?$"
+        - path:
+            type: RegularExpression
             value: "^/projects/[^/]+/newsletter-opens/[^/]+$"
         # Member-facing committee-scoped list of sent newsletters. Heimdall
         # gates it on committee:{committee_uid}#member (fail-closed) — see
