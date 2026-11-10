@@ -364,6 +364,12 @@ func (s *NewsletterService) enforcePublicationTemplate(ctx context.Context, exis
 		if err := json.Unmarshal(existing.BodyLayout, &stored); err != nil {
 			return fmt.Errorf("unmarshal stored body_layout: %w", err)
 		}
+		// A stored layout with no template_key renders with the fallback
+		// library, so that is the set it keeps; a blank key must not pick up
+		// a template set the publication gained later.
+		if stored.TemplateKey == "" {
+			stored.TemplateKey = declarative.FallbackTemplateKey
+		}
 	}
 	if err := pinLayoutTemplate(in.BodyLayout, *pub.TemplateKey, stored.TemplateKey); err != nil {
 		return err

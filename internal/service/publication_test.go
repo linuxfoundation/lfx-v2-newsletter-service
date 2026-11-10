@@ -373,3 +373,27 @@ func TestUpdateDraftKeepsHTMLOnlyEditionAfterTemplateAdded(t *testing.T) {
 		t.Fatalf("UpdateDraft: %v", err)
 	}
 }
+
+// A layout stored with no template_key renders with the fallback library. A
+// later template set on its publication must not move it onto that set.
+func TestUpdateDraftKeepsFallbackTemplateForBlankStoredKey(t *testing.T) {
+	pinned := weeklyPublication()
+	svc, repo := publicationSvc(pinned)
+	n := repo.addDraft("p1", []string{"c1"})
+	repo.mu.Lock()
+	repo.drafts[n.ID].PublicationUID = &pinned.ID
+	repo.drafts[n.ID].BodyLayout = json.RawMessage(`{"blocks":[]}`)
+	repo.mu.Unlock()
+
+	layout := &declarative.Layout{Blocks: []declarative.Block{}}
+	_, err := svc.UpdateDraft(context.Background(), "p1", UpdateDraftInput{
+		ID: n.ID, ExpectedVersion: n.Version, Subject: "s", BodyLayoutSet: true, BodyLayout: layout,
+		EDReplyEmail: "e@example.com", CommitteeUIDs: []string{"c1"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateDraft: %v", err)
+	}
+	if layout.TemplateKey != declarative.FallbackTemplateKey {
+		t.Errorf("template_key = %q, want the fallback %q the layout already rendered with", layout.TemplateKey, declarative.FallbackTemplateKey)
+	}
+}
