@@ -24,6 +24,9 @@ import (
 const (
 	maxPublicationNameLength = 200
 	maxFromNameLength        = 100
+	// maxFromNameBytes matches email-service's FromDisplayName byte limit, so a
+	// saved name cannot be refused at send.
+	maxFromNameBytes = 256
 	// maxEmailLength is the practical address limit from RFC 5321 (forward-path).
 	maxEmailLength = 254
 )
@@ -204,20 +207,27 @@ func validateTemplateKey(key *string) (*string, error) {
 	return trimmed, nil
 }
 
-// validateFromName bounds the From display name and refuses control characters,
-// because the value ends up in a mail header.
+// validateFromName bounds the From display name and refuses control, format
+// (bidi overrides, zero-width) and line or paragraph separator characters,
+// because the value ends up in a mail header that every recipient sees.
 func validateFromName(name *string) (*string, error) {
 	trimmed := trimOptional(name)
 	if trimmed == nil {
 		return nil, nil
 	}
-	if utf8.RuneCountInString(*trimmed) > maxFromNameLength {
+	if utf8.RuneCountInString(*trimmed) > maxFromNameLength || len(*trimmed) > maxFromNameBytes {
 		return nil, fmt.Errorf("%w: from_name exceeds %d characters", domain.ErrInvalidRequest, maxFromNameLength)
 	}
-	if strings.IndexFunc(*trimmed, unicode.IsControl) >= 0 {
-		return nil, fmt.Errorf("%w: from_name must not contain control characters", domain.ErrInvalidRequest)
+	if strings.IndexFunc(*trimmed, isUnsafeHeaderRune) >= 0 {
+		return nil, fmt.Errorf("%w: from_name must not contain control or invisible characters", domain.ErrInvalidRequest)
 	}
 	return trimmed, nil
+}
+
+// isUnsafeHeaderRune reports control characters (Cc), format characters (Cf)
+// and line or paragraph separators (Zl, Zp).
+func isUnsafeHeaderRune(r rune) bool {
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
 }
 
 // validateReplyToEmail requires a bare RFC 5322 address (no display name) on an

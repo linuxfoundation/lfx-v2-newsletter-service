@@ -158,7 +158,7 @@ A publication is the recurring parent of newsletters: each row in `newsletters` 
 | `project_uid` | Owning project UID (also in the URL path). |
 | `name` | Required, up to 200 characters. |
 | `template_key` | Optional. An embedded template set (see `GET .../newsletters/templates`). |
-| `from_name` | Optional. Replaces the From display name at send. The From address is per-project deployment configuration and cannot be set here. |
+| `from_name` | Optional. Replaces the From display name at send. At most 100 characters and 256 bytes, with no control, invisible (format) or line separator characters. The From address is per-project deployment configuration and cannot be set here. |
 | `reply_to_email` | Optional bare email address on a domain in `EMAIL_REPLY_TO_ALLOWED_DOMAINS` (otherwise `400`). Replaces Reply-To at send, and is the default `ed_reply_email` for new editions. If the allowlist later drops the domain, the override is skipped with a warning and the usual Reply-To resolution applies. |
 | `committee_uids` | Default audience for new editions. Empty is allowed. |
 | `implicit` | `true` when the service created this publication for a newsletter that named none. An implicit publication cannot be updated (`400`), cannot take new editions (`400`), and is deleted with its edition. |
