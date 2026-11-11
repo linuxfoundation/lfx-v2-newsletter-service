@@ -36,6 +36,7 @@ func TestMinifyHTML(t *testing.T) {
 		{"a later white-space declaration is honoured", "<td><div style=\"white-space:normal;white-space:pre-wrap\">a   b</div></td>", "<td><div style=\"white-space:normal;white-space:pre-wrap\">a   b</div></td>"},
 		{"a close tag inside a comment does not end a protected element", "<td><div style=\"white-space:pre-wrap\"><!-- </div> -->a   b</div>  c</td>", "<td><div style=\"white-space:pre-wrap\"><!-- </div> -->a   b</div> c</td>"},
 		{"a close tag inside a quoted attribute does not end a protected element", "<td><div style=\"white-space:pre\"><span title=\"</div>\">a   b</span></div>  c</td>", "<td><div style=\"white-space:pre\"><span title=\"</div>\">a   b</span></div> c</td>"},
+		{"a style tag in body text keeps the spaces beside it", "<span>one</span> <style>.x{color:red}</style> <span>two</span>", "<span>one</span> <style>.x{color:red}</style> <span>two</span>"},
 		{"an unterminated pre is copied unchanged", "<td><pre>  a\n  b", "<td><pre>  a\n  b"},
 	}
 	for _, tc := range cases {
