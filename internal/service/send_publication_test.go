@@ -14,9 +14,11 @@ import (
 )
 
 func publicationSendOrchestrator(repo *fakeNewsletterRepo, email *fakeEmailDispatcher, pubs *fakePublicationRepo) *SendOrchestrator {
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{"c1": {{Email: "alice@example.com"}}}}
 	return NewSendOrchestrator(SendOrchestratorConfig{
 		Repo:                  repo,
-		Committee:             &fakeCommitteeClient{members: map[string][]model.CommitteeMember{"c1": {{Email: "alice@example.com"}}}},
+		Audience:              newCommitteeSnapshot(repo, committee),
+		Committee:             committee,
 		Project:               &fakeProjectClient{},
 		Email:                 email,
 		UserMetadata:          &fakeUserMetadataReader{name: "A Sender"},

@@ -9,12 +9,16 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 
@@ -794,4 +798,381 @@ func TestGetMeta_ExcludesBodyLayout(t *testing.T) {
 	if meta.ProjectUID != full.ProjectUID {
 		t.Errorf("GetMeta should still return project_uid: got %q want %q", meta.ProjectUID, full.ProjectUID)
 	}
+}
+
+// Postgres-backed tests of the audience repository. Like the other integration
+// tests they run only when NEWSLETTER_TEST_DATABASE_URL points at a database
+// whose name contains "test" (see newIntegrationRepo).
+
+func newIntegrationAudienceRepo(t *testing.T) (*PostgresAudienceRepo, *PostgresNewsletterRepo) {
+	t.Helper()
+	repo := newIntegrationRepo(t)
+	return NewPostgresAudienceRepo(repo.db), repo
+}
+
+func testMembers(emails ...string) []model.CommitteeMember {
+	out := make([]model.CommitteeMember, 0, len(emails))
+	for _, e := range emails {
+		out = append(out, model.CommitteeMember{Email: e, FirstName: "First", LastName: "Last"})
+	}
+	return out
+}
+
+func memberEmails(members []model.CommitteeMember) []string {
+	out := make([]string, 0, len(members))
+	for _, m := range members {
+		out = append(out, m.Email)
+	}
+	return out
+}
+
+func TestBeginResolve_ClaimsOnceWhileProcessing(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	claimed, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	assert.True(t, claimed)
+
+	claimed, err = audiences.BeginResolve(ctx, id, "project-1", []string{"c1", "c2"})
+	require.NoError(t, err)
+	assert.False(t, claimed, "a second claim while processing must not succeed")
+
+	a, err := audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceProcessing, a.Status)
+	assert.Equal(t, []string{"c1"}, a.CommitteeUIDs, "the losing claim did not change the in-flight row")
+	assert.Equal(t, "project-1", a.ProjectUID)
+	assert.Nil(t, a.ResolvedAt)
+}
+
+func TestBeginResolve_ConcurrentClaimsYieldExactlyOne(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	var claimedCount atomic.Int32
+	var wg sync.WaitGroup
+	for range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			claimed, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+			assert.NoError(t, err)
+			if claimed {
+				claimedCount.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	assert.EqualValues(t, 1, claimedCount.Load())
+}
+
+func TestBeginResolve_ReclaimsReadyAndFailedRows(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	claimed, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, testMembers("a@example.com")))
+	require.NoError(t, audiences.MarkReady(ctx, id, 1, 4))
+
+	// From ready: the row is reset to a clean processing row.
+	claimed, err = audiences.BeginResolve(ctx, id, "project-1", []string{"c1", "c2"})
+	require.NoError(t, err)
+	assert.True(t, claimed)
+	a, err := audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceProcessing, a.Status)
+	assert.Equal(t, []string{"c1", "c2"}, a.CommitteeUIDs)
+	assert.Zero(t, a.RecipientCount)
+	assert.Zero(t, a.SkippedNoEmail)
+	assert.Empty(t, a.Error)
+	assert.Nil(t, a.ResolvedAt)
+
+	// From failed.
+	require.NoError(t, audiences.MarkFailed(ctx, id, "boom"))
+	claimed, err = audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	assert.True(t, claimed)
+	a, err = audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Empty(t, a.Error)
+}
+
+func TestReplaceMembers_ReplacesInsteadOfAppending(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, testMembers("a@example.com", "b@example.com")))
+	got, err := audiences.ListMembers(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a@example.com", "b@example.com"}, memberEmails(got))
+
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, testMembers("c@example.com", "b@example.com")))
+	got, err = audiences.ListMembers(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"b@example.com", "c@example.com"}, memberEmails(got), "the earlier members are gone")
+	assert.Equal(t, "Last", got[0].LastName)
+
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, nil))
+	got, err = audiences.ListMembers(ctx, id)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestReplaceMembers_OtherNewslettersAreUntouched(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	one := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	two := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	for _, id := range []uuid.UUID{one, two} {
+		_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+		require.NoError(t, err)
+	}
+	require.NoError(t, audiences.ReplaceMembers(ctx, one, testMembers("a@example.com")))
+	require.NoError(t, audiences.ReplaceMembers(ctx, two, testMembers("same@example.com", "a@example.com")))
+	require.NoError(t, audiences.ReplaceMembers(ctx, two, testMembers("z@example.com")))
+
+	got, err := audiences.ListMembers(ctx, one)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a@example.com"}, memberEmails(got))
+}
+
+func TestReplaceMembers_InsertsMoreThanOneBatch(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+
+	total := memberInsertBatch*2 + 17
+	members := make([]model.CommitteeMember, 0, total)
+	for i := range total {
+		members = append(members, model.CommitteeMember{Email: fmt.Sprintf("user%06d@example.com", i)})
+	}
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, members))
+
+	got, err := audiences.ListMembers(ctx, id)
+	require.NoError(t, err)
+	assert.Len(t, got, total)
+}
+
+func TestReplaceMembers_RequiresProcessingAudience(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	err := audiences.ReplaceMembers(ctx, id, testMembers("a@example.com"))
+	assert.ErrorIs(t, err, domain.ErrNotFound, "no audience row")
+
+	_, err = audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, testMembers("a@example.com")))
+	require.NoError(t, audiences.MarkFailed(ctx, id, "boom"))
+
+	err = audiences.ReplaceMembers(ctx, id, testMembers("late@example.com"))
+	assert.ErrorIs(t, err, domain.ErrNotFound, "a failed audience cannot be written to")
+	got, err := audiences.ListMembers(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a@example.com"}, memberEmails(got), "the late write changed nothing")
+}
+
+func TestMarkReadyAndMarkFailed_OnlyMatchProcessingRows(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	assert.ErrorIs(t, audiences.MarkReady(ctx, id, 1, 0), domain.ErrNotFound, "no row")
+	assert.ErrorIs(t, audiences.MarkFailed(ctx, id, "x"), domain.ErrNotFound, "no row")
+
+	_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	require.NoError(t, audiences.MarkReady(ctx, id, 7, 3))
+
+	a, err := audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceReady, a.Status)
+	assert.Equal(t, 7, a.RecipientCount)
+	assert.Equal(t, 3, a.SkippedNoEmail)
+	require.NotNil(t, a.ResolvedAt)
+
+	assert.ErrorIs(t, audiences.MarkFailed(ctx, id, "late"), domain.ErrNotFound, "a ready audience is not failed afterwards")
+	assert.ErrorIs(t, audiences.MarkReady(ctx, id, 1, 0), domain.ErrNotFound)
+	a, err = audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceReady, a.Status)
+}
+
+func TestMarkFailed_StoresMessageAndTruncatesLongOnes(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+
+	long := ""
+	for range maxAudienceErrorLength + 50 {
+		long += "é"
+	}
+	require.NoError(t, audiences.MarkFailed(ctx, id, long))
+
+	a, err := audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceFailed, a.Status)
+	assert.Len(t, []rune(a.Error), maxAudienceErrorLength)
+	assert.Nil(t, a.ResolvedAt)
+}
+
+func TestAudienceGet_NotFound(t *testing.T) {
+	audiences, _ := newIntegrationAudienceRepo(t)
+	_, err := audiences.Get(context.Background(), uuid.New())
+	assert.ErrorIs(t, err, domain.ErrNotFound)
+}
+
+func TestFailStale_FailsOnlyOldProcessingRows(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	stale := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	fresh := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	ready := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	for _, id := range []uuid.UUID{stale, fresh, ready} {
+		_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+		require.NoError(t, err)
+	}
+	require.NoError(t, audiences.MarkReady(ctx, ready, 0, 0))
+	_, err := audiences.db.ExecContext(ctx,
+		`UPDATE newsletter_audiences SET updated_at = now() - interval '2 hours' WHERE newsletter_id IN (?, ?)`, stale, ready)
+	require.NoError(t, err)
+
+	n, err := audiences.FailStale(ctx, 40*time.Minute)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	a, err := audiences.Get(ctx, stale)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceFailed, a.Status)
+	assert.NotEmpty(t, a.Error)
+	a, err = audiences.Get(ctx, fresh)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceProcessing, a.Status)
+	a, err = audiences.Get(ctx, ready)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceReady, a.Status, "an old ready row is not touched")
+
+	n, err = audiences.FailStale(ctx, 40*time.Minute)
+	require.NoError(t, err)
+	assert.Zero(t, n, "a second sweep changes nothing")
+
+	// A failed row can be claimed again, so the UI can offer a retry.
+	claimed, err := audiences.BeginResolve(ctx, stale, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	assert.True(t, claimed)
+}
+
+func TestReplaceMembers_KeepsAStaleSweepAway(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	_, err = audiences.db.ExecContext(ctx,
+		`UPDATE newsletter_audiences SET updated_at = now() - interval '2 hours' WHERE newsletter_id = ?`, id)
+	require.NoError(t, err)
+
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, testMembers("a@example.com")))
+
+	n, err := audiences.FailStale(ctx, 40*time.Minute)
+	require.NoError(t, err)
+	assert.Zero(t, n, "ReplaceMembers moved updated_at forward")
+}
+
+func TestDeletingANewsletterDeletesItsAudienceAndMembers(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	other := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	for _, nid := range []uuid.UUID{id, other} {
+		_, err := audiences.BeginResolve(ctx, nid, "project-1", []string{"c1"})
+		require.NoError(t, err)
+		require.NoError(t, audiences.ReplaceMembers(ctx, nid, testMembers("a@example.com")))
+		require.NoError(t, audiences.MarkReady(ctx, nid, 1, 0))
+	}
+
+	require.NoError(t, repo.Delete(ctx, id))
+
+	_, err := audiences.Get(ctx, id)
+	assert.ErrorIs(t, err, domain.ErrNotFound, "the audience row is deleted with the newsletter")
+	var members int
+	require.NoError(t, audiences.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM newsletter_audience_members WHERE newsletter_id = ?`, id).Scan(&members))
+	assert.Zero(t, members, "the members are deleted with the audience")
+
+	_, err = audiences.Get(ctx, other)
+	assert.NoError(t, err, "another newsletter's audience is kept")
+	got, err := audiences.ListMembers(ctx, other)
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+}
+
+func TestAudienceConstraints(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	_, err := audiences.db.ExecContext(ctx,
+		`INSERT INTO newsletter_audiences (newsletter_id, project_uid, committee_uids, status) VALUES (?, 'p', '[]', 'bogus')`, id)
+	assert.Error(t, err, "an unknown status is rejected")
+
+	_, err = audiences.db.ExecContext(ctx,
+		`INSERT INTO newsletter_audiences (newsletter_id, project_uid, committee_uids, status) VALUES (?, 'p', '[]', 'ready')`, id)
+	assert.Error(t, err, "a ready row needs resolved_at")
+
+	_, err = audiences.db.ExecContext(ctx,
+		`INSERT INTO newsletter_audiences (newsletter_id, project_uid, committee_uids, status) VALUES (?, 'p', '[]', 'processing')`, uuid.New())
+	assert.Error(t, err, "the newsletter must exist")
+}
+
+func TestAudienceGet_RoundTripsCommitteeUIDs(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"a", "b\"quoted", "ü"})
+	require.NoError(t, err)
+	a, err := audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "b\"quoted", "ü"}, a.CommitteeUIDs)
+	assert.Equal(t, id, a.NewsletterID)
+	assert.False(t, a.RequestedAt.IsZero())
+	assert.False(t, a.UpdatedAt.IsZero())
+}
+
+// TestSchemaApplyIsIdempotent applies the embedded schema twice more against a
+// database that already has it, which is what every pod restart does.
+func TestSchemaApplyIsIdempotent(t *testing.T) {
+	newIntegrationRepo(t)
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, os.Getenv("NEWSLETTER_TEST_DATABASE_URL"))
+	require.NoError(t, err)
+	defer pool.Close()
+
+	require.NoError(t, schema.Apply(ctx, pool))
+	require.NoError(t, schema.Apply(ctx, pool))
+
+	var tables int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM information_schema.tables WHERE table_name IN ('newsletter_audiences', 'newsletter_audience_members')`).Scan(&tables))
+	assert.Equal(t, 2, tables)
+
+	var constraints int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM pg_constraint WHERE conname IN ('newsletter_audiences_status_check', 'newsletter_audiences_ready_requires_resolved')`).Scan(&constraints))
+	assert.Equal(t, 2, constraints, "each constraint exists once")
 }

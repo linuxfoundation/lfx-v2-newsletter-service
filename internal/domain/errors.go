@@ -52,3 +52,33 @@ var (
 	// kind recently. It maps to HTTP 429.
 	ErrRateLimited = errors.New("rate limited")
 )
+
+// ErrAudienceNotReady indicates a newsletter has no usable audience snapshot.
+// The snapshot is missing, still being resolved, failed, or was built from a
+// different committee list than the newsletter has now. Callers get the
+// details through *AudienceNotReadyError.
+var ErrAudienceNotReady = errors.New("audience not ready")
+
+// Audience states reported by AudienceNotReadyError.Status in addition to the
+// persisted 'processing' and 'failed' audience statuses.
+const (
+	// AudienceStateNone means no audience has been resolved for the newsletter.
+	AudienceStateNone = "none"
+	// AudienceStateStale means a ready audience exists but was built from a
+	// different committee list than the newsletter has now.
+	AudienceStateStale = "stale"
+)
+
+// AudienceNotReadyError is the ErrAudienceNotReady error with the audience
+// state, so the handler can tell the client what to do.
+type AudienceNotReadyError struct {
+	// Status is AudienceStateNone, AudienceStateStale, "processing" or "failed".
+	Status string
+}
+
+func (e *AudienceNotReadyError) Error() string {
+	return "audience not ready: " + e.Status
+}
+
+// Is makes errors.Is(err, ErrAudienceNotReady) true.
+func (e *AudienceNotReadyError) Is(target error) bool { return target == ErrAudienceNotReady }

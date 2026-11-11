@@ -73,7 +73,7 @@ func TestGetNewsletterTotalOpens(t *testing.T) {
 			readers := map[string]port.EngagementReader{model.SendProviderEmailService: &getOneReader{opened: 7}}
 			h := New(Config{
 				Newsletter: service.NewNewsletterService(repo, true),
-				Analytics:  service.NewAnalyticsService(repo, readers, nil, model.SendProviderEmailService),
+				Analytics:  service.NewAnalyticsService(repo, readers, nil, nil, model.SendProviderEmailService),
 			})
 
 			req := httptest.NewRequest(http.MethodGet, "/projects/"+projectUID+"/newsletters/"+n.ID.String(), nil)

@@ -173,6 +173,18 @@ type CommitteeMember struct {
 	Email     string
 	FirstName string
 	LastName  string
+	// ProjectUID is the project that owns the member's committee, as the source
+	// indexed it. Empty when the source does not say. It is used to check a
+	// committee belongs to the newsletter's project and is not stored.
+	ProjectUID string
+}
+
+// CommitteeMembers is the result of listing one committee's members.
+// SkippedNoEmail counts members the source returned without an email address.
+// They are not in Members.
+type CommitteeMembers struct {
+	Members        []CommitteeMember
+	SkippedNoEmail int
 }
 
 // ProjectBranding is the slice of a project used to brand newsletter emails.

@@ -24,6 +24,8 @@ spec:
     # Gateway API's `RegularExpression` path-match type lets us pluck the
     # newsletter-owned subset out of the `/projects/...` URL space without
     # routing every project sub-path here (project-service owns the rest).
+    # The first pattern below also covers the audience routes
+    # (POST and GET /projects/{project_uid}/newsletters/{newsletter_uid}/audience).
     # Requires a Gateway implementation with RegularExpression support
     # (Traefik >= 2.10).
     - matches:

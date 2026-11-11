@@ -8,11 +8,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAppConfigFromEnv_SendGridProvider(t *testing.T) {
 	// Satisfy the other required vars so the SendGrid validation is isolated.
 	t.Setenv("DATABASE_URL", "postgres://u:p@h:5432/db")
+	setQueryServiceEnv(t)
 	t.Setenv("REQUIRE_USER_AUTH", "false")
 	t.Setenv("SEND_FANOUT_ENABLED", "false")
 	t.Setenv("LFX_ENVIRONMENT", "local")
@@ -40,6 +42,7 @@ func TestAppConfigFromEnv_SendGridProvider(t *testing.T) {
 
 func TestAppConfigFromEnv_SendGridRequiresDomainsAndWebhookKey(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://u:p@h:5432/db")
+	setQueryServiceEnv(t)
 	t.Setenv("REQUIRE_USER_AUTH", "false")
 	t.Setenv("SEND_FANOUT_ENABLED", "false")
 	t.Setenv("LFX_ENVIRONMENT", "production")
@@ -67,6 +70,7 @@ func TestAppConfigFromEnv_SendGridRequiresDomainsAndWebhookKey(t *testing.T) {
 
 func TestAppConfigFromEnv_RejectsUnknownProvider(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://u:p@h:5432/db")
+	setQueryServiceEnv(t)
 	t.Setenv("REQUIRE_USER_AUTH", "false")
 	t.Setenv("SEND_FANOUT_ENABLED", "false")
 	t.Setenv("LFX_ENVIRONMENT", "local")
@@ -82,6 +86,7 @@ func TestAppConfigFromEnv_RejectsUnknownProvider(t *testing.T) {
 
 func TestAppConfigFromEnv_DefaultProvider(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://u:p@h:5432/db")
+	setQueryServiceEnv(t)
 	t.Setenv("REQUIRE_USER_AUTH", "false")
 	t.Setenv("SEND_FANOUT_ENABLED", "false")
 	t.Setenv("LFX_ENVIRONMENT", "local")
@@ -217,6 +222,7 @@ func TestAppConfigSelfServeBaseURL(t *testing.T) {
 			// Minimal required env so AppConfigFromEnv succeeds without the
 			// auth/fan-out required variables.
 			t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db")
+			setQueryServiceEnv(t)
 			t.Setenv("REQUIRE_USER_AUTH", "false")
 			t.Setenv("SEND_FANOUT_ENABLED", "false")
 			t.Setenv("LFX_SELF_SERVE_BASE_URL", tc.env)
@@ -229,5 +235,125 @@ func TestAppConfigSelfServeBaseURL(t *testing.T) {
 				t.Errorf("SelfServeBaseURL = %q, want %q", cfg.SelfServeBaseURL, tc.want)
 			}
 		})
+	}
+}
+
+// setQueryServiceEnv sets the query service and M2M variables that every
+// startup needs, so a test can focus on the variable it changes.
+func setQueryServiceEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("QUERY_SERVICE_URL", "https://query.example.com")
+	t.Setenv("M2M_AUTH_DOMAIN", "example.auth0.com")
+	t.Setenv("M2M_AUTH_AUDIENCE", "https://query.example.com/")
+	t.Setenv("M2M_AUTH_CLIENT_ID", "client-id")
+	t.Setenv("M2M_AUTH_PRIVATE_KEY", "pem")
+}
+
+func setMinimalEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://u:p@h:5432/db")
+	t.Setenv("REQUIRE_USER_AUTH", "false")
+	t.Setenv("SEND_FANOUT_ENABLED", "false")
+	t.Setenv("LFX_ENVIRONMENT", "local")
+}
+
+func TestAppConfigFromEnv_QueryServiceDefaults(t *testing.T) {
+	setMinimalEnv(t)
+	setQueryServiceEnv(t)
+
+	cfg, err := AppConfigFromEnv()
+	if err != nil {
+		t.Fatalf("AppConfigFromEnv: %v", err)
+	}
+	if cfg.QueryServiceURL != "https://query.example.com" {
+		t.Errorf("QueryServiceURL = %q", cfg.QueryServiceURL)
+	}
+	if cfg.QueryServicePageSize != 1000 || cfg.QueryServiceMaxPages != 100 || cfg.QueryServiceTimeout != 15*time.Second {
+		t.Errorf("query defaults = %d/%d/%s, want 1000/100/15s", cfg.QueryServicePageSize, cfg.QueryServiceMaxPages, cfg.QueryServiceTimeout)
+	}
+	if cfg.AudienceJobTimeout != 30*time.Minute || cfg.AudienceStaleTTL != 40*time.Minute {
+		t.Errorf("audience defaults = %s/%s, want 30m/40m", cfg.AudienceJobTimeout, cfg.AudienceStaleTTL)
+	}
+}
+
+func TestAppConfigFromEnv_RequiresQueryServiceAndM2M(t *testing.T) {
+	for _, key := range []string{"QUERY_SERVICE_URL", "M2M_AUTH_DOMAIN", "M2M_AUTH_AUDIENCE", "M2M_AUTH_CLIENT_ID", "M2M_AUTH_PRIVATE_KEY"} {
+		t.Run(key, func(t *testing.T) {
+			setMinimalEnv(t)
+			setQueryServiceEnv(t)
+			t.Setenv(key, "")
+
+			if _, err := AppConfigFromEnv(); err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("expected an error naming %s, got: %v", key, err)
+			}
+		})
+	}
+}
+
+func TestAppConfigFromEnv_ErrorDoesNotLeakPrivateKey(t *testing.T) {
+	setMinimalEnv(t)
+	setQueryServiceEnv(t)
+	t.Setenv("M2M_AUTH_PRIVATE_KEY", "super-secret-pem")
+	t.Setenv("M2M_AUTH_DOMAIN", "")
+
+	_, err := AppConfigFromEnv()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), "super-secret-pem") {
+		t.Errorf("error leaks the private key: %v", err)
+	}
+}
+
+func TestAppConfigFromEnv_RejectsBadQueryServiceValues(t *testing.T) {
+	tests := []struct {
+		name, key, value string
+	}{
+		{"page size zero", "QUERY_SERVICE_PAGE_SIZE", "0"},
+		{"page size above the maximum", "QUERY_SERVICE_PAGE_SIZE", "1001"},
+		{"page size not a number", "QUERY_SERVICE_PAGE_SIZE", "lots"},
+		{"max pages zero", "QUERY_SERVICE_MAX_PAGES", "0"},
+		{"timeout not a duration", "QUERY_SERVICE_TIMEOUT", "soon"},
+		{"timeout zero", "QUERY_SERVICE_TIMEOUT", "0s"},
+		{"audience job timeout not a duration", "AUDIENCE_JOB_TIMEOUT", "later"},
+		{"audience job timeout zero", "AUDIENCE_JOB_TIMEOUT", "0s"},
+		{"audience stale ttl not a duration", "AUDIENCE_STALE_TTL", "never"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setMinimalEnv(t)
+			setQueryServiceEnv(t)
+			t.Setenv(tc.key, tc.value)
+
+			if _, err := AppConfigFromEnv(); err == nil || !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("expected an error naming %s, got: %v", tc.key, err)
+			}
+		})
+	}
+}
+
+func TestAppConfigFromEnv_AcceptsQueryServicePageSizeBounds(t *testing.T) {
+	for _, v := range []string{"1", "1000"} {
+		setMinimalEnv(t)
+		setQueryServiceEnv(t)
+		t.Setenv("QUERY_SERVICE_PAGE_SIZE", v)
+		if _, err := AppConfigFromEnv(); err != nil {
+			t.Errorf("page size %s: %v", v, err)
+		}
+	}
+}
+
+func TestAppConfigFromEnv_AudienceStaleTTLStaysAboveJobTimeout(t *testing.T) {
+	setMinimalEnv(t)
+	setQueryServiceEnv(t)
+	t.Setenv("AUDIENCE_JOB_TIMEOUT", "1h")
+	t.Setenv("AUDIENCE_STALE_TTL", "30m")
+
+	cfg, err := AppConfigFromEnv()
+	if err != nil {
+		t.Fatalf("AppConfigFromEnv: %v", err)
+	}
+	if want := time.Hour + 5*time.Minute; cfg.AudienceStaleTTL != want {
+		t.Errorf("AudienceStaleTTL = %s, want %s (job timeout + 5m)", cfg.AudienceStaleTTL, want)
 	}
 }

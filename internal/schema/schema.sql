@@ -504,6 +504,68 @@ CREATE TABLE IF NOT EXISTS newsletter_page_views (
 );
 
 -- ---------------------------------------------------------------------------
+-- Newsletter audience snapshots
+--
+-- Recipients are resolved by a background job and stored here, so the send,
+-- the recipient count and the recipient preview read a snapshot instead of
+-- asking the query service for every committee member inside one HTTP request.
+-- The audience has its own status. The newsletters.status column and its CHECK
+-- constraint are not affected.
+--
+-- newsletter_audiences holds one row per newsletter. committee_uids is the
+-- sorted, deduplicated list the snapshot was built from, so a reader can tell
+-- when the newsletter's committees have changed since. newsletter_id matches
+-- newsletters.id, as in newsletter_opens.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS newsletter_audiences (
+    newsletter_id    UUID        PRIMARY KEY REFERENCES newsletters(id) ON DELETE CASCADE,
+    project_uid      TEXT        NOT NULL,
+    committee_uids   JSONB       NOT NULL,
+    status           TEXT        NOT NULL,
+    recipient_count  INTEGER     NOT NULL DEFAULT 0,
+    skipped_no_email INTEGER     NOT NULL DEFAULT 0,
+    error            TEXT,
+    requested_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at      TIMESTAMPTZ,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletter_audiences_status_check'
+    ) THEN
+        ALTER TABLE newsletter_audiences
+            ADD CONSTRAINT newsletter_audiences_status_check
+            CHECK (status IN ('processing','ready','failed'));
+    END IF;
+END$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletter_audiences_ready_requires_resolved'
+    ) THEN
+        ALTER TABLE newsletter_audiences
+            ADD CONSTRAINT newsletter_audiences_ready_requires_resolved
+            CHECK (status <> 'ready' OR resolved_at IS NOT NULL);
+    END IF;
+END$$;
+
+-- Supports the stale-processing sweep (status = 'processing' AND updated_at < cutoff).
+CREATE INDEX IF NOT EXISTS idx_newsletter_audiences_processing
+    ON newsletter_audiences (updated_at) WHERE status = 'processing';
+
+-- newsletter_audience_members holds the snapshot's recipients. email is
+-- trimmed and lowercased, so the primary key also removes duplicates.
+CREATE TABLE IF NOT EXISTS newsletter_audience_members (
+    newsletter_id UUID NOT NULL REFERENCES newsletter_audiences(newsletter_id) ON DELETE CASCADE,
+    email         TEXT NOT NULL,
+    first_name    TEXT NOT NULL DEFAULT '',
+    last_name     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (newsletter_id, email)
+);
+
 -- Publications (lfx-self-serve#4349)
 --
 -- A publication is the recurring parent of newsletters: a row in `newsletters`
