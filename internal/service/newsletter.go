@@ -34,6 +34,12 @@ const (
 	maxSubjectLength      = 200
 	maxBodyHTMLLength     = 100_000
 	maxCommitteesPerDraft = 50
+	// maxRenderedHTMLBytes bounds the email rendered from a layout. It is above
+	// Gmail's ~102KB clipping point on purpose: long editions, such as the AAIF
+	// Executive Director weekly, already go past it, and Gmail then shows the
+	// start of the email with a link to the rest. The bound only stops a runaway
+	// render.
+	maxRenderedHTMLBytes = 400_000
 )
 
 // NewsletterService implements business logic for draft management.
@@ -462,8 +468,8 @@ func validateSubject(subject string) error {
 // request itself was well-formed and the request's body_html is ignored on
 // the layout path, so a 400 blaming body_html would be misleading.
 func validateDerivedBodyHTML(html string) error {
-	if len(html) > maxBodyHTMLLength {
-		return fmt.Errorf("%w: rendered HTML exceeds %d bytes", domain.ErrUnprocessable, maxBodyHTMLLength)
+	if len(html) > maxRenderedHTMLBytes {
+		return fmt.Errorf("%w: rendered HTML exceeds %d bytes", domain.ErrUnprocessable, maxRenderedHTMLBytes)
 	}
 	return nil
 }

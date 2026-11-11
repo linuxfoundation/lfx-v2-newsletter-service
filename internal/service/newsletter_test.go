@@ -616,6 +616,30 @@ func TestUpdateDraft_ExplicitNullLayout_EmptyBody_ClearsToEmpty(t *testing.T) {
 	}
 }
 
+// TestCreateDraft_LongEditionAboveGmailClipping covers an edition whose rendered
+// email is past Gmail's ~102KB clipping point but under maxRenderedHTMLBytes. Long
+// editions such as the AAIF Executive Director weekly are this size, and they must
+// still save and send.
+func TestCreateDraft_LongEditionAboveGmailClipping(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewNewsletterService(repo, true)
+
+	n, err := svc.CreateDraft(context.Background(), CreateDraftInput{
+		ProjectUID:    "p1",
+		Subject:       "long edition",
+		BodyLayout:    introLayout(strings.Repeat("x", 150_000)),
+		EDReplyEmail:  "ed@example.com",
+		CommitteeUIDs: []string{"c1"},
+		CreatedBy:     "user1",
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if len(n.BodyHTML) <= 102_400 {
+		t.Fatalf("rendered %d bytes, want a document past Gmail's clipping point", len(n.BodyHTML))
+	}
+}
+
 // TestCreateDraft_OversizedDerivedHTML_Is422 pins the status-code contract:
 // an oversized DERIVED (layout-rendered) document is 422 unprocessable, the
 // same classification render-preview gives the identical output — not a 400
@@ -627,7 +651,7 @@ func TestCreateDraft_OversizedDerivedHTML_Is422(t *testing.T) {
 	_, err := svc.CreateDraft(context.Background(), CreateDraftInput{
 		ProjectUID:    "p1",
 		Subject:       "big",
-		BodyLayout:    introLayout(strings.Repeat("x", 100_001)),
+		BodyLayout:    introLayout(strings.Repeat("x", maxRenderedHTMLBytes+1)),
 		EDReplyEmail:  "ed@example.com",
 		CommitteeUIDs: []string{"c1"},
 		CreatedBy:     "user1",
