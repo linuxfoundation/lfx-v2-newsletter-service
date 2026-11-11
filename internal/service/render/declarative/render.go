@@ -145,6 +145,17 @@ func countContentItems(content map[string]any, items *int) error {
 // ctx bounds the mjml-go (wasm) compile so a slow render can be canceled — e.g.
 // a /render-preview request that hits its deadline.
 func Render(ctx context.Context, layout Layout, templates Templates, wrapperContent map[string]any) (string, error) {
+	out, err := renderUnminified(ctx, layout, templates, wrapperContent)
+	if err != nil {
+		return "", err
+	}
+	// Drop MJML's formatting whitespace, so long editions stay further under the
+	// size cap and Gmail's clipping point. See minifyHTML.
+	return minifyHTML(out), nil
+}
+
+// renderUnminified is Render without the final minifyHTML pass.
+func renderUnminified(ctx context.Context, layout Layout, templates Templates, wrapperContent map[string]any) (string, error) {
 	mjmlDoc, cardShadows, err := renderMJML(layout, templates, wrapperContent)
 	if err != nil {
 		return "", err
