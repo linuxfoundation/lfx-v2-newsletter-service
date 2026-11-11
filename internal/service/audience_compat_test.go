@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -305,8 +306,12 @@ func TestSendNewsletter_ReadySnapshotWithPurgedMembersIsStale(t *testing.T) {
 
 // refreshingAudienceRepo starts a refresh of the audience right after its
 // members are read, the way a concurrent POST …/audience?refresh=true can.
+// With complete set, the whole refresh finishes before the read returns, so the
+// audience is ready again with new members and only its updated_at shows the
+// change.
 type refreshingAudienceRepo struct {
 	*fakeAudienceRepo
+	complete  bool
 	refreshed bool
 }
 
@@ -317,6 +322,15 @@ func (r *refreshingAudienceRepo) ListMembers(ctx context.Context, id uuid.UUID) 
 		a, _ := r.fakeAudienceRepo.Get(ctx, id)
 		if _, berr := r.BeginResolve(ctx, id, a.ProjectUID, a.CommitteeUIDs); berr != nil {
 			return nil, berr
+		}
+		if r.complete {
+			replacement := []model.CommitteeMember{{Email: "replacement@example.com"}}
+			if rerr := r.ReplaceMembers(ctx, id, replacement); rerr != nil {
+				return nil, rerr
+			}
+			if merr := r.MarkReady(ctx, id, len(replacement), 0); merr != nil {
+				return nil, merr
+			}
 		}
 	}
 	return members, err
@@ -346,6 +360,36 @@ func TestSendNewsletter_RefreshDuringTheMemberReadStopsTheSend(t *testing.T) {
 	require.ErrorAs(t, err, &notReady)
 	assert.Equal(t, string(model.AudienceProcessing), notReady.Status)
 	assert.Empty(t, email.sends, "members read across a refresh are not sent")
+}
+
+func TestSendNewsletter_RefreshCompletedDuringTheMemberReadStopsTheSend(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	audiences := &refreshingAudienceRepo{fakeAudienceRepo: newFakeAudienceRepo(), complete: true}
+	email := &fakeEmailDispatcher{}
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Audience:      audiences,
+		AudiencePurge: audiences,
+		Committee:     &fakeCommitteeClient{},
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		Unsubscribe:   NewUnsubscribeService(repo, []byte("k"), "https://api.example"),
+		Concurrency:   2,
+		FanoutEnabled: true,
+	})
+	n := repo.addDraft("p1", []string{"c1"})
+	audiences.put(n, []string{"c1"}, model.AudienceReady, []model.CommitteeMember{{Email: "a@example.com"}})
+	// The stored snapshot is older than the refresh, as it would be in Postgres.
+	audiences.mu.Lock()
+	audiences.audiences[n.ID].UpdatedAt = audiences.audiences[n.ID].UpdatedAt.Add(-time.Hour)
+	audiences.mu.Unlock()
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: n.ID})
+	var notReady *domain.AudienceNotReadyError
+	require.ErrorAs(t, err, &notReady)
+	assert.Equal(t, string(model.AudienceProcessing), notReady.Status)
+	assert.Empty(t, email.sends, "members read before a completed refresh are not sent")
 }
 
 func TestRecipientCount_RefusesASnapshotForCommitteesNoLongerOnTheDraft(t *testing.T) {
