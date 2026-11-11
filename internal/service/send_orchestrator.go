@@ -1300,10 +1300,8 @@ func (o *SendOrchestrator) Recipients(ctx context.Context, projectUID string, ne
 	if n.Status != model.StatusDraft {
 		return nil, domain.ErrAlreadySent
 	}
-	if _, err := o.readyAudienceFor(ctx, n, committeeUIDs); err != nil {
-		return nil, err
-	}
-	return o.audience.ListMembers(ctx, newsletterID)
+	_, members, err := o.readyMembers(ctx, n, committeeUIDs)
+	return members, err
 }
 
 // readyAudience returns the newsletter's audience when it is ready and was
@@ -1352,17 +1350,44 @@ func (o *SendOrchestrator) readyAudienceFor(ctx context.Context, n *model.Newsle
 	if audience.Status != model.AudienceReady {
 		return nil, &domain.AudienceNotReadyError{Status: string(audience.Status)}
 	}
-	if !sameCommitteeUIDs(audience.CommitteeUIDs, committeeUIDs) {
+	// The snapshot must match both the committees the caller asked about and
+	// the ones saved on the draft. Otherwise a count or preview for an old
+	// committee list could pass while the send of the same draft is refused.
+	if !sameCommitteeUIDs(audience.CommitteeUIDs, committeeUIDs) || !sameCommitteeUIDs(audience.CommitteeUIDs, n.CommitteeUIDs) {
 		return nil, &domain.AudienceNotReadyError{Status: domain.AudienceStateStale}
 	}
 	return audience, nil
+}
+
+// readyMembers reads a ready audience's members and then checks that the
+// audience did not change while they were read. Every refresh moves the row to
+// 'processing' and updates updated_at before it replaces the members, so an
+// unchanged row proves the members belong to the snapshot that was checked. A
+// changed row is reported as processing, so the caller waits and tries again.
+func (o *SendOrchestrator) readyMembers(ctx context.Context, n *model.Newsletter, committeeUIDs []string) (*model.Audience, []model.CommitteeMember, error) {
+	audience, err := o.readyAudienceFor(ctx, n, committeeUIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	members, err := o.audience.ListMembers(ctx, n.ID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read audience members: %w", err)
+	}
+	again, err := o.readyAudienceFor(ctx, n, committeeUIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !again.UpdatedAt.Equal(audience.UpdatedAt) {
+		return nil, nil, &domain.AudienceNotReadyError{Status: string(model.AudienceProcessing)}
+	}
+	return audience, members, nil
 }
 
 // snapshotRecipients reads the newsletter's ready audience and drops anyone who
 // unsubscribed after the snapshot was taken. Only the email and first name are
 // kept, which is all the fan-out needs.
 func (o *SendOrchestrator) snapshotRecipients(ctx context.Context, n *model.Newsletter) ([]model.CommitteeMember, error) {
-	audience, err := o.readyAudienceFor(ctx, n, n.CommitteeUIDs)
+	audience, members, err := o.readyMembers(ctx, n, n.CommitteeUIDs)
 	if err != nil {
 		// A newsletter with no snapshot at all was drafted by a client that has
 		// not adopted snapshots, so it is sent from a live read, as before. A
@@ -1372,10 +1397,6 @@ func (o *SendOrchestrator) snapshotRecipients(ctx context.Context, n *model.News
 			return o.liveRecipients(ctx, n.ProjectUID, n.CommitteeUIDs, true)
 		}
 		return nil, err
-	}
-	members, err := o.audience.ListMembers(ctx, n.ID)
-	if err != nil {
-		return nil, fmt.Errorf("read audience members: %w", err)
 	}
 	// A ready audience whose members are gone was purged after an earlier
 	// send. Sending from it would reach nobody and use the newsletter up, so

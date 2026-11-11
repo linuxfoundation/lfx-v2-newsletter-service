@@ -158,3 +158,59 @@ func TestNewIdentityClient_RefusesIncompleteCredentials(t *testing.T) {
 	assert.Nil(t, client)
 	assert.Contains(t, err.Error(), "incomplete service identity")
 }
+
+// blockingSource hands out a token only once released.
+type blockingSource struct{ release chan struct{} }
+
+func (b *blockingSource) Token() (*oauth2.Token, error) {
+	<-b.release
+	return &oauth2.Token{AccessToken: "tok", TokenType: "Bearer"}, nil
+}
+
+func TestTokenTransportStopsWaitingWhenTheRequestIsCancelled(t *testing.T) {
+	src := &blockingSource{release: make(chan struct{})}
+	defer close(src.release)
+	tr := &tokenTransport{source: src, base: http.DefaultTransport}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:1/unused", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = tr.RoundTrip(req)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("waited %v for a token after the request was cancelled", waited)
+	}
+}
+
+func TestTokenTransportSetsTheBearerToken(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+	}))
+	defer srv.Close()
+	src := &blockingSource{release: make(chan struct{})}
+	close(src.release)
+	tr := &tokenTransport{source: src, base: http.DefaultTransport}
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got != "Bearer tok" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if req.Header.Get("Authorization") != "" {
+		t.Fatal("the caller's request was changed")
+	}
+}

@@ -184,6 +184,9 @@ type committeeSnapshot struct {
 	committee *fakeCommitteeClient
 }
 
+// snapshotTime is the resolved time every committeeSnapshot audience reports.
+var snapshotTime = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+
 func newCommitteeSnapshot(repo *fakeNewsletterRepo, committee *fakeCommitteeClient) *committeeSnapshot {
 	return &committeeSnapshot{repo: repo, committee: committee}
 }
@@ -208,16 +211,17 @@ func (s *committeeSnapshot) Get(ctx context.Context, id uuid.UUID) (*model.Audie
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	now := time.Now()
+	// A fixed time, as a stored row keeps its timestamps between reads.
+	at := snapshotTime
 	return &model.Audience{
 		NewsletterID:   id,
 		ProjectUID:     cp.ProjectUID,
 		CommitteeUIDs:  canonicalCommitteeUIDs(cp.CommitteeUIDs),
 		Status:         model.AudienceReady,
 		RecipientCount: len(s.members(ctx, cp)),
-		RequestedAt:    now,
-		ResolvedAt:     &now,
-		UpdatedAt:      now,
+		RequestedAt:    at,
+		ResolvedAt:     &at,
+		UpdatedAt:      at,
 	}, nil
 }
 

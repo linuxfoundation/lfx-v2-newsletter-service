@@ -90,9 +90,9 @@ func NewIdentity(ctx context.Context, cfg IdentityConfig, timeout time.Duration)
 	source := newRefreshableSource(base, tokenExpiryLeeway)
 
 	client := &http.Client{
-		Transport: &oauth2.Transport{
-			Source: source,
-			Base:   otelhttp.NewTransport(http.DefaultTransport),
+		Transport: &tokenTransport{
+			source: source,
+			base:   otelhttp.NewTransport(http.DefaultTransport),
 		},
 		Timeout: timeout,
 	}
@@ -163,4 +163,46 @@ func (s *refreshableSource) ForceRefresh() {
 	s.mu.Lock()
 	s.current = oauth2.ReuseTokenSourceWithExpiry(nil, s.base, s.leeway)
 	s.mu.Unlock()
+}
+
+// tokenTransport adds the bearer token to each request. Unlike oauth2.Transport
+// it stops waiting for a token when the request's context ends, so cancelling a
+// caller, such as an audience job at shutdown, is not held up by a slow Auth0
+// login. The login itself runs on to its own timeout in the background.
+type tokenTransport struct {
+	source oauth2.TokenSource
+	base   http.RoundTripper
+}
+
+func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	type result struct {
+		tok *oauth2.Token
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		tok, err := t.source.Token()
+		ch <- result{tok: tok, err: err}
+	}()
+	var r result
+	select {
+	case <-req.Context().Done():
+		closeRequestBody(req)
+		return nil, req.Context().Err()
+	case r = <-ch:
+	}
+	if r.err != nil {
+		closeRequestBody(req)
+		return nil, r.err
+	}
+	// A RoundTripper must not change the caller's request.
+	out := req.Clone(req.Context())
+	r.tok.SetAuthHeader(out)
+	return t.base.RoundTrip(out)
+}
+
+func closeRequestBody(req *http.Request) {
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
 }

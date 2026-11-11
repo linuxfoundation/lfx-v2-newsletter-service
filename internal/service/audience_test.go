@@ -444,3 +444,47 @@ func TestAudienceJob_SurvivesRequestCancellation(t *testing.T) {
 
 	waitForAudienceStatus(t, f, n.ID, model.AudienceReady)
 }
+
+// slowPersistAudienceRepo is a fakeAudienceRepo whose ReplaceMembers runs until
+// its deadline passes, and whose MarkFailed, like Postgres, cannot run on an
+// expired context.
+type slowPersistAudienceRepo struct {
+	*fakeAudienceRepo
+}
+
+func (r *slowPersistAudienceRepo) ReplaceMembers(ctx context.Context, _ uuid.UUID, _ []model.CommitteeMember) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (r *slowPersistAudienceRepo) MarkFailed(ctx context.Context, id uuid.UUID, msg string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return r.fakeAudienceRepo.MarkFailed(ctx, id, msg)
+}
+
+func TestAudienceResolve_MarksFailedAfterAPersistTimeout(t *testing.T) {
+	prev := audiencePersistTimeout
+	audiencePersistTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { audiencePersistTimeout = prev })
+
+	ctx := context.Background()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{"c1": {{Email: "a@example.com"}}}}
+	f := newAudienceFixture(t, committee)
+	slow := &slowPersistAudienceRepo{fakeAudienceRepo: f.audiences}
+	f.svc = NewAudienceService(AudienceServiceConfig{
+		Newsletters:  f.repo,
+		Audiences:    slow,
+		Committee:    committee,
+		Unsubscribed: f.repo,
+		JobTimeout:   time.Minute,
+	})
+	n := f.repo.addDraft("p1", []string{"c1"})
+
+	_, err := f.svc.Resolve(ctx, "p1", n.ID, []string{"c1"}, false)
+	require.NoError(t, err)
+	f.svc.Drain(ctx)
+
+	waitForAudienceStatus(t, f, n.ID, model.AudienceFailed)
+}

@@ -302,3 +302,70 @@ func TestSendNewsletter_ReadySnapshotWithPurgedMembersIsStale(t *testing.T) {
 	assert.Equal(t, domain.AudienceStateStale, notReady.Status)
 	assert.Empty(t, email.sends, "the newsletter is not used up on an empty send")
 }
+
+// refreshingAudienceRepo starts a refresh of the audience right after its
+// members are read, the way a concurrent POST …/audience?refresh=true can.
+type refreshingAudienceRepo struct {
+	*fakeAudienceRepo
+	refreshed bool
+}
+
+func (r *refreshingAudienceRepo) ListMembers(ctx context.Context, id uuid.UUID) ([]model.CommitteeMember, error) {
+	members, err := r.fakeAudienceRepo.ListMembers(ctx, id)
+	if !r.refreshed {
+		r.refreshed = true
+		a, _ := r.fakeAudienceRepo.Get(ctx, id)
+		if _, berr := r.BeginResolve(ctx, id, a.ProjectUID, a.CommitteeUIDs); berr != nil {
+			return nil, berr
+		}
+	}
+	return members, err
+}
+
+func TestSendNewsletter_RefreshDuringTheMemberReadStopsTheSend(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	audiences := &refreshingAudienceRepo{fakeAudienceRepo: newFakeAudienceRepo()}
+	email := &fakeEmailDispatcher{}
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Audience:      audiences,
+		AudiencePurge: audiences,
+		Committee:     &fakeCommitteeClient{},
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		Unsubscribe:   NewUnsubscribeService(repo, []byte("k"), "https://api.example"),
+		Concurrency:   2,
+		FanoutEnabled: true,
+	})
+	n := repo.addDraft("p1", []string{"c1"})
+	audiences.put(n, []string{"c1"}, model.AudienceReady, []model.CommitteeMember{{Email: "a@example.com"}})
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: n.ID})
+	var notReady *domain.AudienceNotReadyError
+	require.ErrorAs(t, err, &notReady)
+	assert.Equal(t, string(model.AudienceProcessing), notReady.Status)
+	assert.Empty(t, email.sends, "members read across a refresh are not sent")
+}
+
+func TestRecipientCount_RefusesASnapshotForCommitteesNoLongerOnTheDraft(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	audiences := newFakeAudienceRepo()
+	orch := newCompatOrchestrator(repo, audiences, &fakeCommitteeClient{}, &fakeEmailDispatcher{})
+	n := repo.addDraft("p1", []string{"c1"})
+	audiences.put(n, []string{"c1"}, model.AudienceReady, []model.CommitteeMember{{Email: "a@example.com"}})
+	// The draft moves to c2 while its snapshot was built for c1.
+	repo.mu.Lock()
+	repo.drafts[n.ID].CommitteeUIDs = []string{"c2"}
+	repo.mu.Unlock()
+
+	_, err := orch.RecipientCount(ctx, "p1", n.ID, []string{"c1"})
+	var notReady *domain.AudienceNotReadyError
+	require.ErrorAs(t, err, &notReady)
+	assert.Equal(t, domain.AudienceStateStale, notReady.Status)
+
+	_, err = orch.Recipients(ctx, "p1", n.ID, []string{"c1"})
+	require.ErrorAs(t, err, &notReady)
+	assert.Equal(t, domain.AudienceStateStale, notReady.Status)
+}

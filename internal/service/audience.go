@@ -222,6 +222,11 @@ func (s *AudienceService) Get(ctx context.Context, projectUID string, newsletter
 	return a, nil
 }
 
+// audiencePersistTimeout bounds each group of an audience job's terminal writes:
+// storing the members and marking the audience ready, or marking it failed. A
+// variable so tests can shorten it.
+var audiencePersistTimeout = persistTimeout
+
 // runResolve is the background half of Resolve. It reads every committee,
 // builds the recipient list, stores it and marks the audience ready. Any error
 // marks the audience failed, so a snapshot is never ready with part of its
@@ -232,7 +237,7 @@ func (s *AudienceService) runResolve(ctx context.Context, projectUID string, new
 
 	// The terminal writes must not depend on the job context, which may already
 	// be exhausted when the reads used the whole job timeout.
-	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), audiencePersistTimeout)
 	defer cancel()
 
 	if err == nil {
@@ -248,7 +253,12 @@ func (s *AudienceService) runResolve(ctx context.Context, projectUID string, new
 			"duration", time.Since(start).String(),
 			"error", err.Error(),
 		)
-		if markErr := s.audiences.MarkFailed(persistCtx, newsletterID, audienceFailureMessage(err)); markErr != nil {
+		// The failure write gets its own deadline: when ReplaceMembers or MarkReady
+		// used up persistCtx, reusing it could not reach Postgres, and the audience
+		// would stay processing until the stale sweep.
+		failCtx, failCancel := context.WithTimeout(context.WithoutCancel(ctx), audiencePersistTimeout)
+		defer failCancel()
+		if markErr := s.audiences.MarkFailed(failCtx, newsletterID, audienceFailureMessage(err)); markErr != nil {
 			slog.ErrorContext(ctx, "mark audience failed",
 				"newsletter_id", newsletterID,
 				"error", markErr.Error(),
