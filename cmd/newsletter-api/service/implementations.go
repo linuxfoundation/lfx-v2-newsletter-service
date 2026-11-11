@@ -169,8 +169,11 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		Unsubscribed: repo,
 		JobTimeout:   cfg.AudienceJobTimeout,
 	})
+	publicationRepo := repository.NewPostgresPublicationRepo(bunDB)
 	newsletterSvc := service.NewNewsletterService(repo, unsubSvc.Enabled())
+	newsletterSvc.UsePublications(publicationRepo)
 	sendSvc = service.NewSendOrchestrator(service.SendOrchestratorConfig{
+		Publications:          publicationRepo,
 		Repo:                  repo,
 		Audience:              audienceRepo,
 		AudiencePurge:         audienceRepo,
@@ -219,6 +222,7 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 
 	handlerImpl = handler.New(handler.Config{
 		Newsletter:      newsletterSvc,
+		Publications:    service.NewPublicationService(publicationRepo, repo, cfg.EmailReplyToAllowedDomains),
 		Send:            sendSvc,
 		Audience:        audienceSvc,
 		Analytics:       analyticsSvc,

@@ -22,27 +22,42 @@ import (
 
 // CreateNewsletter handles POST /projects/{project_uid}/newsletters.
 func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
-	projectUID := r.PathValue("project_uid")
 	var body publicapi.CreateNewsletterRequest
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
+	var publicationUID *uuid.UUID
+	if body.PublicationUID != nil {
+		id, err := parseUUID(*body.PublicationUID)
+		if err != nil {
+			writeError(r.Context(), w, err)
+			return
+		}
+		publicationUID = &id
+	}
+	h.createDraft(w, r, body, publicationUID)
+}
 
+// createDraft runs the shared create flow for POST .../newsletters and POST
+// .../newsletter-publications/{publication_uid}/editions.
+func (h *Handler) createDraft(w http.ResponseWriter, r *http.Request, body publicapi.CreateNewsletterRequest, publicationUID *uuid.UUID) {
+	projectUID := r.PathValue("project_uid")
 	user := UserFromContext(r.Context())
 	if user == "" {
 		user = "anonymous"
 	}
 
 	draft, err := h.newsletter.CreateDraft(r.Context(), service.CreateDraftInput{
-		ProjectUID:    projectUID,
-		Subject:       body.Subject,
-		BodyHTML:      body.BodyHTML,
-		BodyLayout:    toEmitterLayoutPtr(body.BodyLayout),
-		EDReplyEmail:  body.EDReplyEmail,
-		CommitteeUIDs: body.CommitteeUIDs,
-		CreatedBy:     user,
-		ScheduledAt:   body.ScheduledAt,
+		ProjectUID:     projectUID,
+		PublicationUID: publicationUID,
+		Subject:        body.Subject,
+		BodyHTML:       body.BodyHTML,
+		BodyLayout:     toEmitterLayoutPtr(body.BodyLayout),
+		EDReplyEmail:   body.EDReplyEmail,
+		CommitteeUIDs:  body.CommitteeUIDs,
+		CreatedBy:      user,
+		ScheduledAt:    body.ScheduledAt,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -165,9 +180,15 @@ func parseUUID(raw string) (uuid.UUID, error) {
 
 // toAPINewsletter converts a domain model into the public API DTO.
 func toAPINewsletter(ctx context.Context, n *model.Newsletter) *publicapi.Newsletter {
+	var publicationUID *string
+	if n.PublicationUID != nil {
+		v := n.PublicationUID.String()
+		publicationUID = &v
+	}
 	return &publicapi.Newsletter{
 		ID:              n.ID.String(),
 		ProjectUID:      n.ProjectUID,
+		PublicationUID:  publicationUID,
 		Subject:         n.Subject,
 		BodyHTML:        n.BodyHTML,
 		BodyLayout:      toAPILayout(ctx, n.BodyLayout, n.ID.String()),

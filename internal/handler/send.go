@@ -211,14 +211,15 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.send.TestSend(r.Context(), service.TestSendInput{
-		ProjectUID:   projectUID,
-		Subject:      body.Subject,
-		BodyHTML:     body.BodyHTML,
-		ToEmail:      body.ToEmail,
-		EDReplyEmail: body.EDReplyEmail,
-		IsLayout:     body.IsLayout,
-		BodyLayout:   toEmitterLayoutPtr(body.BodyLayout),
-		Principal:    UserFromContext(r.Context()),
+		ProjectUID:     projectUID,
+		Subject:        body.Subject,
+		BodyHTML:       body.BodyHTML,
+		ToEmail:        body.ToEmail,
+		EDReplyEmail:   body.EDReplyEmail,
+		IsLayout:       body.IsLayout,
+		BodyLayout:     toEmitterLayoutPtr(body.BodyLayout),
+		Principal:      UserFromContext(r.Context()),
+		PrincipalEmail: UserEmailFromContext(r.Context()),
 	}); err != nil {
 		writeError(r.Context(), w, err)
 		return

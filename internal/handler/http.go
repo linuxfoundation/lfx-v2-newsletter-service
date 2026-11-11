@@ -26,6 +26,7 @@ import (
 // and exposes registered routes via Routes().
 type Handler struct {
 	newsletter      *service.NewsletterService
+	publications    *service.PublicationService
 	send            *service.SendOrchestrator
 	audience        *service.AudienceService
 	analytics       *service.AnalyticsService
@@ -45,6 +46,7 @@ type Handler struct {
 // Config wires a Handler.
 type Config struct {
 	Newsletter      *service.NewsletterService
+	Publications    *service.PublicationService
 	Send            *service.SendOrchestrator
 	Audience        *service.AudienceService
 	Analytics       *service.AnalyticsService
@@ -64,6 +66,7 @@ type Config struct {
 func New(cfg Config) *Handler {
 	return &Handler{
 		newsletter:      cfg.Newsletter,
+		publications:    cfg.Publications,
 		send:            cfg.Send,
 		audience:        cfg.Audience,
 		analytics:       cfg.Analytics,
@@ -165,6 +168,17 @@ func (h *Handler) Routes() http.Handler {
 	// newsletter. Only registered when a PageViewService is wired.
 	if h.pageViews != nil {
 		mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/page-views", h.withAuth(http.HandlerFunc(h.RecordPageView)))
+	}
+
+	// Publications and the editions under one — JWT auth. Only registered when a
+	// PublicationService is wired.
+	if h.publications != nil {
+		mux.Handle("POST /projects/{project_uid}/newsletter-publications", h.withAuth(http.HandlerFunc(h.CreatePublication)))
+		mux.Handle("GET /projects/{project_uid}/newsletter-publications", h.withAuth(http.HandlerFunc(h.ListPublications)))
+		mux.Handle("GET /projects/{project_uid}/newsletter-publications/{publication_uid}", h.withAuth(http.HandlerFunc(h.GetPublication)))
+		mux.Handle("PUT /projects/{project_uid}/newsletter-publications/{publication_uid}", h.withAuth(http.HandlerFunc(h.UpdatePublication)))
+		mux.Handle("GET /projects/{project_uid}/newsletter-publications/{publication_uid}/editions", h.withAuth(http.HandlerFunc(h.ListEditions)))
+		mux.Handle("POST /projects/{project_uid}/newsletter-publications/{publication_uid}/editions", h.withAuth(http.HandlerFunc(h.CreateEdition)))
 	}
 
 	// Newsletter opt-outs — JWT auth.
@@ -290,6 +304,10 @@ func classifyError(err error) (int, string) {
 		return http.StatusConflict, "cancel_window_closed"
 	case errors.Is(err, domain.ErrAudienceNotReady):
 		return http.StatusConflict, "audience_not_ready"
+	case errors.Is(err, domain.ErrForbidden):
+		return http.StatusForbidden, "forbidden"
+	case errors.Is(err, domain.ErrRateLimited):
+		return http.StatusTooManyRequests, "rate_limited"
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest, "invalid_request"
 	case errors.Is(err, domain.ErrUnprocessable):

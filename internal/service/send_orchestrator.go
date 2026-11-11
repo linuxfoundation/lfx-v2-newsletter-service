@@ -119,6 +119,7 @@ type SendOrchestrator struct {
 	userMetadata  port.UserMetadataReader
 	userEmail     port.UserEmailReader
 	unsub         *UnsubscribeService
+	publications  port.PublicationRepository
 	concurrency   int
 	fanoutEnabled bool
 	fromAddress   string
@@ -141,6 +142,8 @@ type SendOrchestrator struct {
 	// jobs tracks detached background send goroutines so graceful shutdown
 	// (and tests) can wait for in-flight fan-outs via Drain.
 	jobs sync.WaitGroup
+	// testSendLimiter caps test sends per principal (in memory, per pod).
+	testSendLimiter *windowLimiter
 	// scheduleMaxHorizon/scheduleMinLead/scheduleCancelBuffer configure the
 	// arm-time and cancel-time validation windows for scheduled sends
 	// (LFXV2-2685). See SendOrchestratorConfig for their meaning.
@@ -176,11 +179,17 @@ type SendOrchestratorConfig struct {
 	Email        port.EmailDispatcher
 	UserMetadata port.UserMetadataReader
 	// UserEmail resolves the sender's primary email by principal, used to
-	// derive the send-time Reply-To address. Nil is tolerated (e.g. tests) —
-	// resolveSenderEmail falls back to the draft's stored ed_reply_email.
+	// derive the send-time Reply-To address and, when the token has no email,
+	// the address a test send may go to. Nil is tolerated (e.g. tests):
+	// resolveSenderEmail falls back to the draft's stored ed_reply_email, and
+	// the test-send guard refuses a caller it has no address for.
 	UserEmail   port.UserEmailReader
 	Unsubscribe *UnsubscribeService
-	Concurrency int
+	// Publications supplies the From display name and Reply-To a publication
+	// fixes for its editions. Nil is tolerated (e.g. tests): every edition then
+	// uses the sender-resolved values.
+	Publications port.PublicationRepository
+	Concurrency  int
 	// FanoutEnabled is the feature toggle for the per-recipient send loop.
 	// Defaults to true; flip false in environments where we want to validate
 	// the recipient-resolution path without sending real mail.
@@ -263,17 +272,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	// Normalize the reply-to allowlist the same way; empty config falls back
 	// to the email-service default rather than an empty (reject-everything)
 	// list.
-	var replyToDomains []string
-	for _, domain := range cfg.ReplyToAllowedDomains {
-		domain = strings.ToLower(strings.TrimSpace(domain))
-		if domain == "" {
-			continue
-		}
-		replyToDomains = append(replyToDomains, domain)
-	}
-	if len(replyToDomains) == 0 {
-		replyToDomains = defaultReplyToAllowedDomains
-	}
+	replyToDomains := normalizeReplyToDomains(cfg.ReplyToAllowedDomains)
 	jobTimeout := cfg.SendJobTimeout
 	if jobTimeout <= 0 {
 		jobTimeout = defaultSendJobTimeout
@@ -305,6 +304,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		scheduleCancelBuffer = minScheduleCancelBuffer
 	}
 	return &SendOrchestrator{
+		testSendLimiter:       newWindowLimiter(testSendLimit, testSendWindow),
 		repo:                  cfg.Repo,
 		audience:              cfg.Audience,
 		audiencePurge:         cfg.AudiencePurge,
@@ -314,6 +314,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		userMetadata:          cfg.UserMetadata,
 		userEmail:             cfg.UserEmail,
 		unsub:                 cfg.Unsubscribe,
+		publications:          cfg.Publications,
 		concurrency:           c,
 		fanoutEnabled:         cfg.FanoutEnabled,
 		fromAddress:           from,
@@ -459,6 +460,10 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// draft.EDReplyEmail (the drafter's address, captured at save time) is
 	// only a fallback for dev mode or a resolution failure.
 	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), draft.EDReplyEmail)
+	fromDisplayName, replyTo, err = o.applyPublicationSender(ctx, draft, fromDisplayName, replyTo)
+	if err != nil {
+		return nil, err
+	}
 
 	// One slug lookup feeds both the From override and the "Read online"
 	// permalink, so the two can't disagree and a slow project-service costs a
@@ -1040,6 +1045,10 @@ type TestSendInput struct {
 	ToEmail      string
 	EDReplyEmail string
 	Principal    string
+	// PrincipalEmail is the caller's verified email from the token, when the
+	// token carries one. When the caller is authenticated, a test send may only
+	// go to this address or, without one, their auth-service primary email.
+	PrincipalEmail string
 	// IsLayout is DEPRECATED and ignored (see api.TestSendRequest.IsLayout).
 	// BodyLayout is the sole layout trigger; this field has no effect and is
 	// retained only for wire-compatibility with clients that still send it.
@@ -1085,6 +1094,25 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// the bare address recipient resolution compares opt-outs against, and
 	// the dispatch To must carry the same canonical value.
 	toEmail := parsedTo.Address
+	// A test send goes from the LF sending domain, so an authenticated caller
+	// may only send it to their own address (lfx-self-serve#4358 F1), and only
+	// so often. A caller already over the limit stops here, before the lookups
+	// and the render; the charge itself happens just before dispatch. With auth
+	// disabled (local dev) there is no principal and both checks are skipped.
+	var fetchedPrimary string
+	if in.Principal != "" {
+		if o.testSendLimiter.exhausted(in.Principal, time.Now()) {
+			return fmt.Errorf("%w: too many test emails, try again later", domain.ErrRateLimited)
+		}
+		ownEmail, primary, err := o.testSendCallerEmail(ctx, in.Principal, in.PrincipalEmail)
+		if err != nil {
+			return err
+		}
+		fetchedPrimary = primary
+		if ownEmail == "" || !strings.EqualFold(ownEmail, toEmail) {
+			return fmt.Errorf("%w: test emails can only be sent to your own email address", domain.ErrForbidden)
+		}
+	}
 
 	// Resolve the sender's email and name early. The email becomes the envelope
 	// Reply-To (and the legacy chrome's reply line), matching a real send, where
@@ -1101,7 +1129,14 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	// Mirror SendNewsletter's Reply-To resolution so a test-send previews the
 	// same envelope a real send would produce, not the drafter's stored
 	// EDReplyEmail unconditionally.
-	replyTo := fallbackString(o.resolveSenderEmail(ctx, in.Principal), strings.TrimSpace(in.EDReplyEmail))
+	// The guard may already have fetched the primary email; don't ask twice.
+	var senderEmail string
+	if fetchedPrimary != "" {
+		senderEmail = o.replyToFromPrimary(ctx, fetchedPrimary)
+	} else {
+		senderEmail = o.resolveSenderEmail(ctx, in.Principal)
+	}
+	replyTo := fallbackString(senderEmail, strings.TrimSpace(in.EDReplyEmail))
 
 	// body_layout is the SOLE layout trigger for a test send. in.IsLayout is
 	// deprecated and ignored here (a precompiled is_layout body_html is no longer
@@ -1115,6 +1150,9 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		fromDisplayName = projectName + fromDisplayNameSuffix
 	}
 
+	// A test send has no newsletter ID, so a publication's from_name and
+	// reply_to_email are not applied to it.
+	//
 	// A test send is immediate, so the header date is today. No "Read online"
 	// link: a test send is not tied to a newsletter ID, so there is no reader
 	// permalink to link to.
@@ -1211,6 +1249,12 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		From:            o.resolveFromAddress(ctx, in.ProjectUID),
 		FromDisplayName: fromDisplayName,
 		ReplyTo:         replyTo,
+	}
+	// Charge the per-principal limit only once the email is ready to go, so a
+	// layout that fails to render or validate doesn't use up the allowance. A
+	// failed dispatch still counts, because a timeout doesn't prove nothing went.
+	if in.Principal != "" && !o.testSendLimiter.allow(in.Principal, time.Now()) {
+		return fmt.Errorf("%w: too many test emails, try again later", domain.ErrRateLimited)
 	}
 	if _, dispatchErr := o.email.SendEmail(ctx, sendInput); dispatchErr != nil {
 		return fmt.Errorf("dispatch test-send: %w", dispatchErr)
@@ -1577,6 +1621,36 @@ func (o *SendOrchestrator) resolveSenderName(ctx context.Context, principal stri
 	return parsed.Name, nil
 }
 
+// testSendCallerEmail returns the address an authenticated caller may send a
+// test email to. The token's verified email wins. Deployed tokens carry none
+// while newsletter-service runs with the Heimdall OIDC contextualizer off, so
+// the fallback is the caller's auth-service primary email, without
+// resolveSenderEmail's Reply-To domain filter. auth-service does not always
+// report whether that address is verified, so the guard doesn't rely on it.
+//
+// An empty own address means the caller has no known address, which the guard
+// refuses. A lookup that fails for any other reason is a 503, so an outage isn't
+// reported to the caller as the wrong recipient. primary is the fetched
+// primary email, or "" when no lookup returned one, so the caller can reuse it.
+func (o *SendOrchestrator) testSendCallerEmail(ctx context.Context, principal, tokenEmail string) (own, primary string, err error) {
+	if email := strings.TrimSpace(tokenEmail); email != "" {
+		return email, "", nil
+	}
+	if o.userEmail == nil {
+		return "", "", nil
+	}
+	email, lookupErr := o.userEmail.PrimaryEmail(ctx, principal)
+	if lookupErr != nil {
+		var notFound pkgerrors.NotFound
+		if errors.As(lookupErr, &notFound) {
+			return "", "", nil
+		}
+		return "", "", pkgerrors.NewServiceUnavailable("resolve caller email from auth-service", lookupErr)
+	}
+	email = strings.TrimSpace(email)
+	return email, email, nil
+}
+
 // resolveSenderEmail looks up the sender's primary email from auth-service
 // using the validated JWT principal, so Reply-To can track whoever is
 // actually sending rather than the drafter recorded in
@@ -1599,6 +1673,12 @@ func (o *SendOrchestrator) resolveSenderEmail(ctx context.Context, principal str
 		)
 		return ""
 	}
+	return o.replyToFromPrimary(ctx, email)
+}
+
+// replyToFromPrimary applies the Reply-To checks to a primary email already
+// fetched from auth-service, returning "" when it can't be used.
+func (o *SendOrchestrator) replyToFromPrimary(ctx context.Context, email string) string {
 	trimmed := strings.TrimSpace(email)
 	if trimmed == "" {
 		return ""
@@ -1616,6 +1696,21 @@ func (o *SendOrchestrator) resolveSenderEmail(ctx context.Context, principal str
 		return ""
 	}
 	return trimmed
+}
+
+// normalizeReplyToDomains lowercases and trims the configured allowlist,
+// dropping blanks, and applies the default when nothing is left.
+func normalizeReplyToDomains(domains []string) []string {
+	var out []string
+	for _, d := range domains {
+		if d = strings.ToLower(strings.TrimSpace(d)); d != "" {
+			out = append(out, d)
+		}
+	}
+	if len(out) == 0 {
+		return defaultReplyToAllowedDomains
+	}
+	return out
 }
 
 // domainOf returns the lowercased domain portion of an email address, or ""

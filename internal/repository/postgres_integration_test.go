@@ -37,11 +37,14 @@ import (
 // Each helper call TRUNCATEs the newsletters table, so these tests must not
 // run against a database holding data anyone cares about.
 
+// integrationDSN returns the test database DSN, empty when unset.
+func integrationDSN() string { return os.Getenv("NEWSLETTER_TEST_DATABASE_URL") }
+
 // newIntegrationRepo connects, applies the embedded schema, and returns a
 // repository over a clean newsletters table.
 func newIntegrationRepo(t *testing.T) *PostgresNewsletterRepo {
 	t.Helper()
-	dsn := os.Getenv("NEWSLETTER_TEST_DATABASE_URL")
+	dsn := integrationDSN()
 	if dsn == "" {
 		t.Skip("NEWSLETTER_TEST_DATABASE_URL not set — skipping Postgres-backed repository tests")
 	}

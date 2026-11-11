@@ -75,12 +75,13 @@ cmd/newsletter-api/
     └── implementations.go    # Wires infrastructure into service structs
 
 internal/domain/
-├── model/                    # Pure data: Newsletter, Status, Audience, CommitteeMember, Unsubscribe
-├── port/                     # Interfaces: NewsletterRepository, AudienceRepository, CommitteeClient, ProjectMetadataClient, EmailDispatcher, UserMetadataReader
-└── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent, ErrSendInProgress, ErrUnprocessable, ErrAudienceNotReady
+├── model/                    # Pure data: Newsletter, Status, Audience, Publication, CommitteeMember, Unsubscribe
+├── port/                     # Interfaces: NewsletterRepository, AudienceRepository, PublicationRepository, CommitteeClient, ProjectMetadataClient, EmailDispatcher, UserMetadataReader
+└── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent, ErrSendInProgress, ErrUnprocessable, ErrAudienceNotReady, ErrForbidden, ErrRateLimited
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
+├── publication.go            # Publication CRUD and what editions inherit
 ├── send_orchestrator.go      # Resolve recipients, render chrome, fan out sends, mark draft sent
 ├── analytics.go              # Local opens overlaid with email-service engagement totals
 ├── audience.go               # Background audience resolution: query service to snapshot
@@ -92,7 +93,8 @@ internal/service/
 
 internal/repository/
 ├── postgres.go               # bun-backed NewsletterRepository with optimistic locking
-└── audience.go               # bun-backed AudienceRepository (snapshot tables)
+├── audience.go               # bun-backed AudienceRepository (snapshot tables)
+└── publications.go           # bun-backed PublicationRepository
 
 internal/schema/
 ├── schema.go                 # //go:embed schema.sql + Apply()
@@ -106,6 +108,7 @@ internal/handler/
 ├── templates.go              # GET …/newsletters/templates, …/templates/{template_key}/manifest
 ├── audience.go               # …/audience (POST starts the resolution, GET reports status)
 ├── list.go                   # GET /projects/{project_uid}/newsletters unified list
+├── publications.go           # /projects/{project_uid}/newsletter-publications CRUD + editions
 ├── analytics.go              # GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics
 ├── open.go                   # GET /projects/{project_uid}/newsletter-opens/{newsletter_uid} tracking pixel
 ├── unsubscribe.go            # GET /newsletters/unsubscribe (unauthenticated, HMAC token)
@@ -181,7 +184,7 @@ All `os.Getenv` calls belong in `cmd/newsletter-api/service/config.go` →
 4. Register the route in `internal/handler/http.go`.
 
 ### Error handling
-- Domain errors live in `internal/domain/errors.go` (`ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrSendInProgress`, `ErrUnprocessable` for a well-formed layout the renderer cannot render, 422).
+- Domain errors live in `internal/domain/errors.go` (`ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrSendInProgress`, `ErrUnprocessable` for a well-formed layout the renderer cannot render, 422, `ErrForbidden` 403 and `ErrRateLimited` 429 for the test-send guards).
 - Map domain errors to HTTP status codes in `internal/handler/http.go`.
 - Always pass `ctx` for OTel trace correlation.
 
