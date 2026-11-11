@@ -616,10 +616,6 @@ func TestUpdateDraft_ExplicitNullLayout_EmptyBody_ClearsToEmpty(t *testing.T) {
 	}
 }
 
-// TestCreateDraft_OversizedDerivedHTML_Is422 pins the status-code contract:
-// an oversized DERIVED (layout-rendered) document is 422 unprocessable, the
-// same classification render-preview gives the identical output — not a 400
-// blaming a body_html field the request never supplied.
 // TestCreateDraft_LongEditionAboveGmailClipping covers an edition whose rendered
 // email is past Gmail's ~102KB clipping point but under maxRenderedHTMLBytes. Long
 // editions such as the AAIF Executive Director weekly are this size, and they must
@@ -644,6 +640,10 @@ func TestCreateDraft_LongEditionAboveGmailClipping(t *testing.T) {
 	}
 }
 
+// TestCreateDraft_OversizedDerivedHTML_Is422 pins the status-code contract:
+// an oversized DERIVED (layout-rendered) document is 422 unprocessable, the
+// same classification render-preview gives the identical output — not a 400
+// blaming a body_html field the request never supplied.
 func TestCreateDraft_OversizedDerivedHTML_Is422(t *testing.T) {
 	repo := newFakeRepo()
 	svc := NewNewsletterService(repo, true)

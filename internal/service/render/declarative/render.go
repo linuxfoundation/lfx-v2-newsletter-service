@@ -149,8 +149,8 @@ func Render(ctx context.Context, layout Layout, templates Templates, wrapperCont
 	if err != nil {
 		return "", err
 	}
-	// Drop MJML's formatting whitespace, so long editions stay further under the
-	// size cap and Gmail's clipping point. See minifyHTML.
+	// Drop MJML's formatting whitespace, so emails are smaller and Gmail clips
+	// fewer of them. See minifyHTML.
 	return minifyHTML(out), nil
 }
 

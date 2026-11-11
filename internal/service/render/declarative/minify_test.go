@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/net/html"
 )
@@ -17,14 +18,19 @@ func TestMinifyHTML(t *testing.T) {
 		name, in, want string
 	}{
 		{"table whitespace is dropped", "<table>\n  <tr>\n    <td>\n      Hi\n    </td>\n  </tr>\n</table>", "<table><tr><td>Hi</td></tr></table>"},
-		{"a space between inline elements is kept", "<p>\n  <a href=\"x\">one</a>\n  <strong>two</strong>\n</p>", "<p><a href=\"x\">one</a> <strong>two</strong></p>"},
+		{"a space between inline elements is kept", "<td>\n  <a href=\"x\">one</a>\n  <strong>two</strong>\n</td>", "<td><a href=\"x\">one</a> <strong>two</strong></td>"},
 		{"a space inside text is collapsed, not removed", "<td>one   two\n three</td>", "<td>one two three</td>"},
-		{"pre keeps its whitespace", "<div>\n<pre>  a\n    b  </pre>\n</div>", "<div><pre>  a\n    b  </pre></div>"},
+		{"block tags keep one space, as richtext can make them inline", "<td><p style=\"display:inline\">a</p>\n  <p style=\"display:inline\">b</p></td>", "<td><p style=\"display:inline\">a</p> <p style=\"display:inline\">b</p></td>"},
+		{"pre keeps its whitespace", "<td>\n<pre>  a\n    b  </pre>\n</td>", "<td><pre>  a\n    b  </pre></td>"},
+		{"uppercase PRE keeps its whitespace", "<td><PRE>  a\n  b</PRE></td>", "<td><PRE>  a\n  b</PRE></td>"},
+		{"pre after non-ASCII text keeps its whitespace", "<td>İİİİİİ<pre>İİİİİİ a      b</pre> c   d</td>", "<td>İİİİİİ<pre>İİİİİİ a      b</pre> c d</td>"},
+		{"an element styled white-space:pre keeps its whitespace", "<td><div style=\"color:red; white-space: pre-wrap\">a\n   <div>b    c</div>\n d</div>   e</td>", "<td><div style=\"color:red; white-space: pre-wrap\">a\n   <div>b    c</div>\n d</div> e</td>"},
 		{"style keeps its whitespace", "<head>\n<style type=\"text/css\">\n  .x { color: red; }\n</style>\n</head>", "<head><style type=\"text/css\">\n  .x { color: red; }\n</style></head>"},
-		{"outlook conditional comments are unchanged", "<div>\n<!--[if mso | IE]><table\n   role=\"presentation\"><tr><td><![endif]-->\n<div>x</div>\n</div>", "<div><!--[if mso | IE]><table\n   role=\"presentation\"><tr><td><![endif]--><div>x</div></div>"},
+		{"outlook conditional comments are unchanged", "<td>\n<!--[if mso | IE]><table\n   role=\"presentation\"><tr><td><![endif]-->\n<div>x</div>\n</td>", "<td><!--[if mso | IE]><table\n   role=\"presentation\"><tr><td><![endif]--> <div>x</div></td>"},
 		{"attributes are unchanged, including a quoted >", "<td style=\"a:1;\n  b:2\" title=\"x > y\">\n z\n</td>", "<td style=\"a:1;\n  b:2\" title=\"x > y\">z</td>"},
 		{"a literal < in text is not a tag", "<td>1 < 2 and  3</td>", "<td>1 < 2 and 3</td>"},
 		{"img keeps the space around it", "<span>a</span>\n<img src=\"i\">\n<span>b</span>", "<span>a</span> <img src=\"i\"> <span>b</span>"},
+		{"an unterminated pre is copied unchanged", "<td><pre>  a\n  b", "<td><pre>  a\n  b"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,5 +118,19 @@ func readTokens(t *testing.T, doc string) (tags, words []string) {
 				}
 			}
 		}
+	}
+}
+
+// TestMinifyHTMLIsLinearInRawTextElements guards against rescanning the rest of
+// the document at every <pre>, which made a 400 KB document of them take seconds.
+func TestMinifyHTMLIsLinearInRawTextElements(t *testing.T) {
+	doc := strings.Repeat("<pre>  a  b  </pre>\n  ", 20_000)
+	start := time.Now()
+	out := minifyHTML(doc)
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Fatalf("minifying %d bytes of <pre> took %v", len(doc), took)
+	}
+	if !strings.HasPrefix(out, "<pre>  a  b  </pre> <pre>") {
+		t.Fatalf("unexpected output start: %q", out[:40])
 	}
 }

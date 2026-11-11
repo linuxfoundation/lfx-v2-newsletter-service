@@ -9,20 +9,21 @@ import (
 )
 
 // minifyHTML removes formatting whitespace from a rendered email without
-// changing what any client displays. MJML's output is indented across many
-// lines, which is roughly a seventh of a long edition's bytes, and long
-// editions run close to Gmail's ~102KB clipping point.
+// changing what a client displays. MJML's output is indented across many
+// lines, which is roughly a seventh of a long edition's bytes. Smaller emails
+// are clipped by Gmail (~102KB) less often and less deeply.
 //
 // It is deliberately conservative, rather than a general HTML minifier:
-//   - <pre>, <textarea>, <script> and <style> contents, every comment (including
-//     Outlook's <!--[if mso]> conditional blocks) and every tag's attributes are
-//     copied unchanged. Inline styles stay on each element, as email clients
-//     need them.
+//   - Every tag's attributes (so every inline style), every comment (including
+//     Outlook's <!--[if mso]> conditional blocks), the contents of <pre>,
+//     <textarea>, <script> and <style>, and any element styled white-space:pre,
+//     pre-wrap, pre-line or break-spaces are copied unchanged.
 //   - Elsewhere a run of whitespace becomes one space, so the words and spaces a
 //     reader sees are unchanged.
-//   - That space is dropped only next to a block or table tag (see minifyBlockTags),
-//     where HTML does not render it. Whitespace between inline elements, such as
-//     </a> <strong>, is kept.
+//   - That space is dropped only next to table-structure and document-head tags
+//     (see minifyDropSpaceTags), where HTML does not render it. Next to div, p and
+//     other block tags it stays as one space, because richtext can style those
+//     display:inline, and then the space shows.
 //
 // It runs on MJML's output after reconcileCardBorders, which matches MJML's own
 // formatting, so MJML's built-in minify stays off.
@@ -46,27 +47,29 @@ func minifyHTML(in string) string {
 			if tagEnd < 0 {
 				return string(append(out, in[i:]...))
 			}
-			if minifyBlockTags[name] {
+			if minifyDropSpaceTags[name] {
 				out = bytes.TrimSuffix(out, []byte{' '})
 			}
-			out = append(out, in[i:tagEnd]...)
+			tag := in[i:tagEnd]
+			out = append(out, tag...)
 			i = tagEnd
-			if !closing && minifyRawTextTags[name] {
-				end := indexFold(in[i:], "</"+name)
+			if !closing && !strings.HasSuffix(tag, "/>") && (minifyRawTextTags[name] || preservesWhitespace(tag)) {
+				// Copy everything up to the matching close tag unchanged.
+				end := matchingClose(in, i, name)
 				if end < 0 {
 					return string(append(out, in[i:]...))
 				}
-				out = append(out, in[i:i+end]...)
-				i += end
+				out = append(out, in[i:end]...)
+				i = end
 				continue
 			}
-			if minifyBlockTags[name] {
+			if minifyDropSpaceTags[name] {
 				i = skipSpace(in, i)
 			}
 		case isSpace(c):
 			j := skipSpace(in, i)
 			if j < len(in) && in[j] == '<' && isTagStart(in[j:]) {
-				if name, _ := tagName(in[j:]); minifyBlockTags[name] {
+				if name, _ := tagName(in[j:]); minifyDropSpaceTags[name] {
 					i = j
 					continue
 				}
@@ -83,19 +86,67 @@ func minifyHTML(in string) string {
 	return string(out)
 }
 
-// minifyBlockTags are elements whose surrounding whitespace HTML does not render: the
-// document structure, tables and block containers MJML emits. Inline elements
-// (a, span, strong, em, img, br, ...) are absent on purpose.
-var minifyBlockTags = map[string]bool{
+// minifyDropSpaceTags are elements whose surrounding whitespace HTML never
+// renders: table structure and the document head, which MJML emits by the
+// thousand. Block containers such as div and p are absent on purpose, as an
+// inline style can make them inline (see minifyHTML).
+var minifyDropSpaceTags = map[string]bool{
 	"html": true, "head": true, "body": true, "meta": true, "title": true, "link": true,
 	"table": true, "thead": true, "tbody": true, "tfoot": true, "tr": true, "td": true, "th": true,
-	"div": true, "p": true, "center": true, "ul": true, "ol": true, "li": true,
-	"h1": true, "h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
-	"blockquote": true, "hr": true, "style": true, "!doctype": true,
+	"style": true, "!doctype": true,
 }
 
 // minifyRawTextTags hold content that must be copied byte for byte.
 var minifyRawTextTags = map[string]bool{"pre": true, "textarea": true, "script": true, "style": true}
+
+// preservesWhitespace reports whether a start tag's inline style keeps its
+// content's whitespace (white-space: pre, pre-wrap, pre-line or break-spaces).
+func preservesWhitespace(tag string) bool {
+	style := strings.ToLower(tag)
+	k := strings.Index(style, "white-space")
+	if k < 0 {
+		return false
+	}
+	rest := strings.TrimLeft(style[k+len("white-space"):], " \t\n\r:")
+	return strings.HasPrefix(rest, "pre") || strings.HasPrefix(rest, "break-spaces")
+}
+
+// matchingClose returns the index of the close tag that ends the element named
+// name whose content starts at in[from], counting nested elements of the same
+// name, or -1. Names are compared without changing case, so byte offsets stay
+// those of in.
+func matchingClose(in string, from int, name string) int {
+	depth := 1
+	for i := from; i < len(in); i++ {
+		if in[i] != '<' {
+			continue
+		}
+		rest := in[i:]
+		switch {
+		case strings.HasPrefix(rest, "</") && hasTagName(rest[2:], name):
+			depth--
+			if depth == 0 {
+				return i
+			}
+		case !minifyRawTextTags[name] && hasTagName(rest[1:], name):
+			depth++
+		}
+	}
+	return -1
+}
+
+// hasTagName reports whether s starts with the tag name, in any ASCII case,
+// followed by the end of the name.
+func hasTagName(s, name string) bool {
+	if len(s) < len(name) || !strings.EqualFold(s[:len(name)], name) {
+		return false
+	}
+	if len(s) == len(name) {
+		return true
+	}
+	c := s[len(name)]
+	return c == '>' || c == '/' || isSpace(c)
+}
 
 // isTagStart reports whether s starts a tag rather than a literal "<" in text.
 func isTagStart(s string) bool {
@@ -154,9 +205,4 @@ func skipSpace(s string, i int) int {
 		i++
 	}
 	return i
-}
-
-// indexFold is strings.Index, ignoring ASCII case.
-func indexFold(s, substr string) int {
-	return strings.Index(strings.ToLower(s), strings.ToLower(substr))
 }
