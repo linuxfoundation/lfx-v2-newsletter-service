@@ -29,6 +29,11 @@ import (
 // formatting, so MJML's built-in minify stays off.
 func minifyHTML(in string) string {
 	out := make([]byte, 0, len(in))
+	// wroteSpace is true while the last byte of out is a space this function
+	// wrote in place of a whitespace run. Only that space may be dropped before a
+	// table or head tag: a space copied from a comment or a protected element is
+	// content and stays.
+	wroteSpace := false
 	i := 0
 	for i < len(in) {
 		c := in[i]
@@ -40,6 +45,7 @@ func minifyHTML(in string) string {
 			}
 			stop := i + 4 + end + 3
 			out = append(out, in[i:stop]...)
+			wroteSpace = false
 			i = stop
 		case c == '<' && isTagStart(in[i:]):
 			name, closing := tagName(in[i:])
@@ -47,11 +53,12 @@ func minifyHTML(in string) string {
 			if tagEnd < 0 {
 				return string(append(out, in[i:]...))
 			}
-			if minifyDropSpaceTags[name] {
+			if minifyDropSpaceTags[name] && wroteSpace {
 				out = bytes.TrimSuffix(out, []byte{' '})
 			}
 			tag := in[i:tagEnd]
 			out = append(out, tag...)
+			wroteSpace = false
 			i = tagEnd
 			if !closing && !strings.HasSuffix(tag, "/>") && (minifyRawTextTags[name] || preservesWhitespace(tag)) {
 				// Copy everything up to the matching close tag unchanged.
@@ -76,10 +83,12 @@ func minifyHTML(in string) string {
 			}
 			if len(out) > 0 && out[len(out)-1] != ' ' {
 				out = append(out, ' ')
+				wroteSpace = true
 			}
 			i = j
 		default:
 			out = append(out, c)
+			wroteSpace = false
 			i++
 		}
 	}
@@ -87,12 +96,14 @@ func minifyHTML(in string) string {
 }
 
 // minifyDropSpaceTags are elements whose surrounding whitespace HTML never
-// renders: table structure and the document head, which MJML emits by the
-// thousand. Block containers such as div and p are absent on purpose, as an
-// inline style can make them inline (see minifyHTML).
+// renders: the rows and cells inside a table, which MJML emits by the
+// thousand, and the document head. table itself and block containers such as
+// div and p are absent on purpose, as an inline style can make them inline
+// (display:inline-table, display:inline), and then the space beside them shows.
+// Whitespace inside a table is still dropped, next to its rows and cells.
 var minifyDropSpaceTags = map[string]bool{
 	"html": true, "head": true, "body": true, "meta": true, "title": true, "link": true,
-	"table": true, "thead": true, "tbody": true, "tfoot": true, "tr": true, "td": true, "th": true,
+	"thead": true, "tbody": true, "tfoot": true, "tr": true, "td": true, "th": true,
 	"style": true, "!doctype": true,
 }
 
@@ -101,36 +112,68 @@ var minifyRawTextTags = map[string]bool{"pre": true, "textarea": true, "script":
 
 // preservesWhitespace reports whether a start tag's inline style keeps its
 // content's whitespace (white-space: pre, pre-wrap, pre-line or break-spaces).
+// Every white-space declaration is checked, and any that preserves whitespace
+// counts, since a later declaration in the same style wins in the cascade.
 func preservesWhitespace(tag string) bool {
 	style := strings.ToLower(tag)
-	k := strings.Index(style, "white-space")
-	if k < 0 {
-		return false
+	for {
+		k := strings.Index(style, "white-space")
+		if k < 0 {
+			return false
+		}
+		style = style[k+len("white-space"):]
+		rest := strings.TrimLeft(style, " \t\n\r:")
+		if strings.HasPrefix(rest, "pre") || strings.HasPrefix(rest, "break-spaces") {
+			return true
+		}
 	}
-	rest := strings.TrimLeft(style[k+len("white-space"):], " \t\n\r:")
-	return strings.HasPrefix(rest, "pre") || strings.HasPrefix(rest, "break-spaces")
 }
 
 // matchingClose returns the index of the close tag that ends the element named
 // name whose content starts at in[from], counting nested elements of the same
 // name, or -1. Names are compared without changing case, so byte offsets stay
 // those of in.
+//
+// script, style and textarea content is raw text, so their close tag is the
+// first "</name". Elsewhere (pre, and elements styled white-space:pre) the
+// content is HTML: comments are skipped, and each tag is read whole, so text
+// shaped like a tag inside a comment or a quoted attribute is not mistaken for
+// the close tag.
 func matchingClose(in string, from int, name string) int {
+	raw := name == "script" || name == "style" || name == "textarea"
 	depth := 1
-	for i := from; i < len(in); i++ {
+	i := from
+	for i < len(in) {
 		if in[i] != '<' {
+			i++
 			continue
 		}
 		rest := in[i:]
-		switch {
-		case strings.HasPrefix(rest, "</") && hasTagName(rest[2:], name):
+		if !raw && strings.HasPrefix(rest, "<!--") {
+			end := strings.Index(rest[4:], "-->")
+			if end < 0 {
+				return -1
+			}
+			i += 4 + end + 3
+			continue
+		}
+		if strings.HasPrefix(rest, "</") && hasTagName(rest[2:], name) {
 			depth--
 			if depth == 0 {
 				return i
 			}
-		case !minifyRawTextTags[name] && hasTagName(rest[1:], name):
+		} else if !raw && hasTagName(rest[1:], name) {
 			depth++
 		}
+		if raw || !isTagStart(rest) {
+			i++
+			continue
+		}
+		end := findTagEnd(in, i)
+		if end < 0 {
+			return -1
+		}
+		i = end
 	}
 	return -1
 }

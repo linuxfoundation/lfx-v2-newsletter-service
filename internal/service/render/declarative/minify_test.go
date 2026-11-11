@@ -30,6 +30,12 @@ func TestMinifyHTML(t *testing.T) {
 		{"attributes are unchanged, including a quoted >", "<td style=\"a:1;\n  b:2\" title=\"x > y\">\n z\n</td>", "<td style=\"a:1;\n  b:2\" title=\"x > y\">z</td>"},
 		{"a literal < in text is not a tag", "<td>1 < 2 and  3</td>", "<td>1 < 2 and 3</td>"},
 		{"img keeps the space around it", "<span>a</span>\n<img src=\"i\">\n<span>b</span>", "<span>a</span> <img src=\"i\"> <span>b</span>"},
+		{"a trailing space in a protected element is kept", "<tr><td style=\"white-space:break-spaces\">a   </td></tr>", "<tr><td style=\"white-space:break-spaces\">a   </td></tr>"},
+		{"a trailing space in style is kept", "<head><style>.x{}  </style></head>", "<head><style>.x{}  </style></head>"},
+		{"an inline table keeps the spaces beside it", "<span>one</span> <table style=\"display:inline-table\"><tr><td>two</td></tr></table> <span>three</span>", "<span>one</span> <table style=\"display:inline-table\"><tr><td>two</td></tr></table> <span>three</span>"},
+		{"a later white-space declaration is honoured", "<td><div style=\"white-space:normal;white-space:pre-wrap\">a   b</div></td>", "<td><div style=\"white-space:normal;white-space:pre-wrap\">a   b</div></td>"},
+		{"a close tag inside a comment does not end a protected element", "<td><div style=\"white-space:pre-wrap\"><!-- </div> -->a   b</div>  c</td>", "<td><div style=\"white-space:pre-wrap\"><!-- </div> -->a   b</div> c</td>"},
+		{"a close tag inside a quoted attribute does not end a protected element", "<td><div style=\"white-space:pre\"><span title=\"</div>\">a   b</span></div>  c</td>", "<td><div style=\"white-space:pre\"><span title=\"</div>\">a   b</span></div> c</td>"},
 		{"an unterminated pre is copied unchanged", "<td><pre>  a\n  b", "<td><pre>  a\n  b"},
 	}
 	for _, tc := range cases {
@@ -111,9 +117,10 @@ func readTokens(t *testing.T, doc string) (tags, words []string) {
 			tok := z.Token()
 			tags = append(tags, tok.String())
 			if tok.Data == "style" || tok.Data == "script" {
-				if tok.Type == html.StartTagToken {
+				switch tok.Type {
+				case html.StartTagToken:
 					inRaw++
-				} else if tok.Type == html.EndTagToken {
+				case html.EndTagToken:
 					inRaw--
 				}
 			}
