@@ -814,6 +814,7 @@ func (o *SendOrchestrator) runSendJob(ctx context.Context, sending *model.Newsle
 			)
 			return
 		}
+		o.purgeAudience(persistCtx, sending.ID)
 		slog.InfoContext(ctx, "newsletter scheduled",
 			"newsletter_id", sending.ID,
 			"project_uid", sending.ProjectUID,
@@ -1380,6 +1381,13 @@ func (o *SendOrchestrator) readyMembers(ctx context.Context, n *model.Newsletter
 	if !again.UpdatedAt.Equal(audience.UpdatedAt) {
 		return nil, nil, &domain.AudienceNotReadyError{Status: string(model.AudienceProcessing)}
 	}
+	// A ready audience whose members are gone was purged after an earlier send
+	// or schedule. Report it as stale on every path, so a preview asks for a
+	// rebuild instead of showing an empty audience and a send does not use the
+	// newsletter up on nobody.
+	if len(members) == 0 && audience.RecipientCount > 0 {
+		return nil, nil, &domain.AudienceNotReadyError{Status: domain.AudienceStateStale}
+	}
 	return audience, members, nil
 }
 
@@ -1387,7 +1395,7 @@ func (o *SendOrchestrator) readyMembers(ctx context.Context, n *model.Newsletter
 // unsubscribed after the snapshot was taken. Only the email and first name are
 // kept, which is all the fan-out needs.
 func (o *SendOrchestrator) snapshotRecipients(ctx context.Context, n *model.Newsletter) ([]model.CommitteeMember, error) {
-	audience, members, err := o.readyMembers(ctx, n, n.CommitteeUIDs)
+	_, members, err := o.readyMembers(ctx, n, n.CommitteeUIDs)
 	if err != nil {
 		// A newsletter with no snapshot at all was drafted by a client that has
 		// not adopted snapshots, so it is sent from a live read, as before. A
@@ -1397,12 +1405,6 @@ func (o *SendOrchestrator) snapshotRecipients(ctx context.Context, n *model.News
 			return o.liveRecipients(ctx, n.ProjectUID, n.CommitteeUIDs, true)
 		}
 		return nil, err
-	}
-	// A ready audience whose members are gone was purged after an earlier
-	// send. Sending from it would reach nobody and use the newsletter up, so
-	// treat it as stale and have the client resolve it again.
-	if len(members) == 0 && audience.RecipientCount > 0 {
-		return nil, &domain.AudienceNotReadyError{Status: domain.AudienceStateStale}
 	}
 	excluded, err := o.listUnsubscribed(ctx, n.ProjectUID)
 	if err != nil {

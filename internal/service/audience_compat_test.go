@@ -413,3 +413,46 @@ func TestRecipientCount_RefusesASnapshotForCommitteesNoLongerOnTheDraft(t *testi
 	require.ErrorAs(t, err, &notReady)
 	assert.Equal(t, domain.AudienceStateStale, notReady.Status)
 }
+
+func TestSendNewsletter_ScheduledSendDeletesSnapshotMembersInline(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	audiences := newFakeAudienceRepo()
+	email := &fakeScheduledEmailDispatcher{}
+	orch := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Audience:      audiences,
+		AudiencePurge: audiences,
+		Committee:     &fakeCommitteeClient{},
+		Project:       &fakeProjectClient{},
+		Email:         email,
+		Unsubscribe:   NewUnsubscribeService(repo, []byte("k"), "https://api.example"),
+		Concurrency:   2,
+		FanoutEnabled: true,
+	})
+	draft := repo.addDraft("p1", []string{"c1"})
+	audiences.put(draft, []string{"c1"}, model.AudienceReady, []model.CommitteeMember{{Email: "a@example.com"}})
+	scheduledAt := time.Now().UTC().Add(time.Hour)
+
+	_, err := orch.SendNewsletter(ctx, SendNewsletterInput{ProjectUID: "p1", NewsletterID: draft.ID, Schedule: true, ScheduledAt: &scheduledAt})
+	require.NoError(t, err)
+	orch.Drain(ctx)
+
+	waitForStatus(t, repo, draft.ID, model.StatusScheduled)
+	assert.Equal(t, []uuid.UUID{draft.ID}, audiences.purged, "members are deleted when the schedule is recorded, not by the next sweep")
+}
+
+func TestRecipients_PurgedReadyAudienceIsStale(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	audiences := newFakeAudienceRepo()
+	orch := newCompatOrchestrator(repo, audiences, &fakeCommitteeClient{}, &fakeEmailDispatcher{})
+	n := repo.addDraft("p1", []string{"c1"})
+	audiences.put(n, []string{"c1"}, model.AudienceReady, []model.CommitteeMember{{Email: "a@example.com"}})
+	require.NoError(t, audiences.DeleteMembers(ctx, n.ID))
+
+	_, err := orch.Recipients(ctx, "p1", n.ID, []string{"c1"})
+	var notReady *domain.AudienceNotReadyError
+	require.ErrorAs(t, err, &notReady)
+	assert.Equal(t, domain.AudienceStateStale, notReady.Status)
+}

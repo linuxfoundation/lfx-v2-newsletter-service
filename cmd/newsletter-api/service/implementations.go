@@ -46,11 +46,13 @@ var (
 
 // stuckSendSweepInterval is how often the recovery sweep re-checks for
 // newsletters stranded in 'sending' by a crashed pod.
-// stuckSendSweepTimeout bounds a single sweep iteration.
-const (
-	stuckSendSweepInterval = 5 * time.Minute
-	stuckSendSweepTimeout  = 30 * time.Second
-)
+const stuckSendSweepInterval = 5 * time.Minute
+
+// stuckSendSweepTimeout bounds each step of a sweep iteration. Each step gets
+// its own deadline, so a slow audience step cannot leave the send recovery and
+// scheduled settlement after it with an expired context. A variable so tests
+// can shorten it.
+var stuckSendSweepTimeout = 30 * time.Second
 
 // drainTimeout bounds how long Shutdown waits for in-flight background send
 // jobs. Kept under main's 25s graceful-shutdown window; anything that doesn't
@@ -259,59 +261,75 @@ func startStuckSendRecovery(repo stuckSendRecoverer, audiences port.AudienceSwee
 	recoveryStop = stop
 	go func() {
 		sweep := func() {
-			// Bound each iteration so a hung DB call can't wedge the sweep
-			// goroutine (Shutdown closes recoveryStop without awaiting it).
-			ctx, cancel := context.WithTimeout(context.Background(), stuckSendSweepTimeout)
-			defer cancel()
+			// Bound each step so a hung DB call can't wedge the sweep goroutine
+			// (Shutdown closes recoveryStop without awaiting it).
+			step := func(run func(ctx context.Context)) {
+				ctx, cancel := context.WithTimeout(context.Background(), stuckSendSweepTimeout)
+				defer cancel()
+				run(ctx)
+			}
 
 			// An audience whose pod died mid-job would stay 'processing' and block
-			// a retry. Failing it lets the UI offer one. This runs first and does not
-			// return on error, so a failure here never skips the send recovery below.
-			failed, err := audiences.FailStale(ctx, audienceTTL)
-			if err != nil {
-				slog.ErrorContext(ctx, "stale-audience sweep failed", "error", err)
-			} else if failed > 0 {
-				slog.WarnContext(ctx, "stale-audience sweep failed stranded audiences",
-					"failed", failed,
-					"ttl", audienceTTL.String(),
-				)
-			}
+			// a retry. Failing it lets the UI offer one. A failure here never skips
+			// the steps below.
+			step(func(ctx context.Context) {
+				failed, err := audiences.FailStale(ctx, audienceTTL)
+				if err != nil {
+					slog.ErrorContext(ctx, "stale-audience sweep failed", "error", err)
+				} else if failed > 0 {
+					slog.WarnContext(ctx, "stale-audience sweep failed stranded audiences",
+						"failed", failed,
+						"ttl", audienceTTL.String(),
+					)
+				}
+			})
 
 			// Delete snapshot members of sent and scheduled newsletters, so member
 			// emails and names are not kept after a send on any path.
-			purged, err := audiences.PurgeSentMembers(ctx)
-			if err != nil {
-				slog.ErrorContext(ctx, "sent-audience purge sweep failed", "error", err)
-			} else if purged > 0 {
-				slog.InfoContext(ctx, "sent-audience purge sweep deleted snapshot members", "deleted", purged)
-			}
+			step(func(ctx context.Context) {
+				purged, err := audiences.PurgeSentMembers(ctx)
+				if err != nil {
+					slog.ErrorContext(ctx, "sent-audience purge sweep failed", "error", err)
+				} else if purged > 0 {
+					slog.InfoContext(ctx, "sent-audience purge sweep deleted snapshot members", "deleted", purged)
+				}
+			})
 
-			recovered, err := repo.RecoverStuckSending(ctx, ttl)
-			if err != nil {
-				slog.ErrorContext(ctx, "stuck-sending recovery sweep failed", "error", err)
+			recoveredOK := true
+			step(func(ctx context.Context) {
+				recovered, err := repo.RecoverStuckSending(ctx, ttl)
+				if err != nil {
+					slog.ErrorContext(ctx, "stuck-sending recovery sweep failed", "error", err)
+					recoveredOK = false
+					return
+				}
+				if recovered > 0 {
+					slog.WarnContext(ctx, "stuck-sending recovery sweep settled stranded newsletters",
+						"recovered", recovered,
+						"ttl", ttl.String(),
+					)
+				}
+			})
+			if !recoveredOK {
 				return
-			}
-			if recovered > 0 {
-				slog.WarnContext(ctx, "stuck-sending recovery sweep settled stranded newsletters",
-					"recovered", recovered,
-					"ttl", ttl.String(),
-				)
 			}
 
 			// Same sweep, second responsibility: flip any 'scheduled' rows whose
 			// scheduled_at has passed to 'sent'. SendGrid owns the actual release
 			// timing; this only reconciles our display state, and is safe from
 			// multiple pods since the UPDATE is status+time gated.
-			settled, err := repo.SettleDueScheduled(ctx, time.Now().UTC())
-			if err != nil {
-				slog.ErrorContext(ctx, "due-scheduled settlement sweep failed", "error", err)
-				return
-			}
-			if settled > 0 {
-				slog.InfoContext(ctx, "due-scheduled settlement sweep settled newsletters",
-					"settled", settled,
-				)
-			}
+			step(func(ctx context.Context) {
+				settled, err := repo.SettleDueScheduled(ctx, time.Now().UTC())
+				if err != nil {
+					slog.ErrorContext(ctx, "due-scheduled settlement sweep failed", "error", err)
+					return
+				}
+				if settled > 0 {
+					slog.InfoContext(ctx, "due-scheduled settlement sweep settled newsletters",
+						"settled", settled,
+					)
+				}
+			})
 		}
 		sweep()
 		ticker := time.NewTicker(stuckSendSweepInterval)
