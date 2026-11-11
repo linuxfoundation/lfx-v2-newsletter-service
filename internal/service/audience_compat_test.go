@@ -319,7 +319,7 @@ func (r *refreshingAudienceRepo) ListMembers(ctx context.Context, id uuid.UUID) 
 	members, err := r.fakeAudienceRepo.ListMembers(ctx, id)
 	if !r.refreshed {
 		r.refreshed = true
-		a, _ := r.fakeAudienceRepo.Get(ctx, id)
+		a, _ := r.Get(ctx, id)
 		if _, berr := r.BeginResolve(ctx, id, a.ProjectUID, a.CommitteeUIDs); berr != nil {
 			return nil, berr
 		}
