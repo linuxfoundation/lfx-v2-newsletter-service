@@ -101,10 +101,12 @@ func minifyHTML(in string) string {
 // div and p are absent on purpose, as an inline style can make them inline
 // (display:inline-table, display:inline), and then the space beside them shows.
 // Whitespace inside a table is still dropped, next to its rows and cells.
+// style is absent too: richtext can put a <style> between two words, and the
+// head's own <style> already sits between head and meta tags, which drop it.
 var minifyDropSpaceTags = map[string]bool{
 	"html": true, "head": true, "body": true, "meta": true, "title": true, "link": true,
 	"thead": true, "tbody": true, "tfoot": true, "tr": true, "td": true, "th": true,
-	"style": true, "!doctype": true,
+	"!doctype": true,
 }
 
 // minifyRawTextTags hold content that must be copied byte for byte.
