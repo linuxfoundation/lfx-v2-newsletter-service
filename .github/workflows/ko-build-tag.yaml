@@ -194,6 +194,7 @@ jobs:
           private-key: ${{ env.TRIGGER_PRIVATE_KEY }}
           # zizmor flags owner plus repositories as all-repository access;
           # repositories scopes the token, so this is a false positive.
+          # Remove this ignore if repositories or permission-actions change.
           owner: linuxfoundation  # zizmor: ignore[github-app]
           repositories: lfx-v2-argocd
           permission-actions: write
