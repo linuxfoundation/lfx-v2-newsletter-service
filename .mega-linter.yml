@@ -18,6 +18,12 @@ YAML_YAMLLINT_CONFIG_FILE: .yamllint
 # ref-confusion) query the GitHub API, which requires GITHUB_TOKEN.
 ACTION_ZIZMOR_UNSECURED_ENV_VARIABLES:
   - GITHUB_TOKEN
+# osv-scanner's govulncheck is built with Go 1.26 and cannot load this Go 1.27
+# module; when a dependency matches an advisory, the failed call analysis makes
+# osv-scanner exit 127. Match by version only. Remove once MegaLinter ships an
+# osv-scanner built with Go 1.27 or later.
+REPOSITORY_OSV_SCANNER_ARGUMENTS:
+  - --no-call-analysis=go
 SPELL_CSPELL_ANALYZE_FILE_NAMES: false
 SPELL_VALE_PRE_COMMANDS:
   - command: mkdir -p styles
