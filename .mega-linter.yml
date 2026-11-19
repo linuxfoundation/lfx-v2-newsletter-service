@@ -14,7 +14,10 @@ DISABLE_ERRORS_LINTERS:
   - REPOSITORY_CHECKOV
   - REPOSITORY_DEVSKIM
 YAML_YAMLLINT_CONFIG_FILE: .yamllint
-REPOSITORY_KICS_ARGUMENTS: scan --no-progress --exclude-severities="medium,low,info,trace"
+# zizmor's "artipacked" audit needs the GitHub API (to verify
+# SHA-pinned action tags), which requires GITHUB_TOKEN.
+ACTION_ZIZMOR_UNSECURED_ENV_VARIABLES:
+  - GITHUB_TOKEN
 SPELL_CSPELL_ANALYZE_FILE_NAMES: false
 SPELL_VALE_PRE_COMMANDS:
   - command: mkdir -p styles

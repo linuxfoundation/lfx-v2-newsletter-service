@@ -34,14 +34,16 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Prepare versions and chart name
         id: prepare
         run: |
           set -euo pipefail
-          APP_VERSION=$(echo ${{ github.ref_name }} | sed 's/v//g')
+          APP_VERSION="${GITHUB_REF_NAME#v}"
           CHART_NAME="$(yq '.name' charts/*/Chart.yaml)"
-          CHART_VERSION=$(echo ${{ github.ref_name }} | sed 's/v//g')
+          CHART_VERSION="${GITHUB_REF_NAME#v}"
           {
             echo "app_version=$APP_VERSION"
             echo "chart_name=$CHART_NAME"
@@ -52,6 +54,7 @@ jobs:
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Setup Ko
         uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d  # v0.9
@@ -70,8 +73,8 @@ jobs:
           ko build github.com/linuxfoundation/lfx-v2-newsletter-service/cmd/newsletter-api \
             -B \
             --platform linux/amd64,linux/arm64 \
-            -t ${{ github.ref_name }} \
-            -t ${{ steps.prepare.outputs.app_version }} \
+            -t "${GITHUB_REF_NAME}" \
+            -t "${VERSION}" \
             -t latest \
             --sbom spdx
 
@@ -93,6 +96,8 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Publish Chart to GHCR
         id: publish-ghcr
@@ -122,9 +127,11 @@ jobs:
       - name: Sign the Helm chart in GHCR
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_NAME: ${{ steps.publish-ghcr.outputs.image_name }}
+          CHART_DIGEST: ${{ steps.publish-ghcr.outputs.digest }}
         run: |
           set -euo pipefail
-          cosign sign --yes '${{ steps.publish-ghcr.outputs.image_name }}@${{ steps.publish-ghcr.outputs.digest }}'
+          cosign sign --yes "${IMAGE_NAME}@${CHART_DIGEST}"
 
   create-ghcr-helm-provenance:
     needs:
@@ -185,7 +192,9 @@ jobs:
         with:
           client-id: ${{ env.TRIGGER_CLIENT_ID }}
           private-key: ${{ env.TRIGGER_PRIVATE_KEY }}
-          owner: linuxfoundation
+          # zizmor flags owner plus repositories as all-repository access;
+          # repositories scopes the token, so this is a false positive.
+          owner: linuxfoundation  # zizmor: ignore[github-app]
           repositories: lfx-v2-argocd
           permission-actions: write
 
