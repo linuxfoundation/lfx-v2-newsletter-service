@@ -20,7 +20,8 @@ RUN go build -o /go/bin/newsletter-api -trimpath -ldflags="-w -s" github.com/lin
 
 FROM cgr.dev/chainguard/static:latest
 
-USER nonroot
+# Numeric UID of the Chainguard nonroot user, matching the chart's runAsUser.
+USER 65532
 
 COPY --from=builder /go/bin/newsletter-api /cmd/newsletter-api
 
