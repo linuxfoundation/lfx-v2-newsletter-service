@@ -5,8 +5,6 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -19,7 +17,8 @@ import (
 
 // AnonymousPrincipal is the principal Heimdall mints for an unauthenticated
 // caller (the platform's anonymous_authenticator subject). It is one identity
-// shared by every anonymous visitor, so it can never record a share.
+// shared by every anonymous visitor, so it can never record a share or a
+// page view.
 const AnonymousPrincipal = "_anonymous"
 
 // ShareService records in-app newsletter share intents and reads back share
@@ -72,7 +71,7 @@ func (s *ShareService) RecordShare(ctx context.Context, in RecordShareInput) err
 	}
 	return s.shares.RecordShare(ctx, &model.NewsletterShare{
 		NewsletterID: n.ID,
-		UserHash:     hashShareUser(user),
+		UserHash:     hashUserPrincipal(user),
 		Channel:      in.Channel,
 	})
 }
@@ -114,12 +113,5 @@ func (s *ShareService) DeleteUserShares(ctx context.Context, user string) (int64
 	if user == "" {
 		return 0, fmt.Errorf("%w: a user principal is required to erase shares", domain.ErrInvalidRequest)
 	}
-	return s.shares.DeleteSharesByUser(ctx, hashShareUser(user))
-}
-
-// hashShareUser returns the lowercase hex SHA-256 of the user principal, the
-// shape the newsletter_shares.user_hash CHECK constraint enforces.
-func hashShareUser(user string) string {
-	sum := sha256.Sum256([]byte(user))
-	return hex.EncodeToString(sum[:])
+	return s.shares.DeleteSharesByUser(ctx, hashUserPrincipal(user))
 }
