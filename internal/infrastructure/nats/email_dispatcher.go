@@ -18,25 +18,15 @@ import (
 )
 
 // openEventWire mirrors email-service's per-event entry inside opened_at_list.
-// Defined locally instead of leaning on emailapi because the pinned
-// email-service version (v0.1.3) predates the OpenedAtList field and we want
-// to deserialize the newer shape without a dep bump.
 type openEventWire struct {
 	EventID  string    `json:"event_id"`
 	OpenedAt time.Time `json:"opened_at"`
 }
 
-// emailRecipientWire is the lenient JSON shape used to decode replies from
-// lfx.email-service.get_email_status. Decoding through this struct (instead of
-// emailapi.EmailRecipientRecord) lets newsletter-service accept both:
-//   - the older flat shape exposed by email-service v0.1.3 (`opened_at`
-//     single timestamp; no list), and
-//   - the newer shape (`opened_at_list` per-event series + `last_opened_at`).
-//
-// Whichever email-service version is deployed, the higher layers see a single
-// canonical `port.EmailRecipientRecord` carrying OpenedAtList — populated from
-// the list when available, falling back to a one-element slice when only the
-// flat timestamp is present.
+// emailRecipientWire decodes lfx.email-service.get_email_status replies with
+// either a single opened_at timestamp or an opened_at_list event series.
+// It supports normalization to a port.EmailRecipientRecord with an open-event
+// list, using the single timestamp when no event series is present.
 type emailRecipientWire struct {
 	GroupID      string          `json:"group_id"`
 	EmailID      string          `json:"email_id"`
