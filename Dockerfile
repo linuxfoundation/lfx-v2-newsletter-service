@@ -4,10 +4,10 @@
 # checkov:skip=CKV_DOCKER_7:No free access to Chainguard versioned labels.
 # hadolint global ignore=DL3007
 
-FROM golang:1.26.11-alpine AS builder
+FROM cgr.dev/chainguard/go:latest AS builder
 
 ARG TARGETARCH
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH GOTOOLCHAIN=local
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH
 
 WORKDIR /build
 

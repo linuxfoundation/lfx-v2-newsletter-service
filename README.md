@@ -200,7 +200,7 @@ psql postgres://localhost/postgres -c 'DROP DATABASE IF EXISTS newsletters;'
   provisioned by [CloudNativePG](https://cloudnative-pg.io) in cluster
 - **Schema**: single embedded `schema.sql` applied idempotently on startup (CREATE … IF NOT EXISTS), serialized across pods via a Postgres advisory transaction lock
 - **Observability**: OpenTelemetry (traces, metrics, logs) + slog structured logging
-- **Container**: Chainguard distroless runtime image
+- **Container**: Chainguard distroless images
 - **Orchestration**: Kubernetes with Helm charts
 
 ## Architecture

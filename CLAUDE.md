@@ -62,7 +62,7 @@ Use `/lfx-skills:lfx` if an owner repo is missing locally, a path has moved, or 
 - **Schema**: single embedded `schema.sql` applied idempotently on startup (CREATE … IF NOT EXISTS), serialized across pods via a Postgres advisory transaction lock
 - **Auth**: Heimdall-issued JWTs verified via JWKS (`MicahParks/keyfunc`)
 - **Observability**: OpenTelemetry (traces, metrics, logs) + slog structured logging
-- **Container**: Chainguard distroless runtime image
+- **Container**: Chainguard distroless images
 - **Orchestration**: Kubernetes with Helm charts
 
 ## Go version
