@@ -28,7 +28,7 @@ KO_LOCAL_REPO := ko.local
 KO_LOCAL_TAG := local
 KO_LOCAL_IMAGE := $(KO_LOCAL_REPO)/newsletter-api
 
-GO_VERSION := 1.27.4
+GO_VERSION := 1.26.11
 GOLANGCI_LINT_VERSION := v2.15.0
 LINT_TIMEOUT := 10m
 LINT_TOOL := $(shell go env GOPATH)/bin/golangci-lint

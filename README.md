@@ -30,7 +30,7 @@ Two supported paths for running the service locally:
 
 ### Prerequisites
 
-- Go 1.27.4+
+- Go 1.26.11+
 - A running PostgreSQL 16+ instance (Path A) **or** OrbStack/kind with `kubectl`,
   `helm` 3.8+, and [`ko`](https://ko.build) (Path B)
 - Access to an LFX V2 query service, and an Auth0 M2M client that can read committee
@@ -194,13 +194,13 @@ psql postgres://localhost/postgres -c 'DROP DATABASE IF EXISTS newsletters;'
 
 ## Key Technologies
 
-- **Language**: Go 1.27.4+
+- **Language**: Go 1.26.11+
 - **HTTP**: stdlib `net/http` with Go 1.22+ mux pattern
 - **Database**: PostgreSQL via [pgx](https://github.com/jackc/pgx) + [bun](https://bun.uptrace.dev),
   provisioned by [CloudNativePG](https://cloudnative-pg.io) in cluster
 - **Schema**: single embedded `schema.sql` applied idempotently on startup (CREATE … IF NOT EXISTS), serialized across pods via a Postgres advisory transaction lock
 - **Observability**: OpenTelemetry (traces, metrics, logs) + slog structured logging
-- **Container**: Chainguard distroless images
+- **Container**: Chainguard distroless runtime image
 - **Orchestration**: Kubernetes with Helm charts
 
 ## Architecture
