@@ -55,7 +55,7 @@ Use `/lfx-skills:lfx` if an owner repo is missing locally, a path has moved, or 
 
 ## Key Technologies
 
-- **Language**: Go 1.27.4+
+- **Language**: Go 1.26.11+
 - **HTTP**: stdlib `net/http` with Go 1.22+ mux pattern
 - **Messaging**: NATS request/reply for service-to-service calls (project, email, auth). Committee members are the exception: they are read from the query service over HTTPS. Exception: when `EMAIL_PROVIDER=sendgrid`, newsletter delivery and engagement go direct to SendGrid over HTTPS (a signed event webhook feeds a local engagement store); email-service/SES over NATS is the default
 - **Database**: PostgreSQL via [pgx](https://github.com/jackc/pgx) + [bun](https://bun.uptrace.dev), provisioned by [CloudNativePG](https://cloudnative-pg.io)
@@ -67,20 +67,11 @@ Use `/lfx-skills:lfx` if an owner repo is missing locally, a path has moved, or 
 
 ## Go version
 
-This repo targets Go 1.27.x (currently 1.27.4, the latest patch). This
-supersedes the Go version policy in the `lfx-megalinter` skill, which targets
-the latest stable minor minus one: don't move `go.mod` back to Go 1.26. Take
-every 1.27.x patch release, and update `go.mod`, `GO_VERSION` in the
-`Makefile`, this file and `README.md` together. Release images build with the
-`go.mod` Go (`setup-go` with `go-version-file: go.mod`).
-
-MegaLinter (v10.2.0) runs Go 1.26.10 in its image, so
-`.github/workflows/mega-linter.yml` sets `GOTOOLCHAIN: auto` to let its Go
-linters download the `go.mod` toolchain. Its bundled golangci-lint 2.15.0 is
-built with Go 1.27.0 and lints this module. osv-scanner's govulncheck call
-analysis is built with Go 1.26 and cannot load it, so osv-scanner falls back
-to matching vulnerabilities by version: any known vulnerability in a
-dependency version fails the check, reachable or not.
+**Go toolchain version**: Follow the `lfx-megalinter` skill's Go version policy.
+It sets `go.mod` to the latest patch of the previous stable Go minor and caps it
+at the minor bundled by the pinned MegaLinter release. This importable module
+declares the lowest Go version allowed by its dependencies in `go` and pins the
+patch in `toolchain`.
 
 ## Architecture
 

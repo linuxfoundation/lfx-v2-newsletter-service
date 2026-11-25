@@ -10,6 +10,9 @@ DOCKER_REGISTRY := ghcr.io/linuxfoundation
 DOCKER_IMAGE := $(DOCKER_REGISTRY)/$(APP_NAME)
 DOCKER_TAG := latest
 
+# Pin the MegaLinter Go image to the release used by CI.
+MEGALINTER_IMAGE := ghcr.io/oxsecurity/megalinter-go@sha256:e676b8e9dac00d148bf1abb6ab809f1df76f07e804d8061f78631975d0c90925  # v10.2.0
+
 HELM_CHART_PATH := ./charts/lfx-v2-newsletter-service
 HELM_RELEASE_NAME := lfx-v2-newsletter-service
 # The chart names its Deployment from .Chart.Name, not the release, so
@@ -25,7 +28,7 @@ KO_LOCAL_REPO := ko.local
 KO_LOCAL_TAG := local
 KO_LOCAL_IMAGE := $(KO_LOCAL_REPO)/newsletter-api
 
-GO_VERSION := 1.27.4
+GO_VERSION := 1.26.11
 GOLANGCI_LINT_VERSION := v2.15.0
 LINT_TIMEOUT := 10m
 LINT_TOOL := $(shell go env GOPATH)/bin/golangci-lint
@@ -73,6 +76,11 @@ fmt:
 lint:
 	@which golangci-lint >/dev/null 2>&1 || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	golangci-lint run ./...
+
+.PHONY: megalinter
+megalinter:
+	docker pull $(MEGALINTER_IMAGE)
+	docker run --rm --platform linux/amd64 -e GOTOOLCHAIN=auto -v '$(CURDIR):/tmp/lint:rw' $(MEGALINTER_IMAGE)
 
 # sync-templates refreshes the embedded newsletter template sets from the git
 # repositories pinned in templates.lock. It needs git access to those

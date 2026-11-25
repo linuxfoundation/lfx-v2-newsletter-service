@@ -46,15 +46,16 @@ jobs:
       - name: Build newsletter-api for PR
         env:
           VERSION: ${{ steps.container_tag.outputs.tag }}
+          CONTAINER_TAG: ${{ steps.container_tag.outputs.tag }}
+          FULL_SHA: ${{ github.sha }}
         run: |
           BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
-          GIT_COMMIT="${{ github.sha }}"
-          GIT_COMMIT="${GIT_COMMIT:0:7}"
+          GIT_COMMIT="${FULL_SHA:0:7}"
           export BUILD_TIME
           export GIT_COMMIT
           ko build github.com/linuxfoundation/lfx-v2-newsletter-service/cmd/newsletter-api \
             -B \
             --platform linux/amd64,linux/arm64 \
-            -t ${{ github.sha }} \
-            -t "${VERSION}" \
+            -t "${FULL_SHA}" \
+            -t "${CONTAINER_TAG}" \
             --sbom spdx

@@ -39,11 +39,13 @@ jobs:
 
       - name: Prepare versions and chart name
         id: prepare
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          APP_VERSION="${GITHUB_REF_NAME#v}"
+          APP_VERSION="${REF_NAME#v}"
           CHART_NAME="$(yq '.name' charts/*/Chart.yaml)"
-          CHART_VERSION="${GITHUB_REF_NAME#v}"
+          CHART_VERSION="${REF_NAME#v}"
           {
             echo "app_version=$APP_VERSION"
             echo "chart_name=$CHART_NAME"
@@ -64,6 +66,7 @@ jobs:
       - name: Build and publish newsletter-api image
         env:
           VERSION: ${{ steps.prepare.outputs.app_version }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
           GIT_COMMIT="${{ github.sha }}"
@@ -73,7 +76,7 @@ jobs:
           ko build github.com/linuxfoundation/lfx-v2-newsletter-service/cmd/newsletter-api \
             -B \
             --platform linux/amd64,linux/arm64 \
-            -t "${GITHUB_REF_NAME}" \
+            -t "${REF_NAME}" \
             -t "${VERSION}" \
             -t latest \
             --sbom spdx
@@ -102,7 +105,7 @@ jobs:
       - name: Publish Chart to GHCR
         id: publish-ghcr
         # yamllint disable-line rule:line-length
-        uses: linuxfoundation/lfx-public-workflows/.github/actions/helm-chart-oci-publisher@17e4144d7ba68f7c3e8c16eece5aed15fd7c2dc8  # main
+        uses: linuxfoundation/lfx-public-workflows/.github/actions/helm-chart-oci-publisher@737873e045a02df2f66b09d8061b98997cdf1880  # v0.2.0
         with:
           name: ${{ needs.publish.outputs.chart_name }}
           repository: ${{ github.repository }}/chart
@@ -128,10 +131,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_NAME: ${{ steps.publish-ghcr.outputs.image_name }}
-          CHART_DIGEST: ${{ steps.publish-ghcr.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.publish-ghcr.outputs.digest }}
         run: |
           set -euo pipefail
-          cosign sign --yes "${IMAGE_NAME}@${CHART_DIGEST}"
+          cosign sign --yes "${IMAGE_NAME}@${IMAGE_DIGEST}"
 
   create-ghcr-helm-provenance:
     needs:

@@ -129,7 +129,7 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 		Limit(limit + 1)
 
 	if len(filters.Statuses) > 0 {
-		q = q.Where("status IN (?)", bun.In(filters.Statuses))
+		q = q.Where("status IN (?)", bun.List(filters.Statuses))
 	}
 
 	if filters.PublicationUID != nil {
@@ -812,7 +812,7 @@ func (r *PostgresNewsletterRepo) OpenCounts(ctx context.Context, newsletterIDs [
 		Table("newsletter_opens").
 		Column("newsletter_id").
 		ColumnExpr("COUNT(*) AS opens").
-		Where("newsletter_id IN (?)", bun.In(newsletterIDs)).
+		Where("newsletter_id IN (?)", bun.List(newsletterIDs)).
 		Group("newsletter_id").
 		Scan(ctx, &rows); err != nil {
 		return nil, fmt.Errorf("count opens: %w", err)
@@ -850,7 +850,7 @@ func (r *PostgresNewsletterRepo) ShareCounts(ctx context.Context, newsletterIDs 
 		Table("newsletter_shares").
 		Column("newsletter_id").
 		ColumnExpr("COUNT(*) AS shares").
-		Where("newsletter_id IN (?)", bun.In(newsletterIDs)).
+		Where("newsletter_id IN (?)", bun.List(newsletterIDs)).
 		Group("newsletter_id").
 		Scan(ctx, &rows); err != nil {
 		return nil, fmt.Errorf("count shares: %w", err)
@@ -1129,7 +1129,7 @@ func (r *PostgresNewsletterRepo) PageViewCounts(ctx context.Context, newsletterI
 		Table("newsletter_page_views").
 		Column("newsletter_id").
 		ColumnExpr("COUNT(*) AS views").
-		Where("newsletter_id IN (?)", bun.In(newsletterIDs)).
+		Where("newsletter_id IN (?)", bun.List(newsletterIDs)).
 		Group("newsletter_id").
 		Scan(ctx, &rows); err != nil {
 		return nil, fmt.Errorf("count page views: %w", err)
