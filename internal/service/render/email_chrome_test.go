@@ -9,6 +9,165 @@ import (
 	"unicode/utf8"
 )
 
+// TestStripHTMLForTextDropsHeadStyleScript asserts the layout text/plain
+// derivation drops <head>/<style>/<script> inner text. The layout send path
+// feeds a full compiled MJML document, whose <head><style>…</style></head>
+// carries CSS/media-query text that must never leak into the plain-text part.
+func TestStripHTMLForTextDropsHeadStyleScript(t *testing.T) {
+	doc := `<!DOCTYPE html><html><head>` +
+		`<title>Weekly</title>` +
+		`<style>@media only screen and (max-width:600px){.col{width:100%!important;}}` +
+		`.btn{background-color:#4086c6;}</style>` +
+		`</head><body>` +
+		`<p>Hello subscribers</p>` +
+		`<script>trackOpen();</script>` +
+		`<a href="https://example.com/read">Read more</a>` +
+		`</body></html>`
+
+	got := StripHTMLForText(doc)
+
+	// The CSS / media-query / script text must be gone.
+	for _, leaked := range []string{"@media", "max-width", "background-color", "#4086c6", "trackOpen", "<title>", "Weekly"} {
+		if strings.Contains(got, leaked) {
+			t.Errorf("text body leaked non-rendered content %q: %q", leaked, got)
+		}
+	}
+	// The real body content survives, with link destinations preserved.
+	if !strings.Contains(got, "Hello subscribers") {
+		t.Errorf("text body dropped visible content: %q", got)
+	}
+	if !strings.Contains(got, "https://example.com/read") {
+		t.Errorf("text body dropped link destination: %q", got)
+	}
+}
+
+// TestStripHTMLForTextTokenizerEdgeCases guards the two failure modes that a
+// regex-based strip could not handle and that the html-tokenizer pass fixes.
+func TestStripHTMLForTextTokenizerEdgeCases(t *testing.T) {
+	// (1) A '>' inside an attribute value must not corrupt extraction. A naive
+	// `<[^>]+>` tag pass stops at the first '>' (here inside title="1 > 0") and
+	// leaks the attribute tail into the visible text.
+	got := StripHTMLForText(`<p><a href="https://example.com/a" title="1 > 0">Read</a> now</p>`)
+	if strings.Contains(got, "title=") || strings.Contains(got, `0">`) {
+		t.Errorf("attribute tail leaked into text: %q", got)
+	}
+	for _, want := range []string{"Read", "https://example.com/a", "now"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("visible content/link lost %q: %q", want, got)
+		}
+	}
+
+	// (2) A self-closing <style/> is a raw-text element (HTML ignores the slash),
+	// so its CSS must never leak into the text. The old regex skip-scanner keyed
+	// on a </style> that a self-closing tag never opens, spilling the CSS.
+	// Content BEFORE the style survives; the style's own content does not.
+	got = StripHTMLForText(`<p>Before</p><style/>.leaked{color:red}`)
+	if !strings.Contains(got, "Before") {
+		t.Errorf("content before self-closing <style/> was dropped: %q", got)
+	}
+	for _, leaked := range []string{".leaked", "color:red", "leaked"} {
+		if strings.Contains(got, leaked) {
+			t.Errorf("self-closing <style/> css leaked %q: %q", leaked, got)
+		}
+	}
+}
+
+// TestStripHTMLForTextBreakEmitsNewline pins that a <br> becomes a newline in the
+// text/plain part, so lines separated by a line break do not collapse into one
+// run. The regression case is the footer postal address
+// ("The Linux Foundation<br />2810 N Church St...") rendering as
+// "The Linux Foundation2810..." when <br> was dropped without whitespace.
+func TestStripHTMLForTextBreakEmitsNewline(t *testing.T) {
+	// Self-closing <br /> as authored in the layout wrapper's postal-address row.
+	got := StripHTMLForText(`<p>The Linux Foundation<br />2810 N Church St., PMB 57274</p>`)
+	if !strings.Contains(got, "The Linux Foundation\n2810 N Church St., PMB 57274") {
+		t.Errorf("self-closing <br /> did not separate the address lines: %q", got)
+	}
+
+	// Start-tag <br> (author-supplied body content) must also separate its lines.
+	got = StripHTMLForText(`<p>Line one<br>Line two</p>`)
+	if !strings.Contains(got, "Line one\nLine two") {
+		t.Errorf("start-tag <br> did not separate authored lines: %q", got)
+	}
+}
+
+// TestStripHTMLForTextSeparatesBlocks pins that block boundaries survive into
+// the text/plain part. The emitter inlines a block's authored richtext with no
+// whitespace between tags, so compact markup used to collapse: two paragraphs
+// became "First paragraph.Second paragraph.", and adjacent list items,
+// headings and table cells ran together the same way.
+func TestStripHTMLForTextSeparatesBlocks(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "compact paragraphs",
+			input: `<p>First paragraph.</p><p>Second paragraph.</p>`,
+			want:  []string{"First paragraph.\n\nSecond paragraph."},
+		},
+		{
+			name:  "compact list items",
+			input: `<ul><li>One</li><li>Two</li><li>Three</li></ul>`,
+			want:  []string{"One\n\nTwo", "Two\n\nThree"},
+		},
+		{
+			// No end tags at all, and the tokenizer does not synthesize them, so the
+			// separation comes from the second <li>'s START tag alone: one newline
+			// rather than the blank line a closed pair produces. Still separated,
+			// which is the point.
+			name:  "unclosed list items",
+			input: `<ul><li>One<li>Two</ul>`,
+			want:  []string{"One\nTwo"},
+		},
+		{
+			name:  "heading then paragraph",
+			input: `<h2>Headline</h2><p>Body copy.</p>`,
+			want:  []string{"Headline\n\nBody copy."},
+		},
+		{
+			name:  "table cells",
+			input: `<table><tr><td>Left</td><td>Right</td></tr></table>`,
+			want:  []string{"Left\n\nRight"},
+		},
+		{
+			name:  "linked paragraphs keep hrefs and separate",
+			input: `<p><a href="https://example.com/a">Alpha</a></p><p><a href="https://example.com/b">Beta</a></p>`,
+			want: []string{
+				"Alpha (https://example.com/a)",
+				"Beta (https://example.com/b)",
+				")\n\nBeta",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := StripHTMLForText(tc.input)
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("StripHTMLForText(%q) = %q, want it to contain %q", tc.input, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestStripHTMLForTextInlineTextStaysJoined is the counterpart to
+// TestStripHTMLForTextSeparatesBlocks: inline markup inside a block must NOT
+// gain a line break, so emphasis and links keep reading as one sentence.
+func TestStripHTMLForTextInlineTextStaysJoined(t *testing.T) {
+	got := StripHTMLForText(`<p>A <strong>bold</strong> and <em>italic</em> sentence.</p>`)
+	if !strings.Contains(got, "A bold and italic sentence.") {
+		t.Errorf("inline markup split the sentence: %q", got)
+	}
+	got = StripHTMLForText(`<p>See <a href="https://example.com/x">the docs</a> for more.</p>`)
+	if !strings.Contains(got, "See the docs (https://example.com/x) for more.") {
+		t.Errorf("inline anchor split the sentence: %q", got)
+	}
+}
+
 const testMyNewslettersURL = "https://app.lfx.dev/newsletters/my"
 
 func TestEmailHTMLMyNewslettersLine(t *testing.T) {
@@ -177,5 +336,127 @@ func TestEmailHTMLForcesUTF8Charset(t *testing.T) {
 	// UTF-8. RuneCount < byte length holds iff at least one multibyte rune exists.
 	if utf8.RuneCountInString(html) == len(html) {
 		t.Errorf("rendered HTML is single-byte throughout (would be sent as iso-8859-1); expected a multibyte rune")
+	}
+}
+
+func TestEmailHTMLDateBar(t *testing.T) {
+	const readOnline = "https://app.lfx.dev/newsletters/tlf/c76eac6b-52db-47d3-b92c-dc7e1ac6ee05"
+	tests := []struct {
+		name          string
+		sentDate      string
+		readOnlineURL string
+		wantDate      bool
+		wantLink      bool
+		wantSeparator bool
+	}{
+		{name: "date and link", sentDate: "October 13, 2026", readOnlineURL: readOnline, wantDate: true, wantLink: true, wantSeparator: true},
+		{name: "date only", sentDate: "October 13, 2026", wantDate: true},
+		{name: "neither"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			html := EmailHTML(Chrome{
+				Subject:       "Hello",
+				BodyHTML:      "<p>Body</p>",
+				DisplayName:   "Test",
+				SentDate:      tc.sentDate,
+				ReadOnlineURL: tc.readOnlineURL,
+			})
+			if got := strings.Contains(html, "October 13, 2026"); got != tc.wantDate {
+				t.Errorf("date present = %v, want %v", got, tc.wantDate)
+			}
+			if got := strings.Contains(html, `clicktracking="off" href="`+readOnline+`"`); got != tc.wantLink {
+				t.Errorf("read-online link present = %v, want %v", got, tc.wantLink)
+			}
+			if got := strings.Contains(html, ">Read online</a>"); got != tc.wantLink {
+				t.Errorf("read-online label present = %v, want %v", got, tc.wantLink)
+			}
+			if got := strings.Contains(html, `>LinkedIn</a>`); got != tc.wantLink {
+				t.Errorf("share links present = %v, want %v", got, tc.wantLink)
+			}
+			if got := strings.Contains(html, "&nbsp;&nbsp;|&nbsp;&nbsp;"); got != tc.wantSeparator {
+				t.Errorf("separator present = %v, want %v", got, tc.wantSeparator)
+			}
+			if tc.wantDate {
+				// The bar sits above the card, so it must precede the header.
+				if strings.Index(html, "October 13, 2026") > strings.Index(html, "Test &middot; Newsletter") {
+					t.Errorf("date bar renders after the card header")
+				}
+			}
+		})
+	}
+}
+
+func TestEmailHTMLReadOnlineURLEscaped(t *testing.T) {
+	html := EmailHTML(Chrome{
+		SentDate:      "October 13, 2026",
+		ReadOnlineURL: `https://app.lfx.dev/newsletters/x?a=1&b="y"`,
+	})
+	if !strings.Contains(html, `href="https://app.lfx.dev/newsletters/x?a=1&amp;b=&quot;y&quot;"`) {
+		t.Errorf("read-online URL not HTML-escaped:\n%s", html)
+	}
+}
+
+func TestEmailHTMLShareLinks(t *testing.T) {
+	const readOnline = "https://app.lfx.dev/newsletters/tlf/abc"
+	const encoded = "https%3A%2F%2Fapp.lfx.dev%2Fnewsletters%2Ftlf%2Fabc"
+	html := EmailHTML(Chrome{
+		Subject:       `Kids + Agents & "PHP"`,
+		SentDate:      "October 13, 2026",
+		ReadOnlineURL: readOnline,
+	})
+	// Subject is query-escaped (spaces as %20, matching encodeURIComponent), then the whole
+	// href is HTML-escaped, so the query's & separators become &amp;.
+	const title = "Kids%20%2B%20Agents%20%26%20%22PHP%22"
+	want := []string{
+		`clicktracking="off" href="https://x.com/intent/tweet?url=` + encoded + `&amp;text=` + title + `"`,
+		`clicktracking="off" href="https://www.linkedin.com/sharing/share-offsite/?url=` + encoded + `"`,
+		`clicktracking="off" href="https://www.reddit.com/submit?url=` + encoded + `&amp;title=` + title + `"`,
+		`clicktracking="off" href="mailto:?subject=` + title + `&amp;body=` + title + `%0A%0A` + encoded + `"`,
+	}
+	for _, w := range want {
+		if !strings.Contains(html, w) {
+			t.Errorf("missing share link %s", w)
+		}
+	}
+	// Share follows Read online in the bar.
+	if strings.Index(html, ">Read online</a>") > strings.Index(html, "Share:") {
+		t.Errorf("share links render before Read online")
+	}
+}
+
+func TestEmailHTMLShareLinksUntitledFallback(t *testing.T) {
+	html := EmailHTML(Chrome{SentDate: "October 13, 2026", ReadOnlineURL: "https://app.lfx.dev/newsletters/tlf/abc"})
+	if !strings.Contains(html, "&amp;title=Untitled") || !strings.Contains(html, "mailto:?subject=Untitled&amp;") {
+		t.Errorf("share links do not fall back to Untitled for an empty subject:\n%s", html)
+	}
+}
+
+func TestEmailHTMLNoShareLinksWithoutReadOnline(t *testing.T) {
+	html := EmailHTML(Chrome{Subject: "Hello", SentDate: "October 13, 2026"})
+	if strings.Contains(html, "Share:") || strings.Contains(html, "x.com/intent") {
+		t.Errorf("share links rendered without a read-online URL:\n%s", html)
+	}
+}
+
+func TestEmailTextDateLine(t *testing.T) {
+	const readOnline = "https://app.lfx.dev/newsletters/tlf/abc"
+	base := Chrome{Subject: "Hello", BodyHTML: "<p>Body</p>", DisplayName: "Test"}
+
+	both := base
+	both.SentDate = "October 13, 2026"
+	both.ReadOnlineURL = readOnline
+	if got := EmailText(both); !strings.HasPrefix(got, "October 13, 2026 | Read online: "+readOnline+"\n\nTest · Newsletter") {
+		t.Errorf("text with date+link has wrong header:\n%s", got)
+	}
+
+	dateOnly := base
+	dateOnly.SentDate = "October 13, 2026"
+	if got := EmailText(dateOnly); !strings.HasPrefix(got, "October 13, 2026\n\nTest · Newsletter") || strings.Contains(got, "Read online") {
+		t.Errorf("text with date only has wrong header:\n%s", got)
+	}
+
+	if got := EmailText(base); !strings.HasPrefix(got, "Test · Newsletter") {
+		t.Errorf("text without date bar has wrong header:\n%s", got)
 	}
 }

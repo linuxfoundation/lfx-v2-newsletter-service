@@ -9,12 +9,16 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 
@@ -33,11 +37,14 @@ import (
 // Each helper call TRUNCATEs the newsletters table, so these tests must not
 // run against a database holding data anyone cares about.
 
+// integrationDSN returns the test database DSN, empty when unset.
+func integrationDSN() string { return os.Getenv("NEWSLETTER_TEST_DATABASE_URL") }
+
 // newIntegrationRepo connects, applies the embedded schema, and returns a
 // repository over a clean newsletters table.
 func newIntegrationRepo(t *testing.T) *PostgresNewsletterRepo {
 	t.Helper()
-	dsn := os.Getenv("NEWSLETTER_TEST_DATABASE_URL")
+	dsn := integrationDSN()
 	if dsn == "" {
 		t.Skip("NEWSLETTER_TEST_DATABASE_URL not set — skipping Postgres-backed repository tests")
 	}
@@ -344,6 +351,171 @@ func TestArmedMutations_AllMethodsSucceed(t *testing.T) {
 	}
 }
 
+// TestLayoutSend_TriggerRejectsLegacyClaim covers the rolling-deploy / rollback
+// guard for block-layout newsletters. A legacy pod (one that predates the
+// feature and so never sets app.allow_layout_send) must not be able to claim a
+// body_layout row for dispatch: it ignores body_layout and would wrap the
+// stored body_html in the legacy email_chrome a second time. The
+// reject_legacy_layout_send trigger blocks the draft -> sending edge unless the
+// layout-aware GUC is set. The new binary's MarkSending sets it, so a normal
+// claim still succeeds. Mirrors TestArmedMutations_TriggerRejectsUnauthorized.
+func TestLayoutSend_TriggerRejectsLegacyClaim(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	// Mark the row as a layout newsletter. A plain draft UPDATE does not touch
+	// the draft -> sending edge, so the guard lets body_layout be set.
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_layout = ?::jsonb WHERE id = ?`,
+		`{"wrapper_key":"default","blocks":[]}`, draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("set body_layout: %v", err)
+	}
+
+	// A legacy pod's claim is a raw draft -> sending UPDATE with no layout GUC;
+	// the trigger must reject it.
+	_, err := repo.db.NewRaw(
+		`UPDATE newsletters SET status = ?, group_id = ?, version = version + 1 WHERE id = ? AND status = ?`,
+		model.StatusSending, uuid.NewString(), draftID, model.StatusDraft,
+	).Exec(ctx)
+	if err == nil {
+		t.Fatalf("legacy layout claim should have been rejected by the trigger but succeeded")
+	}
+	if !strings.Contains(err.Error(), "cannot send layout newsletter") && !strings.Contains(err.Error(), "service version mismatch") {
+		t.Fatalf("unexpected rejection message: %v", err)
+	}
+
+	// The row is untouched: still a draft (the rejected UPDATE rolled back).
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after rejected claim: %v", err)
+	}
+	if n.Status != model.StatusDraft {
+		t.Fatalf("Status should be unchanged StatusDraft, got %v", n.Status)
+	}
+
+	// The new binary's MarkSending sets app.allow_layout_send, so a real claim
+	// of the same layout row succeeds.
+	sending, err := repo.MarkSending(ctx, draftID, uuid.NewString(), "sendgrid", 100, 1, nil, "")
+	if err != nil {
+		t.Fatalf("layout-aware MarkSending should succeed: %v", err)
+	}
+	if sending.Status != model.StatusSending {
+		t.Fatalf("Status after MarkSending: got %v, want StatusSending", sending.Status)
+	}
+}
+
+// TestLayoutUpdate_TriggerRejectsLegacyBodyHTMLEdit covers the second edge of
+// reject_legacy_layout_send: a legacy pod editing a layout row's body_html. On a
+// layout row, body_html is DERIVED from body_layout, so a legacy pod (which
+// ignores body_layout) that rewrites only body_html leaves the two inconsistent;
+// the next layout-aware send re-renders the stale body_layout and silently
+// discards the edit. The trigger blocks that body_html mutation unless the caller
+// sets app.allow_layout_update. A raw legacy UPDATE never does and is rejected;
+// the layout-aware repo.Update sets it (rewriting body_html and body_layout
+// together, including explicit layout removal) and succeeds.
+func TestLayoutUpdate_TriggerRejectsLegacyBodyHTMLEdit(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	// Mark the row as a layout newsletter. OLD.body_layout is NULL on this first
+	// write, so the body_html guard does not fire (and body_html is untouched).
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_layout = ?::jsonb WHERE id = ?`,
+		`{"wrapper_key":"default","blocks":[]}`, draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("set body_layout: %v", err)
+	}
+
+	// A legacy pod's HTML-only edit is a raw body_html UPDATE with no layout-update
+	// GUC; the trigger must reject it because body_layout would be left stale.
+	_, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_html = ?, version = version + 1 WHERE id = ?`,
+		"<p>legacy html-only edit</p>", draftID,
+	).Exec(ctx)
+	if err == nil {
+		t.Fatalf("legacy body_html edit of a layout row should have been rejected by the trigger but succeeded")
+	}
+	if !strings.Contains(err.Error(), "cannot edit layout newsletter body_html") && !strings.Contains(err.Error(), "service version mismatch") {
+		t.Fatalf("unexpected rejection message: %v", err)
+	}
+
+	// The row is untouched: body_html is still the seeded value (rejected UPDATE
+	// rolled back).
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after rejected edit: %v", err)
+	}
+	if n.BodyHTML != "<p>body</p>" {
+		t.Fatalf("body_html should be unchanged after rejected legacy edit, got %q", n.BodyHTML)
+	}
+
+	// The layout-aware Update path sets app.allow_layout_update, so editing the
+	// same layout row's body_html (re-derived alongside body_layout) succeeds.
+	n.BodyHTML = "<p>layout-aware re-render</p>"
+	updated, err := repo.Update(ctx, n, n.Version)
+	if err != nil {
+		t.Fatalf("layout-aware Update should succeed: %v", err)
+	}
+	if updated.BodyHTML != "<p>layout-aware re-render</p>" {
+		t.Fatalf("body_html after layout-aware Update: got %q", updated.BodyHTML)
+	}
+
+	// Explicit layout removal is also part of the layout-aware path: dropping
+	// body_layout to NULL while rewriting body_html must be allowed (the guard
+	// keys on OLD.body_layout, and Update sets the GUC).
+	updated.BodyLayout = nil
+	updated.BodyHTML = "<p>layout removed</p>"
+	removed, err := repo.Update(ctx, updated, updated.Version)
+	if err != nil {
+		t.Fatalf("layout-aware Update removing the layout should succeed: %v", err)
+	}
+	if removed.BodyLayout != nil {
+		t.Fatalf("body_layout should be cleared after explicit removal, got %q", string(removed.BodyLayout))
+	}
+}
+
+func TestLayoutUpdate_TriggerAllowsMetadataOnlyEdit(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	draftID := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+
+	// Make it a layout row.
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_layout = ?::jsonb WHERE id = ?`,
+		`{"wrapper_key":"default","blocks":[]}`, draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("set body_layout: %v", err)
+	}
+
+	// A metadata-only edit that leaves body_html unchanged must pass Guard 2 even
+	// without app.allow_layout_update: the guard is scoped to body_html content
+	// changes (NEW.body_html IS DISTINCT FROM OLD.body_html), so it must not
+	// over-fire on status/metadata updates like MarkSending.
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET subject = ?, version = version + 1 WHERE id = ?`,
+		"metadata-only edit", draftID,
+	).Exec(ctx); err != nil {
+		t.Fatalf("metadata-only edit of a layout row should be allowed by the trigger: %v", err)
+	}
+
+	n, err := repo.Get(ctx, draftID)
+	if err != nil {
+		t.Fatalf("Get after metadata-only edit: %v", err)
+	}
+	if n.Subject != "metadata-only edit" {
+		t.Fatalf("subject should be updated, got %q", n.Subject)
+	}
+	if n.BodyHTML != "<p>body</p>" {
+		t.Fatalf("body_html should be unchanged after a metadata-only edit, got %q", n.BodyHTML)
+	}
+}
+
 func TestArmedMutations_TriggerRejectsUnauthorized(t *testing.T) {
 	repo := newIntegrationRepo(t)
 
@@ -591,4 +763,416 @@ func TestRevertScheduled_RejectsStaleBatchID(t *testing.T) {
 	if n.Version != armedB.Version {
 		t.Fatalf("Version after stale revert attempt: got %d, want unchanged %d", n.Version, armedB.Version)
 	}
+}
+
+// TestGetMeta_ExcludesBodyLayout pins the hot-path read: GetMeta returns the
+// row without its body_layout (so the open-pixel / analytics routes never
+// decode the layout JSON), while Get still materializes it.
+func TestGetMeta_ExcludesBodyLayout(t *testing.T) {
+	repo := newIntegrationRepo(t)
+	ctx := context.Background()
+
+	id := seed(t, repo, model.StatusDraft, []string{"committee-a"}, nil)
+	if _, err := repo.db.NewRaw(
+		`UPDATE newsletters SET body_layout = ?::jsonb WHERE id = ?`,
+		`{"wrapper_key":"default","blocks":[]}`, id,
+	).Exec(ctx); err != nil {
+		t.Fatalf("set body_layout: %v", err)
+	}
+
+	full, err := repo.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(full.BodyLayout) == 0 {
+		t.Fatalf("Get should materialize body_layout")
+	}
+
+	meta, err := repo.GetMeta(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if len(meta.BodyLayout) != 0 {
+		t.Errorf("GetMeta must not materialize body_layout, got %s", meta.BodyLayout)
+	}
+	if meta.ProjectUID != full.ProjectUID {
+		t.Errorf("GetMeta should still return project_uid: got %q want %q", meta.ProjectUID, full.ProjectUID)
+	}
+}
+
+// Postgres-backed tests of the audience repository. Like the other integration
+// tests they run only when NEWSLETTER_TEST_DATABASE_URL points at a database
+// whose name contains "test" (see newIntegrationRepo).
+
+func newIntegrationAudienceRepo(t *testing.T) (*PostgresAudienceRepo, *PostgresNewsletterRepo) {
+	t.Helper()
+	repo := newIntegrationRepo(t)
+	return NewPostgresAudienceRepo(repo.db), repo
+}
+
+func testMembers(emails ...string) []model.CommitteeMember {
+	out := make([]model.CommitteeMember, 0, len(emails))
+	for _, e := range emails {
+		out = append(out, model.CommitteeMember{Email: e, FirstName: "First", LastName: "Last"})
+	}
+	return out
+}
+
+func memberEmails(members []model.CommitteeMember) []string {
+	out := make([]string, 0, len(members))
+	for _, m := range members {
+		out = append(out, m.Email)
+	}
+	return out
+}
+
+func TestBeginResolve_ClaimsOnceWhileProcessing(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	claimed, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	assert.True(t, claimed)
+
+	claimed, err = audiences.BeginResolve(ctx, id, "project-1", []string{"c1", "c2"})
+	require.NoError(t, err)
+	assert.False(t, claimed, "a second claim while processing must not succeed")
+
+	a, err := audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceProcessing, a.Status)
+	assert.Equal(t, []string{"c1"}, a.CommitteeUIDs, "the losing claim did not change the in-flight row")
+	assert.Equal(t, "project-1", a.ProjectUID)
+	assert.Nil(t, a.ResolvedAt)
+}
+
+func TestBeginResolve_ConcurrentClaimsYieldExactlyOne(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	var claimedCount atomic.Int32
+	var wg sync.WaitGroup
+	for range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			claimed, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+			assert.NoError(t, err)
+			if claimed {
+				claimedCount.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	assert.EqualValues(t, 1, claimedCount.Load())
+}
+
+func TestBeginResolve_ReclaimsReadyAndFailedRows(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	claimed, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, testMembers("a@example.com")))
+	require.NoError(t, audiences.MarkReady(ctx, id, 1, 4))
+
+	// From ready: the row is reset to a clean processing row.
+	claimed, err = audiences.BeginResolve(ctx, id, "project-1", []string{"c1", "c2"})
+	require.NoError(t, err)
+	assert.True(t, claimed)
+	a, err := audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceProcessing, a.Status)
+	assert.Equal(t, []string{"c1", "c2"}, a.CommitteeUIDs)
+	assert.Zero(t, a.RecipientCount)
+	assert.Zero(t, a.SkippedNoEmail)
+	assert.Empty(t, a.Error)
+	assert.Nil(t, a.ResolvedAt)
+
+	// From failed.
+	require.NoError(t, audiences.MarkFailed(ctx, id, "boom"))
+	claimed, err = audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	assert.True(t, claimed)
+	a, err = audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Empty(t, a.Error)
+}
+
+func TestReplaceMembers_ReplacesInsteadOfAppending(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, testMembers("a@example.com", "b@example.com")))
+	got, err := audiences.ListMembers(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a@example.com", "b@example.com"}, memberEmails(got))
+
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, testMembers("c@example.com", "b@example.com")))
+	got, err = audiences.ListMembers(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"b@example.com", "c@example.com"}, memberEmails(got), "the earlier members are gone")
+	assert.Equal(t, "Last", got[0].LastName)
+
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, nil))
+	got, err = audiences.ListMembers(ctx, id)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestReplaceMembers_OtherNewslettersAreUntouched(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	one := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	two := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	for _, id := range []uuid.UUID{one, two} {
+		_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+		require.NoError(t, err)
+	}
+	require.NoError(t, audiences.ReplaceMembers(ctx, one, testMembers("a@example.com")))
+	require.NoError(t, audiences.ReplaceMembers(ctx, two, testMembers("same@example.com", "a@example.com")))
+	require.NoError(t, audiences.ReplaceMembers(ctx, two, testMembers("z@example.com")))
+
+	got, err := audiences.ListMembers(ctx, one)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a@example.com"}, memberEmails(got))
+}
+
+func TestReplaceMembers_InsertsMoreThanOneBatch(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+
+	total := memberInsertBatch*2 + 17
+	members := make([]model.CommitteeMember, 0, total)
+	for i := range total {
+		members = append(members, model.CommitteeMember{Email: fmt.Sprintf("user%06d@example.com", i)})
+	}
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, members))
+
+	got, err := audiences.ListMembers(ctx, id)
+	require.NoError(t, err)
+	assert.Len(t, got, total)
+}
+
+func TestReplaceMembers_RequiresProcessingAudience(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	err := audiences.ReplaceMembers(ctx, id, testMembers("a@example.com"))
+	assert.ErrorIs(t, err, domain.ErrNotFound, "no audience row")
+
+	_, err = audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, testMembers("a@example.com")))
+	require.NoError(t, audiences.MarkFailed(ctx, id, "boom"))
+
+	err = audiences.ReplaceMembers(ctx, id, testMembers("late@example.com"))
+	assert.ErrorIs(t, err, domain.ErrNotFound, "a failed audience cannot be written to")
+	got, err := audiences.ListMembers(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a@example.com"}, memberEmails(got), "the late write changed nothing")
+}
+
+func TestMarkReadyAndMarkFailed_OnlyMatchProcessingRows(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	assert.ErrorIs(t, audiences.MarkReady(ctx, id, 1, 0), domain.ErrNotFound, "no row")
+	assert.ErrorIs(t, audiences.MarkFailed(ctx, id, "x"), domain.ErrNotFound, "no row")
+
+	_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	require.NoError(t, audiences.MarkReady(ctx, id, 7, 3))
+
+	a, err := audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceReady, a.Status)
+	assert.Equal(t, 7, a.RecipientCount)
+	assert.Equal(t, 3, a.SkippedNoEmail)
+	require.NotNil(t, a.ResolvedAt)
+
+	assert.ErrorIs(t, audiences.MarkFailed(ctx, id, "late"), domain.ErrNotFound, "a ready audience is not failed afterwards")
+	assert.ErrorIs(t, audiences.MarkReady(ctx, id, 1, 0), domain.ErrNotFound)
+	a, err = audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceReady, a.Status)
+}
+
+func TestMarkFailed_StoresMessageAndTruncatesLongOnes(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+
+	long := ""
+	for range maxAudienceErrorLength + 50 {
+		long += "é"
+	}
+	require.NoError(t, audiences.MarkFailed(ctx, id, long))
+
+	a, err := audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceFailed, a.Status)
+	assert.Len(t, []rune(a.Error), maxAudienceErrorLength)
+	assert.Nil(t, a.ResolvedAt)
+}
+
+func TestAudienceGet_NotFound(t *testing.T) {
+	audiences, _ := newIntegrationAudienceRepo(t)
+	_, err := audiences.Get(context.Background(), uuid.New())
+	assert.ErrorIs(t, err, domain.ErrNotFound)
+}
+
+func TestFailStale_FailsOnlyOldProcessingRows(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	stale := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	fresh := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	ready := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	for _, id := range []uuid.UUID{stale, fresh, ready} {
+		_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+		require.NoError(t, err)
+	}
+	require.NoError(t, audiences.MarkReady(ctx, ready, 0, 0))
+	_, err := audiences.db.ExecContext(ctx,
+		`UPDATE newsletter_audiences SET updated_at = now() - interval '2 hours' WHERE newsletter_id IN (?, ?)`, stale, ready)
+	require.NoError(t, err)
+
+	n, err := audiences.FailStale(ctx, 40*time.Minute)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	a, err := audiences.Get(ctx, stale)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceFailed, a.Status)
+	assert.NotEmpty(t, a.Error)
+	a, err = audiences.Get(ctx, fresh)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceProcessing, a.Status)
+	a, err = audiences.Get(ctx, ready)
+	require.NoError(t, err)
+	assert.Equal(t, model.AudienceReady, a.Status, "an old ready row is not touched")
+
+	n, err = audiences.FailStale(ctx, 40*time.Minute)
+	require.NoError(t, err)
+	assert.Zero(t, n, "a second sweep changes nothing")
+
+	// A failed row can be claimed again, so the UI can offer a retry.
+	claimed, err := audiences.BeginResolve(ctx, stale, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	assert.True(t, claimed)
+}
+
+func TestReplaceMembers_KeepsAStaleSweepAway(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"c1"})
+	require.NoError(t, err)
+	_, err = audiences.db.ExecContext(ctx,
+		`UPDATE newsletter_audiences SET updated_at = now() - interval '2 hours' WHERE newsletter_id = ?`, id)
+	require.NoError(t, err)
+
+	require.NoError(t, audiences.ReplaceMembers(ctx, id, testMembers("a@example.com")))
+
+	n, err := audiences.FailStale(ctx, 40*time.Minute)
+	require.NoError(t, err)
+	assert.Zero(t, n, "ReplaceMembers moved updated_at forward")
+}
+
+func TestDeletingANewsletterDeletesItsAudienceAndMembers(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	other := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+	for _, nid := range []uuid.UUID{id, other} {
+		_, err := audiences.BeginResolve(ctx, nid, "project-1", []string{"c1"})
+		require.NoError(t, err)
+		require.NoError(t, audiences.ReplaceMembers(ctx, nid, testMembers("a@example.com")))
+		require.NoError(t, audiences.MarkReady(ctx, nid, 1, 0))
+	}
+
+	require.NoError(t, repo.Delete(ctx, id))
+
+	_, err := audiences.Get(ctx, id)
+	assert.ErrorIs(t, err, domain.ErrNotFound, "the audience row is deleted with the newsletter")
+	var members int
+	require.NoError(t, audiences.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM newsletter_audience_members WHERE newsletter_id = ?`, id).Scan(&members))
+	assert.Zero(t, members, "the members are deleted with the audience")
+
+	_, err = audiences.Get(ctx, other)
+	assert.NoError(t, err, "another newsletter's audience is kept")
+	got, err := audiences.ListMembers(ctx, other)
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+}
+
+func TestAudienceConstraints(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	_, err := audiences.db.ExecContext(ctx,
+		`INSERT INTO newsletter_audiences (newsletter_id, project_uid, committee_uids, status) VALUES (?, 'p', '[]', 'bogus')`, id)
+	assert.Error(t, err, "an unknown status is rejected")
+
+	_, err = audiences.db.ExecContext(ctx,
+		`INSERT INTO newsletter_audiences (newsletter_id, project_uid, committee_uids, status) VALUES (?, 'p', '[]', 'ready')`, id)
+	assert.Error(t, err, "a ready row needs resolved_at")
+
+	_, err = audiences.db.ExecContext(ctx,
+		`INSERT INTO newsletter_audiences (newsletter_id, project_uid, committee_uids, status) VALUES (?, 'p', '[]', 'processing')`, uuid.New())
+	assert.Error(t, err, "the newsletter must exist")
+}
+
+func TestAudienceGet_RoundTripsCommitteeUIDs(t *testing.T) {
+	ctx := context.Background()
+	audiences, repo := newIntegrationAudienceRepo(t)
+	id := seed(t, repo, model.StatusDraft, []string{"c1"}, nil)
+
+	_, err := audiences.BeginResolve(ctx, id, "project-1", []string{"a", "b\"quoted", "ü"})
+	require.NoError(t, err)
+	a, err := audiences.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "b\"quoted", "ü"}, a.CommitteeUIDs)
+	assert.Equal(t, id, a.NewsletterID)
+	assert.False(t, a.RequestedAt.IsZero())
+	assert.False(t, a.UpdatedAt.IsZero())
+}
+
+// TestSchemaApplyIsIdempotent applies the embedded schema twice more against a
+// database that already has it, which is what every pod restart does.
+func TestSchemaApplyIsIdempotent(t *testing.T) {
+	newIntegrationRepo(t)
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, os.Getenv("NEWSLETTER_TEST_DATABASE_URL"))
+	require.NoError(t, err)
+	defer pool.Close()
+
+	require.NoError(t, schema.Apply(ctx, pool))
+	require.NoError(t, schema.Apply(ctx, pool))
+
+	var tables int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM information_schema.tables WHERE table_name IN ('newsletter_audiences', 'newsletter_audience_members')`).Scan(&tables))
+	assert.Equal(t, 2, tables)
+
+	var constraints int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM pg_constraint WHERE conname IN ('newsletter_audiences_status_check', 'newsletter_audiences_ready_requires_resolved')`).Scan(&constraints))
+	assert.Equal(t, 2, constraints, "each constraint exists once")
 }

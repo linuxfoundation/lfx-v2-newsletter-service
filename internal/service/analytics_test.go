@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,6 +60,10 @@ func (a *analyticsRepoFake) Create(_ context.Context, _ *model.Newsletter) error
 func (a *analyticsRepoFake) Get(_ context.Context, _ uuid.UUID) (*model.Newsletter, error) {
 	return a.newsletter, nil
 }
+
+func (a *analyticsRepoFake) GetMeta(_ context.Context, _ uuid.UUID) (*model.Newsletter, error) {
+	return a.newsletter, nil
+}
 func (a *analyticsRepoFake) List(_ context.Context, _ string) ([]*model.Newsletter, error) {
 	return nil, nil
 }
@@ -95,6 +100,22 @@ func (a *analyticsRepoFake) RecordOpen(_ context.Context, _ uuid.UUID, _ string)
 func (a *analyticsRepoFake) Analytics(_ context.Context, _ uuid.UUID) (*model.Analytics, error) {
 	cp := *a.base
 	return &cp, nil
+}
+func (a *analyticsRepoFake) OpenCount(_ context.Context, _ uuid.UUID) (int, error) {
+	if a.base == nil {
+		return 0, nil
+	}
+	return a.base.TotalOpens, nil
+}
+func (a *analyticsRepoFake) OpenCounts(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]int, error) {
+	out := make(map[uuid.UUID]int, len(ids))
+	if a.base == nil {
+		return out, nil
+	}
+	for _, id := range ids {
+		out[id] = a.base.TotalOpens
+	}
+	return out, nil
 }
 
 // TestAnalyticsGet_DailyOpensFromGroupStatus verifies the analytics service
@@ -144,7 +165,7 @@ func TestAnalyticsGet_DailyOpensFromGroupStatus(t *testing.T) {
 		},
 	}
 
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, nil, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -216,7 +237,7 @@ func TestAnalyticsGet_FailedRecipients(t *testing.T) {
 		},
 	}
 
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, nil, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -260,7 +281,7 @@ func TestAnalyticsGet_NoFailedRecipients(t *testing.T) {
 		},
 	}
 
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, nil, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -312,7 +333,7 @@ func TestAnalyticsGet_CountsPerEventOpens(t *testing.T) {
 		},
 	}
 
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, nil, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -367,7 +388,7 @@ func TestAnalyticsGet_DegradesGracefullyOnGroupStatusError(t *testing.T) {
 		recordsErr: errors.New("nats: timeout"),
 	}
 
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, nil, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -444,7 +465,7 @@ func TestAnalyticsGet_RoutesByProvider(t *testing.T) {
 				},
 				base: &model.Analytics{NewsletterID: newsletterID, Status: model.StatusSent, SentAt: &sentAt, TotalRecipients: 5, Delivered: 5},
 			}
-			svc := NewAnalyticsService(repo, readers, nil, model.SendProviderEmailService)
+			svc := NewAnalyticsService(repo, readers, nil, nil, model.SendProviderEmailService)
 			got, err := svc.Get(context.Background(), projectUID, newsletterID)
 			if err != nil {
 				t.Fatalf("Get: unexpected error: %v", err)
@@ -486,7 +507,7 @@ func TestAnalyticsGet_KnownProviderMissingReaderIsLocalOnly(t *testing.T) {
 		},
 		base: &model.Analytics{NewsletterID: newsletterID, Status: model.StatusSent, SentAt: &sentAt, TotalRecipients: 5, Delivered: 5},
 	}
-	svc := NewAnalyticsService(repo, readers, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, readers, nil, nil, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: unexpected error: %v", err)
@@ -526,7 +547,7 @@ func TestAnalyticsGet_PreservesLocalDailyOpensWhenProviderDetailEmpty(t *testing
 			DailyOpens: []model.DailyOpens{{Date: localDay, Opens: 3, UniqueOpens: 2}},
 		},
 	}
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, nil, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -609,7 +630,7 @@ func TestAnalyticsGet_ClickRateArithmetic(t *testing.T) {
 				engagement: &port.EmailEngagement{GroupID: groupID, TotalSent: tt.totalRecipients, UniqueOpens: tt.uniqueOpens, UniqueClicks: tt.uniqueClicks},
 				detail:     &port.GroupEngagementDetail{FailedRecipients: []string{}, UniqueOpens: tt.uniqueOpens, UniqueClicks: tt.uniqueClicks},
 			}
-			svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderSendGrid: reader}, nil, model.SendProviderEmailService)
+			svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderSendGrid: reader}, nil, nil, model.SendProviderEmailService)
 			got, err := svc.Get(context.Background(), projectUID, newsletterID)
 			if err != nil {
 				t.Fatalf("Get: %v", err)
@@ -651,7 +672,7 @@ func TestAnalyticsGet_PreservesLocalDailyClicksAndTopLinksWhenProviderDetailEmpt
 			TopLinks:        []model.LinkClicks{{URL: "https://example.com", Clicks: 3, UniqueClicks: 2}},
 		},
 	}
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderSendGrid: reader}, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderSendGrid: reader}, nil, nil, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -691,7 +712,7 @@ func TestAnalyticsGet_EmailServiceProviderReturnsZeroClicks(t *testing.T) {
 			{EmailID: "rA", To: "a@x", Delivered: true, Opened: true, OpenedAtList: []time.Time{sentAt}},
 		},
 	}
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, nil, model.SendProviderEmailService)
 	got, err := svc.Get(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -711,13 +732,19 @@ func TestAnalyticsGet_EmailServiceProviderReturnsZeroClicks(t *testing.T) {
 type committeeFake struct {
 	members map[string][]model.CommitteeMember
 	err     error
+
+	mu    sync.Mutex
+	calls []string
 }
 
-func (c *committeeFake) ListMembers(_ context.Context, uid string) ([]model.CommitteeMember, error) {
+func (c *committeeFake) ListMembers(_ context.Context, uid string) (model.CommitteeMembers, error) {
+	c.mu.Lock()
+	c.calls = append(c.calls, uid)
+	c.mu.Unlock()
 	if c.err != nil {
-		return nil, c.err
+		return model.CommitteeMembers{}, c.err
 	}
-	return c.members[uid], nil
+	return model.CommitteeMembers{Members: c.members[uid]}, nil
 }
 
 // TestAnalyticsRecipients_DraftReturnsEmpty verifies drafts (and sent rows
@@ -730,7 +757,7 @@ func TestAnalyticsRecipients_DraftReturnsEmpty(t *testing.T) {
 		newsletter: &model.Newsletter{ID: newsletterID, ProjectUID: projectUID, Status: model.StatusDraft},
 	}
 	// No readers wired at all: the draft short-circuit must not need one.
-	svc := NewAnalyticsService(repo, nil, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, nil, nil, nil, model.SendProviderEmailService)
 	got, err := svc.Recipients(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Recipients: %v", err)
@@ -754,7 +781,7 @@ func TestAnalyticsRecipients_ProjectMismatch(t *testing.T) {
 			Status: model.StatusSent, GroupID: &groupID,
 		},
 	}
-	svc := NewAnalyticsService(repo, nil, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, nil, nil, nil, model.SendProviderEmailService)
 	if _, err := svc.Recipients(context.Background(), "7f0c88a4-6a8c-4fa4-95c1-6d640a12e3aa", newsletterID); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("Recipients: got err %v, want domain.ErrNotFound", err)
 	}
@@ -789,7 +816,7 @@ func TestAnalyticsRecipients_SortsAndEnrichesNames(t *testing.T) {
 		"committee-1": {{Email: "ANN@x.dev", FirstName: "Ann", LastName: "Ames"}},
 		"committee-2": {{Email: "zed@x.dev", FirstName: "Zed"}},
 	}}
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, committee, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, committee, model.SendProviderEmailService)
 	result, err := svc.Recipients(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Recipients: %v", err)
@@ -844,7 +871,7 @@ func TestAnalyticsRecipients_CompletenessMarker(t *testing.T) {
 				},
 			}
 			email := &statusByGroupFake{records: records}
-			svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+			svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, nil, model.SendProviderEmailService)
 			result, err := svc.Recipients(context.Background(), projectUID, newsletterID)
 			if err != nil {
 				t.Fatalf("Recipients: %v", err)
@@ -874,7 +901,7 @@ func TestAnalyticsRecipients_ReaderErrorPropagates(t *testing.T) {
 	}
 	wantErr := errors.New("engagement store unavailable")
 	email := &statusByGroupFake{recordsErr: wantErr}
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, nil, model.SendProviderEmailService)
 	if _, err := svc.Recipients(context.Background(), projectUID, newsletterID); !errors.Is(err, wantErr) {
 		t.Fatalf("Recipients: got err %v, want the reader error propagated", err)
 	}
@@ -893,7 +920,7 @@ func TestAnalyticsRecipients_NilReaderForKnownProvider(t *testing.T) {
 			GroupID: &groupID, SendProvider: model.SendProviderSendGrid,
 		},
 	}
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: &statusByGroupFake{}}, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: &statusByGroupFake{}}, nil, nil, model.SendProviderEmailService)
 	_, err := svc.Recipients(context.Background(), projectUID, newsletterID)
 	var unavailable pkgerrors.ServiceUnavailable
 	if !errors.As(err, &unavailable) {
@@ -917,7 +944,7 @@ func TestAnalyticsRecipients_CommitteeLookupFailureDegrades(t *testing.T) {
 	}
 	email := &statusByGroupFake{records: []port.EmailRecipientRecord{{EmailID: "e1", To: "ann@x.dev", Delivered: true}}}
 	committee := &committeeFake{err: errors.New("committee-service down")}
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, committee, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, committee, model.SendProviderEmailService)
 	result, err := svc.Recipients(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Recipients: %v", err)
@@ -961,7 +988,7 @@ func TestRecipients_CapsOpensPerRecipient(t *testing.T) {
 			TotalRecipients: 1,
 		},
 	}
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, nil, model.SendProviderEmailService)
 	result, err := svc.Recipients(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Recipients: %v", err)
@@ -1020,7 +1047,7 @@ func TestRecipients_CapsClicksPerRecipient(t *testing.T) {
 			TotalRecipients: 1,
 		},
 	}
-	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, model.SendProviderEmailService)
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, nil, model.SendProviderEmailService)
 	result, err := svc.Recipients(context.Background(), projectUID, newsletterID)
 	if err != nil {
 		t.Fatalf("Recipients: %v", err)
@@ -1040,5 +1067,127 @@ func TestRecipients_CapsClicksPerRecipient(t *testing.T) {
 	}
 	if rec.ClickedAtList[499] != clicks[500] {
 		t.Errorf("Recipients: last kept click is %v, want %v (last original click)", rec.ClickedAtList[499], clicks[500])
+	}
+}
+
+// TestAnalyticsTotalOpens covers the cheap open total behind the single-newsletter
+// read: provider Opened wins when larger, the local count survives a provider
+// failure, and anything but a sent newsletter reports no value.
+func TestAnalyticsTotalOpens(t *testing.T) {
+	groupID := "group-xyz"
+	sent := func() *model.Newsletter {
+		return &model.Newsletter{ID: uuid.New(), Status: model.StatusSent, GroupID: &groupID}
+	}
+
+	cases := []struct {
+		name       string
+		newsletter *model.Newsletter
+		localOpens int
+		email      *statusByGroupFake
+		wantOpens  int
+		wantOK     bool
+	}{
+		{
+			name:       "provider opened wins when larger",
+			newsletter: sent(),
+			localOpens: 2,
+			email:      &statusByGroupFake{engagement: &port.EmailEngagement{Opened: 7}},
+			wantOpens:  7,
+			wantOK:     true,
+		},
+		{
+			name:       "local count kept when larger",
+			newsletter: sent(),
+			localOpens: 9,
+			email:      &statusByGroupFake{engagement: &port.EmailEngagement{Opened: 7}},
+			wantOpens:  9,
+			wantOK:     true,
+		},
+		{
+			name:       "provider failure degrades to local",
+			newsletter: sent(),
+			localOpens: 3,
+			email:      &statusByGroupFake{engagementErr: errors.New("nats: timeout")},
+			wantOpens:  3,
+			wantOK:     true,
+		},
+		{
+			name:       "sent without group is local only",
+			newsletter: &model.Newsletter{ID: uuid.New(), Status: model.StatusSent},
+			localOpens: 4,
+			email:      &statusByGroupFake{engagement: &port.EmailEngagement{Opened: 99}},
+			wantOpens:  4,
+			wantOK:     true,
+		},
+		{
+			name:       "draft reports no value",
+			newsletter: &model.Newsletter{ID: uuid.New(), Status: model.StatusDraft, GroupID: &groupID},
+			localOpens: 5,
+			email:      &statusByGroupFake{engagement: &port.EmailEngagement{Opened: 5}},
+			wantOpens:  0,
+			wantOK:     false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &analyticsRepoFake{newsletter: tc.newsletter, base: &model.Analytics{TotalOpens: tc.localOpens}}
+			svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: tc.email}, nil, nil, model.SendProviderEmailService)
+			got, ok, err := svc.TotalOpens(context.Background(), tc.newsletter)
+			if err != nil {
+				t.Fatalf("TotalOpens: unexpected error: %v", err)
+			}
+			if ok != tc.wantOK || got != tc.wantOpens {
+				t.Errorf("TotalOpens = (%d, %v), want (%d, %v)", got, ok, tc.wantOpens, tc.wantOK)
+			}
+		})
+	}
+}
+
+// failingAnalyticsRepo fails the local open-count read.
+type failingAnalyticsRepo struct{ analyticsRepoFake }
+
+func (f *failingAnalyticsRepo) OpenCount(_ context.Context, _ uuid.UUID) (int, error) {
+	return 0, errors.New("db down")
+}
+
+// TestAnalyticsTotalOpens_LocalReadErrorPropagates: unlike a provider failure, a
+// failed local read has no fallback, so it is an error the caller omits on.
+func TestAnalyticsTotalOpens_LocalReadErrorPropagates(t *testing.T) {
+	groupID := "group-xyz"
+	n := &model.Newsletter{ID: uuid.New(), Status: model.StatusSent, GroupID: &groupID}
+	email := &statusByGroupFake{engagement: &port.EmailEngagement{Opened: 7}}
+	svc := NewAnalyticsService(&failingAnalyticsRepo{analyticsRepoFake{newsletter: n}}, map[string]port.EngagementReader{model.SendProviderEmailService: email}, nil, nil, model.SendProviderEmailService)
+
+	if _, ok, err := svc.TotalOpens(context.Background(), n); err == nil || ok {
+		t.Errorf("TotalOpens = (ok %v, err %v), want an error and no value", ok, err)
+	}
+}
+
+// blockingReader never answers until its context ends, like an absent email-service responder.
+type blockingReader struct{ statusByGroupFake }
+
+func (b *blockingReader) GetEngagement(ctx context.Context, _ string) (*port.EmailEngagement, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestAnalyticsTotalOpens_ProviderTimeoutFallsBackToLocal: GET one must not wait
+// out the full NATS timeout on a silent provider; it returns the local count.
+func TestAnalyticsTotalOpens_ProviderTimeoutFallsBackToLocal(t *testing.T) {
+	groupID := "group-xyz"
+	n := &model.Newsletter{ID: uuid.New(), Status: model.StatusSent, GroupID: &groupID}
+	repo := &analyticsRepoFake{newsletter: n, base: &model.Analytics{TotalOpens: 3}}
+	svc := NewAnalyticsService(repo, map[string]port.EngagementReader{model.SendProviderEmailService: &blockingReader{}}, nil, nil, model.SendProviderEmailService)
+
+	start := time.Now()
+	got, ok, err := svc.TotalOpens(context.Background(), n)
+	elapsed := time.Since(start)
+
+	if err != nil || !ok || got != 3 {
+		t.Errorf("TotalOpens = (%d, %v, %v), want (3, true, nil)", got, ok, err)
+	}
+	if elapsed > 3*totalOpensProviderTimeout {
+		t.Errorf("TotalOpens took %v, want it bounded near %v", elapsed, totalOpensProviderTimeout)
 	}
 }

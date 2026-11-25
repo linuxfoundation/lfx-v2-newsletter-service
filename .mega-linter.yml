@@ -17,13 +17,16 @@ DISABLE_ERRORS_LINTERS:
   - REPOSITORY_CHECKOV
   - REPOSITORY_DEVSKIM
 YAML_YAMLLINT_CONFIG_FILE: .yamllint
-REPOSITORY_KICS_ARGUMENTS: scan --no-progress --exclude-severities="medium,low,info,trace"
+# zizmor's online audits (impostor-commit, known-vulnerable-actions,
+# ref-confusion) query the GitHub API, which requires GITHUB_TOKEN.
+ACTION_ZIZMOR_UNSECURED_ENV_VARIABLES:
+  - GITHUB_TOKEN
 SPELL_CSPELL_ANALYZE_FILE_NAMES: false
 SPELL_CSPELL_PRE_COMMANDS:
   - command: >-
       cp .cspell.json /tmp/cspell.json.orig &&
       curl -sSf --connect-timeout 5 --max-time 15
-      https://raw.githubusercontent.com/linuxfoundation/lfx-public-workflows/a93335d2abc2a2e2bb1b7a4cdefbbf15351681ce/cspell/flagwords.json.snippet
+      https://raw.githubusercontent.com/linuxfoundation/lfx-public-workflows/737873e045a02df2f66b09d8061b98997cdf1880/cspell/flagwords.json.snippet
       -o /tmp/flagwords.json.snippet &&
       test "$(grep -c '^[[:space:]]*"flagWords"[[:space:]]*:[[:space:]]*\[\],[[:space:]]*$' .cspell.json)" -eq 1 &&
       sed -i -e '/^[[:space:]]*"flagWords"[[:space:]]*:[[:space:]]*\[\],[[:space:]]*$/{r /tmp/flagwords.json.snippet' -e 'd}' .cspell.json &&
@@ -38,6 +41,8 @@ SPELL_VALE_PRE_COMMANDS:
     cwd: "workspace"
   - command: vale sync
     cwd: "workspace"
-FILTER_REGEX_EXCLUDE: '(templates/.*\.yml|templates/.*\.yaml)'
+# Exclude Helm chart templates (Go-templated yaml) and the declarative
+# newsletter templates (a custom JSX-like DSL, not real HTML) from linting.
+FILTER_REGEX_EXCLUDE: '(templates/.*\.yml|templates/.*\.yaml|internal/service/render/declarative/templates/.*\.html)'
 KUBERNETES_DIRECTORY: charts/lfx-v2-newsletter-service/templates
 KUBERNETES_HELM_ARGUMENTS: charts/lfx-v2-newsletter-service

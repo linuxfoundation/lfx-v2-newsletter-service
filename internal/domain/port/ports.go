@@ -39,9 +39,18 @@ const MaxTopLinks = 20
 // PageToken is the opaque cursor returned in the previous page's response.
 type ListFilters struct {
 	ProjectUID string
-	Statuses   []model.Status
-	PageToken  string
-	Limit      int
+	// PublicationUID, when non-nil, limits the page to editions of one publication.
+	PublicationUID *uuid.UUID
+	Statuses       []model.Status
+	PageToken      string
+	Limit          int
+}
+
+// PublicationListPage is one page of publications plus an optional
+// NextPageToken for continuation.
+type PublicationListPage struct {
+	Publications  []*model.Publication
+	NextPageToken string
 }
 
 // ListPage is one page of newsletters plus an optional NextPageToken for
@@ -51,6 +60,49 @@ type ListPage struct {
 	NextPageToken string
 }
 
+// NewsletterGetter is the read-one slice of NewsletterRepository, for
+// services that only need to look a newsletter up.
+type NewsletterGetter interface {
+	Get(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
+}
+
+// NewsletterMetaGetter is the metadata-only read-one slice of
+// NewsletterRepository (see NewsletterRepository.GetMeta), for hot paths that
+// only check existence, project ownership or send state.
+type NewsletterMetaGetter interface {
+	GetMeta(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
+}
+
+// ShareRepository persists in-app newsletter share intents and reads back
+// share counts.
+type ShareRepository interface {
+	// RecordShare inserts a share. Idempotent per (newsletter, user, channel):
+	// a repeat is a silent no-op.
+	RecordShare(ctx context.Context, share *model.NewsletterShare) error
+	// ShareCounts returns the total share count for each of the given
+	// newsletters. Newsletters with no shares are absent from the map.
+	ShareCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error)
+	// ShareStats returns one newsletter's share count in total and per channel.
+	ShareStats(ctx context.Context, newsletterID uuid.UUID) (*model.ShareStats, error)
+	// DeleteSharesByUser erases every share recorded for one user hash,
+	// across all newsletters, and returns how many rows were removed.
+	DeleteSharesByUser(ctx context.Context, userHash string) (int64, error)
+}
+
+// PageViewRepository persists unique web page views of sent newsletters and
+// reads back view counts.
+type PageViewRepository interface {
+	// RecordPageView inserts a page view. Idempotent per (newsletter, user):
+	// a repeat is a silent no-op.
+	RecordPageView(ctx context.Context, view *model.NewsletterPageView) error
+	// PageViewCounts returns the unique page-view count for each of the given
+	// newsletters. Newsletters with no views are absent from the map.
+	PageViewCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error)
+	// DeletePageViewsByUser erases every page view recorded for one user
+	// hash, across all newsletters, and returns how many rows were removed.
+	DeletePageViewsByUser(ctx context.Context, userHash string) (int64, error)
+}
+
 // NewsletterRepository persists Newsletter aggregates.
 //
 // Implementations must surface optimistic-locking conflicts as
@@ -58,6 +110,13 @@ type ListPage struct {
 type NewsletterRepository interface {
 	Create(ctx context.Context, n *model.Newsletter) error
 	Get(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
+	// GetMeta reads a newsletter WITHOUT its body_layout column. Use it on hot
+	// paths that only need existence, ownership (project_uid), or send-state
+	// (status / group_id) — the open-pixel and analytics routes — so they never
+	// pull and decode the layout JSON (up to ~1 MiB) they immediately discard.
+	// The returned model's BodyLayout is always nil. Missing records surface as
+	// domain.ErrNotFound.
+	GetMeta(ctx context.Context, id uuid.UUID) (*model.Newsletter, error)
 	List(ctx context.Context, projectUID string) ([]*model.Newsletter, error)
 	ListAll(ctx context.Context, filters ListFilters) (*ListPage, error)
 	// ListSentByCommittee returns a page of sent newsletters whose audience
@@ -125,6 +184,13 @@ type NewsletterRepository interface {
 	// Open tracking
 	RecordOpen(ctx context.Context, newsletterID uuid.UUID, recipientHash string) error
 	Analytics(ctx context.Context, newsletterID uuid.UUID) (*model.Analytics, error)
+	// OpenCount returns the raw local open total (one COUNT over
+	// newsletter_opens) without the rest of the analytics aggregate.
+	OpenCount(ctx context.Context, newsletterID uuid.UUID) (int, error)
+	// OpenCounts returns the raw local open total for each of the given
+	// newsletters in one grouped query. Newsletters with no recorded opens
+	// are absent from the map.
+	OpenCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error)
 }
 
 // UnsubscribeRepository persists project-scoped opt-outs.
@@ -138,14 +204,58 @@ type UnsubscribeRepository interface {
 	DeleteUnsubscribe(ctx context.Context, projectUID string, id uuid.UUID) error
 }
 
-// CommitteeClient resolves committee members for newsletter recipient calculation.
+// CommitteeClient reads committee members for newsletter recipient calculation.
 //
-// The concrete implementation talks to lfx-v2-committee-service via the
-// `lfx.committee-api.list_members` NATS subject. No auth context flows through
-// — NATS is network-isolated and authorization is enforced at the inbound
-// gateway before the request ever reaches newsletter-service.
+// The concrete implementation pages through the LFX V2 query service over HTTPS
+// as this service, using its own M2M token. The inbound user's token is never
+// forwarded.
 type CommitteeClient interface {
-	ListMembers(ctx context.Context, committeeUID string) ([]model.CommitteeMember, error)
+	ListMembers(ctx context.Context, committeeUID string) (model.CommitteeMembers, error)
+}
+
+// AudienceReader reads audience snapshots.
+type AudienceReader interface {
+	// Get returns the audience, or domain.ErrNotFound when none exists.
+	Get(ctx context.Context, newsletterID uuid.UUID) (*model.Audience, error)
+	// ListMembers returns the snapshot members ordered by email.
+	ListMembers(ctx context.Context, newsletterID uuid.UUID) ([]model.CommitteeMember, error)
+}
+
+// AudiencePurger deletes a snapshot's members once its newsletter is sent, so
+// member emails and names are not kept after the send. The audience row and its
+// counts stay.
+type AudiencePurger interface {
+	DeleteMembers(ctx context.Context, newsletterID uuid.UUID) error
+}
+
+// AudienceSweeper is the audience slice the recovery sweep runs.
+type AudienceSweeper interface {
+	// FailStale sets 'processing' rows not updated for olderThan to 'failed'.
+	// It is safe to call from several pods. It returns the number of rows changed.
+	FailStale(ctx context.Context, olderThan time.Duration) (int, error)
+	// PurgeSentMembers deletes the snapshot members of every newsletter that is
+	// sent or scheduled, so a purge missed on any send path is caught.
+	PurgeSentMembers(ctx context.Context) (int, error)
+}
+
+// AudienceRepository persists audience snapshots (newsletter_audiences and
+// newsletter_audience_members).
+type AudienceRepository interface {
+	AudienceReader
+	AudiencePurger
+	AudienceSweeper
+
+	// BeginResolve starts a resolution in one statement. It inserts the row, or
+	// moves an existing row to 'processing' unless it is already 'processing'.
+	// It returns false when another resolution is in flight.
+	BeginResolve(ctx context.Context, newsletterID uuid.UUID, projectUID string, committeeUIDs []string) (claimed bool, err error)
+	// ReplaceMembers deletes the snapshot's members and inserts members in one
+	// transaction.
+	ReplaceMembers(ctx context.Context, newsletterID uuid.UUID, members []model.CommitteeMember) error
+	// MarkReady sets the audience to 'ready'. It matches only a 'processing' row.
+	MarkReady(ctx context.Context, newsletterID uuid.UUID, count, skippedNoEmail int) error
+	// MarkFailed sets the audience to 'failed'. It matches only a 'processing' row.
+	MarkFailed(ctx context.Context, newsletterID uuid.UUID, msg string) error
 }
 
 // ProjectMetadataClient resolves the project name and slug used for email
@@ -176,7 +286,8 @@ type UserMetadataReader interface {
 // that drives the From display name — but only when the address resolves,
 // parses, and passes the Reply-To domain allowlist; the orchestrator falls
 // back to the draft's stored `ed_reply_email` otherwise, so Reply-To does
-// not unconditionally track the sender.
+// not unconditionally track the sender. Also the test-send guard's source for
+// the caller's own address when the token carries no email.
 type UserEmailReader interface {
 	PrimaryEmail(ctx context.Context, principal string) (string, error)
 }
@@ -443,4 +554,21 @@ func DailyOpensFromRecords(records []EmailRecipientRecord) ([]model.DailyOpens, 
 	}
 	sort.Slice(daily, func(i, j int) bool { return daily[i].Date.Before(daily[j].Date) })
 	return daily, lastEvent
+}
+
+// PublicationRepository persists publications. Every read is scoped by project
+// so a publication id cannot be probed across projects (FGA only gates the
+// project in the URL). A publication missing from the project surfaces as
+// domain.ErrNotFound.
+type PublicationRepository interface {
+	// CreatePublication inserts p and populates its generated fields.
+	CreatePublication(ctx context.Context, p *model.Publication) error
+	GetPublication(ctx context.Context, projectUID string, id uuid.UUID) (*model.Publication, error)
+	// ListPublications returns a keyset page of the project's named
+	// publications, most recently updated first. Implicit publications are not
+	// listed.
+	ListPublications(ctx context.Context, projectUID, pageToken string) (*PublicationListPage, error)
+	// UpdatePublication full-replaces the editable fields, gated on
+	// expectedVersion: a mismatch is domain.ErrVersionMismatch.
+	UpdatePublication(ctx context.Context, p *model.Publication, expectedVersion int64) (*model.Publication, error)
 }

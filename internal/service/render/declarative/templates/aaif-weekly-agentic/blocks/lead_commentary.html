@@ -1,0 +1,46 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: {
+  "eyebrow": {
+    "type": "text",
+    "label": "Label",
+    "default": "THE LEAD"
+  },
+  "title": {
+    "type": "text",
+    "label": "Title"
+  },
+  "byline": {
+    "type": "text",
+    "label": "Byline (optional)"
+  },
+  "body": {
+    "type": "richtext",
+    "label": "Commentary (300–400 words)"
+  },
+  "read_more_label": {
+    "type": "text",
+    "label": "Read-more link text (optional)"
+  },
+  "read_more_url": {
+    "type": "text",
+    "label": "Read-more URL"
+  }
+} -->
+<!--
+  Lead / Commentary — our take on the news of the week: what happened, how it
+  connects to broader developments, and what it means for people building and
+  using agents. This is the newsletter's editorial voice, so it is the one
+  section set in a serif and at a larger size than the bullets below.
+-->
+<Section style="width:100%;max-width:640px;margin:0 auto 20px">
+  <div style="padding:4px 20px 0">
+    <Text class="dm-h" style="margin:0 0 10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:bold;letter-spacing:2.5px;text-transform:uppercase;color:#111111;line-height:1.4">{{eyebrow}}</Text>
+    <Heading if="title" class="dm-h" style="margin:0 0 8px;font-family:Georgia,'Times New Roman',Times,serif;font-size:30px;font-weight:bold;line-height:1.2;letter-spacing:-0.2px;color:#111111">{{title}}</Heading>
+    <Text if="byline" class="dm-m" style="margin:0 0 14px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.5;color:#6b6b70">{{byline}}</Text>
+    <richtext field="body" class="dm-t" style="font-family:Georgia,'Times New Roman',Times,serif;font-size:18px;line-height:1.6;color:#333338" />
+    <Text if="read_more_url" style="margin:12px 0 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5">
+      <strong><Link href="{{read_more_url}}" class="dm-h" style="color:#111111;text-decoration:underline">{{read_more_label}} &rarr;</Link></strong>
+    </Text>
+  </div>
+</Section>

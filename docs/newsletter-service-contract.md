@@ -14,11 +14,14 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 - Project-scoped newsletter draft persistence in Postgres.
 - Draft-to-sent state transition.
 - Email dispatch: the send orchestrator mints the `group_id`, renders email chrome, and fans out per-recipient sends through the active provider (selected by `EMAIL_PROVIDER`): `lfx-v2-email-service` over NATS by default, or SendGrid directly when selected.
-- Recipient count and recipient preview through committee-service member lookup over NATS.
+- The audience snapshot. A background job reads committee members from the LFX V2 query service, as this service, and stores them per newsletter. The recipient count, the recipient preview and the send read that snapshot.
 - Per-recipient HMAC-signed, project-scoped unsubscribe opt-outs.
 - Newsletter list and analytics reads (local opens overlaid with the sending provider's engagement totals, routed by `send_provider`).
 - Local open tracking through the tracking-pixel endpoint.
-- The public Go DTOs in `pkg/api/newsletter.go`.
+- In-app share-intent recording (`newsletter_shares`) and the share counts exposed on read endpoints.
+- Unique web page-view recording (`newsletter_page_views`) and the page-view counts exposed on read endpoints.
+- Publications (`publications`): the recurring parent of newsletters. See [Publications](#publications).
+- The public Go DTOs in `pkg/api/newsletter.go` and `pkg/api/publication.go`.
 
 ## Routes
 
@@ -26,23 +29,36 @@ Update this document in the same PR as any change to `pkg/api/newsletter.go`, ro
 | --- | --- | --- | --- |
 | `GET` | `/livez` | no | Liveness probe. |
 | `GET` | `/readyz` | no | Readiness probe. |
-| `POST` | `/projects/{project_uid}/newsletters` | yes | Create a draft. |
+| `POST` | `/projects/{project_uid}/newsletters` | yes | Create a draft. Optional `publication_uid` makes it an edition of that publication; see [Publications](#publications). |
 | `GET` | `/projects/{project_uid}/newsletters` | yes | Unified list of drafts and sent newsletters. Supports `status` and `page_token` query params. |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Get one newsletter and return its ETag. |
 | `PUT` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Update a draft. Requires `If-Match`. |
 | `DELETE` | `/projects/{project_uid}/newsletters/{newsletter_uid}` | yes | Delete a draft. |
-| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/send` | yes | Accept the send: resolve recipients, transition the draft to `sending`, return `202`; the fan-out and the `sent` transition complete in a detached background job. Requires `If-Match`. Behaviorally unchanged by scheduling: a draft carrying a saved `scheduled_at` still sends immediately, ignoring it. |
+| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/send` | yes | Accept the send: read the audience snapshot (`409 audience_not_ready` if it is processing, failed or stale; a newsletter with no audience at all is read live from its committees, and an empty committee is a `422`), transition the draft to `sending`, return `202`; the fan-out and the `sent` transition complete in a detached background job. Requires `If-Match`. Behaviorally unchanged by scheduling: a draft carrying a saved `scheduled_at` still sends immediately, ignoring it. |
 | `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/schedule` | yes | Arm a scheduled send via the active provider's native scheduling (SendGrid only — LFXV2-2685). Optional body `{ "scheduled_at": "..." }` overrides the draft's saved value; when neither exists, `400`. Otherwise behaves like `send`: `202` with the draft in `sending`, settling in the background to `scheduled` once at least one recipient's message is accepted by the provider for release at `scheduled_at`, or if any scheduling outcome is ambiguous. Requires `If-Match`. `503` when the active provider doesn't support scheduling (`EMAIL_PROVIDER=email-service`). |
 | `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/cancel-schedule` | yes | Cancel an armed schedule and revert the newsletter to `draft`, retaining `scheduled_at` as the author's saved intent while clearing `group_id`/`batch_id`. Rejected within the configured cancel buffer of `scheduled_at` (`409 cancel_window_closed`) since provider cancellation is best-effort near release. Requires `If-Match`. |
-| `POST` | `/projects/{project_uid}/newsletters/recipient-count` | yes | Resolve committees and return unique recipient count. |
-| `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Resolve committees and return unique recipient preview. |
+| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/audience` | yes | Start the background resolution of the newsletter's audience. Body `{ "committee_uids": [...], "refresh": false }`. `committee_uids` must be the committees saved on the draft (`400` otherwise). Returns `202` with the audience while it is `processing`, whether this call started the job or one was already running. Returns `200` when a `ready` audience already exists for the same committee list, unless `refresh` is `true`, which rebuilds it. Only a draft can be resolved. Gated on `writer_guard`. |
+| `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/audience` | yes | Return the audience status. `404` when it was never resolved. |
+| `POST` | `/projects/{project_uid}/newsletters/recipient-count` | yes | Return the recipient count of the newsletter's audience snapshot. `409 audience_not_ready` when it is not ready. Without `newsletter_uid`, counts the committees live. |
+| `POST` | `/projects/{project_uid}/newsletters/recipients` | yes | Return the recipient preview from the audience snapshot. `409 audience_not_ready` when it is not ready, and `409 already_sent` once the newsletter is no longer a draft. Without `newsletter_uid`, reads the committees live. Gated on `writer_guard`. |
 | `POST` | `/projects/{project_uid}/newsletters/test-send` | yes | Dispatch a single test email (no persistence, no analytics). |
+| `POST` | `/projects/{project_uid}/newsletters/render-preview` | yes | Render a `NewsletterLayout` to email-safe HTML for the editor's live preview. Stateless — nothing is persisted. Returns `422 unprocessable_entity` when the layout cannot be rendered. |
+| `GET` | `/projects/{project_uid}/newsletters/templates` | yes | List the embedded editor template sets (`{"templates": [{"key", "label"}]}`). The catalog is compiled into the binary and identical for every project. |
+| `GET` | `/projects/{project_uid}/newsletters/templates/{template_key}/manifest` | yes | Return the editor manifest for one template set: the palette of block types (`block_type`, `label`, `category`, `schema`, optional `is_container`, comment-stripped `template`) plus the page-chrome `wrapper` and `wrapper_key`, and the `starter_blocks` a new edition starts with. Unknown keys return `404 not_found`. Mirrors `NewsletterTemplateManifest` in `@lfx-one/shared`. |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics` | yes | Return analytics for one newsletter. |
+| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/shares` | yes | Record an in-app share intent. Body `{ "channel": "x" \| "linkedin" \| "reddit" \| "email" \| "copy_link" }`. Gated on project `viewer`. Returns `204`; idempotent per (user, channel). `401` for unauthenticated callers (OIDC only at the gateway); `400` for an unknown channel, an unknown body field, or a missing or anonymous (`_anonymous`) principal; `404` for drafts, unsent newsletters, unknown ids, and project mismatches. See [Share Counts](#share-counts). |
+| `POST` | `/projects/{project_uid}/newsletters/{newsletter_uid}/page-views` | yes | Record a unique web page view of a sent newsletter by the caller. No body. Gated on project `viewer`. Returns `204`; idempotent per user. `401` for unauthenticated callers (OIDC only at the gateway); `400` for a missing or anonymous (`_anonymous`) principal; `404` for drafts, unsent newsletters, unknown ids, and project mismatches. See [Page Views](#page-views). |
 | `GET` | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients` | yes | Per-recipient engagement: who the newsletter went to, delivery outcome, and every recorded open timestamp, with a best-effort display name from the newsletter's committees. |
 | `GET` | `/committees/{committee_uid}/newsletters` | yes | Member-facing: sent newsletters whose audience includes the committee, ordered `sent_at` descending. Supports `page_token`. The gateway gates on `committee:{committee_uid}` `member` OR `auditor` (openfga_or_check), checked per request against OpenFGA — auditor folds in committee writers and project oversight roles so stronger roles never see less than members. Member tuples are maintained by committee-service via fga-sync, so revocation after a membership removal is eventual — normally near-immediate, but tuple removal is asynchronous/best-effort (see committee-service's `docs/fga-contract.md`); this endpoint adds no caching on top of tuple state. Returns `CommitteeNewsletterListResponse` — a reduced DTO without `body_html`, `ed_reply_email`, `group_id`, `created_by`, or `committee_uids` (the full audience list would let a single-committee member enumerate the newsletter's other committees). Clients fetch the rendered body via the project-scoped get, which is reachable for members because the platform model's project `viewer` relation includes all authenticated users (`[user:*]`). |
 | `GET` | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}` | no | Tracking pixel. Records open by recipient hash and returns a GIF. |
 | `GET` | `/newsletters/unsubscribe` | no | One-click unsubscribe via HMAC-signed `t` token. Returns HTML. A direct-service HEAD is a no-op so link previews don't unsubscribe; the gateway ruleset allows only `GET`, so HEAD is blocked at the gateway. |
 | `POST` | `/newsletters/sendgrid/events` | no | SendGrid signed event webhook (delivered / open / click / bounce / dropped / spamreport / blocked). Authenticity is the ECDSA signature over `timestamp + body` plus a 10-minute freshness window against replay; no user session. Registered whenever `SENDGRID_WEBHOOK_PUBLIC_KEY` is set — independent of `EMAIL_PROVIDER`, so events for historical and scheduled SendGrid sends keep flowing after the outbound provider is flipped back to `email-service`; do not remove or block this route on a provider flip. Returns `204`; `400` on a malformed body, `401` on a bad signature or stale timestamp. The chart routes this path (`httproute.yaml` + an anonymous `ruleset.yaml` rule) whenever `app.send.sendgrid.webhookPublicKeySecretRef.name` is set — independent of the outbound provider, so ingestion survives a flip back to `email-service`. |
+| `POST` | `/projects/{project_uid}/newsletter-publications` | yes | Create a publication. Returns `201` and its ETag. See [Publications](#publications). |
+| `GET` | `/projects/{project_uid}/newsletter-publications` | yes | List the project's named publications, most recently updated first. Supports `page_token`. Implicit publications are not listed. |
+| `GET` | `/projects/{project_uid}/newsletter-publications/{publication_uid}` | yes | Get one publication and return its ETag. `404` when it is not in this project. |
+| `PUT` | `/projects/{project_uid}/newsletter-publications/{publication_uid}` | yes | Full-replace update. Requires `If-Match`. |
+| `GET` | `/projects/{project_uid}/newsletter-publications/{publication_uid}/editions` | yes | List the publication's editions as a `NewsletterListResponse`. Supports `status` and `page_token`. `404` when the publication is not in this project. |
+| `POST` | `/projects/{project_uid}/newsletter-publications/{publication_uid}/editions` | yes | Create an edition under the publication. Same body as `POST .../newsletters`; a `publication_uid` in the body must match the path. |
 | `GET` | `/projects/{project_uid}/newsletter-opt-outs` | yes | List all unsubscribes for the project — `id`, `email`, and `unsubscribed_at`, ordered by `unsubscribed_at` descending. No pagination (opt-out volumes are small). |
 | `DELETE` | `/projects/{project_uid}/newsletter-opt-outs/{opt_out_id}` | yes | Delete an opt-out entry. Returns `204 No Content` on success, `400` for a malformed `opt_out_id` UUID, `404` for unknown `opt_out_id` or project mismatch. |
 
@@ -50,7 +66,7 @@ Auth routes expect a Heimdall-issued JWT. `REQUIRE_USER_AUTH=false` is only for 
 
 ## DTOs
 
-Public DTOs live in `pkg/api/newsletter.go`. Field names are snake_case to match the LFX V2 attribute-naming convention.
+Public DTOs live in `pkg/api/newsletter.go` and `pkg/api/publication.go`. Field names are snake_case to match the LFX V2 attribute-naming convention.
 
 Core state:
 
@@ -58,27 +74,117 @@ Core state:
 | --- | --- |
 | `id` | Newsletter UUID. |
 | `project_uid` | Owning project UID (also in the URL path). |
+| `publication_uid` | The publication this newsletter is an edition of. Every newsletter has one; see [Publications](#publications). |
 | `subject` | Subject line. |
-| `body_html` | Newsletter HTML body. |
-| `ed_reply_email` | Reply-to address stored on the draft. Fallback only — at send time the orchestrator resolves the sender's own primary email via `lfx.auth-service.user_emails.read` and uses it as Reply-To instead, so replies reach whoever sends rather than whoever last drafted. This field is used only when that resolution fails or the sender's domain isn't in the Reply-To allowlist. |
+| `body_html` | Newsletter HTML body. For layout-based newsletters this is derived from `body_layout` on write (see below); for legacy newsletters it is the authored HTML. |
+| `body_layout` | Optional `NewsletterLayout` — the editor's structured layout. Returned **only by the editable single-resource reads** (get / create / update) and **only** for layout-based newsletters (`omitempty` for legacy / html-only rows). The **list** and **send** responses always omit it (`NewsletterListItem` and the send response DTO clear `body_layout` on the returned copy regardless of type — the persisted newsletter's stored layout is untouched, since it is still needed for later reads and send-time re-rendering), so those consumers must never rely on receiving it — fetch the single resource when the structured layout is needed. |
+| `ed_reply_email` | Reply-to address stored on the draft. Fallback only — at send time the orchestrator resolves the sender's own primary email via `lfx.auth-service.user_emails.read` and uses it as Reply-To instead, so replies reach whoever sends rather than whoever last drafted. This field is used only when that resolution fails or the sender's domain isn't in the Reply-To allowlist. A publication's `reply_to_email` takes precedence over both at send; see [Publications](#publications). |
 | `committee_uids` | Committees used for recipient resolution. |
 | `status` | `draft`, `sending`, `scheduled`, or `sent`. |
 | `sent_at` | Set when status becomes `sent`. |
 | `scheduled_at` | Optional, settable on create/update. Two meanings depending on `status`: while `draft`, it is the author's saved intent — saving it does **not** by itself contact the send provider or send anything. Once `status=scheduled`, it is the committed release time armed at the provider. Null when no schedule has ever been set. `PUT` is full-replace: an omitted value clears a previously-saved schedule. |
-| `total_recipients` | Recipient count snapshot taken at send-acceptance time. |
+| `total_recipients` | Recipient count taken at send-acceptance time. It is the audience snapshot after the send-time unsubscribe filter. |
 | `group_id` | `lfx-v2-email-service` correlation ID, minted by this service when a send is accepted. Null on drafts. |
 | `created_by` | Authenticated principal or local fallback. |
 | `version` | Optimistic-locking version. |
+| `share_count` | In-app share count (see [Share Counts](#share-counts)). Present only on sent newsletters in `GET` one, the project list, and the committee list; omitted when the count can't be read, so treat absent as unknown, not zero. |
+| `total_opens` | Raw open total (every open, not unique recipients), the same value as the analytics endpoint's `total_opens` minus the per-recipient detail fetch: the larger of the local pixel count and the provider's scalar opens. Present only on sent newsletters in `GET` one and the committee list. On the committee list the local counts come from one grouped query for the page, and every row's provider read runs concurrently under one shared one-second budget, so a slow provider adds at most a second to the page and the late rows fall back to their local count; a failed local read omits `total_opens` on every row of that page. The provider read is limited to one second so it never holds the main read; a provider failure or timeout falls back to the local count, and a local read failure omits the field, so treat absent as unknown, not zero. |
+| `page_view_count` | Unique web page views, one per signed-in user (see [Page Views](#page-views)). Present only on sent newsletters in `GET` one, the project list, and the committee list; omitted when the count can't be read, so treat absent as unknown, not zero. Clients that show a single "views" number display `total_opens + page_view_count`. |
 
 `POST …/send` returns `SendNewsletterResponse`: the newsletter plus `group_id`, `total_recipients`, `sent`, `failed`, and per-recipient `failures`. The send is asynchronous: acceptance returns `202` with the newsletter in `status=sending` and `sent=0`; clients observe the outcome by re-fetching the newsletter (branch on `newsletter.status`, not the HTTP status code). The zero-recipient edge case settles synchronously and returns `200` with `status=sent`.
+
+### Declarative Layout
+
+`CreateNewsletterRequest` and `UpdateNewsletterRequest` accept an optional `body_layout` (`NewsletterLayout`) alongside `subject`, `body_html`, `ed_reply_email`, and `committee_uids`. When `body_layout` is supplied the service renders it to `body_html` via the declarative emitter and persists both; any `body_html` in the request is ignored.
+
+On update, `body_layout` is tri-state: **absent** preserves a layout newsletter's stored layout and derived `body_html` (the request's `body_html` is ignored for layout rows; html-only rows take `body_html` from the request as before); an **explicit `"body_layout": null`** clears the stored layout and converts the newsletter to html-only, taking `body_html` from the request; an **object** replaces the layout and re-derives `body_html`. On create, absent and `null` are equivalent (html-only).
+
+`NewsletterLayout` is the structured newsletter body:
+
+| Field | Description |
+| --- | --- |
+| `wrapper_key` | Selects the wrapper template the top-level blocks render inside. |
+| `template_key` | Optional (`omitempty`). Selects the embedded block library the layout is rendered with. The layout renders with that library's blocks, bricks and wrapper and nothing else, so a `block_type` the library does not have is a `422`. The binary embeds three libraries: `aaif-user-community`, `aaif-weekly-agentic` and `aaif-member`. Empty falls back to `aaif-user-community`, for drafts saved before layouts named a library. Naming a library the binary does not embed is a `422`. |
+| `blocks` | Ordered top-level `LayoutBlock`s rendered in the wrapper's body slot. |
+
+`LayoutBlock` is a recursive content node:
+
+| Field | Description |
+| --- | --- |
+| `block_type` | Selects the declarative block template. |
+| `content` | Optional map of field bindings the template consumes (`omitempty`). |
+| `blocks` | Optional nested child `LayoutBlock`s (`omitempty`). |
+
+`POST …/render-preview` takes a `RenderPreviewRequest` and returns a `RenderPreviewResponse`:
+
+| DTO | Field | Description |
+| --- | --- | --- |
+| `RenderPreviewRequest` | `body_layout` | The `NewsletterLayout` to render. |
+| `RenderPreviewRequest` | `wrapper_content` | Optional map of runtime values the wrapper template binds against: `edition.date`, `edition.view_online_link`, and the display values `edition.sender_name` and `edition.project_name` for the footer's sender line, always sent together (both omitted, the wrapper drops the line or shows its library's fallback; one without the other renders an empty name). The unsubscribe and manage-subscriptions sentinels cannot be overridden. May be omitted (`omitempty`). |
+| `RenderPreviewResponse` | `body_html` | The rendered, email-safe HTML produced by the declarative emitter. |
+
+The rendered email has its formatting whitespace removed. Tags, attributes, inline styles, comments (including Outlook conditional blocks) and the text are unchanged. It may be up to 400,000 bytes. That is above Gmail's roughly 102 KB clipping point on purpose: long editions already pass it, and Gmail then shows the start of the email with a "View entire message" link, behind which sits the footer with its unsubscribe link (see Gmail message clipping in `sendgrid-go-live.md`). A layout whose rendered email is larger returns `422 unprocessable_entity`, on `render-preview`, on save and at send.
+
+`GET …/newsletters/templates` returns `{"templates": [{"key", "label"}]}`, sorted by key. The labels are `AAIF Member`, `AAIF User Community` and `AAIF Weekly Agentic`. `GET …/templates/{template_key}/manifest` returns the editor manifest for one embedded template set: `wrapper_key`, `blocks` (each with `block_type`, `label`, `category`, `schema`, optional `is_container`, and a comment-stripped `template` body), the page-chrome `wrapper`, and `starter_blocks`. `starter_blocks` is the ordered list of `{"block_type"}` entries from the set's `edition.json`, which the composer uses to seed a new draft. It is an additive field. Every starter block names a block in the same set, and the catalog fails to build (a `500`) if one does not. The shape is produced by `internal/service/render/declarative.Manifest` and mirrors `NewsletterTemplateManifest` in `@lfx-one/shared`, which the block composer consumes; the embedded per-key template sets are the single source of truth for both the editor palette and rendering.
+
+`TestSendRequest` (the `…/test-send` body) carries an optional `body_layout` (`NewsletterLayout`, `omitempty`) — the **sole layout trigger** for a test send. When present the service recompiles the layout server-side (declarative emitter) and dispatches that HTML, with only the unsubscribe opt-out row **suppressed** — the wrapper's `if=`-guarded opt-out row is dropped, avoiding a dangling unsubscribe link in a test that mints no real signed token, while the rest of the wrapper's compliance footer still renders. The test email shows today's date and no "View Online" link, because a test send has no newsletter to link to. When `body_layout` is omitted, `body_html` is treated as simple editor HTML and wrapped in email chrome (the legacy path).
+
+The `is_layout` boolean is **deprecated and ignored**. It is still accepted (the decoder rejects unknown fields, so removing it would break clients that still send it), but it has no effect: a precompiled `is_layout` + `body_html` request is no longer dispatched verbatim, because binding its per-recipient unsubscribe sentinel to empty left a dangling `<a href="">Unsubscribe</a>`. Send `body_layout` for a layout test send.
+
+Each template set is a copy of a git repository that the AAIF team maintains. `internal/service/render/declarative/templates/templates.lock` lists each set with its repository and the commit it was copied from. `make sync-templates` copies the `blocks/`, `bricks/`, `wrappers/` and `edition.json` files at those commits into `templates/<key>/` and adds two licence header lines to each `.html` file. Apart from that header the files are the repository files. Running the command twice gives no change. To update a set, change its ref in `templates.lock`, run the command, and commit the result. The command needs git access to the private repositories. The build and the running service do not use git.
+
+Block fields have a `type` and an optional `default`. The service does not apply a `default` when it renders. A client that creates a block uses it to fill the field. The `boolean` field type works the same way, and the renderer reads the value as a boolean or as the text `true` or `false`.
+
+The renderer supports these directives on a template element:
+
+| Directive | Behavior |
+| --- | --- |
+| `if="field"` | Render the element when the field is set. A string is set when it is not blank. An array is set when it has items. A boolean is set when it is true and a number is set when it is not zero. |
+| `unless="field"` | Render the element when `if="field"` would not. |
+| `if="field == text"`, `if="field != text"` | Compare the field, written as text, with the literal text on the right. A missing field is empty text. `unless` accepts the same forms. |
+| `each="field"` | Repeat the element for each item of an array field. A nested array inside an item is bound against that item. |
+
+A lowercase `<a href>` renders as a link, the same as `<Link>`. A `<style>` element in a wrapper is dropped, so a wrapper's dark mode stylesheet has no effect and the email renders in light mode. A link that is bound to the unsubscribe or "My Newsletters" sentinel always carries `clicktracking="off"`, whatever the template says.
+
+The wrappers read six runtime values from the `edition` object: `date`, `view_online_link`, `unsubscribe_url`, `manage_subscriptions_url`, `sender_name` and `project_name`. The footer's sender line ("Sent by X on behalf of Y") is bound to `sender_name` and `project_name`, which the send path resolves from the sending user's profile and the project (the same values the legacy chrome uses) and substitutes once per send. It renders when `sender_name` is set; with it unset, `aaif-user-community` shows a sender-neutral fallback line and the other two libraries drop the line. The opt-out row renders only when `unsubscribe_url` is set and also carries the manage-subscriptions link, labelled "My Newsletters" in `aaif-user-community` and "Manage email preferences" in the other two. Every wrapper writes the postal address into its footer text. The reply email of a send is bound but not rendered by any embedded wrapper; Reply-To reaches the reader through the envelope.
 
 `POST …/schedule` returns `ScheduleNewsletterResponse`: the same shape as `SendNewsletterResponse` plus `scheduled_at` (the value actually armed — the request's override, or the draft's own saved value). `POST …/cancel-schedule` returns `CancelScheduleResponse`: just the reverted newsletter.
 
 **Save-time vs. arm-time validation.** `scheduled_at` on create/update is validated leniently — only that it is in the future. The full arm-time window (minimum lead, and a hard cap at the send provider's horizon — currently 72 hours for SendGrid Mail Send) is validated only when `POST …/schedule` is called, independently of when the value was saved. An author can save a schedule five days out on a draft; arming it fails with `400 invalid_request` until it falls inside the window.
 
+## Publications
+
+A publication is the recurring parent of newsletters: each row in `newsletters` is one edition of a publication. A publication holds the choices that outlive one send.
+
+| Field | Description |
+| --- | --- |
+| `id` | Publication UUID. |
+| `project_uid` | Owning project UID (also in the URL path). |
+| `name` | Required, up to 200 characters. |
+| `template_key` | Optional. An embedded template set (see `GET .../newsletters/templates`). |
+| `from_name` | Optional. Replaces the From display name at send. At most 100 characters and 256 bytes, with no control, invisible (format) or line separator characters. The From address is per-project deployment configuration and cannot be set here. |
+| `reply_to_email` | Optional bare email address on a domain in `EMAIL_REPLY_TO_ALLOWED_DOMAINS` (otherwise `400`). It must also pass email-service's address rules: ASCII only, at most 64 characters before the `@`, and nothing that needs quoting. Replaces Reply-To at send, and is the default `ed_reply_email` for new editions. If the allowlist later drops the domain, the override is skipped with a warning, a stored reply-to on the edition that the allowlist no longer accepts is not used either, and the usual Reply-To resolution applies. |
+| `committee_uids` | Default audience for new editions. Empty is allowed. |
+| `implicit` | `true` when the service created this publication for a newsletter that named none. An implicit publication cannot be updated (`400`), cannot take new editions (`400`), and is deleted with its edition. |
+| `created_by`, `version`, `created_at`, `updated_at` | As on a newsletter. `version` is the ETag. |
+
+`POST` and `PUT` take `PublicationRequest` (`name`, `template_key`, `from_name`, `reply_to_email`, `committee_uids`). `PUT` is full-replace: an omitted optional field is cleared.
+
+**Editions.** A draft created with `publication_uid`, or through `POST .../editions`, is an edition of that publication. At create it copies from the publication:
+
+- `committee_uids` when the request omits them. An explicit empty list is not inherited and gets the usual empty-audience `400`.
+- `ed_reply_email` when the request omits it.
+- The template set when the publication has one. A `body_layout` with no `template_key` takes the publication's, one naming a different template set is `400`, and a request with neither `body_layout` nor `body_html` starts from an empty layout on that template set. `body_html` on its own is `400`, because such a publication renders through its template set.
+
+Updating the template set or the default audience changes new editions only; existing editions keep what they were created with. An edition saved without a layout before its publication gained a template set keeps saving as a basic edition. `from_name` and `reply_to_email` are read from the publication at send, so changing them applies to every edition not yet sent. A test send has no newsletter to resolve a publication from, so `POST .../test-send` uses the sender-resolved values. An edition of a publication with a template set cannot be moved to another template set or cleared to html-only through `PUT`, except that the template key the edition already has stays allowed, so a publication changing its template set does not strand an edition created before it.
+
+**Implicit publications and existing clients.** `publication_uid` is optional on create. A client that does not send one is unaffected: the database gives the new row its own implicit publication and the response carries its `publication_uid`. Implicit publications have no `template_key`, `from_name`, `reply_to_email` or default audience, so their editions send exactly as a newsletter with no publication did. Rows that predate publications get one the same way, in the schema backfill.
+
+**Rolling deploys.** The schema change is additive and takes one release. Older pods do not name `publication_uid`, so a `BEFORE INSERT` trigger assigns their rows an implicit publication and the column can be `NOT NULL` from the start. They ignore the extra column on `RETURNING *` because v0.2.10 and later run with `bun.WithDiscardUnknownColumns`. Rolling back to any such version keeps working against the new schema, and the publications objects stay in place; only the sender override and the new routes go away, since those are in this binary. The UI must stop sending `publication_uid` before a rollback past this release, because older versions reject the unknown field with `400`.
+
 ## Optimistic Locking
 
-`POST /projects/{project_uid}/newsletters`, `GET …/newsletters/{newsletter_uid}`, and `PUT …/newsletters/{newsletter_uid}` return a strong ETag formatted as the current integer version.
+`POST /projects/{project_uid}/newsletters`, `GET …/newsletters/{newsletter_uid}`, and `PUT …/newsletters/{newsletter_uid}` return a strong ETag formatted as the current integer version. The publication `POST`, `GET` one and `PUT`, and `POST …/editions`, follow the same rules, and `PUT …/newsletter-publications/{publication_uid}` requires `If-Match` (publication `version`).
 
 `PUT …/newsletters/{newsletter_uid}`, `POST …/newsletters/{newsletter_uid}/send`, `POST …/schedule`, and `POST …/cancel-schedule` require `If-Match`. Missing or malformed `If-Match` returns `400 invalid_request`. A stale version returns `412 version_mismatch`.
 
@@ -86,10 +192,13 @@ Core state:
 
 - New newsletters are created with `status=draft`.
 - Drafts can be updated and deleted.
+- On create and update, layout-based newsletters (request includes `body_layout`) derive the persisted `body_html` from `body_layout` via the declarative emitter; legacy newsletters persist the authored `body_html` as-is.
+- A send of a layout-based newsletter renders `body_layout` again at send time, using the unsubscribe setting in effect then, and dispatches that email without the email chrome. The wrapper's `edition.date` is the send date (`America/Los_Angeles`, or the `scheduled_at` date for a scheduled send), formatted as the legacy chrome formats it. The wrapper's `edition.view_online_link` is the same "Read online" URL the legacy chrome uses, from the same per-send project slug lookup. A send is refused with `400 invalid_request`, before the `draft → sending` transition, when a layout has no blocks or a legacy `body_html` is empty. A real send of a layout newsletter is refused with `503 service_unavailable` when the unsubscribe service is not configured, because the wrappers have no opt-out text without an unsubscribe link. A send or schedule is refused with `422 unprocessable_entity`, before the `draft → sending` transition, when the stored layout no longer renders (for example a block type removed by a template re-sync) or its re-rendered output exceeds the size cap; a stored layout that cannot be parsed is a `500`. A newsletter with only `body_html` sends exactly as it did before layouts.
+- A database trigger on `newsletters` refuses a `draft → sending` change of a layout row, and a `body_html` change of a layout row, unless the writer sets a transaction setting that only layout-aware versions of this service set. During a rolling deploy or after a rollback, an older pod fails with a database error instead of sending a layout row without its chrome or discarding an edit.
 - `POST …/newsletters/{newsletter_uid}/send` accepts the send synchronously and completes it asynchronously:
-  - **Synchronous (inside the request):** validates the draft, resolves recipients (excluding project-scoped unsubscribes), renders the email envelope, mints a `group_id`, and atomically transitions `draft → sending` — persisting `group_id` and `total_recipients` and incrementing `version`. This single optimistically-locked transition is the duplicate-send guard across replicas: a concurrent or repeated send observes the row is no longer a draft and gets `409 send_in_progress`. The endpoint then returns `202`.
+  - **Synchronous (inside the request):** validates the draft, reads the audience snapshot (and drops project-scoped unsubscribes that arrived after it was taken), renders the email envelope, mints a `group_id`, and atomically transitions `draft → sending` — persisting `group_id` and `total_recipients` and incrementing `version`. This single optimistically-locked transition is the duplicate-send guard across replicas: a concurrent or repeated send observes the row is no longer a draft and gets `409 send_in_progress`. The endpoint then returns `202`.
   - **Asynchronous (detached background job):** fans out per-recipient sends through the active provider, then — when at least one recipient was delivered to OR any result is ambiguous (provider may have accepted it) — sets `status=sent`, `sent_at`, and increments `version`. A settled status=sent does NOT guarantee all recipients were accepted — only that the send was initiated. A fully-failed fan-out (zero definitive rejections) reverts the row to `draft` (clearing `group_id` and `total_recipients`) so the operator can retry. The job is detached from the HTTP request context, so client disconnects and proxy timeouts cannot cancel a partially-dispatched send or orphan the status; its runtime is bounded by `SEND_JOB_TIMEOUT` (default 30m). Consult the Failures list and provider engagement metrics for per-recipient delivery outcomes.
-  - **Zero-recipient edge case:** if recipient resolution yields an empty set — for example every resolved committee member is filtered out by a project-scoped unsubscribe — the send settles synchronously: the draft is marked `status=sent` with `total_recipients=0` (and `sent=0`, `failed=0`), `group_id` is persisted, and the endpoint returns `200`. No email is dispatched, and the newsletter cannot be sent again. This applies identically to a scheduled request against a zero-recipient audience — it settles straight to `sent`, never `scheduled`.
+  - **Zero-recipient edge case:** if the ready snapshot is empty after the send-time unsubscribe filter, for example when every member has unsubscribed, the send settles synchronously: the draft is marked `status=sent` with `total_recipients=0` (and `sent=0`, `failed=0`), `group_id` is persisted, and the endpoint returns `200`. No email is dispatched, and the newsletter cannot be sent again. This applies identically to a scheduled request against a zero-recipient audience — it settles straight to `sent`, never `scheduled`.
 - `POST …/newsletters/{newsletter_uid}/schedule` reuses the same `send` machinery (`draft → sending`, same duplicate-send guard, same `202`), with two differences: it mints a provider `batch_id` and validates the arm-time window before transitioning, and it requires the active provider to support native scheduling (SendGrid) — `503 service_unavailable` otherwise. The background job settles a scheduled fan-out to `status=scheduled` instead of `sent` once at least one recipient's message has been accepted by the provider for release at `scheduled_at` (or reverts to `draft` if zero recipients could be scheduled). A settled status=scheduled does NOT guarantee all recipients were accepted — only that the schedule was armed. `POST …/send` on a draft carrying a saved `scheduled_at` is unaffected — it sends immediately and never consults the saved value. Consult the Failures list for per-recipient scheduling outcomes.
 - **`scheduled`** means at least one recipient's message has been accepted by the provider and is held for release at `scheduled_at`, or the scheduling outcome was ambiguous and the batch was armed at the provider. The provider — not this service — owns the actual delivery timing. A periodic sweep (the same one that recovers stuck `sending` rows) flips `scheduled` rows to `sent` once `scheduled_at` has passed — this is reconciliation of our own display state only.
   - `POST …/newsletters/{newsletter_uid}/cancel-schedule` cancels the provider batch (best-effort near release) and reverts `scheduled → draft`, clearing `group_id`/`batch_id`/`total_recipients` but **retaining** `scheduled_at` — the author's picked time survives the cancel so re-scheduling doesn't require re-entering it. Rejected inside the configured cancel buffer of `scheduled_at` with `409 cancel_window_closed`. A provider-side cancel failure leaves the row truthfully still `scheduled` rather than reporting a cancellation that didn't take effect upstream.
@@ -111,13 +220,47 @@ Recipient resolution and the provider fan-out are documented in `docs/recipient-
 
 | Endpoint | Behavior |
 | --- | --- |
-| `…/newsletters/recipient-count` | Returns unique recipient count after resolving committee members. |
-| `…/newsletters/recipients` | Returns unique recipient emails and first names. |
-| `…/newsletters/test-send` | Validates fields and dispatches a single test email to `to_email` — no persistence, no analytics. The body renders the same compliance footer as a real send: sender attribution, optional reply-to line, the "My Newsletters" link, and a working unsubscribe link minted for `to_email` (clicking it records a real project-scoped opt-out for that address). Returns `{ "ok": true }`. |
+| `…/newsletters/{newsletter_uid}/audience` (`POST`) | Starts the background resolution and returns the audience. See Audience API. |
+| `…/newsletters/{newsletter_uid}/audience` (`GET`) | Returns the audience status. |
+| `…/newsletters/recipient-count` | Returns the recipient count of the audience snapshot. Does not resolve anything. |
+| `…/newsletters/recipients` | Returns the unique recipient emails and first names of the audience snapshot. |
+| `…/newsletters/test-send` | Validates fields and dispatches a single test email to `to_email` — no persistence, no analytics. The body renders the same compliance footer as a real send: sender attribution, optional reply-to line, the "My Newsletters" link, and a working unsubscribe link minted for `to_email` (clicking it records a real project-scoped opt-out for that address). Returns `{ "ok": true }`. With auth on, `to_email` must match the caller's own email (case-insensitive), else `403 forbidden`. That is the token's verified `email` claim when present, else the caller's primary email from `lfx.auth-service.user_emails.read`, which does not always report whether it is verified. Each principal may send 20 test emails an hour per pod, else `429 rate_limited`. Every dispatch attempt counts, including one that fails (a timeout doesn't prove nothing was sent). A request refused before dispatch (400, 403, or a layout that fails to render) does not count (lfx-self-serve#4358 F1). |
+
+### Audience API
+
+The audience is the stored list of recipients for one newsletter. It is built by a background job, so a request never waits for the committees to be read. The design is described in `docs/recipient-resolution.md`.
+
+`POST …/newsletters/{newsletter_uid}/audience` takes `ResolveAudienceRequest`, `{ "committee_uids": [...], "refresh": false }`. `committee_uids` must be the draft's saved committees; `refresh: true` rebuilds a ready snapshot. The list is trimmed, deduplicated and sorted before it is stored. The response is `AudienceResponse` and has this shape:
+
+| Field | Description |
+| --- | --- |
+| `status` | `processing`, `ready` or `failed`. |
+| `recipient_count` | Number of recipients in the snapshot. It is `0` until the audience is `ready`. Addresses that had unsubscribed when the snapshot was taken are not counted. |
+| `skipped_no_email` | Number of committee members skipped because they had no usable email. |
+| `committee_uids` | The sorted committee list the snapshot is built from. |
+| `requested_at` | When the resolution started. |
+| `resolved_at` | When the audience became `ready`. Omitted before that. |
+| `error` | A short reason, set only when `status` is `failed`. The full error is in the service log. |
+
+`AudienceResponse` does not list recipient emails. Emails are returned only by `…/recipients`.
+
+Status codes for `POST`: `202` when the audience is `processing`, `200` when it is already `ready` for the same committees, `400` for an invalid body or committee list, `404` when the newsletter does not exist in the project, and `409` when the newsletter is not a draft (`send_in_progress`, `scheduled` or `already_sent`). A `failed` audience is started again by a new `POST`. `GET` returns `200`, or `404` when no audience exists.
+
+`recipient-count` and `recipients` keep their success shapes. Their request bodies now also carry the newsletter, `{ "newsletter_uid": "...", "committee_uids": [...] }`, because the snapshot belongs to a newsletter. `newsletter_uid` must be a UUID when present. When it is omitted, both routes read the committees live, as before snapshots, so a client that has not adopted snapshots keeps working (see Clients that have not adopted snapshots in `recipient-resolution.md`). With `newsletter_uid`, the snapshot must have been built from both the request's `committee_uids` and the committees saved on the newsletter. If either differs, the route returns `409 audience_not_ready` with `stale`, the same as a send of that newsletter.
+
+When the audience cannot be used, `recipient-count`, `recipients` and `…/send` return `409` with this body:
+
+```json
+{ "error": "audience_not_ready", "message": "...", "audience_status": "processing" }
+```
+
+`audience_status` is `none` (never resolved), `processing`, `failed`, or `stale` (a `ready` audience exists but the committee list has changed). The client starts a resolution with `POST …/audience` and waits for `ready`.
 
 The fan-out is gated by `SEND_FANOUT_ENABLED` (default true). When disabled, sends validate and transition state without dispatching email.
 
 Real sends and test-sends render a compliance footer containing sender attribution, an optional reply-to line, a "My Newsletters" deep link (`<LFX_SELF_SERVE_BASE_URL>/newsletters/my`, default `https://app.lfx.dev/newsletters/my`) so recipients can browse past newsletters in Self-Serve, and the per-recipient unsubscribe small print. The "My Newsletters" line sits above the unsubscribe small print in both the HTML and plain-text bodies. An unset or empty `LFX_SELF_SERVE_BASE_URL` falls back to the production default — no supported configuration omits the line from sends (the renderer omits it only for callers that pass no URL).
+
+Real sends and test-sends also render a right-aligned date bar above the email card (`October 13, 2026 | Read online`), and the plain-text body starts with the same line. The date is formatted `January 2, 2006` in `America/Los_Angeles`, the same for every recipient. An immediate send shows the date it was sent, and a scheduled send shows its `scheduled_at` date. "Read online" links to the Self-Serve reader permalink `<LFX_SELF_SERVE_BASE_URL>/newsletters/<project slug>/<newsletter_uid>` (for example `https://app.lfx.dev/newsletters/tlf/c76eac6b-52db-47d3-b92c-dc7e1ac6ee05`). The slug comes from `lfx.projects-api.get_slug`, and the link carries `clicktracking="off"` like the other chrome links. The link is left out of test-sends, which have no `newsletter_uid`, and out of real sends whose slug lookup fails; the date still renders in both cases and the send is never blocked. After "Read online" the HTML bar adds text share links to the same permalink — `Share: X · LinkedIn · Reddit · Email` (X intent, LinkedIn share-offsite, Reddit submit, and a `mailto:` with the subject and permalink), each with `clicktracking="off"` and built to match the Self-Serve share dialog's URLs. They appear only when "Read online" does; the plain-text body is unchanged.
 
 ## Analytics, Open Tracking, And Unsubscribe
 
@@ -135,6 +278,32 @@ The engagement source is routed per newsletter by `send_provider`, so the respon
 
 Click tracking excludes the compliance-footer links: the "Unsubscribe" and "My Newsletters" anchors are rendered with `clicktracking="off"`, so opting out or browsing past newsletters never counts toward `click_rate`, `daily_clicks`, or `top_links` — only clicks on the author's own content are tracked.
 
+### Share Counts
+
+`POST …/newsletters/{newsletter_uid}/shares` records that the caller clicked a share target (or "Copy link") in the LFX Self Serve share dialog. It measures share *intent*, not a confirmed post. Rows live in `newsletter_shares`, keyed by (newsletter, user hash, channel): the user is stored as a SHA-256 of the JWT principal (a pseudonym, not an anonymization — principals are guessable, so a digest can be matched to a known user), and a repeat share by the same user to the same channel is a no-op, so each user adds at most one share per channel.
+
+Counts are read back as:
+
+- `share_count` on sent newsletters in `GET` one, the project list, and the committee list (one grouped query per page).
+- `total_shares` and `shares_by_channel` (every channel present, `0` when unused) on `…/analytics`.
+
+**Data minimization and erasure.** Rows hold only the dedupe key — no timestamp — so the table records whether a user shared a newsletter to a channel, never when. A user's share rows are erased across all newsletters by `ShareService.DeleteUserShares(principal)` (repository `DeleteSharesByUser`), which hashes the principal exactly as `RecordShare` does; counts drop accordingly. There is no HTTP route for it: it is the in-service hook for a data-subject erasure request, and is the equivalent of `DELETE FROM newsletter_shares WHERE user_hash = encode(sha256(convert_to('<principal>', 'UTF8')), 'hex')`. Rows are otherwise removed only when their newsletter is deleted (`ON DELETE CASCADE`).
+
+Share counts are decorative, so a share-store read failure is logged and the share fields are omitted; it never fails the surrounding response. Share links inside the email body (`render/email_chrome.go`) point straight at the social sites and are not counted.
+
+### Page Views
+
+`POST …/newsletters/{newsletter_uid}/page-views` records that the signed-in caller opened a sent newsletter's web page in LFX Self Serve (the reader that the email's "Read online" link and share links point at). Rows live in `newsletter_page_views`, keyed by (newsletter, user hash), with the user hashed exactly as for shares (SHA-256 of the JWT principal, a pseudonym). A repeat view by the same user is a no-op, so the count is unique viewers, ever: refreshes and revisits never add to it. The anonymous principal is rejected, because every signed-out visitor shares it.
+
+Page views are stored separately from email opens; this service never merges them. Counts are read back as:
+
+- `page_view_count` on sent newsletters in `GET` one, the project list, and the committee list (one grouped query per page).
+- `total_page_views` on `…/analytics` for sent newsletters.
+
+A reader who opens the email and then clicks "Read online" counts once in `total_opens` and once in page views. That overlap is accepted by clients that sum the two.
+
+**Data minimization and erasure.** As with shares, rows hold only the dedupe key and no timestamp. A user's rows are erased across all newsletters by `PageViewService.DeleteUserPageViews(principal)` (repository `DeletePageViewsByUser`); there is no HTTP route for it. Rows are otherwise removed only when their newsletter is deleted (`ON DELETE CASCADE`). A page-view store read failure is logged and the fields are omitted; it never fails the surrounding response.
+
 ### Per-Recipient Engagement
 
 `…/newsletters/{newsletter_uid}/analytics/recipients` returns `NewsletterRecipientEngagementResponse`, gated on project ownership like the aggregate endpoint. Unlike the aggregate analytics rule, the gateway rule requires the `auditor` relation, fail-closed (no `allow_all` fallback; unreachable when `openfga.enabled=false`) — the platform model's project `viewer` includes the public wildcard `[user:*]`, and this response exposes recipient identities plus per-recipient engagement history, so it takes the same posture as the opt-out list. Response fields:
@@ -143,7 +312,7 @@ Click tracking excludes the compliance-footer links: the "Unsubscribe" and "My N
 - `complete`: `false` when the provider returned fewer per-recipient records than `total_recipients`. Both providers' per-recipient stores are best-effort — email-service silently omits missing/malformed records and its group index briefly lags a fresh send; the SendGrid store records no row for ambiguous send outcomes — so clients must treat an incomplete list as partial data, not as proof the absent recipients were never sent to.
 - `recipients`: one row per recipient the sending provider recorded, with:
   - `email`: the recipient address the provider recorded for the send.
-  - `name`: the recipient's full name, resolved best-effort at read time by re-querying the newsletter's committees (`lfx.committee-api.list_members`) and matching on lowercased email. Omitted when the member no longer appears in the committees, has no name on file, or the committee lookup fails — clients display `name` when present and fall back to `email`.
+  - `name`: the recipient's full name, resolved best-effort at read time and matched on lowercased email. The name comes from the newsletter's audience snapshot when it has a `ready` one. Newsletters sent before snapshots existed are read live from the query service for each committee. Omitted when the member no longer appears in the committees, has no name on file, or the committee lookup fails — clients display `name` when present and fall back to `email`.
   - `delivered` / `delivered_at`, `failed` / `failed_at`: delivery outcome; timestamps omitted when unknown.
   - `opened`, `open_count`, `last_opened_at`, and `opened_at_list` — open timestamps, ascending. Per recipient, `opened_at_list` is capped at the 500 most recent recorded opens (enforced in the query) to bound response size. `open_count` is the provider's total recorded open count and may exceed the capped list length. `opened_at_list` is always present (empty array when the recipient never opened).
   - `clicked`, `click_count`, `last_clicked_at`, and `clicked_at_list` — click timestamps, ascending, same shape and 500-entry cap as the open fields above. **SendGrid-only**: on an email-service (SES) newsletter these are always `false` / `0` / omitted / `[]`.
@@ -168,18 +337,25 @@ Semantics and caveats:
 | Stale `If-Match` | 412 | `version_mismatch` |
 | Draft already sent | 409 | `already_sent` |
 | Send fan-out still in flight | 409 | `send_in_progress` |
+| Audience snapshot processing, failed or stale (or missing, on a snapshot read with a `newsletter_uid`) | 409 | `audience_not_ready` |
 | Newsletter is scheduled (edit/delete/send/schedule attempted) | 409 | `scheduled` |
 | Cancel-schedule requested inside the cancel buffer | 409 | `cancel_window_closed` |
 | Invalid request | 400 | `invalid_request` |
+| Test send to an address other than the caller's own email (the token's verified email, else their auth-service primary email), or neither is available | 403 | `forbidden` |
+| Test send when auth-service cannot look up the caller's email | 503 | `service_unavailable` |
+| Too many test sends for this principal (20 an hour per pod) | 429 | `rate_limited` |
+| A layout cannot be rendered — unknown `block_type`, an unknown/unembedded `template_key`, malformed markup, MJML compile failure, or a layout exceeding the block-count / nesting-depth / content-item limits (on `render-preview`, on render-on-write during create/update, or on the send-time re-render during `send` / `schedule`) | 422 | `unprocessable_entity` |
 | Upstream conflict (typed `pkgerrors.Conflict`) | 409 | `conflict` |
-| Upstream dependency unavailable | 503 | `service_unavailable` |
+| Upstream dependency unavailable, or a real send of a layout newsletter while the unsubscribe service is not configured | 503 | `service_unavailable` |
 | Unexpected server error | 500 | `internal_error` |
 
-Domain sentinels match first; typed `pkgerrors.*` wrappers from the NATS upstream clients (committee, project, email-dispatcher) match by `errors.As`. 5xx responses intentionally use a generic client message. Details are logged server-side.
+Domain sentinels match first; typed `pkgerrors.*` wrappers from the upstream clients (the query-service committee client, and the NATS project and email-dispatcher clients) match by `errors.As`. 5xx responses intentionally use a generic client message. Details are logged server-side.
+
+`422 unprocessable_entity` is a client/markup error — the request was well-formed but its layout could not be rendered. This includes a `template_key` that names a block library the binary does not embed, and a layout that exceeds the block-count, container-nesting-depth, or total content-item ceilings — bounded so the pre-compile render pipeline (parse, recursive bind, spacing expansion), which runs before the compile timeout, cannot be driven into pathological CPU/memory work. The content-item ceiling counts the array elements a block's `content` carries, transitively: those arrays are what `each=` repeaters fan out over, so a single block holding one very long array would otherwise pass the block-count check and still be bound and translated item by item. The same status applies whether the layout fails on `render-preview`, on render-on-write during create/update, or on the send-time re-render during `send` / `schedule`, so an editor that previews then saves the same bad layout sees a consistent code, and a layout that stops rendering after a template re-sync is reported the same way at send. It is distinct from a failure to load the *default* render library, which is a deployment defect (the templates ship with the binary) and surfaces as `500 internal_error`.
 
 ## Change Checklist
 
-- Update `pkg/api/newsletter.go`.
+- Update `pkg/api/newsletter.go` (or `pkg/api/publication.go`).
 - Update `internal/handler/http.go` and route handlers.
 - Update `internal/service/` and `internal/repository/` when behavior or persistence changes.
 - Update `internal/schema/schema.sql` for database changes.

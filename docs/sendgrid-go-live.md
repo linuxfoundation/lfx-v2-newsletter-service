@@ -191,8 +191,15 @@ reasons. Both apply to the SendGrid direct-send path.
   `text/plain` alternative is not what Gmail renders and does not count toward this
   threshold, so the Plain Text click-tracking setting does not affect clipping.
   The lever is the HTML part itself: content length plus HTML click-tracking (kept
-  ON for analytics) rewriting each link into a long redirect URL. A very
-  link-heavy or long newsletter can approach the limit; keep the HTML lean.
+  ON for analytics) rewriting each link into a long redirect URL. The service
+  minifies a layout's rendered email to keep it smaller, but long editions, such
+  as the AAIF Executive Director weekly, still go past the limit. That is
+  allowed on purpose: the service accepts a rendered email up to 400,000 bytes
+  (see the render-preview section of `newsletter-service-contract.md`). Gmail
+  then shows the start of the email and a "View entire message" link, and the
+  footer with its unsubscribe link is behind that link. The one-click
+  `List-Unsubscribe` header (lfx-self-serve#4354) gives Gmail readers an
+  unsubscribe control that clipping does not hide.
 
 ## Blockers that depend on people outside this repo
 

@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "blocks": [
+    {
+      "block": "intro_letter"
+    },
+    {
+      "block": "foundation_news"
+    },
+    {
+      "block": "blogs_videos"
+    },
+    {
+      "block": "ambassadors"
+    },
+    {
+      "block": "contributions"
+    },
+    {
+      "block": "working_groups"
+    },
+    {
+      "block": "upcoming_events"
+    },
+    {
+      "block": "member_innovation"
+    },
+    {
+      "block": "protocols_standards"
+    },
+    {
+      "block": "in_the_news"
+    },
+    {
+      "block": "ecosystem_pulse"
+    },
+    {
+      "block": "agents_infra"
+    },
+    {
+      "block": "models"
+    },
+    {
+      "block": "benchmarks"
+    },
+    {
+      "block": "security"
+    },
+    {
+      "block": "in_production"
+    },
+    {
+      "block": "emerging"
+    },
+    {
+      "block": "funding"
+    },
+    {
+      "block": "m_and_a"
+    }
+  ]
+}

@@ -39,8 +39,15 @@ func (h *Handler) ListCommitteeNewsletters(w http.ResponseWriter, r *http.Reques
 		Newsletters:   make([]publicapi.CommitteeNewsletter, 0, len(page.Newsletters)),
 		NextPageToken: page.NextPageToken,
 	}
+	counts := h.shareCounts(r.Context(), page.Newsletters)
+	views := h.pageViewCounts(r.Context(), page.Newsletters)
+	opens := h.totalOpensFor(r.Context(), page.Newsletters)
 	for _, n := range page.Newsletters {
-		out.Newsletters = append(out.Newsletters, toAPICommitteeNewsletter(n))
+		item := toAPICommitteeNewsletter(n)
+		item.ShareCount = countFor(counts, n.ID)
+		item.PageViewCount = countFor(views, n.ID)
+		item.TotalOpens = countFor(opens, n.ID)
+		out.Newsletters = append(out.Newsletters, item)
 	}
 	writeJSON(r.Context(), w, http.StatusOK, out)
 }

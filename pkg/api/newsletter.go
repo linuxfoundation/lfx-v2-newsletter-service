@@ -6,7 +6,11 @@
 // the rest of the V2 services (committee, project, meeting).
 package api
 
-import "time"
+import (
+	"bytes"
+	"encoding/json"
+	"time"
+)
 
 // Status enumerates newsletter lifecycle states.
 type Status string
@@ -33,14 +37,22 @@ const (
 
 // Newsletter is the response shape returned by single-resource endpoints.
 type Newsletter struct {
-	ID            string     `json:"id"`
-	ProjectUID    string     `json:"project_uid"`
-	Subject       string     `json:"subject"`
-	BodyHTML      string     `json:"body_html"`
-	EDReplyEmail  string     `json:"ed_reply_email"`
-	CommitteeUIDs []string   `json:"committee_uids"`
-	Status        Status     `json:"status"`
-	SentAt        *time.Time `json:"sent_at,omitempty"`
+	ID         string `json:"id"`
+	ProjectUID string `json:"project_uid"`
+	// PublicationUID is the publication this newsletter is an edition of. Every
+	// newsletter has one: when none was named at create, the service created an
+	// implicit publication for it.
+	PublicationUID *string `json:"publication_uid,omitempty"`
+	Subject        string  `json:"subject"`
+	BodyHTML       string  `json:"body_html"`
+	// BodyLayout is the editor's structured layout. Present only for layout-based
+	// newsletters; body_html is derived from it. Omitted for legacy / html-only
+	// newsletters.
+	BodyLayout    *NewsletterLayout `json:"body_layout,omitempty"`
+	EDReplyEmail  string            `json:"ed_reply_email"`
+	CommitteeUIDs []string          `json:"committee_uids"`
+	Status        Status            `json:"status"`
+	SentAt        *time.Time        `json:"sent_at,omitempty"`
 	// GroupID is the lfx-v2-email-service correlation identifier, set when
 	// the newsletter is sent. Null on drafts.
 	GroupID *string `json:"group_id,omitempty"`
@@ -55,14 +67,42 @@ type Newsletter struct {
 	Version         int64      `json:"version"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+	// ShareCount is the number of in-app shares, one per (user, channel).
+	// Set only on sent newsletters returned by the read endpoints (GET one,
+	// project list); omitted when the count can't be read, so clients must
+	// treat an absent value as unknown rather than zero.
+	ShareCount *int `json:"share_count,omitempty"`
+	// TotalOpens is the raw open total (every open, not unique recipients),
+	// matching the analytics endpoint's total_opens. Set only on a sent
+	// newsletter returned by GET one; omitted when it can't be read, so clients
+	// must treat an absent value as unknown rather than zero.
+	TotalOpens *int `json:"total_opens,omitempty"`
+	// PageViewCount is the number of unique web page views (one per signed-in
+	// user, ever). Set only on sent newsletters returned by the read endpoints
+	// (GET one, project list); omitted when the count can't be read, so
+	// clients must treat an absent value as unknown rather than zero. Clients
+	// that show a single "views" number add it to total_opens.
+	PageViewCount *int `json:"page_view_count,omitempty"`
 }
 
 // CreateNewsletterRequest is the body of POST /projects/{project_uid}/newsletters.
+//
+// BodyLayout is optional. When supplied, the service renders it to body_html via
+// the declarative emitter and persists both — any body_html in the request is
+// ignored. When omitted, body_html is taken from the request as-is (legacy path).
+//
+// PublicationUID is optional. When set the draft is created as an edition of
+// that publication: committee_uids and ed_reply_email default to the
+// publication's when omitted, and the publication's template set applies. When
+// omitted the service creates an implicit publication, so existing clients are
+// unaffected.
 type CreateNewsletterRequest struct {
-	Subject       string   `json:"subject"`
-	BodyHTML      string   `json:"body_html"`
-	EDReplyEmail  string   `json:"ed_reply_email"`
-	CommitteeUIDs []string `json:"committee_uids"`
+	PublicationUID *string           `json:"publication_uid,omitempty"`
+	Subject        string            `json:"subject"`
+	BodyHTML       string            `json:"body_html"`
+	BodyLayout     *NewsletterLayout `json:"body_layout,omitempty"`
+	EDReplyEmail   string            `json:"ed_reply_email"`
+	CommitteeUIDs  []string          `json:"committee_uids"`
 	// ScheduledAt is optional. When set, only a future time is required at
 	// save time — arming the schedule (72h horizon, minimum lead) is
 	// validated separately by POST .../schedule.
@@ -71,18 +111,75 @@ type CreateNewsletterRequest struct {
 
 // UpdateNewsletterRequest is the body of PUT /projects/{project_uid}/newsletters/{newsletter_uid}.
 //
+// BodyLayout is tri-state:
+//   - ABSENT (key omitted): a layout newsletter keeps its stored layout and
+//     derived body_html (the request's body_html is ignored); an html-only
+//     newsletter takes body_html from the request as before.
+//   - EXPLICIT NULL ("body_layout": null): the stored layout is cleared and
+//     the newsletter becomes html-only, taking body_html from the request.
+//   - OBJECT: the layout replaces the stored one; body_html is re-derived
+//     from it and the request's body_html is ignored.
+//
 // Full-replace semantics apply to ScheduledAt like every other field here: an
 // omitted value clears a previously-saved schedule.
 type UpdateNewsletterRequest struct {
-	Subject       string     `json:"subject"`
-	BodyHTML      string     `json:"body_html"`
-	EDReplyEmail  string     `json:"ed_reply_email"`
-	CommitteeUIDs []string   `json:"committee_uids"`
-	ScheduledAt   *time.Time `json:"scheduled_at,omitempty"`
+	Subject       string         `json:"subject"`
+	BodyHTML      string         `json:"body_html"`
+	BodyLayout    OptionalLayout `json:"body_layout,omitzero"`
+	EDReplyEmail  string         `json:"ed_reply_email"`
+	CommitteeUIDs []string       `json:"committee_uids"`
+	ScheduledAt   *time.Time     `json:"scheduled_at,omitempty"`
+}
+
+// OptionalLayout distinguishes the three JSON states of an optional
+// body_layout field: key absent (Present false), explicit null (Present true,
+// Layout nil), and an object (Present true, Layout non-nil). encoding/json
+// only calls UnmarshalJSON when the key exists, which is what makes the
+// absent/null distinction observable.
+type OptionalLayout struct {
+	Present bool
+	Layout  *NewsletterLayout
+}
+
+// UnmarshalJSON implements the tri-state decode described on the type.
+func (o *OptionalLayout) UnmarshalJSON(b []byte) error {
+	o.Present = true
+	if string(bytes.TrimSpace(b)) == "null" {
+		o.Layout = nil
+		return nil
+	}
+	return json.Unmarshal(b, &o.Layout)
+}
+
+// MarshalJSON round-trips the tri-state. The field carries the omitzero tag
+// and IsZero reports true for the not-Present zero value, so a Go client that
+// zero-initializes UpdateNewsletterRequest OMITS body_layout (preserve) rather
+// than accidentally sending an explicit null (clear). Explicit null therefore
+// requires Present true with a nil Layout — an intentional act.
+func (o OptionalLayout) MarshalJSON() ([]byte, error) {
+	if o.Layout == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(o.Layout)
+}
+
+// IsZero implements the encoding/json omitzero contract: the zero value
+// (Present false) is omitted from marshaled requests.
+func (o OptionalLayout) IsZero() bool {
+	return !o.Present
 }
 
 // RecipientCountRequest is the body of POST /projects/{project_uid}/newsletters/recipient-count.
+//
+// NewsletterUID names the newsletter whose audience snapshot is read; when it is
+// omitted the committees are read live. CommitteeUIDs is the committee list the
+// caller expects the snapshot to have been built from. A snapshot built from a
+// different list is reported as stale.
 type RecipientCountRequest struct {
+	// NewsletterUID selects the newsletter's audience snapshot. When it is
+	// omitted, the count is read live from the committees, as before snapshots
+	// existed, so a client that has not adopted snapshots keeps working.
+	NewsletterUID string   `json:"newsletter_uid,omitempty"`
 	CommitteeUIDs []string `json:"committee_uids"`
 }
 
@@ -98,7 +195,11 @@ type Recipient struct {
 }
 
 // RecipientsRequest is the body of POST /projects/{project_uid}/newsletters/recipients.
+// Its fields mean the same as in RecipientCountRequest.
 type RecipientsRequest struct {
+	// NewsletterUID selects the newsletter's audience snapshot. When it is
+	// omitted, the recipients are read live from the committees.
+	NewsletterUID string   `json:"newsletter_uid,omitempty"`
 	CommitteeUIDs []string `json:"committee_uids"`
 }
 
@@ -109,10 +210,26 @@ type RecipientsResponse struct {
 
 // TestSendRequest is the body of POST /projects/{project_uid}/newsletters/test-send.
 type TestSendRequest struct {
-	Subject      string `json:"subject"`
-	BodyHTML     string `json:"body_html"`
-	ToEmail      string `json:"to_email"`
-	EDReplyEmail string `json:"ed_reply_email,omitempty"`
+	Subject  string `json:"subject"`
+	BodyHTML string `json:"body_html"`
+	ToEmail  string `json:"to_email"`
+	// IsLayout is DEPRECATED and ignored. body_layout is the sole layout trigger
+	// for a test send (see below); a precompiled is_layout body_html is no longer
+	// dispatched verbatim, because binding its per-recipient unsubscribe sentinel
+	// to empty left a dangling <a href="">Unsubscribe</a>. The field is retained
+	// only so existing clients that still send it are not rejected (the decoder
+	// disallows unknown fields); its value has no effect. Send body_layout for a
+	// layout test send.
+	IsLayout bool `json:"is_layout,omitempty"`
+	// BodyLayout, when present, is the structured layout the service recompiles
+	// server-side for the test send. It is the sole layout trigger and suppresses
+	// only the unsubscribe opt-out row (a non-recipient test mints no opt-out
+	// token, so the row would otherwise render a dangling empty Unsubscribe
+	// link); the sender/reply/delivery attribution in the compliance footer
+	// still renders. Send the layout — not a pre-compiled body_html — for a
+	// layout test send so its footer matches the real send.
+	BodyLayout   *NewsletterLayout `json:"body_layout,omitempty"`
+	EDReplyEmail string            `json:"ed_reply_email,omitempty"`
 }
 
 // TestSendResponse is the body of POST /projects/{project_uid}/newsletters/test-send.
@@ -150,6 +267,103 @@ type SendNewsletterResponse struct {
 	Sent            int           `json:"sent"`
 	Failed          int           `json:"failed"`
 	Failures        []SendFailure `json:"failures,omitempty"`
+}
+
+// LayoutBlock is a single recursive content node in a newsletter layout.
+// BlockType selects the declarative template; Content holds the field bindings
+// the template consumes; Blocks holds nested child blocks. It mirrors the
+// emitter's internal Block so the public contract does not leak an internal
+// type.
+type LayoutBlock struct {
+	BlockType string         `json:"block_type"`
+	Content   map[string]any `json:"content,omitempty"`
+	Blocks    []LayoutBlock  `json:"blocks,omitempty"`
+}
+
+// NewsletterLayout is the structured newsletter body: a wrapper key plus the
+// ordered top-level blocks that render inside the wrapper's body slot.
+type NewsletterLayout struct {
+	WrapperKey string `json:"wrapper_key"`
+	// TemplateKey selects the block library the layout is composed from and
+	// rendered with. The layout renders with that library's blocks and wrapper
+	// only, so a block_type the library does not have is a 422. Optional. Empty
+	// falls back to aaif-user-community (see declarative.FallbackTemplateKey), for
+	// drafts saved before layouts named a library. Naming a library the binary does
+	// not embed is a 422.
+	TemplateKey string        `json:"template_key,omitempty"`
+	Blocks      []LayoutBlock `json:"blocks"`
+}
+
+// RenderPreviewRequest is the body of POST
+// /projects/{project_uid}/newsletters/render-preview.
+//
+// BodyLayout is the structured layout to render. WrapperContent supplies
+// caller-controlled edition data the wrapper template binds against:
+// edition.date, edition.view_online_link, and the display values for the
+// footer's sender line, edition.sender_name and edition.project_name, sent
+// together (a stateless preview has no send to resolve them from; when both are
+// omitted the wrapper drops the sender line or shows its own fallback line, and
+// supplying one without the other renders an empty name). edition.reply_email
+// is accepted and bound but the
+// embedded wrappers do not render it. The unsubscribe and "My Newsletters"
+// footer sentinels are service-owned and protected against mutation; see
+// previewWrapperContent in newsletter.go. WrapperContent is optional and may be
+// omitted when no edition customization is needed.
+type RenderPreviewRequest struct {
+	BodyLayout     NewsletterLayout `json:"body_layout"`
+	WrapperContent map[string]any   `json:"wrapper_content,omitempty"`
+}
+
+// RenderPreviewResponse is the body of POST
+// /projects/{project_uid}/newsletters/render-preview. BodyHTML is the rendered,
+// email-safe HTML produced by the declarative emitter.
+type RenderPreviewResponse struct {
+	BodyHTML string `json:"body_html"`
+}
+
+// TemplateSummary is one entry in the template-list response: a selectable block
+// library keyed by its embedded template key.
+type TemplateSummary struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// TemplatesResponse is the body of GET /projects/{project_uid}/newsletters/templates.
+type TemplatesResponse struct {
+	Templates []TemplateSummary `json:"templates"`
+}
+
+// TemplateManifestBlock is one palette entry in a template manifest: a block
+// type with its editor schema and comment-stripped renderable template body.
+// Mirrors NewsletterBlockManifestEntry in @lfx-one/shared.
+type TemplateManifestBlock struct {
+	BlockType   string          `json:"block_type"`
+	Label       string          `json:"label"`
+	Category    string          `json:"category"`
+	Schema      json.RawMessage `json:"schema"`
+	IsContainer bool            `json:"is_container,omitempty"`
+	// Template is the raw element tree with all HTML comments stripped — the
+	// client-side renderer walks it to draw the canvas preview.
+	Template string `json:"template"`
+}
+
+// TemplateManifest is the editor manifest for one template set: the block
+// palette plus the page-chrome wrapper. Body of
+// GET /projects/{project_uid}/newsletters/templates/{template_key}/manifest.
+// Mirrors NewsletterTemplateManifest in @lfx-one/shared.
+type TemplateManifest struct {
+	WrapperKey string                  `json:"wrapper_key"`
+	Blocks     []TemplateManifestBlock `json:"blocks"`
+	Wrapper    string                  `json:"wrapper,omitempty"`
+	// StarterBlocks is the ordered block list a new edition starts with, from the
+	// template set's edition.json. Every entry names a block in Blocks. Additive:
+	// clients that do not know the field can ignore it.
+	StarterBlocks []TemplateStarterBlock `json:"starter_blocks"`
+}
+
+// TemplateStarterBlock names one block of a starting edition.
+type TemplateStarterBlock struct {
+	BlockType string `json:"block_type"`
 }
 
 // ScheduleNewsletterRequest is the body of
@@ -195,6 +409,9 @@ type CancelScheduleResponse struct {
 
 // NewsletterListItem is one row in the unified list response. Inherits the
 // Newsletter shape and adds engagement fields populated only when status='sent'.
+// body_layout is always omitted on list rows: a layout can approach the 1 MiB
+// request cap and list pages return up to 100 rows, so carrying it would bloat
+// one list response by up to ~100 MiB. Fetch the single newsletter to get it.
 type NewsletterListItem struct {
 	Newsletter
 	UniqueOpens *int     `json:"unique_opens,omitempty"`
@@ -219,6 +436,15 @@ type CommitteeNewsletter struct {
 	ProjectUID string     `json:"project_uid"`
 	Subject    string     `json:"subject"`
 	SentAt     *time.Time `json:"sent_at,omitempty"`
+	// ShareCount is the number of in-app shares, one per (user, channel).
+	// Omitted when the count can't be read (treat as unknown, not zero).
+	ShareCount *int `json:"share_count,omitempty"`
+	// TotalOpens is the raw open total, the same value GET one returns.
+	// Omitted when it can't be read (treat as unknown, not zero).
+	TotalOpens *int `json:"total_opens,omitempty"`
+	// PageViewCount is the number of unique web page views, one per user.
+	// Omitted when the count can't be read (treat as unknown, not zero).
+	PageViewCount *int `json:"page_view_count,omitempty"`
 }
 
 // CommitteeNewsletterListResponse is the body of
@@ -280,6 +506,22 @@ type NewsletterAnalytics struct {
 	DailyClicks     []NewsletterDailyClicks `json:"daily_clicks"`
 	TopLinks        []NewsletterLinkClicks  `json:"top_links"`
 	LastEventAt     *time.Time              `json:"last_event_at,omitempty"`
+	// TotalShares is the number of in-app shares, one per (user, channel),
+	// and SharesByChannel splits it by share target (x, linkedin, reddit,
+	// email, copy_link; channels with no shares are 0). Both are omitted when
+	// the share store can't be read.
+	TotalShares     *int           `json:"total_shares,omitempty"`
+	SharesByChannel map[string]int `json:"shares_by_channel,omitempty"`
+	// TotalPageViews is the number of unique web page views, one per user.
+	// Omitted for unsent newsletters and when the view store can't be read.
+	TotalPageViews *int `json:"total_page_views,omitempty"`
+}
+
+// ShareNewsletterRequest is the body of
+// POST /projects/{project_uid}/newsletters/{newsletter_uid}/shares.
+type ShareNewsletterRequest struct {
+	// Channel is the share target: x, linkedin, reddit, email, or copy_link.
+	Channel string `json:"channel"`
 }
 
 // NewsletterRecipientEngagement is one recipient's row in the per-recipient
@@ -338,4 +580,29 @@ type OptOut struct {
 // OptOutListResponse is the body of GET /projects/{project_uid}/newsletter-opt-outs.
 type OptOutListResponse struct {
 	OptOuts []OptOut `json:"opt_outs"`
+}
+
+// ResolveAudienceRequest is the body of
+// POST /projects/{project_uid}/newsletters/{newsletter_uid}/audience.
+type ResolveAudienceRequest struct {
+	CommitteeUIDs []string `json:"committee_uids"`
+	// Refresh rebuilds a ready snapshot from the committees' current
+	// membership instead of returning it unchanged.
+	Refresh bool `json:"refresh,omitempty"`
+}
+
+// AudienceResponse is the body of POST and GET
+// /projects/{project_uid}/newsletters/{newsletter_uid}/audience.
+//
+// Status is "processing", "ready" or "failed". RecipientCount and
+// SkippedNoEmail are set once the audience is ready. Error is set when the
+// audience failed. The response does not list recipient emails.
+type AudienceResponse struct {
+	Status         string     `json:"status"`
+	RecipientCount int        `json:"recipient_count"`
+	SkippedNoEmail int        `json:"skipped_no_email"`
+	CommitteeUIDs  []string   `json:"committee_uids"`
+	RequestedAt    time.Time  `json:"requested_at"`
+	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
+	Error          string     `json:"error,omitempty"`
 }

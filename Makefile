@@ -10,8 +10,14 @@ DOCKER_REGISTRY := ghcr.io/linuxfoundation
 DOCKER_IMAGE := $(DOCKER_REGISTRY)/$(APP_NAME)
 DOCKER_TAG := latest
 
+# Pin the MegaLinter Go image to the release used by CI.
+MEGALINTER_IMAGE := ghcr.io/oxsecurity/megalinter-go@sha256:e676b8e9dac00d148bf1abb6ab809f1df76f07e804d8061f78631975d0c90925  # v10.2.0
+
 HELM_CHART_PATH := ./charts/lfx-v2-newsletter-service
 HELM_RELEASE_NAME := lfx-v2-newsletter-service
+# The chart names its Deployment from .Chart.Name, not the release, so
+# redeploy-local targets this name whatever HELM_RELEASE_NAME is set to.
+HELM_DEPLOYMENT_NAME := lfx-v2-newsletter-service
 HELM_NAMESPACE := lfx
 HELM_VALUES_FILE := ./charts/lfx-v2-newsletter-service/values.local.yaml
 
@@ -20,9 +26,10 @@ CNPG_VERSION := 0.28.0
 KUBE_CONTEXT ?= orbstack
 KO_LOCAL_REPO := ko.local
 KO_LOCAL_TAG := local
+KO_LOCAL_IMAGE := $(KO_LOCAL_REPO)/newsletter-api
 
-GO_VERSION := 1.25.0
-GOLANGCI_LINT_VERSION := v2.12.2
+GO_VERSION := 1.27.4
+GOLANGCI_LINT_VERSION := v2.15.0
 LINT_TIMEOUT := 10m
 LINT_TOOL := $(shell go env GOPATH)/bin/golangci-lint
 GO_FILES := $(shell find . -name '*.go' -not -path './gen/*' -not -path './vendor/*')
@@ -69,6 +76,18 @@ fmt:
 lint:
 	@which golangci-lint >/dev/null 2>&1 || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	golangci-lint run ./...
+
+.PHONY: megalinter
+megalinter:
+	docker pull $(MEGALINTER_IMAGE)
+	docker run --rm --platform linux/amd64 -e GOTOOLCHAIN=auto -v '$(CURDIR):/tmp/lint:rw' $(MEGALINTER_IMAGE)
+
+# sync-templates refreshes the embedded newsletter template sets from the git
+# repositories pinned in templates.lock. It needs git access to those
+# repositories (they are private). Run it, then commit the changed files.
+.PHONY: sync-templates
+sync-templates:
+	./scripts/sync-templates.sh
 
 .PHONY: license-check
 license-check:
@@ -145,7 +164,26 @@ helm-install-cnpg:
 helm-install-local:
 	helm upgrade --force --install $(HELM_RELEASE_NAME) $(HELM_CHART_PATH) \
 		--namespace $(HELM_NAMESPACE) --create-namespace \
+		--kube-context $(KUBE_CONTEXT) \
 		--values $(HELM_VALUES_FILE)
+
+# redeploy-local is the inner dev loop against the full-local (OrbStack) stack:
+# rebuild the ko image with a fresh unique tag and roll the running deployment to
+# it in one command. Run helm-install-local once first to create the release;
+# after that `make redeploy-local` picks up your latest service code. The unique
+# tag guarantees the deployment sees a new image (imagePullPolicy is Never), so
+# the rollout actually restarts the pod.
+.PHONY: redeploy-local
+redeploy-local:
+	@which ko >/dev/null 2>&1 || (echo "ko not found — install from https://ko.build" && exit 1)
+	@set -e; \
+	TAG=local-$$(date +%Y%m%d%H%M%S); \
+	echo "==> Building $(KO_LOCAL_IMAGE):$$TAG from $$(git rev-parse --short HEAD)..."; \
+	KO_DOCKER_REPO=$(KO_LOCAL_IMAGE) VERSION=$(VERSION) BUILD_TIME=$(BUILD_TIME) GIT_COMMIT=$(GIT_COMMIT) \
+		ko build --local --bare --tags=$$TAG ./cmd/newsletter-api && \
+	echo "==> Rolling $(HELM_DEPLOYMENT_NAME) to $$TAG..." && \
+	kubectl --context $(KUBE_CONTEXT) --namespace $(HELM_NAMESPACE) set image deploy/$(HELM_DEPLOYMENT_NAME) app=$(KO_LOCAL_IMAGE):$$TAG && \
+	kubectl --context $(KUBE_CONTEXT) --namespace $(HELM_NAMESPACE) rollout status deploy/$(HELM_DEPLOYMENT_NAME) --timeout=180s
 
 # helm-uninstall removes the chart release. Run helm-uninstall-cnpg afterwards
 # (in cluster+database mode) if you want to remove the Postgres data as well.

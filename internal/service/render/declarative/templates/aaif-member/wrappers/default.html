@@ -1,0 +1,140 @@
+<!-- Copyright The Linux Foundation and each contributor to LFX. -->
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SCHEMA: {
+  "edition": {
+    "date": {
+      "type": "text",
+      "label": "Edition date"
+    },
+    "title": {
+      "type": "text",
+      "label": "Edition title"
+    },
+    "preheader": {
+      "type": "text",
+      "label": "Preheader"
+    },
+    "view_online_link": {
+      "type": "text",
+      "label": "View Online URL"
+    },
+    "unsubscribe_url": {
+      "type": "text",
+      "label": "Unsubscribe URL"
+    },
+    "manage_subscriptions_url": {
+      "type": "text",
+      "label": "Manage subscriptions URL"
+    },
+    "sender_name": {
+      "type": "text",
+      "label": "Sender name"
+    },
+    "project_name": {
+      "type": "text",
+      "label": "Project name"
+    }
+  }
+} -->
+
+<!--
+  AAIF Member Newsletter — wrapper (header / footer chrome around every edition).
+
+  STYLING MODEL: this repo owns 100% of the look. Every block and this wrapper
+  use INLINE styles only; the `dm-*` class names carry no light-mode styling
+  and exist purely as hooks for the dark-mode <style> block below (progressive
+  enhancement for clients that honour <style> — Apple Mail, Outlook.com via
+  [data-ogsc]; Gmail strips it and gets the complete light design).
+
+  The look is deliberately editorial and dense: a single 640px column, no
+  cards, a serif lead, uppercase section labels over a 2px rule, and
+  scannable bullets. Monochrome ink so the AAIF wordmark is the only brand
+  element.
+
+  Per-brand URLs are baked into the markup. Only runtime fields use
+  {{mustache}}: edition.date · edition.view_online_link ·
+  edition.unsubscribe_url · edition.manage_subscriptions_url ·
+  edition.sender_name · edition.project_name
+  The sender line renders only when the renderer supplies edition.sender_name.
+-->
+
+<style>
+@media (prefers-color-scheme: dark) {
+  body { background-color:#0f0f10 !important; }
+  .dm-h { color:#f2f2f2 !important; }
+  .dm-t { color:#c9c9cc !important; }
+  .dm-m { color:#8a8a90 !important; }
+  .dm-rule { border-top-color:#2e2e31 !important; }
+  .dm-rule-strong { border-top-color:#f2f2f2 !important; }
+  .dm-chip { background-color:#2a2a2d !important; color:#f2f2f2 !important; }
+  .dm-btn { background-color:#f2f2f2 !important; }
+  .dm-btn-a { color:#111111 !important; }
+  .logo-light { display:none !important; }
+  .logo-dark { display:block !important; max-height:none !important; overflow:visible !important; }
+}
+[data-ogsc] body { background-color:#0f0f10 !important; }
+[data-ogsc] .dm-h { color:#f2f2f2 !important; }
+[data-ogsc] .dm-t { color:#c9c9cc !important; }
+[data-ogsc] .dm-m { color:#8a8a90 !important; }
+[data-ogsc] .dm-rule { border-top-color:#2e2e31 !important; }
+[data-ogsc] .dm-rule-strong { border-top-color:#f2f2f2 !important; }
+[data-ogsc] .dm-chip { background-color:#2a2a2d !important; color:#f2f2f2 !important; }
+[data-ogsc] .dm-btn { background-color:#f2f2f2 !important; }
+[data-ogsc] .dm-btn-a { color:#111111 !important; }
+[data-ogsc] .logo-light { display:none !important; }
+[data-ogsc] .logo-dark { display:block !important; max-height:none !important; overflow:visible !important; }
+</style>
+
+<Section style="width:100%;max-width:640px;margin:0 auto">
+  <div style="padding:18px 20px 6px">
+    <div class="logo-light">
+      <a href="https://aaif.io" target="_blank" style="text-decoration:none;border:0;outline:none">
+        <img alt="Agentic AI Foundation" width="200" src="https://data.aaif.live/storage/v1/object/public/media/branding/logo_dark.png" style="display:block;outline:none;border:0;width:200px;max-width:100%;height:auto" />
+      </a>
+    </div>
+    <div class="logo-dark" style="display:none;max-height:0;overflow:hidden">
+      <a href="https://aaif.io" target="_blank" style="text-decoration:none;border:0;outline:none">
+        <img alt="Agentic AI Foundation" width="200" src="https://data.aaif.live/storage/v1/object/public/media/branding/logo_light.png" style="display:block;outline:none;border:0;width:200px;max-width:100%;height:auto" />
+      </a>
+    </div>
+    <Heading class="dm-h" style="margin:16px 0 2px;font-family:Georgia,'Times New Roman',Times,serif;font-size:34px;font-weight:bold;line-height:1.1;letter-spacing:-0.5px;color:#111111">AAIF Member Newsletter</Heading>
+    <Text class="dm-m" style="margin:0 0 10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#6b6b70">What happened across the Agentic AI Foundation this week, for AAIF members.</Text>
+    <Text class="dm-m" style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6b6b70">
+      <span if="edition.date">{{edition.date}} &nbsp;&middot;&nbsp; </span>
+      <span if="edition.view_online_link"><Link href="{{edition.view_online_link}}" class="dm-h" style="color:#111111;text-decoration:underline">View online</Link> &nbsp;&middot;&nbsp; </span>
+      <Link href="https://aaif.io/subscribe" class="dm-h" style="color:#111111;text-decoration:underline">Subscribe</Link>
+    </Text>
+    <Hr class="dm-rule" style="border:0;border-top:1px solid #e2e2e5;margin:16px 0 0" />
+  </div>
+</Section>
+
+<slot name="body" />
+
+<Section style="width:100%;max-width:640px;margin:0 auto">
+  <div style="padding:8px 20px 28px">
+    <Hr class="dm-rule" style="border:0;border-top:1px solid #e2e2e5;margin:0 0 16px" />
+    <Text class="dm-t" style="margin:0 0 10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6;color:#333338">
+      The AAIF Member Newsletter is published by the
+      <Link href="https://aaif.io" class="dm-h" style="color:#111111;text-decoration:underline;font-weight:bold">Agentic AI Foundation</Link>,
+      home of open standards and open-source projects for agentic AI. Find us on
+      <Link href="https://github.com/aaif" class="dm-h" style="color:#111111;text-decoration:underline;font-weight:bold">GitHub</Link>,
+      <Link href="https://x.com/AgenticAIFdn" class="dm-h" style="color:#111111;text-decoration:underline;font-weight:bold">X</Link>,
+      <Link href="https://www.linkedin.com/company/agentic-ai-foundation" class="dm-h" style="color:#111111;text-decoration:underline;font-weight:bold">LinkedIn</Link> and
+      <Link href="https://www.youtube.com/@AgenticAI-Foundation" class="dm-h" style="color:#111111;text-decoration:underline;font-weight:bold">YouTube</Link>.
+    </Text>
+    <Text class="dm-m" style="margin:0 0 10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6b6b70">
+      For AAIF members. Got here by forward?
+      <Link href="https://aaif.io/subscribe" class="dm-h" style="color:#111111;text-decoration:underline">Subscribe</Link>.
+    </Text>
+    <Text if="edition.sender_name" class="dm-m" style="margin:0 0 10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6;color:#6b6b70">
+      Sent by <strong>{{edition.sender_name}}</strong> on behalf of <strong>{{edition.project_name}}</strong>.
+    </Text>
+    <Text if="edition.unsubscribe_url" class="dm-m" style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6;color:#6b6b70">
+      <Link href="{{edition.unsubscribe_url}}" class="dm-h" style="color:#111111;text-decoration:underline">Unsubscribe</Link>
+      &middot;
+      <Link href="{{edition.manage_subscriptions_url}}" class="dm-h" style="color:#111111;text-decoration:underline">Manage email preferences</Link>
+      &middot; Delivered by <Link href="https://lfx.linuxfoundation.org" class="dm-h" style="color:#111111;text-decoration:underline">LFX</Link>.
+    </Text>
+    <Text class="dm-m" style="margin:10px 0 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6;color:#6b6b70">The Linux Foundation, 2810 N Church St., PMB 57274, Wilmington, Delaware 19802-4447, United States</Text>
+  </div>
+</Section>

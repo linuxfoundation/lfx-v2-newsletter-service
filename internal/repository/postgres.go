@@ -69,6 +69,26 @@ func (r *PostgresNewsletterRepo) Get(ctx context.Context, id uuid.UUID) (*model.
 	return n, nil
 }
 
+// GetMeta is Get without the body_layout column — for hot paths (open pixel,
+// analytics ownership) that only read existence / project_uid / status /
+// group_id and would otherwise pull and decode the full layout JSON they
+// discard. ExcludeColumn mirrors the ListAll / ListSentByCommittee read path.
+func (r *PostgresNewsletterRepo) GetMeta(ctx context.Context, id uuid.UUID) (*model.Newsletter, error) {
+	n := &model.Newsletter{}
+	err := r.db.NewSelect().
+		Model(n).
+		ExcludeColumn("body_layout").
+		Where("n.id = ?", id).
+		Scan(ctx)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("select newsletter meta: %w", err)
+	}
+	return n, nil
+}
+
 // List returns all newsletters in the given project, newest first.
 func (r *PostgresNewsletterRepo) List(ctx context.Context, projectUID string) ([]*model.Newsletter, error) {
 	var rows []*model.Newsletter
@@ -98,6 +118,11 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 
 	q := r.db.NewSelect().
 		Model((*model.Newsletter)(nil)).
+		// body_layout can approach the 1 MiB request cap; list rows discard it
+		// (see toAPIListItem), so never materialize it here — a 100-row page would
+		// otherwise fetch up to ~100 MiB of JSON only to throw it away. Get/single
+		// -row paths still SELECT it (they need the layout).
+		ExcludeColumn("body_layout").
 		Where("project_uid = ?", filters.ProjectUID).
 		Order("updated_at DESC").
 		Order("id DESC").
@@ -105,6 +130,10 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 
 	if len(filters.Statuses) > 0 {
 		q = q.Where("status IN (?)", bun.List(filters.Statuses))
+	}
+
+	if filters.PublicationUID != nil {
+		q = q.Where("publication_uid = ?", *filters.PublicationUID)
 	}
 
 	if filters.PageToken != "" {
@@ -140,6 +169,10 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 func (r *PostgresNewsletterRepo) ListSentByCommittee(ctx context.Context, committeeUID string, pageToken string) (*port.ListPage, error) {
 	q := r.db.NewSelect().
 		Model((*model.Newsletter)(nil)).
+		// body_layout can approach the 1 MiB request cap; committee-list rows
+		// discard it (see toAPICommitteeNewsletter), so never materialize it here
+		// — matching ListAll.
+		ExcludeColumn("body_layout").
 		Where("status = ?", model.StatusSent).
 		// pgdialect.Array forces a Postgres text[] literal for the containment
 		// operand; without it bun json-encodes the slice (see Update's
@@ -200,33 +233,56 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		return nil, fmt.Errorf("%w: cannot update armed scheduled row", domain.ErrInvalidRequest)
 	}
 
-	res, err := r.db.NewUpdate().
-		Model(n).
-		Set("subject = ?", n.Subject).
-		Set("body_html = ?", n.BodyHTML).
-		Set("ed_reply_email = ?", n.EDReplyEmail).
-		// pgdialect.Array forces a Postgres text[] literal; without it bun
-		// json-encodes the slice and PG raises a "malformed array literal".
-		Set("committee_uids = ?", pgdialect.Array(n.CommitteeUIDs)).
-		Set("project_uid = ?", n.ProjectUID).
-		// Full replace: an omitted/null scheduled_at clears it, consistent with
-		// every other field here (LFXV2-2685).
-		Set("scheduled_at = ?", n.ScheduledAt).
-		Set("updated_at = now()").
-		Set("version = version + 1").
-		Where("id = ? AND version = ?", n.ID, expectedVersion).
-		Returning("*").
-		Exec(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("update newsletter: %w", err)
-	}
+	// Wrap the GUC flag and UPDATE in the same transaction so reject_legacy_layout_send
+	// sees it. This is the layout-aware update path: it rewrites body_html and
+	// body_layout together (including explicit layout removal via nullableJSONB), so
+	// the derived HTML stays consistent with the layout. Setting app.allow_layout_update
+	// authorizes that body_html rewrite on a layout row; a legacy pod (which ignores
+	// body_layout) never sets it and is blocked from an HTML-only edit that would leave
+	// body_layout stale. SET LOCAL only applies inside a transaction.
+	txErr := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_layout_update = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set layout update flag: %w", err)
+		}
+		res, err := tx.NewUpdate().
+			Model(n).
+			Set("subject = ?", n.Subject).
+			Set("body_html = ?", n.BodyHTML).
+			// body_layout is the editor's structured layout; nil persists SQL NULL so
+			// updating a layout-less draft doesn't write an empty JSONB value.
+			Set("body_layout = ?", nullableJSONB(n.BodyLayout)).
+			Set("ed_reply_email = ?", n.EDReplyEmail).
+			// pgdialect.Array forces a Postgres text[] literal; without it bun
+			// json-encodes the slice and PG raises a "malformed array literal".
+			Set("committee_uids = ?", pgdialect.Array(n.CommitteeUIDs)).
+			Set("project_uid = ?", n.ProjectUID).
+			// Full replace: an omitted/null scheduled_at clears it, consistent with
+			// every other field here (LFXV2-2685).
+			Set("scheduled_at = ?", n.ScheduledAt).
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("id = ? AND version = ?", n.ID, expectedVersion).
+			Returning("*").
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("update newsletter: %w", err)
+		}
 
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("update newsletter rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return nil, r.classifyMissing(ctx, n.ID)
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("update newsletter rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			// Classify on the enclosing tx, not the pool: running the SELECT on
+			// r.db here would hold this transaction's connection open while
+			// acquiring a second pool connection (pool-exhaustion / deadlock risk),
+			// the hazard the send-transition methods thread tx to avoid.
+			return r.classifyMissingWithDB(ctx, tx, n.ID)
+		}
+		return nil
+	})
+	if txErr != nil {
+		return nil, txErr
 	}
 
 	// bun's Returning("*") populated n with the new row state.
@@ -301,9 +357,15 @@ func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, 
 	// If scheduling, authorize armed mutations by setting the GUC before the update.
 	if scheduledAt != nil {
 		err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-			// Set the GUC flag in this transaction
+			// Set the GUC flags in this transaction: armed-mutation authorizes the
+			// batch_id write against reject_armed_scheduled_mutation, and layout-send
+			// authorizes the draft -> sending claim of a layout row against
+			// reject_legacy_layout_send.
 			if _, err := tx.NewRaw("SET LOCAL app.allow_armed_mutation = 'true'").Exec(ctx); err != nil {
 				return fmt.Errorf("set armed mutation flag: %w", err)
+			}
+			if _, err := tx.NewRaw("SET LOCAL app.allow_layout_send = 'true'").Exec(ctx); err != nil {
+				return fmt.Errorf("set layout send flag: %w", err)
 			}
 			// Now run the UPDATE in the same transaction
 			res, err := tx.NewUpdate().
@@ -337,29 +399,39 @@ func (r *PostgresNewsletterRepo) MarkSending(ctx context.Context, id uuid.UUID, 
 		return updated, err
 	}
 
-	// Non-scheduled send: no GUC needed, just run the UPDATE directly
-	res, err := r.db.NewUpdate().
-		Model(updated).
-		Set("status = ?", model.StatusSending).
-		Set("group_id = ?", groupID).
-		Set("send_provider = ?", sendProvider).
-		Set("total_recipients = ?", totalRecipients).
-		Set("updated_at = now()").
-		Set("version = version + 1").
-		Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusDraft).
-		Returning("*").
-		Exec(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("mark sending: %w", err)
-	}
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("mark sending rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return nil, r.classifySendTransitionMiss(ctx, id, expectedVersion)
-	}
-	return updated, nil
+	// Non-scheduled (immediate) send. Wrap the UPDATE in a transaction so the
+	// layout-send GUC is visible to reject_legacy_layout_send, which blocks a
+	// legacy pod from claiming a body_layout row for dispatch (it would wrap the
+	// stored body_html in email_chrome a second time). SET LOCAL only applies
+	// inside a transaction, so an immediate send now uses one too.
+	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw("SET LOCAL app.allow_layout_send = 'true'").Exec(ctx); err != nil {
+			return fmt.Errorf("set layout send flag: %w", err)
+		}
+		res, err := tx.NewUpdate().
+			Model(updated).
+			Set("status = ?", model.StatusSending).
+			Set("group_id = ?", groupID).
+			Set("send_provider = ?", sendProvider).
+			Set("total_recipients = ?", totalRecipients).
+			Set("updated_at = now()").
+			Set("version = version + 1").
+			Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusDraft).
+			Returning("*").
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("mark sending: %w", err)
+		}
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("mark sending rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			return r.classifySendTransitionMissWithDB(ctx, tx, id, expectedVersion)
+		}
+		return nil
+	})
+	return updated, err
 }
 
 // MarkSent transitions sending → sent, gated on the version produced by
@@ -620,6 +692,10 @@ func (r *PostgresNewsletterRepo) RecoverStuckSending(ctx context.Context, olderT
 // within the same hour collapse to a no-op via the
 // uq_opens_newsletter_recipient_hour unique index — this bounds growth on the
 // unauthenticated tracking pixel without losing unique-open counts.
+//
+// The conflict target names the index columns rather than the index itself:
+// uq_opens_newsletter_recipient_hour is a UNIQUE INDEX, not a constraint, and
+// ON CONFLICT ON CONSTRAINT only resolves pg_constraint entries.
 func (r *PostgresNewsletterRepo) RecordOpen(ctx context.Context, newsletterID uuid.UUID, recipientHash string) error {
 	open := &model.NewsletterOpen{
 		NewsletterID:  newsletterID,
@@ -627,7 +703,7 @@ func (r *PostgresNewsletterRepo) RecordOpen(ctx context.Context, newsletterID uu
 	}
 	if _, err := r.db.NewInsert().
 		Model(open).
-		On("CONFLICT ON CONSTRAINT uq_opens_newsletter_recipient_hour DO NOTHING").
+		On("CONFLICT (newsletter_id, recipient_hash, opened_at_hour) DO NOTHING").
 		Exec(ctx); err != nil {
 		return fmt.Errorf("record open: %w", err)
 	}
@@ -638,7 +714,7 @@ func (r *PostgresNewsletterRepo) RecordOpen(ctx context.Context, newsletterID uu
 // ErrNotFound if the newsletter doesn't exist; returns zero counts (not an
 // error) if it exists but has no opens recorded yet.
 func (r *PostgresNewsletterRepo) Analytics(ctx context.Context, newsletterID uuid.UUID) (*model.Analytics, error) {
-	n, err := r.Get(ctx, newsletterID)
+	n, err := r.GetMeta(ctx, newsletterID)
 	if err != nil {
 		return nil, err
 	}
@@ -704,6 +780,125 @@ func (r *PostgresNewsletterRepo) Analytics(ctx context.Context, newsletterID uui
 		DailyOpens:      daily,
 		LastEventAt:     agg.LastEventAt,
 	}, nil
+}
+
+// OpenCount returns the raw local open total for one newsletter: a single
+// COUNT over newsletter_opens, with no newsletter-row fetch, distinct count or
+// daily breakdown. Zero (not an error) when nothing has been recorded.
+func (r *PostgresNewsletterRepo) OpenCount(ctx context.Context, newsletterID uuid.UUID) (int, error) {
+	count, err := r.db.NewSelect().
+		Table("newsletter_opens").
+		Where("newsletter_id = ?", newsletterID).
+		Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count opens: %w", err)
+	}
+	return count, nil
+}
+
+// OpenCounts returns the raw local open total per newsletter for the given ids
+// in one grouped COUNT over newsletter_opens. Newsletters with no recorded
+// opens are absent from the map.
+func (r *PostgresNewsletterRepo) OpenCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	counts := make(map[uuid.UUID]int, len(newsletterIDs))
+	if len(newsletterIDs) == 0 {
+		return counts, nil
+	}
+	var rows []struct {
+		NewsletterID uuid.UUID `bun:"newsletter_id"`
+		Opens        int       `bun:"opens"`
+	}
+	if err := r.db.NewSelect().
+		Table("newsletter_opens").
+		Column("newsletter_id").
+		ColumnExpr("COUNT(*) AS opens").
+		Where("newsletter_id IN (?)", bun.List(newsletterIDs)).
+		Group("newsletter_id").
+		Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("count opens: %w", err)
+	}
+	for _, row := range rows {
+		counts[row.NewsletterID] = row.Opens
+	}
+	return counts, nil
+}
+
+// RecordShare inserts a share intent. The (newsletter_id, user_hash, channel)
+// primary key makes a repeat by the same user to the same channel a no-op.
+func (r *PostgresNewsletterRepo) RecordShare(ctx context.Context, share *model.NewsletterShare) error {
+	if _, err := r.db.NewInsert().
+		Model(share).
+		On("CONFLICT DO NOTHING").
+		Exec(ctx); err != nil {
+		return fmt.Errorf("record share: %w", err)
+	}
+	return nil
+}
+
+// ShareCounts returns the total share count per newsletter for the given ids
+// in one grouped query. Newsletters with no shares are absent from the map.
+func (r *PostgresNewsletterRepo) ShareCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	counts := make(map[uuid.UUID]int, len(newsletterIDs))
+	if len(newsletterIDs) == 0 {
+		return counts, nil
+	}
+	var rows []struct {
+		NewsletterID uuid.UUID `bun:"newsletter_id"`
+		Shares       int       `bun:"shares"`
+	}
+	if err := r.db.NewSelect().
+		Table("newsletter_shares").
+		Column("newsletter_id").
+		ColumnExpr("COUNT(*) AS shares").
+		Where("newsletter_id IN (?)", bun.List(newsletterIDs)).
+		Group("newsletter_id").
+		Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("count shares: %w", err)
+	}
+	for _, row := range rows {
+		counts[row.NewsletterID] = row.Shares
+	}
+	return counts, nil
+}
+
+// ShareStats returns one newsletter's share count, in total and per channel.
+func (r *PostgresNewsletterRepo) ShareStats(ctx context.Context, newsletterID uuid.UUID) (*model.ShareStats, error) {
+	var rows []struct {
+		Channel model.ShareChannel `bun:"channel"`
+		Shares  int                `bun:"shares"`
+	}
+	if err := r.db.NewSelect().
+		Table("newsletter_shares").
+		Column("channel").
+		ColumnExpr("COUNT(*) AS shares").
+		Where("newsletter_id = ?", newsletterID).
+		Group("channel").
+		Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("share stats: %w", err)
+	}
+	stats := &model.ShareStats{ByChannel: make(map[model.ShareChannel]int, len(rows))}
+	for _, row := range rows {
+		stats.ByChannel[row.Channel] = row.Shares
+		stats.Total += row.Shares
+	}
+	return stats, nil
+}
+
+// DeleteSharesByUser erases every share recorded for one user hash, across
+// all newsletters (the erasure path for a user's share data).
+func (r *PostgresNewsletterRepo) DeleteSharesByUser(ctx context.Context, userHash string) (int64, error) {
+	res, err := r.db.NewDelete().
+		Table("newsletter_shares").
+		Where("user_hash = ?", userHash).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("delete shares by user: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete shares by user: rows affected: %w", err)
+	}
+	return n, nil
 }
 
 // CreateUnsubscribe records a project-scoped opt-out. Idempotent: a second
@@ -779,10 +974,12 @@ func (r *PostgresNewsletterRepo) DeleteUnsubscribe(ctx context.Context, projectU
 	return nil
 }
 
-// classifyMissing distinguishes ErrNotFound from ErrVersionMismatch after an
-// Update affected zero rows.
-func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UUID) error {
-	exists, err := r.db.NewSelect().
+// classifyMissingWithDB explains a zero-rows Update: not-found vs version
+// mismatch. It takes an explicit bun.IDB so a caller inside a transaction can
+// pass its tx and run the SELECT on that connection rather than acquiring a
+// second pool connection (mirrors classifySendTransitionMissWithDB).
+func (r *PostgresNewsletterRepo) classifyMissingWithDB(ctx context.Context, db bun.IDB, id uuid.UUID) error {
+	exists, err := db.NewSelect().
 		Model((*model.Newsletter)(nil)).
 		Where("id = ?", id).
 		Exists(ctx)
@@ -795,23 +992,15 @@ func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UU
 	return domain.ErrVersionMismatch
 }
 
-// classifySendTransitionMiss distinguishes the reasons a MarkSending or
+// classifySendTransitionMissWithDB distinguishes the reasons a MarkSending or
 // MarkSent update can affect zero rows: not found, already sent, another send
-// in progress, or wrong version. Status checks take precedence over the
-// version check because the send-transition UPDATEs bump the version — a row
-// that moved to sending/sent necessarily has a different version too, and the
-// status is the more actionable signal for the caller.
-//
-// Use classifySendTransitionMissWithDB to classify through a transaction,
-// avoiding pool connection exhaustion when classifying within a transaction.
-func (r *PostgresNewsletterRepo) classifySendTransitionMiss(ctx context.Context, id uuid.UUID, expectedVersion int64) error {
-	return r.classifySendTransitionMissWithDB(ctx, r.db, id, expectedVersion)
-}
-
-// classifySendTransitionMissWithDB classifies through an arbitrary bun.IDB
-// (pool or transaction). Use this when classifying within a transaction to
-// avoid holding a transaction open while acquiring another pool connection
-// (pool exhaustion / deadlock risk).
+// in progress, scheduled, or wrong version. Status checks take precedence over
+// the version check because the send-transition UPDATEs bump the version — a
+// row that moved to sending/sent necessarily has a different version too, and
+// the status is the more actionable signal for the caller. It classifies
+// through an arbitrary bun.IDB (pool or transaction); pass the enclosing tx
+// when classifying inside one, so it does not hold that transaction open while
+// acquiring another pool connection (pool exhaustion / deadlock risk).
 func (r *PostgresNewsletterRepo) classifySendTransitionMissWithDB(ctx context.Context, db bun.IDB, id uuid.UUID, expectedVersion int64) error {
 	existing := &model.Newsletter{}
 	err := db.NewSelect().
@@ -838,6 +1027,17 @@ func (r *PostgresNewsletterRepo) classifySendTransitionMissWithDB(ctx context.Co
 	}
 	// Unreachable in practice — fall back to version mismatch.
 	return domain.ErrVersionMismatch
+}
+
+// nullableJSONB normalizes a raw JSON value for a nullable JSONB column. An
+// empty or nil payload becomes an untyped nil so the driver writes SQL NULL —
+// a zero-length []byte would otherwise be sent as an empty string, which JSONB
+// rejects.
+func nullableJSONB(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	return raw
 }
 
 // listCursor is the keyset cursor encoded into NextPageToken for ListAll.
@@ -899,4 +1099,60 @@ func decodeSentCursor(token string) (sentListCursor, error) {
 		return sentListCursor{}, errors.New("cursor fields must be non-zero")
 	}
 	return c, nil
+}
+
+// RecordPageView inserts a page view. The (newsletter_id, user_hash) primary
+// key makes a repeat view by the same user a no-op.
+func (r *PostgresNewsletterRepo) RecordPageView(ctx context.Context, view *model.NewsletterPageView) error {
+	if _, err := r.db.NewInsert().
+		Model(view).
+		On("CONFLICT DO NOTHING").
+		Exec(ctx); err != nil {
+		return fmt.Errorf("record page view: %w", err)
+	}
+	return nil
+}
+
+// PageViewCounts returns the unique page-view count per newsletter for the
+// given ids in one grouped query. Newsletters with no views are absent from
+// the map.
+func (r *PostgresNewsletterRepo) PageViewCounts(ctx context.Context, newsletterIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	counts := make(map[uuid.UUID]int, len(newsletterIDs))
+	if len(newsletterIDs) == 0 {
+		return counts, nil
+	}
+	var rows []struct {
+		NewsletterID uuid.UUID `bun:"newsletter_id"`
+		Views        int       `bun:"views"`
+	}
+	if err := r.db.NewSelect().
+		Table("newsletter_page_views").
+		Column("newsletter_id").
+		ColumnExpr("COUNT(*) AS views").
+		Where("newsletter_id IN (?)", bun.List(newsletterIDs)).
+		Group("newsletter_id").
+		Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("count page views: %w", err)
+	}
+	for _, row := range rows {
+		counts[row.NewsletterID] = row.Views
+	}
+	return counts, nil
+}
+
+// DeletePageViewsByUser erases every page view recorded for one user hash,
+// across all newsletters (the erasure path for a user's page-view data).
+func (r *PostgresNewsletterRepo) DeletePageViewsByUser(ctx context.Context, userHash string) (int64, error) {
+	res, err := r.db.NewDelete().
+		Table("newsletter_page_views").
+		Where("user_hash = ?", userHash).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("delete page views by user: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete page views by user: rows affected: %w", err)
+	}
+	return n, nil
 }

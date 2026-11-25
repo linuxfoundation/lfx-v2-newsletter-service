@@ -64,11 +64,8 @@ spec:
               value: {{ .Values.service.port | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.app.logLevel | quote }}
-            # NATS — used by the email dispatcher, committee member client,
-            # and project metadata client. Newsletter-service makes no HTTP
-            # upstream calls (the previous COMMITTEE_SERVICE_URL was retired
-            # along with the HTTP committee_client because Heimdall-minted
-            # JWTs failed OIDC validation at query-service).
+            # NATS — used by the email dispatcher, the project metadata client
+            # and the user metadata client.
             - name: NATS_URL
               value: {{ .Values.app.nats.url | quote }}
             {{- with .Values.app.nats.timeout }}
@@ -81,6 +78,47 @@ spec:
             {{- end }}
             {{- with .Values.app.nats.reconnectWait }}
             - name: NATS_RECONNECT_WAIT
+              value: {{ . | quote }}
+            {{- end }}
+            # Committee members are read from the query service over HTTPS as this
+            # service, with an Auth0 M2M token (private key JWT client assertion).
+            # The service cannot resolve an audience without them, so every value
+            # is required and the install fails here instead of the pod
+            # CrashLooping in AppConfigFromEnv.
+            - name: QUERY_SERVICE_URL
+              value: {{ required "app.queryService.url is required" .Values.app.queryService.url | quote }}
+            {{- with .Values.app.queryService.pageSize }}
+            - name: QUERY_SERVICE_PAGE_SIZE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.queryService.maxPages }}
+            - name: QUERY_SERVICE_MAX_PAGES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.queryService.timeout }}
+            - name: QUERY_SERVICE_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: M2M_AUTH_DOMAIN
+              value: {{ required "app.m2mAuth.domain is required" .Values.app.m2mAuth.domain | quote }}
+            - name: M2M_AUTH_AUDIENCE
+              value: {{ required "app.m2mAuth.audience is required" .Values.app.m2mAuth.audience | quote }}
+            - name: M2M_AUTH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "app.m2mAuth.clientIDSecretRef.name is required" .Values.app.m2mAuth.clientIDSecretRef.name }}
+                  key: {{ required "app.m2mAuth.clientIDSecretRef.key is required" .Values.app.m2mAuth.clientIDSecretRef.key }}
+            - name: M2M_AUTH_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "app.m2mAuth.privateKeySecretRef.name is required" .Values.app.m2mAuth.privateKeySecretRef.name }}
+                  key: {{ required "app.m2mAuth.privateKeySecretRef.key is required" .Values.app.m2mAuth.privateKeySecretRef.key }}
+            {{- with .Values.app.audienceResolution.jobTimeout }}
+            - name: AUDIENCE_JOB_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.audienceResolution.staleTTL }}
+            - name: AUDIENCE_STALE_TTL
               value: {{ . | quote }}
             {{- end }}
             - name: SEND_FANOUT_ENABLED

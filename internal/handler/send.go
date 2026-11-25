@@ -4,8 +4,12 @@
 package handler
 
 import (
+	"context"
 	"net/http"
+	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
@@ -14,7 +18,7 @@ import (
 
 // SendNewsletter handles POST /projects/{project_uid}/newsletters/{newsletter_uid}/send.
 //
-// The service validates the draft, resolves recipients, transitions the row to
+// The service validates the draft, reads the audience snapshot, transitions the row to
 // status=sending (the duplicate-send guard), and runs the per-recipient
 // fan-out in a background job detached from this request. The response is
 // therefore 202 Accepted with the sending-state newsletter (sent=0); clients
@@ -55,7 +59,7 @@ func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusAccepted
 	}
 	w.Header().Set("ETag", formatETag(result.Newsletter.Version))
-	writeJSON(r.Context(), w, status, toAPISendResponse(result))
+	writeJSON(r.Context(), w, status, toAPISendResponse(r.Context(), result))
 }
 
 // ScheduleNewsletter handles POST /projects/{project_uid}/newsletters/{newsletter_uid}/schedule.
@@ -106,7 +110,7 @@ func (h *Handler) ScheduleNewsletter(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusAccepted
 	}
 	w.Header().Set("ETag", formatETag(result.Newsletter.Version))
-	writeJSON(r.Context(), w, status, toAPIScheduleResponse(result))
+	writeJSON(r.Context(), w, status, toAPIScheduleResponse(r.Context(), result))
 }
 
 // CancelScheduleNewsletter handles POST
@@ -135,10 +139,20 @@ func (h *Handler) CancelScheduleNewsletter(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.Header().Set("ETag", formatETag(reverted.Version))
-	writeJSON(r.Context(), w, http.StatusOK, publicapi.CancelScheduleResponse{Newsletter: *toAPINewsletter(reverted)})
+	// Mirror the send/schedule responses: this send-lifecycle response echoes
+	// post-cancel state, not editable content, so omit body_layout (a layout can
+	// approach 1 MiB and the client already holds what it composed). Shallow-copy
+	// and clear before converting so toAPINewsletter never decodes it.
+	item := *reverted
+	item.BodyLayout = nil
+	writeJSON(r.Context(), w, http.StatusOK, publicapi.CancelScheduleResponse{Newsletter: *toAPINewsletter(r.Context(), &item)})
 }
 
 // RecipientCount handles POST /projects/{project_uid}/newsletters/recipient-count.
+// With a newsletter_uid it reads the newsletter's audience snapshot and returns
+// 409 with the audience status until the snapshot is ready (see
+// ResolveAudience). Without one it counts the committees live, for clients that
+// have not adopted snapshots yet.
 func (h *Handler) RecipientCount(w http.ResponseWriter, r *http.Request) {
 	projectUID := r.PathValue("project_uid")
 	var body publicapi.RecipientCountRequest
@@ -146,7 +160,12 @@ func (h *Handler) RecipientCount(w http.ResponseWriter, r *http.Request) {
 		writeError(r.Context(), w, err)
 		return
 	}
-	count, err := h.send.RecipientCount(r.Context(), projectUID, body.CommitteeUIDs)
+	newsletterID, err := optionalNewsletterUID(body.NewsletterUID)
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+	count, err := h.send.RecipientCount(r.Context(), projectUID, newsletterID, body.CommitteeUIDs)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
@@ -154,7 +173,8 @@ func (h *Handler) RecipientCount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(r.Context(), w, http.StatusOK, publicapi.RecipientCountResponse{Count: count})
 }
 
-// Recipients handles POST /projects/{project_uid}/newsletters/recipients.
+// Recipients handles POST /projects/{project_uid}/newsletters/recipients. It has
+// the same readiness rules as RecipientCount.
 func (h *Handler) Recipients(w http.ResponseWriter, r *http.Request) {
 	projectUID := r.PathValue("project_uid")
 	var body publicapi.RecipientsRequest
@@ -162,7 +182,12 @@ func (h *Handler) Recipients(w http.ResponseWriter, r *http.Request) {
 		writeError(r.Context(), w, err)
 		return
 	}
-	recipients, err := h.send.Recipients(r.Context(), projectUID, body.CommitteeUIDs)
+	newsletterID, err := optionalNewsletterUID(body.NewsletterUID)
+	if err != nil {
+		writeError(r.Context(), w, err)
+		return
+	}
+	recipients, err := h.send.Recipients(r.Context(), projectUID, newsletterID, body.CommitteeUIDs)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
@@ -186,12 +211,15 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.send.TestSend(r.Context(), service.TestSendInput{
-		ProjectUID:   projectUID,
-		Subject:      body.Subject,
-		BodyHTML:     body.BodyHTML,
-		ToEmail:      body.ToEmail,
-		EDReplyEmail: body.EDReplyEmail,
-		Principal:    UserFromContext(r.Context()),
+		ProjectUID:     projectUID,
+		Subject:        body.Subject,
+		BodyHTML:       body.BodyHTML,
+		ToEmail:        body.ToEmail,
+		EDReplyEmail:   body.EDReplyEmail,
+		IsLayout:       body.IsLayout,
+		BodyLayout:     toEmitterLayoutPtr(body.BodyLayout),
+		Principal:      UserFromContext(r.Context()),
+		PrincipalEmail: UserEmailFromContext(r.Context()),
 	}); err != nil {
 		writeError(r.Context(), w, err)
 		return
@@ -203,7 +231,7 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 // response DTO. ScheduledAt is read off the settled newsletter so the
 // response always reflects the value actually persisted (the request's
 // override, or the draft's own saved value when the request body was empty).
-func toAPIScheduleResponse(result *service.SendResult) publicapi.ScheduleNewsletterResponse {
+func toAPIScheduleResponse(ctx context.Context, result *service.SendResult) publicapi.ScheduleNewsletterResponse {
 	failures := make([]publicapi.SendFailure, 0, len(result.Failures))
 	for _, f := range result.Failures {
 		failures = append(failures, publicapi.SendFailure{Email: f.Email, Error: f.Error})
@@ -212,8 +240,13 @@ func toAPIScheduleResponse(result *service.SendResult) publicapi.ScheduleNewslet
 	if result.Newsletter.ScheduledAt != nil {
 		scheduledAt = *result.Newsletter.ScheduledAt
 	}
+	// Mirror toAPISendResponse: omit body_layout in this send-lifecycle response
+	// (it echoes post-schedule state, not editable content, and a layout can
+	// approach 1 MiB). Shallow-copy and clear before converting.
+	item := *result.Newsletter
+	item.BodyLayout = nil
 	return publicapi.ScheduleNewsletterResponse{
-		Newsletter:      *toAPINewsletter(result.Newsletter),
+		Newsletter:      *toAPINewsletter(ctx, &item),
 		GroupID:         result.GroupID,
 		ScheduledAt:     scheduledAt,
 		TotalRecipients: result.TotalRecipients,
@@ -224,17 +257,36 @@ func toAPIScheduleResponse(result *service.SendResult) publicapi.ScheduleNewslet
 }
 
 // toAPISendResponse converts a service SendResult into the public API DTO.
-func toAPISendResponse(result *service.SendResult) publicapi.SendNewsletterResponse {
+func toAPISendResponse(ctx context.Context, result *service.SendResult) publicapi.SendNewsletterResponse {
 	failures := make([]publicapi.SendFailure, 0, len(result.Failures))
 	for _, f := range result.Failures {
 		failures = append(failures, publicapi.SendFailure{Email: f.Email, Error: f.Error})
 	}
+	// The send response echoes the newsletter's post-send state (status, counts),
+	// not its editable content. Omit body_layout here — as list rows do — so the
+	// structured layout is carried only by the explicit get / create / update
+	// single-resource reads (see docs/newsletter-service-contract.md). The client
+	// already holds the layout it just sent. Shallow-copy and clear BodyLayout
+	// on the copy (mirroring toAPIListItem) so toAPINewsletter never decodes a
+	// layout the response discards anyway — a layout can approach 1 MiB.
+	item := *result.Newsletter
+	item.BodyLayout = nil
+	newsletter := toAPINewsletter(ctx, &item)
 	return publicapi.SendNewsletterResponse{
-		Newsletter:      *toAPINewsletter(result.Newsletter),
+		Newsletter:      *newsletter,
 		GroupID:         result.GroupID,
 		TotalRecipients: result.TotalRecipients,
 		Sent:            result.Sent,
 		Failed:          result.Failed,
 		Failures:        failures,
 	}
+}
+
+// optionalNewsletterUID parses a newsletter_uid that clients may omit. An empty
+// value returns uuid.Nil, which selects the live committee read.
+func optionalNewsletterUID(raw string) (uuid.UUID, error) {
+	if strings.TrimSpace(raw) == "" {
+		return uuid.Nil, nil
+	}
+	return parseUUID(raw)
 }

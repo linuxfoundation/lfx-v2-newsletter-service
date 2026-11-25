@@ -26,9 +26,13 @@ import (
 // and exposes registered routes via Routes().
 type Handler struct {
 	newsletter      *service.NewsletterService
+	publications    *service.PublicationService
 	send            *service.SendOrchestrator
+	audience        *service.AudienceService
 	analytics       *service.AnalyticsService
 	unsub           *service.UnsubscribeService
+	shares          *service.ShareService
+	pageViews       *service.PageViewService
 	project         port.ProjectMetadataClient
 	db              *sql.DB
 	auth            *AuthValidator
@@ -42,9 +46,13 @@ type Handler struct {
 // Config wires a Handler.
 type Config struct {
 	Newsletter      *service.NewsletterService
+	Publications    *service.PublicationService
 	Send            *service.SendOrchestrator
+	Audience        *service.AudienceService
 	Analytics       *service.AnalyticsService
 	Unsubscribe     *service.UnsubscribeService
+	Shares          *service.ShareService
+	PageViews       *service.PageViewService
 	Project         port.ProjectMetadataClient
 	DB              *sql.DB
 	Auth            *AuthValidator
@@ -58,9 +66,13 @@ type Config struct {
 func New(cfg Config) *Handler {
 	return &Handler{
 		newsletter:      cfg.Newsletter,
+		publications:    cfg.Publications,
 		send:            cfg.Send,
+		audience:        cfg.Audience,
 		analytics:       cfg.Analytics,
 		unsub:           cfg.Unsubscribe,
+		shares:          cfg.Shares,
+		pageViews:       cfg.PageViews,
 		project:         cfg.Project,
 		db:              cfg.DB,
 		auth:            cfg.Auth,
@@ -121,9 +133,53 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("POST /projects/{project_uid}/newsletters/recipients", h.withAuth(http.HandlerFunc(h.Recipients)))
 	mux.Handle("POST /projects/{project_uid}/newsletters/test-send", h.withAuth(http.HandlerFunc(h.TestSend)))
 
+	// Stateless render preview — JWT auth. Binds a layout against the embedded
+	// declarative templates and returns email-safe HTML; nothing is persisted.
+	mux.Handle("POST /projects/{project_uid}/newsletters/render-preview", h.withAuth(http.HandlerFunc(h.RenderPreview)))
+
+	// Editor template sets — JWT auth. Serves the hard-coded (embedded)
+	// template catalog and per-key editor manifests; the block composer's
+	// palette is driven entirely by these, so the embedded templates are the
+	// single source of truth for both editing and rendering. The literal
+	// "templates" segment wins over the {newsletter_uid} wildcard in the
+	// ServeMux, so these do not collide with the per-newsletter routes.
+	mux.Handle("GET /projects/{project_uid}/newsletters/templates", h.withAuth(http.HandlerFunc(h.ListTemplates)))
+	mux.Handle("GET /projects/{project_uid}/newsletters/templates/{template_key}/manifest", h.withAuth(http.HandlerFunc(h.GetTemplateManifest)))
+
+	// Audience snapshot — JWT auth. POST starts (or returns) the background
+	// resolution, GET reports its status. recipient-count and recipients read
+	// the snapshot and return 409 until it is ready.
+	mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/audience", h.withAuth(http.HandlerFunc(h.ResolveAudience)))
+	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/audience", h.withAuth(http.HandlerFunc(h.GetAudience)))
+
 	// Per-newsletter analytics — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics", h.withAuth(http.HandlerFunc(h.GetAnalytics)))
 	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics/recipients", h.withAuth(http.HandlerFunc(h.GetRecipientEngagement)))
+
+	// In-app share intents — JWT auth. Heimdall gates on project viewer: any
+	// reader of the project can share a sent newsletter. Only registered when
+	// a ShareService is wired.
+	if h.shares != nil {
+		mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/shares", h.withAuth(http.HandlerFunc(h.ShareNewsletter)))
+	}
+
+	// Unique web page views — JWT auth. Heimdall gates on project viewer, like
+	// shares: any signed-in reader of the project records one view per
+	// newsletter. Only registered when a PageViewService is wired.
+	if h.pageViews != nil {
+		mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/page-views", h.withAuth(http.HandlerFunc(h.RecordPageView)))
+	}
+
+	// Publications and the editions under one — JWT auth. Only registered when a
+	// PublicationService is wired.
+	if h.publications != nil {
+		mux.Handle("POST /projects/{project_uid}/newsletter-publications", h.withAuth(http.HandlerFunc(h.CreatePublication)))
+		mux.Handle("GET /projects/{project_uid}/newsletter-publications", h.withAuth(http.HandlerFunc(h.ListPublications)))
+		mux.Handle("GET /projects/{project_uid}/newsletter-publications/{publication_uid}", h.withAuth(http.HandlerFunc(h.GetPublication)))
+		mux.Handle("PUT /projects/{project_uid}/newsletter-publications/{publication_uid}", h.withAuth(http.HandlerFunc(h.UpdatePublication)))
+		mux.Handle("GET /projects/{project_uid}/newsletter-publications/{publication_uid}/editions", h.withAuth(http.HandlerFunc(h.ListEditions)))
+		mux.Handle("POST /projects/{project_uid}/newsletter-publications/{publication_uid}/editions", h.withAuth(http.HandlerFunc(h.CreateEdition)))
+	}
 
 	// Newsletter opt-outs — JWT auth.
 	mux.Handle("GET /projects/{project_uid}/newsletter-opt-outs", h.withAuth(http.HandlerFunc(h.ListOptOuts)))
@@ -178,6 +234,9 @@ func writeJSON(ctx context.Context, w http.ResponseWriter, status int, v any) {
 type errorPayload struct {
 	Error   string `json:"error"`
 	Message string `json:"message,omitempty"`
+	// AudienceStatus is set on audience_not_ready responses: "none",
+	// "processing", "failed" or "stale".
+	AudienceStatus string `json:"audience_status,omitempty"`
 }
 
 // writeError maps a domain error to an HTTP status code + JSON body.
@@ -196,10 +255,12 @@ func writeError(ctx context.Context, w http.ResponseWriter, err error) {
 	if status >= http.StatusInternalServerError {
 		message = "internal server error"
 	}
-	writeJSON(ctx, w, status, errorPayload{
-		Error:   code,
-		Message: message,
-	})
+	payload := errorPayload{Error: code, Message: message}
+	var notReady *domain.AudienceNotReadyError
+	if errors.As(err, &notReady) {
+		payload.AudienceStatus = notReady.Status
+	}
+	writeJSON(ctx, w, status, payload)
 }
 
 // classifyError maps an error to an HTTP status code and short error code.
@@ -241,8 +302,16 @@ func classifyError(err error) (int, string) {
 		return http.StatusConflict, "scheduled"
 	case errors.Is(err, domain.ErrCancelWindowClosed):
 		return http.StatusConflict, "cancel_window_closed"
+	case errors.Is(err, domain.ErrAudienceNotReady):
+		return http.StatusConflict, "audience_not_ready"
+	case errors.Is(err, domain.ErrForbidden):
+		return http.StatusForbidden, "forbidden"
+	case errors.Is(err, domain.ErrRateLimited):
+		return http.StatusTooManyRequests, "rate_limited"
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest, "invalid_request"
+	case errors.Is(err, domain.ErrUnprocessable):
+		return http.StatusUnprocessableEntity, "unprocessable_entity"
 	case errors.As(err, &svcUnavailable):
 		return http.StatusServiceUnavailable, "service_unavailable"
 	case errors.As(err, &notFound):

@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS newsletters (
     project_uid       TEXT         NOT NULL,
     subject           TEXT         NOT NULL,
     body_html         TEXT         NOT NULL,
+    body_layout       JSONB,
     ed_reply_email    TEXT         NOT NULL,
     committee_uids    TEXT[]       NOT NULL DEFAULT '{}',
     status            TEXT         NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sending','sent')),
@@ -49,6 +50,14 @@ END$$;
 -- layer in case a caller misbehaves.
 ALTER TABLE newsletters
     ADD COLUMN IF NOT EXISTS group_id TEXT;
+
+-- body_layout is the editor's structured layout (wrapper key + ordered blocks),
+-- stored verbatim as JSONB. When present it is the source of truth: body_html is
+-- DERIVED from it by the declarative emitter on every write. Nullable so legacy
+-- rows (and the body_html-only API path) keep working unchanged. Added as an
+-- idempotent ALTER so deployments that ran the prior schema migrate in place.
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS body_layout JSONB;
 
 -- PG has no native IF NOT EXISTS on ADD CONSTRAINT; check pg_constraint first
 -- so re-running schema.sql is a no-op.
@@ -219,6 +228,55 @@ DROP TRIGGER IF EXISTS trg_reject_armed_scheduled_mutation ON newsletters;
 CREATE TRIGGER trg_reject_armed_scheduled_mutation
     BEFORE UPDATE OR DELETE ON newsletters
     FOR EACH ROW EXECUTE FUNCTION reject_armed_scheduled_mutation();
+
+-- Prevent legacy pods (running old code before the block-layout feature) from
+-- dispatching OR editing a layout newsletter during a rolling deploy or after a
+-- rollback. A layout row (body_layout IS NOT NULL) stores a fully-rendered email
+-- in body_html DERIVED from body_layout; the new binary re-renders that body from
+-- body_layout at send time, but a legacy pod ignores body_layout entirely. Two
+-- distinct hazards follow, so this guard covers two edges:
+--
+--   1. Dispatch (draft -> sending): a legacy pod would wrap the already-complete
+--      body_html in the legacy email_chrome a second time. Blocked unless the
+--      caller is layout-aware: the new binary sets 'app.allow_layout_send' before
+--      the transition in MarkSending, so it passes; a legacy pod never sets it and
+--      its claim fails loudly — the row waits in draft until a layout-aware pod
+--      picks it up.
+--   2. Edit (body_html mutation): a legacy pod's update rewrites body_html but
+--      leaves body_layout untouched, so the two fall out of sync; the next
+--      layout-aware send re-renders the stale body_layout and silently discards
+--      the edit. Blocked unless the caller sets 'app.allow_layout_update'. The
+--      layout-aware Update path rewrites body_html and body_layout together
+--      (including explicit layout removal, body_layout -> NULL) and sets that GUC,
+--      so it passes. OLD.body_layout drives the check so removing the layout in the
+--      same UPDATE still requires the opt-in; NEW.body_html IS DISTINCT FROM
+--      OLD.body_html scopes it to content edits, leaving pure status/metadata
+--      updates (e.g. MarkSending, which never touches body_html) unaffected.
+--
+-- Mirrors reject_armed_scheduled_mutation. CREATE OR REPLACE + DROP/CREATE keep
+-- re-running schema.sql a no-op.
+CREATE OR REPLACE FUNCTION reject_legacy_layout_send() RETURNS trigger AS $$
+BEGIN
+    -- Guard 1 (dispatch): draft -> sending claim of a layout row.
+    IF NEW.body_layout IS NOT NULL
+       AND OLD.status = 'draft' AND NEW.status = 'sending'
+       AND current_setting('app.allow_layout_send', true) IS DISTINCT FROM 'true' THEN
+        RAISE EXCEPTION 'cannot send layout newsletter (body_layout is set) — service version mismatch during rolling deploy';
+    END IF;
+    -- Guard 2 (edit): body_html mutation of a layout row without re-rendering it.
+    IF OLD.body_layout IS NOT NULL
+       AND NEW.body_html IS DISTINCT FROM OLD.body_html
+       AND current_setting('app.allow_layout_update', true) IS DISTINCT FROM 'true' THEN
+        RAISE EXCEPTION 'cannot edit layout newsletter body_html without re-rendering body_layout (body_layout is set) — service version mismatch during rolling deploy';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_reject_legacy_layout_send ON newsletters;
+CREATE TRIGGER trg_reject_legacy_layout_send
+    BEFORE UPDATE ON newsletters
+    FOR EACH ROW EXECUTE FUNCTION reject_legacy_layout_send();
 
 -- Supports the due-schedule sweep (status = 'scheduled' AND scheduled_at <= now()).
 CREATE INDEX IF NOT EXISTS idx_newsletters_scheduled_due
@@ -413,3 +471,242 @@ CREATE TABLE IF NOT EXISTS sendgrid_click_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sg_click_events_email ON sendgrid_click_events (email_id);
+
+-- newsletter_shares records in-app share intents (a click on a share target
+-- or "Copy link" in LFX Self Serve). One row per (newsletter, user, channel):
+-- repeat shares by the same user to the same channel collapse to a no-op, so
+-- the share count can't be inflated by clicking the same button repeatedly.
+-- user_hash is a SHA-256 of the caller's principal claim: the table stores
+-- no raw username, but the digest is a pseudonym, not an anonymization —
+-- principals are guessable, so a digest can be matched to a known user.
+-- Data minimization: rows carry only the dedupe key, no timestamp, so the
+-- table records whether a user shared, never when. A user's rows are erased
+-- with ShareService.DeleteUserShares (see the contract's Share Counts).
+CREATE TABLE IF NOT EXISTS newsletter_shares (
+    newsletter_id  UUID         NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
+    user_hash      TEXT         NOT NULL CHECK (user_hash ~ '^[a-f0-9]{64}$'),
+    channel        TEXT         NOT NULL CHECK (channel IN ('x', 'linkedin', 'reddit', 'email', 'copy_link')),
+    PRIMARY KEY (newsletter_id, user_hash, channel)
+);
+
+-- newsletter_page_views records unique web page views of a sent newsletter
+-- (a signed-in user opening its page in LFX Self Serve). One row per
+-- (newsletter, user): revisits and refreshes by the same user collapse to a
+-- no-op, so the count is unique viewers and can't be inflated by reloading.
+-- user_hash is the same SHA-256 principal digest newsletter_shares uses (a
+-- pseudonym, not an anonymization). Data minimization: no timestamp, so the
+-- table records whether a user viewed, never when. A user's rows are erased
+-- with PageViewService.DeleteUserPageViews (see the contract's Page Views).
+CREATE TABLE IF NOT EXISTS newsletter_page_views (
+    newsletter_id  UUID         NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
+    user_hash      TEXT         NOT NULL CHECK (user_hash ~ '^[a-f0-9]{64}$'),
+    PRIMARY KEY (newsletter_id, user_hash)
+);
+
+-- ---------------------------------------------------------------------------
+-- Newsletter audience snapshots
+--
+-- Recipients are resolved by a background job and stored here, so the send,
+-- the recipient count and the recipient preview read a snapshot instead of
+-- asking the query service for every committee member inside one HTTP request.
+-- The audience has its own status. The newsletters.status column and its CHECK
+-- constraint are not affected.
+--
+-- newsletter_audiences holds one row per newsletter. committee_uids is the
+-- sorted, deduplicated list the snapshot was built from, so a reader can tell
+-- when the newsletter's committees have changed since. newsletter_id matches
+-- newsletters.id, as in newsletter_opens.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS newsletter_audiences (
+    newsletter_id    UUID        PRIMARY KEY REFERENCES newsletters(id) ON DELETE CASCADE,
+    project_uid      TEXT        NOT NULL,
+    committee_uids   JSONB       NOT NULL,
+    status           TEXT        NOT NULL,
+    recipient_count  INTEGER     NOT NULL DEFAULT 0,
+    skipped_no_email INTEGER     NOT NULL DEFAULT 0,
+    error            TEXT,
+    requested_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at      TIMESTAMPTZ,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletter_audiences_status_check'
+    ) THEN
+        ALTER TABLE newsletter_audiences
+            ADD CONSTRAINT newsletter_audiences_status_check
+            CHECK (status IN ('processing','ready','failed'));
+    END IF;
+END$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletter_audiences_ready_requires_resolved'
+    ) THEN
+        ALTER TABLE newsletter_audiences
+            ADD CONSTRAINT newsletter_audiences_ready_requires_resolved
+            CHECK (status <> 'ready' OR resolved_at IS NOT NULL);
+    END IF;
+END$$;
+
+-- Supports the stale-processing sweep (status = 'processing' AND updated_at < cutoff).
+CREATE INDEX IF NOT EXISTS idx_newsletter_audiences_processing
+    ON newsletter_audiences (updated_at) WHERE status = 'processing';
+
+-- newsletter_audience_members holds the snapshot's recipients. email is
+-- trimmed and lowercased, so the primary key also removes duplicates.
+CREATE TABLE IF NOT EXISTS newsletter_audience_members (
+    newsletter_id UUID NOT NULL REFERENCES newsletter_audiences(newsletter_id) ON DELETE CASCADE,
+    email         TEXT NOT NULL,
+    first_name    TEXT NOT NULL DEFAULT '',
+    last_name     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (newsletter_id, email)
+);
+
+-- Publications (lfx-self-serve#4349)
+--
+-- A publication is the recurring parent of newsletters: a row in `newsletters`
+-- is one edition of its publication. Publications carry the choices that
+-- outlive one send: the template set, the sender name, the reply-to address and
+-- the default audience. Inheritance is copied onto the edition when it is
+-- created (see NewsletterService.CreateDraft), so a binary that knows nothing
+-- about publications can still send it. from_name and reply_to_email are read
+-- from the publication at send time, so an edit applies to unsent editions too.
+--
+-- Every newsletter belongs to a publication. Rows that predate publications,
+-- and rows inserted without a publication_uid (by a client that does not know
+-- about publications, or by a pod on an older binary during a rolling deploy),
+-- get their own IMPLICIT publication: name = subject, template_key and the
+-- sender fields NULL, audience empty, so nothing about how they send changes.
+-- Implicit publications are excluded from the list route, are not writable and
+-- cannot take further editions, and are removed with their edition.
+--
+-- Rolling-deploy safety: only the column and trigger are needed for an older
+-- binary to keep working, and an older binary tolerates the new column through
+-- bun.WithDiscardUnknownColumns (v0.2.10 and later).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS publications (
+    id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_uid     TEXT         NOT NULL,
+    name            TEXT         NOT NULL CHECK (char_length(name) BETWEEN 1 AND 200),
+    template_key    TEXT,
+    from_name       TEXT,
+    reply_to_email  TEXT,
+    committee_uids  TEXT[]       NOT NULL DEFAULT '{}',
+    implicit        BOOLEAN      NOT NULL DEFAULT FALSE,
+    created_by      TEXT         NOT NULL,
+    version         BIGINT       NOT NULL DEFAULT 1,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    -- Target of the composite foreign key below, so a newsletter can only join a
+    -- publication in its own project.
+    UNIQUE (project_uid, id)
+);
+
+-- Supports the (updated_at DESC, id DESC) keyset list of named publications.
+CREATE INDEX IF NOT EXISTS idx_publications_list
+    ON publications (project_uid, updated_at DESC, id DESC) WHERE NOT implicit;
+
+ALTER TABLE newsletters
+    ADD COLUMN IF NOT EXISTS publication_uid UUID;
+
+-- Supports the (updated_at DESC, id DESC) keyset list of a publication's editions.
+CREATE INDEX IF NOT EXISTS idx_newsletters_publication_list
+    ON newsletters (publication_uid, updated_at DESC, id DESC);
+
+-- Give a newsletter inserted without a publication its own implicit one. A BEFORE
+-- INSERT trigger rather than application code, so the same behaviour covers this
+-- binary, pods on an older binary during a rolling deploy, and a rollback.
+CREATE OR REPLACE FUNCTION assign_implicit_publication() RETURNS trigger AS $$
+DECLARE
+    new_publication_uid UUID;
+BEGIN
+    IF NEW.publication_uid IS NULL THEN
+        INSERT INTO publications (project_uid, name, implicit, created_by)
+        VALUES (NEW.project_uid, left(COALESCE(NULLIF(btrim(NEW.subject), ''), 'Untitled newsletter'), 200), TRUE, NEW.created_by)
+        RETURNING id INTO new_publication_uid;
+        NEW.publication_uid := new_publication_uid;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_assign_implicit_publication ON newsletters;
+CREATE TRIGGER trg_assign_implicit_publication
+    BEFORE INSERT ON newsletters
+    FOR EACH ROW EXECUTE FUNCTION assign_implicit_publication();
+
+-- Remove an implicit publication when its edition is deleted, so deleting a
+-- draft also removes the subject and created_by copied onto it. In the database
+-- for the same reason as the insert trigger: older binaries delete rows too.
+CREATE OR REPLACE FUNCTION remove_orphaned_implicit_publication() RETURNS trigger AS $$
+BEGIN
+    DELETE FROM publications p
+    WHERE p.id = OLD.publication_uid
+      AND p.implicit
+      AND NOT EXISTS (SELECT 1 FROM newsletters n WHERE n.publication_uid = OLD.publication_uid);
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_remove_orphaned_implicit_publication ON newsletters;
+CREATE TRIGGER trg_remove_orphaned_implicit_publication
+    AFTER DELETE ON newsletters
+    FOR EACH ROW EXECUTE FUNCTION remove_orphaned_implicit_publication();
+
+-- Backfill: one implicit publication per newsletter that has none. Touches only
+-- publication_uid — not version (open editors keep their ETag) and not updated_at
+-- (the list order stays put).
+--
+-- The UPDATE fires trg_reject_armed_scheduled_mutation, which rejects any update
+-- of a row with a batch_id unless app.allow_armed_mutation is set. Armed and
+-- already-released scheduled rows carry a batch_id, so without the flag this
+-- backfill would fail and abort every pod's startup. The flag is transaction-local
+-- and cleared immediately after, and only set when there is work to do: once the
+-- trigger above exists no NULLs appear, so a normal boot never relaxes the guard.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM newsletters WHERE publication_uid IS NULL) THEN
+        PERFORM set_config('app.allow_armed_mutation', 'true', true);
+
+        WITH legacy AS (
+            SELECT id, gen_random_uuid() AS publication_uid, project_uid, subject, created_by, created_at
+            FROM newsletters
+            WHERE publication_uid IS NULL
+        ), created AS (
+            INSERT INTO publications (id, project_uid, name, implicit, created_by, created_at, updated_at)
+            SELECT publication_uid, project_uid, left(COALESCE(NULLIF(btrim(subject), ''), 'Untitled newsletter'), 200),
+                   TRUE, created_by, created_at, created_at
+            FROM legacy
+        )
+        UPDATE newsletters n
+        SET publication_uid = legacy.publication_uid
+        FROM legacy
+        WHERE n.id = legacy.id;
+
+        PERFORM set_config('app.allow_armed_mutation', '', true);
+    END IF;
+END$$;
+
+-- Composite so the database itself refuses a newsletter attached to another
+-- project's publication.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_publication_fk'
+    ) THEN
+        ALTER TABLE newsletters
+            ADD CONSTRAINT newsletters_publication_fk
+            FOREIGN KEY (project_uid, publication_uid)
+            REFERENCES publications (project_uid, id)
+            ON DELETE RESTRICT;
+    END IF;
+END$$;
+
+-- Safe in this release (and for a rollback): every insert path runs through the
+-- trigger above, so an older binary that doesn't send publication_uid still
+-- satisfies NOT NULL.
+ALTER TABLE newsletters ALTER COLUMN publication_uid SET NOT NULL;

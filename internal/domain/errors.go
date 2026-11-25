@@ -29,6 +29,11 @@ var (
 	// total failure).
 	ErrSendInProgress = errors.New("newsletter send in progress")
 
+	// ErrUnprocessable indicates the request was well-formed (parsed fine) but
+	// could not be processed — e.g. a newsletter layout that the renderer cannot
+	// bind or compile. It maps to HTTP 422 Unprocessable Entity.
+	ErrUnprocessable = errors.New("unprocessable entity")
+
 	// ErrScheduled indicates a newsletter has an armed schedule (status
 	// scheduled) and cannot be edited, deleted, or sent/scheduled again until
 	// it is cancelled back to draft or settles to sent.
@@ -38,4 +43,42 @@ var (
 	// close to the newsletter's scheduled_at — inside the configured buffer
 	// where the provider's cancel is no longer reliable.
 	ErrCancelWindowClosed = errors.New("cancel window closed")
+
+	// ErrForbidden indicates the caller is authenticated but not allowed to do
+	// this, e.g. a test send to an address that is not their own.
+	ErrForbidden = errors.New("forbidden")
+
+	// ErrRateLimited indicates the caller has made too many requests of this
+	// kind recently. It maps to HTTP 429.
+	ErrRateLimited = errors.New("rate limited")
 )
+
+// ErrAudienceNotReady indicates a newsletter has no usable audience snapshot.
+// The snapshot is missing, still being resolved, failed, or was built from a
+// different committee list than the newsletter has now. Callers get the
+// details through *AudienceNotReadyError.
+var ErrAudienceNotReady = errors.New("audience not ready")
+
+// Audience states reported by AudienceNotReadyError.Status in addition to the
+// persisted 'processing' and 'failed' audience statuses.
+const (
+	// AudienceStateNone means no audience has been resolved for the newsletter.
+	AudienceStateNone = "none"
+	// AudienceStateStale means a ready audience exists but was built from a
+	// different committee list than the newsletter has now.
+	AudienceStateStale = "stale"
+)
+
+// AudienceNotReadyError is the ErrAudienceNotReady error with the audience
+// state, so the handler can tell the client what to do.
+type AudienceNotReadyError struct {
+	// Status is AudienceStateNone, AudienceStateStale, "processing" or "failed".
+	Status string
+}
+
+func (e *AudienceNotReadyError) Error() string {
+	return "audience not ready: " + e.Status
+}
+
+// Is makes errors.Is(err, ErrAudienceNotReady) true.
+func (e *AudienceNotReadyError) Is(target error) bool { return target == ErrAudienceNotReady }

@@ -12,8 +12,11 @@
 package render
 
 import (
+	"net/url"
 	"regexp"
 	"strings"
+
+	nethtml "golang.org/x/net/html"
 )
 
 // Chrome carries everything the renderer needs to wrap a body in the outer
@@ -46,6 +49,13 @@ type Chrome struct {
 	// IncludeComplianceFooter is true) the footer renders a dedicated line
 	// above the unsubscribe small print. Empty omits the line.
 	MyNewslettersURL string
+	// SentDate is the pre-formatted send date (e.g. "October 13, 2026")
+	// rendered right-aligned above the card. Empty omits the date.
+	SentDate string
+	// ReadOnlineURL is the Self-Serve reader permalink for this newsletter,
+	// rendered as a "Read online" link beside SentDate. Empty omits the link
+	// (test sends have no newsletter ID to link to).
+	ReadOnlineURL string
 }
 
 // LFX brand colors used by the email chrome. Mirrored from
@@ -300,6 +310,74 @@ func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
 </tr>`
 }
 
+// shareLink is one inline share destination in the date bar.
+type shareLink struct {
+	label string
+	href  string
+}
+
+// queryEscape matches JavaScript's encodeURIComponent for spaces ("%20", not
+// "+"), so these URLs line up with the self-serve share dialog's.
+func queryEscape(value string) string {
+	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
+}
+
+// socialShareLinks builds the share-intent URLs for the read-online permalink.
+// Keep in step with buildSocialShareHref in lfx-self-serve
+// (packages/shared/src/utils/social-share.utils.ts).
+func socialShareLinks(readOnlineURL, subject string) []shareLink {
+	u := queryEscape(readOnlineURL)
+	t := queryEscape(subject)
+	return []shareLink{
+		{label: "X", href: "https://x.com/intent/tweet?url=" + u + "&text=" + t},
+		{label: "LinkedIn", href: "https://www.linkedin.com/sharing/share-offsite/?url=" + u},
+		{label: "Reddit", href: "https://www.reddit.com/submit?url=" + u + "&title=" + t},
+		{label: "Email", href: "mailto:?subject=" + t + "&body=" + queryEscape(subject+"\n\n"+readOnlineURL)},
+	}
+}
+
+// renderShareLinksHTML emits "Share: X · LinkedIn · Reddit · Email" as text
+// links — icon images are routinely blocked by mail clients.
+func renderShareLinksHTML(readOnlineURL, subject string) string {
+	links := socialShareLinks(readOnlineURL, subject)
+	anchors := make([]string, 0, len(links))
+	for _, link := range links {
+		// clicktracking="off" must precede href for SendGrid to honor it.
+		anchors = append(anchors, `<a clicktracking="off" href="`+escapeHTML(link.href)+`" style="color:`+colorGray700+`;text-decoration:underline;">`+link.label+`</a>`)
+	}
+	return `Share:&nbsp; ` + strings.Join(anchors, `<span style="color:`+colorGray400+`;">&nbsp;&middot;&nbsp;</span>`)
+}
+
+// renderDateBarHTML emits the right-aligned "<date> | Read online | Share: …"
+// row that sits above the card. The share links ride on the read-online
+// permalink, so they appear only with it. Empty when neither SentDate nor
+// ReadOnlineURL is set.
+func renderDateBarHTML(input Chrome) string {
+	if input.SentDate == "" && input.ReadOnlineURL == "" {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if input.SentDate != "" {
+		parts = append(parts, escapeHTML(input.SentDate))
+	}
+	if input.ReadOnlineURL != "" {
+		// clicktracking="off" for the same reason as the footer chrome links:
+		// SendGrid honors it only when the attribute appears BEFORE href.
+		parts = append(parts, `<a clicktracking="off" href="`+escapeHTML(input.ReadOnlineURL)+`" style="color:`+colorGray700+`;text-decoration:underline;">Read online</a>`)
+		// Same "Untitled" fallback as the card header, so a share never goes out blank.
+		subject := input.Subject
+		if subject == "" {
+			subject = "Untitled"
+		}
+		parts = append(parts, renderShareLinksHTML(input.ReadOnlineURL, subject))
+	}
+	separator := `<span style="color:` + colorGray400 + `;">&nbsp;&nbsp;|&nbsp;&nbsp;</span>`
+	return `<tr>
+<td align="right" class="lfx-pad" style="padding:8px 4px 16px;font-size:14px;color:` + colorGray700 + `;text-align:right;font-family:` + fontStack + `;">` + strings.Join(parts, separator) + `</td>
+</tr>
+`
+}
+
 // EmailHTML builds the outer HTML envelope wrapping the authored body.
 // See the package trust boundary comment.
 func EmailHTML(input Chrome) string {
@@ -315,6 +393,7 @@ func EmailHTML(input Chrome) string {
 	displayNameSafe := escapeHTML(display)
 	styledBody := convertStandaloneCtas(inlineBodyStyles(input.BodyHTML))
 	complianceFooter := renderComplianceFooterHTML(input, displayNameSafe)
+	dateBar := renderDateBarHTML(input)
 
 	logoCell := ""
 	if input.LogoURL != "" {
@@ -343,6 +422,9 @@ func EmailHTML(input Chrome) string {
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:` + colorGray50 + `;padding:16px 8px;">
 <tr>
 <td align="center">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;max-width:680px;">
+` + dateBar + `<tr>
+<td>
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;max-width:680px;background-color:` + colorWhite + `;border:1px solid ` + colorGray200 + `;border-radius:8px;overflow:hidden;">
 <tr>
 <td class="lfx-pad" style="` + headerBG + `color:` + colorWhite + `;padding:28px 24px;font-family:` + fontStack + `;">
@@ -365,6 +447,9 @@ func EmailHTML(input Chrome) string {
 </td>
 </tr>
 </table>
+</td>
+</tr>
+</table>
 </body>
 </html>`
 }
@@ -381,7 +466,16 @@ func EmailText(input Chrome) string {
 	}
 	body := stripHTML(preserveLinkDestinations(input.BodyHTML))
 
-	lines := []string{display + " · Newsletter", subject, "", body}
+	var lines []string
+	switch {
+	case input.SentDate != "" && input.ReadOnlineURL != "":
+		lines = append(lines, input.SentDate+" | Read online: "+input.ReadOnlineURL, "")
+	case input.SentDate != "":
+		lines = append(lines, input.SentDate, "")
+	case input.ReadOnlineURL != "":
+		lines = append(lines, "Read online: "+input.ReadOnlineURL, "")
+	}
+	lines = append(lines, display+" · Newsletter", subject, "", body)
 
 	if input.IncludeComplianceFooter {
 		edName := input.EDName
@@ -403,4 +497,179 @@ func EmailText(input Chrome) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// textBlockTags are the elements whose boundaries are visible structure in the
+// rendered email, so htmlToText must turn them into line breaks in the
+// text/plain part. Table parts are included because MJML compiles every row and
+// cell of a layout into a table: a cell's content is a separate visual unit and
+// must not be glued to its neighbour's.
+//
+// A boundary is emitted on BOTH the start and the end tag. The tokenizer never
+// synthesizes an omitted close (a bare "<li>a<li>b" or "<td>a<td>b" sequence
+// yields no end tags at all), so keying on one alone would still run those
+// items together; the \n{3,} collapse below folds the resulting doubled breaks
+// back into a single blank line.
+var textBlockTags = map[string]bool{
+	"address": true, "article": true, "aside": true, "blockquote": true,
+	"caption": true, "dd": true, "div": true, "dl": true, "dt": true,
+	"figcaption": true, "figure": true, "footer": true, "h1": true,
+	"h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
+	"header": true, "hr": true, "li": true, "main": true, "nav": true,
+	"ol": true, "p": true, "pre": true, "section": true, "table": true,
+	"tbody": true, "td": true, "tfoot": true, "th": true, "thead": true,
+	"tr": true, "ul": true,
+}
+
+// htmlToText derives a plain-text body from a compiled HTML document for the
+// text/plain part of a layout email. It tokenizes with golang.org/x/net/html
+// instead of matching tags with regexes, so:
+//
+//   - Non-rendered content never leaks: text inside <head>, <style>, <script>,
+//     and <title> is dropped. A self-closing <style/> or a '>' inside an
+//     attribute value cannot spill CSS or script text into the output.
+//   - Link destinations survive: <a href="X">label</a> becomes "label (X)",
+//     unless the label is already the raw URL (or the href is empty).
+//   - A <br> becomes a newline, and so does every block boundary
+//     (textBlockTags): paragraphs, headings, list items, table rows and cells.
+//     The emitter inlines a block's authored richtext with no whitespace between
+//     tags, so without this "<p>First.</p><p>Second.</p>" would collapse to
+//     "First.Second." and adjacent <li> items would run together.
+//
+// Entities are decoded by the tokenizer. A decoded &nbsp; (U+00A0) becomes a
+// plain space, then whitespace is collapsed as in stripHTML.
+func htmlToText(input string) string {
+	z := nethtml.NewTokenizer(strings.NewReader(input))
+	var out strings.Builder
+	skip := 0 // depth inside <head>/<style>/<script>/<title> — their text is dropped
+	inAnchor := false
+	anchorHref := ""
+	var anchorText strings.Builder
+
+	// writeBreak emits a line break into whichever builder is currently
+	// collecting text, honoring the <head>/<style>/<script>/<title> skip. Both
+	// the <br> cases and the block-boundary cases go through it.
+	writeBreak := func() {
+		if skip > 0 {
+			return
+		}
+		if inAnchor {
+			anchorText.WriteByte('\n')
+		} else {
+			out.WriteByte('\n')
+		}
+	}
+
+	flushAnchor := func() {
+		if !inAnchor {
+			return
+		}
+		label := anchorText.String()
+		out.WriteString(label)
+		if anchorHref != "" && strings.TrimSpace(label) != anchorHref {
+			out.WriteString(" (" + anchorHref + ")")
+		}
+		inAnchor = false
+		anchorHref = ""
+		anchorText.Reset()
+	}
+
+loop:
+	for {
+		switch z.Next() {
+		case nethtml.ErrorToken:
+			break loop // io.EOF or a parse error — emit what we have
+		case nethtml.TextToken:
+			if skip > 0 {
+				continue
+			}
+			if inAnchor {
+				anchorText.Write(z.Text())
+			} else {
+				out.Write(z.Text())
+			}
+		case nethtml.StartTagToken:
+			name, hasAttr := z.TagName()
+			switch string(name) {
+			case "head", "style", "script", "title":
+				skip++
+			case "br":
+				// A line break is visible whitespace in the rendered email, so the
+				// text/plain part must carry a newline — otherwise adjacent lines
+				// (e.g. "The Linux Foundation<br />2810 N Church St...") collapse
+				// into one run. net/html emits <br> as a start tag and <br/> as a
+				// self-closing tag, so both cases emit here and below.
+				writeBreak()
+			case "a":
+				if skip == 0 && !inAnchor {
+					href := ""
+					for hasAttr {
+						k, v, more := z.TagAttr()
+						if string(k) == "href" {
+							href = string(v)
+						}
+						hasAttr = more
+					}
+					inAnchor = true
+					anchorHref = href
+					anchorText.Reset()
+				}
+			default:
+				if textBlockTags[string(name)] {
+					writeBreak()
+				}
+			}
+		case nethtml.EndTagToken:
+			name, _ := z.TagName()
+			switch string(name) {
+			case "head", "style", "script", "title":
+				if skip > 0 {
+					skip--
+				}
+			case "a":
+				flushAnchor()
+			default:
+				if textBlockTags[string(name)] {
+					writeBreak()
+				}
+			}
+		case nethtml.SelfClosingTagToken:
+			name, _ := z.TagName()
+			switch string(name) {
+			case "br":
+				// Self-closing <br/> — emit a newline, matching the start-tag case.
+				writeBreak()
+			case "style", "script", "title":
+				// style/script/title are raw-text/RCDATA elements: the tokenizer
+				// switches to raw-text mode after the start tag even when it is
+				// written self-closing (HTML ignores the slash on these), so the
+				// following content arrives as one text token and must be dropped
+				// until the matching close (or EOF). This is exactly the
+				// self-closing <style/> case the old regex skip-scanner missed.
+				skip++
+			default:
+				// A block element written self-closing (<p/>) still ends its block.
+				if textBlockTags[string(name)] {
+					writeBreak()
+				}
+			}
+			// Other self-closing/void tags (<img/>, <input/>, …) are neither block
+			// boundaries nor text, so they contribute nothing.
+		}
+	}
+	flushAnchor() // document ended mid-anchor (unterminated <a>)
+
+	text := strings.ReplaceAll(out.String(), " ", " ")
+	text = multispaceRe.ReplaceAllString(text, " ")
+	text = multiNewlineRe.ReplaceAllString(text, "\n\n")
+	return strings.TrimSpace(text)
+}
+
+// StripHTMLForText derives a plain-text body from a full HTML email. It is the
+// exported counterpart to EmailText for the layout-based send path, where the
+// emitter already owns the whole email and there is no Chrome to wrap. Link
+// destinations are preserved (`label (href)`); non-rendered <head>/<style>/
+// <script> content is dropped by the tokenizer.
+func StripHTMLForText(input string) string {
+	return htmlToText(input)
 }

@@ -23,7 +23,7 @@ Patterns specific to this repo's embedded-`schema.sql` model and its Bun/Postgre
 
 ---
 
-## `persistence/on-conflict-target-mismatch` — Critical
+## `persistence/on-conflict-target-mismatch` — Critical (forward-looking only — no live construct since GH-107)
 
 **Pattern:** repository code uses `ON CONFLICT ON CONSTRAINT <name>` but `<name>` is created in `schema.sql` as a UNIQUE INDEX, not a UNIQUE CONSTRAINT. Postgres `ON CONFLICT ON CONSTRAINT` only resolves named `pg_constraint` entries, so the insert errors at runtime with "constraint … does not exist".
 

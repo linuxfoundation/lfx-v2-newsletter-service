@@ -16,6 +16,8 @@ Use this reference when editing implementation code in `lfx-v2-newsletter-servic
 | `internal/repository/` | Bun/Postgres persistence and cursor encoding. |
 | `internal/schema/` | Embedded SQL schema applied at startup. |
 | `internal/infrastructure/nats/` | NATS request/reply clients for sibling services and subject constants. |
+| `internal/infrastructure/queryservice/` | HTTPS client that pages committee members from the query service. |
+| `internal/infrastructure/m2m/` | Auth0 M2M identity used by the query service client. |
 
 Do not put business rules in handlers or transport concerns in repositories.
 
@@ -38,9 +40,9 @@ Do not put business rules in handlers or transport concerns in repositories.
 ## Upstream Calls
 
 - Use interfaces from `internal/domain/port`.
-- All sibling-service calls are NATS request/reply; never forward the inbound bearer token (outbound calls carry no token).
+- Calls to project, email and auth services are NATS request/reply and carry no token. The query service is called over HTTPS with the service's own M2M token. Never forward the inbound bearer token, and never log a token or the Authorization header.
 - Keep subject constants in `internal/infrastructure/nats/subjects.go` in sync with the owning services.
-- Read `docs/recipient-resolution.md` and the owning service's contract before changing NATS payloads.
+- Read `docs/recipient-resolution.md` and the owning service's contract before changing NATS payloads or the query service request.
 
 ## Testing
 

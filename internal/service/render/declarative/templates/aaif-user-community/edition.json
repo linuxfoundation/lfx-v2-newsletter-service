@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "blocks": [
+    { "block": "intro_paragraph" },
+    { "block": "hidden_gems" },
+    { "block": "hit_reply" },
+    { "block": "generic" },
+    { "block": "generic" },
+    { "block": "mlops_community" },
+    { "block": "generic" },
+    { "block": "generic" },
+    { "block": "meme_of_week" }
+  ]
+}

@@ -3,7 +3,7 @@
 
 # Recipient Resolution and HTTP
 
-Patterns for the recipient-resolution path (concurrent committee lookups, normalization, the email-service `group_id` handoff) and the HTTP error-classification surface. These are the patterns the maintainer reviewer and Copilot flagged on PRs #3 and #9. The lookups originally hit query-service over HTTP; that client was retired for NATS (`lfx.committee-api.list_members`), but the underlying patterns (cancellation, bounded loops, normalization, validated correlation IDs) carry over to the NATS clients.
+Patterns for the recipient-resolution path (concurrent committee lookups, normalization, the email-service `group_id` handoff) and the HTTP error-classification surface. These are the patterns the maintainer reviewer and Copilot flagged on PRs #3 and #9. The lookups originally hit query-service over HTTP, moved to NATS (`lfx.committee-api.list_members`), and are now back on the query service with the service's M2M identity (`internal/infrastructure/queryservice`), read by the audience job. The patterns (cancellation, bounded loops, normalization, validated correlation IDs) apply to that client.
 
 **Read when:** `internal/service/send_orchestrator.go`, `internal/infrastructure/**` (any upstream client, not only `nats/`), `internal/handler/send.go`, `internal/handler/http.go`, `internal/service/newsletter.go`, `internal/domain/model/**`, `pkg/api/newsletter.go`, or `internal/handler/drafts.go` changed — anything that resolves recipients, calls an upstream service, maps domain errors to HTTP status, or handles the `group_id` send handoff.
 
@@ -13,7 +13,7 @@ Patterns for the recipient-resolution path (concurrent committee lookups, normal
 
 **Pattern:** concurrent committee lookups launch all goroutines up front (`sync.WaitGroup` + result slice) and return on the first error, but the remaining goroutines keep running against the upstream query-service with no cancellation.
 
-**Detect:** in `internal/service/send_orchestrator.go::resolveRecipients`, confirm concurrent committee fetches use `errgroup.WithContext` so the first error cancels the shared `gctx` and aborts in-flight upstream requests (now NATS `ListMembers` calls). Flag a hand-rolled `WaitGroup` fan-out with no cancellation.
+**Detect:** in `internal/service/audience_members.go::readCommittees` (used by the audience job and the compatibility live reads), confirm concurrent committee fetches use `errgroup.WithContext` so the first error cancels the shared `gctx` and aborts in-flight upstream requests (query-service `ListMembers` calls). Flag a hand-rolled `WaitGroup` fan-out with no cancellation.
 
 **Empirical citation:** PR #3 `internal/service/send_orchestrator.go:167` — dealako (blocking) — "If one goroutine returns an error, `resolveRecipients` returns early — but the remaining goroutines continue running against the upstream query service until they finish naturally, with no way to cancel them. Use `golang.org/x/sync/errgroup`." Resolved in `959e23d`: "replaced the `sync.WaitGroup` + manual result slice with `errgroup.WithContext`."
 
@@ -29,7 +29,7 @@ Patterns for the recipient-resolution path (concurrent committee lookups, normal
 
 **Pattern:** an upstream client follows a `next_page_token` in an unbounded `for` loop. A per-call timeout does not bound the whole sequence, so an upstream that always returns a non-empty token loops until context cancellation.
 
-**Detect:** fires only when the patch **adds** upstream pagination. Flag a new `next_page_token`-style loop (in `internal/infrastructure/nats/**` or any new upstream client) that has no max-pages ceiling. Two things at HEAD are **not** matches: `internal/infrastructure/upstream/` is a package-doc placeholder (`committee_client.go` is 12 comment lines plus `package upstream`; `http_helpers.go` is 4 lines) with no `maxQueryPages` and no loop, and the only `NextPageToken` in the repo is this service's **own** bounded keyset cursor at `internal/repository/postgres.go:130`, which is not upstream pagination. Committee member lookup is now a single NATS request per committee with no pagination at all.
+**Detect:** fires only when the patch **adds** upstream pagination. Flag a new `next_page_token`-style loop (in `internal/infrastructure/nats/**` or any new upstream client) that has no max-pages ceiling. Two things at HEAD are **not** matches: `internal/infrastructure/upstream/` is a package-doc placeholder (`committee_client.go` is 12 comment lines plus `package upstream`; `http_helpers.go` is 4 lines) with no `maxQueryPages` and no loop, and the only `NextPageToken` in the repo is this service's **own** bounded keyset cursor at `internal/repository/postgres.go:130`, which is not upstream pagination. Committee member lookup pages through the query service in `internal/infrastructure/queryservice/client.go`, bounded by `QUERY_SERVICE_MAX_PAGES`.
 
 **Empirical citation:** PR #3 `internal/infrastructure/upstream/committee_client.go:70` — dealako (blocking) — "`GetMembers` follows `next_page_token` in an unbounded loop … a buggy or adversarial upstream that always returns a non-empty token will loop forever. Add a max-pages guard." Resolved in `959e23d` with `maxQueryPages = 100`.
 
@@ -43,7 +43,7 @@ Patterns for the recipient-resolution path (concurrent committee lookups, normal
 
 **Pattern:** committee UIDs or recipient emails are deduped/stored without normalizing first (trimming whitespace, lowercasing), so logically-equal values (`"abc"` vs `" abc"`, mixed-case emails) are treated as distinct — causing extra upstream calls and inconsistent persistence.
 
-**Detect:** in `internal/service/newsletter.go` (committee UID handling) and `internal/service/send_orchestrator.go::resolveRecipients`, confirm values are `strings.TrimSpace`d (and emails `strings.ToLower`ed) before dedup/storage. Emails must also drop empty values and values without `@`.
+**Detect:** in `internal/service/newsletter.go` (committee UID handling) and `internal/service/audience_members.go::buildAudienceMembers`, confirm values are `strings.TrimSpace`d (and emails `strings.ToLower`ed) before dedup/storage. Emails must also drop empty values and values without `@`.
 
 **Empirical citation:** PR #3 `internal/service/newsletter.go:298` — Copilot — "validateCommitteeUIDs trims values only to check emptiness, but the values stored/deduped keep original whitespace. This can lead to logically-duplicate committee UIDs … being treated as distinct, causing extra upstream calls and inconsistent persistence." Resolved in `e9e61b0`: "replaced dedupeStrings with normalizeCommitteeUIDs which trims surrounding whitespace and dedupes on the normalized value before storage."
 

@@ -195,9 +195,9 @@ jobs:
         with:
           client-id: ${{ env.TRIGGER_CLIENT_ID }}
           private-key: ${{ env.TRIGGER_PRIVATE_KEY }}
-          # Rationale: repositories: below already scopes
-          # this token to one repo. Fixed upstream in zizmor v1.25.1/v1.29.0
-          # (zizmorcore/zizmor#2011, #2227); MegaLinter v9.6.0 bundles the buggy v1.25.0.
+          # zizmor flags owner plus repositories as all-repository access;
+          # repositories scopes the token, so this is a false positive.
+          # Remove this ignore if repositories or permission-actions change.
           owner: linuxfoundation  # zizmor: ignore[github-app]
           repositories: lfx-v2-argocd
           permission-actions: write

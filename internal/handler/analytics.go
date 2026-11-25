@@ -31,7 +31,12 @@ func (h *Handler) GetAnalytics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(r.Context(), w, http.StatusOK, toAPIAnalytics(a))
+	dto := toAPIAnalytics(a)
+	h.applyShareStats(r.Context(), a.NewsletterID, &dto)
+	if a.Status == model.StatusSent {
+		dto.TotalPageViews = countFor(h.pageViewCounts(r.Context(), []*model.Newsletter{{ID: a.NewsletterID, Status: a.Status}}), a.NewsletterID)
+	}
+	writeJSON(r.Context(), w, http.StatusOK, dto)
 }
 
 // GetRecipientEngagement handles

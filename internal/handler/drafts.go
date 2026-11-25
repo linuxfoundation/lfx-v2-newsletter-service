@@ -4,7 +4,10 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,26 +22,42 @@ import (
 
 // CreateNewsletter handles POST /projects/{project_uid}/newsletters.
 func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
-	projectUID := r.PathValue("project_uid")
 	var body publicapi.CreateNewsletterRequest
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
+	var publicationUID *uuid.UUID
+	if body.PublicationUID != nil {
+		id, err := parseUUID(*body.PublicationUID)
+		if err != nil {
+			writeError(r.Context(), w, err)
+			return
+		}
+		publicationUID = &id
+	}
+	h.createDraft(w, r, body, publicationUID)
+}
 
+// createDraft runs the shared create flow for POST .../newsletters and POST
+// .../newsletter-publications/{publication_uid}/editions.
+func (h *Handler) createDraft(w http.ResponseWriter, r *http.Request, body publicapi.CreateNewsletterRequest, publicationUID *uuid.UUID) {
+	projectUID := r.PathValue("project_uid")
 	user := UserFromContext(r.Context())
 	if user == "" {
 		user = "anonymous"
 	}
 
 	draft, err := h.newsletter.CreateDraft(r.Context(), service.CreateDraftInput{
-		ProjectUID:    projectUID,
-		Subject:       body.Subject,
-		BodyHTML:      body.BodyHTML,
-		EDReplyEmail:  body.EDReplyEmail,
-		CommitteeUIDs: body.CommitteeUIDs,
-		CreatedBy:     user,
-		ScheduledAt:   body.ScheduledAt,
+		ProjectUID:     projectUID,
+		PublicationUID: publicationUID,
+		Subject:        body.Subject,
+		BodyHTML:       body.BodyHTML,
+		BodyLayout:     toEmitterLayoutPtr(body.BodyLayout),
+		EDReplyEmail:   body.EDReplyEmail,
+		CommitteeUIDs:  body.CommitteeUIDs,
+		CreatedBy:      user,
+		ScheduledAt:    body.ScheduledAt,
 	})
 	if err != nil {
 		writeError(r.Context(), w, err)
@@ -47,7 +66,7 @@ func (h *Handler) CreateNewsletter(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("ETag", formatETag(draft.Version))
 	w.Header().Set("Location", fmt.Sprintf("/projects/%s/newsletters/%s", projectUID, draft.ID))
-	writeJSON(r.Context(), w, http.StatusCreated, toAPINewsletter(draft))
+	writeJSON(r.Context(), w, http.StatusCreated, toAPINewsletter(r.Context(), draft))
 }
 
 // GetNewsletter handles GET /projects/{project_uid}/newsletters/{newsletter_uid}.
@@ -65,8 +84,12 @@ func (h *Handler) GetNewsletter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	dto := toAPINewsletter(r.Context(), n)
+	dto.ShareCount = countFor(h.shareCounts(r.Context(), []*model.Newsletter{n}), n.ID)
+	dto.TotalOpens = h.totalOpens(r.Context(), n)
+	dto.PageViewCount = countFor(h.pageViewCounts(r.Context(), []*model.Newsletter{n}), n.ID)
 	w.Header().Set("ETag", formatETag(n.Version))
-	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(n))
+	writeJSON(r.Context(), w, http.StatusOK, dto)
 }
 
 // UpdateNewsletter handles PUT /projects/{project_uid}/newsletters/{newsletter_uid} with required If-Match.
@@ -95,6 +118,8 @@ func (h *Handler) UpdateNewsletter(w http.ResponseWriter, r *http.Request) {
 		ExpectedVersion: expectedVersion,
 		Subject:         body.Subject,
 		BodyHTML:        body.BodyHTML,
+		BodyLayoutSet:   body.BodyLayout.Present,
+		BodyLayout:      toEmitterLayoutPtr(body.BodyLayout.Layout),
 		EDReplyEmail:    body.EDReplyEmail,
 		CommitteeUIDs:   body.CommitteeUIDs,
 		ScheduledAt:     body.ScheduledAt,
@@ -105,7 +130,7 @@ func (h *Handler) UpdateNewsletter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("ETag", formatETag(updated.Version))
-	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(updated))
+	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(r.Context(), updated))
 }
 
 // DeleteNewsletter handles DELETE /projects/{project_uid}/newsletters/{newsletter_uid}.
@@ -154,12 +179,19 @@ func parseUUID(raw string) (uuid.UUID, error) {
 }
 
 // toAPINewsletter converts a domain model into the public API DTO.
-func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
+func toAPINewsletter(ctx context.Context, n *model.Newsletter) *publicapi.Newsletter {
+	var publicationUID *string
+	if n.PublicationUID != nil {
+		v := n.PublicationUID.String()
+		publicationUID = &v
+	}
 	return &publicapi.Newsletter{
 		ID:              n.ID.String(),
 		ProjectUID:      n.ProjectUID,
+		PublicationUID:  publicationUID,
 		Subject:         n.Subject,
 		BodyHTML:        n.BodyHTML,
+		BodyLayout:      toAPILayout(ctx, n.BodyLayout, n.ID.String()),
 		EDReplyEmail:    n.EDReplyEmail,
 		CommitteeUIDs:   n.CommitteeUIDs,
 		Status:          publicapi.Status(n.Status),
@@ -172,4 +204,30 @@ func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
 		CreatedAt:       n.CreatedAt,
 		UpdatedAt:       n.UpdatedAt,
 	}
+}
+
+// toAPILayout decodes the stored raw layout JSON back into the public-API
+// layout shape. The stored JSON uses the same snake_case field names as the
+// public contract (the emitter Layout and NewsletterLayout share json tags), so
+// this is a direct unmarshal. A nil/empty payload (legacy / html-only
+// newsletter) yields nil. A decode failure is logged and treated as absent
+// rather than failing the read — the body_html is still valid and serving it is
+// better than a 500 on a row that was already persisted.
+func toAPILayout(ctx context.Context, raw json.RawMessage, newsletterID string) *publicapi.NewsletterLayout {
+	if len(raw) == 0 {
+		return nil
+	}
+	var layout publicapi.NewsletterLayout
+	if err := json.Unmarshal(raw, &layout); err != nil {
+		// Corrupt stored layout: serve the (still valid) body_html rather than a
+		// 500. Log WITH the id, because the row then needs operator attention: the
+		// newsletter reads as html-only, so a client that omits body_layout on the
+		// next PUT hits UpdateDraft's preserve branch, which unmarshals the SAME
+		// corrupt payload and fails the save (an untyped error → 500). The draft
+		// stays uneditable until a client sends an explicit "body_layout": null or
+		// a replacement layout. The id makes that row findable.
+		slog.WarnContext(ctx, "decode stored body_layout failed; omitting from response", "newsletter_id", newsletterID, "error", err)
+		return nil
+	}
+	return &layout
 }
